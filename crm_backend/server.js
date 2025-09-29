@@ -175,7 +175,7 @@ import {
   uploadMultiple,
   handleUploadErrors 
 } from "./middleware/upload.js";
-import fs from 'fs';
+  import fs from 'fs';
 
 dotenv.config();
 
@@ -212,7 +212,7 @@ if (cluster.isPrimary) {
   connectDB();
 
   // Create uploads directory if it doesn't exist
-  
+
   const uploadsDir = './uploads';
   if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
@@ -220,7 +220,7 @@ if (cluster.isPrimary) {
 
   // Middleware
   app.use(cors({
-    origin: process.env.CLIENT_URL || 'http://localhost:3000',
+    origin: process.env.CLIENT_URL || 'http://localhost:5173',
     credentials: true
   }));
   app.use(express.json({ limit: '10mb' })); // Increase JSON payload limit

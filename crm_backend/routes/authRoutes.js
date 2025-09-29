@@ -126,6 +126,7 @@ import { generateToken } from '../utils/jwtUtils.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { validate, registerSchema, loginSchema } from '../validators/authValidator.js';
 import { setAuthCookie, clearAuthCookie } from '../utils/cookieUtils.js';
+import { strictLimiter } from '../middleware/rateLimit.js'; // Add this import
 
 const router = express.Router();
 
@@ -276,16 +277,33 @@ router.get('/check-auth', protect, (req, res) => {
     }
   });
 });
+
+// Password reset request (with strict rate limiting)
 router.post('/forgot-password', strictLimiter, async (req, res) => {
   try {
     const { email } = req.body;
     
-    // Implementation for password reset
+    // Check if user exists
+    const user = await User.findOne({ email });
+    if (!user) {
+      // For security, don't reveal if email exists or not
+      return res.json({
+        success: true,
+        message: 'If an account with that email exists, a reset link has been sent'
+      });
+    }
+
+    // In a real application, you would:
+    // 1. Generate a reset token
+    // 2. Save it to the user document with an expiration
+    // 3. Send an email with the reset link
+    
     res.json({
       success: true,
       message: 'If an account with that email exists, a reset link has been sent'
     });
   } catch (error) {
+    console.error('Forgot password error:', error);
     res.status(500).json({
       success: false,
       message: error.message
