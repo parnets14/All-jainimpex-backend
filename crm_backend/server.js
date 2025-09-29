@@ -154,17 +154,28 @@
 
 
 
-// server.js (add cookie-parser to imports and middleware)
 import cluster from "cluster";
 import { cpus } from "os";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
-import cookieParser from "cookie-parser"; // Add this import
+import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import connectDB from "./config/db.js";
 import authRoutes from "./routes/authRoutes.js";
 import { protect } from "./middleware/authMiddleware.js";
+import { 
+  generalLimiter, 
+  authLimiter, 
+  uploadLimiter,
+  strictLimiter 
+} from "./middleware/rateLimit.js";
+import { 
+  uploadSingle, 
+  uploadMultiple,
+  handleUploadErrors 
+} from "./middleware/upload.js";
+import fs from 'fs';
 
 dotenv.config();
 
@@ -200,26 +211,95 @@ if (cluster.isPrimary) {
   // Connect to MongoDB (each worker connects)
   connectDB();
 
+  // Create uploads directory if it doesn't exist
+  
+  const uploadsDir = './uploads';
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+
   // Middleware
   app.use(cors({
-    origin: process.env.CLIENT_URL || 'http://localhost:5173',
-    credentials: true // Important for cookies
+    origin: process.env.CLIENT_URL || 'http://localhost:3000',
+    credentials: true
   }));
-  app.use(express.json());
-  app.use(express.urlencoded({ extended: true }));
-  app.use(cookieParser()); // Add cookie parser middleware
+  app.use(express.json({ limit: '10mb' })); // Increase JSON payload limit
+  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+  app.use(cookieParser());
+  app.use(helmet());
 
-  // Optional: Logging middleware (comment out in production for performance)
+  // Apply general rate limiting to all routes
+  app.use(generalLimiter);
+
+  // Optional: Logging middleware
   app.use((req, res, next) => {
     console.log(`[Worker ${process.pid}] ${req.method} ${req.url}`);
     next();
   });
 
+  // Apply specific rate limiters to auth routes
+  app.use("/api/auth", authLimiter);
+
   // Routes
   app.use("/api/auth", authRoutes);
 
-  // Protected route example
-  app.get("/api/protected", protect, (req, res) => {
+  // File upload routes with upload rate limiting
+  app.post("/api/upload/single", 
+    uploadLimiter, 
+    uploadSingle('file'), 
+    handleUploadErrors,
+    (req, res) => {
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          message: 'No file uploaded'
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'File uploaded successfully',
+        file: {
+          filename: req.file.filename,
+          originalname: req.file.originalname,
+          size: req.file.size,
+          mimetype: req.file.mimetype,
+          path: req.file.path
+        }
+      });
+    }
+  );
+
+  app.post("/api/upload/multiple", 
+    uploadLimiter, 
+    uploadMultiple('files', 5), 
+    handleUploadErrors,
+    (req, res) => {
+      if (!req.files || req.files.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'No files uploaded'
+        });
+      }
+
+      const files = req.files.map(file => ({
+        filename: file.filename,
+        originalname: file.originalname,
+        size: file.size,
+        mimetype: file.mimetype,
+        path: file.path
+      }));
+
+      res.json({
+        success: true,
+        message: `${files.length} files uploaded successfully`,
+        files: files
+      });
+    }
+  );
+
+  // Protected route example with strict rate limiting
+  app.get("/api/protected", protect, strictLimiter, (req, res) => {
     res.json({
       success: true,
       message: `Protected route accessed by ${req.user.username}`,
@@ -227,6 +307,9 @@ if (cluster.isPrimary) {
       data: { secret: "This is sensitive data" }
     });
   });
+
+  // Serve uploaded files statically
+  app.use('/uploads', express.static('uploads'));
 
   // Health check route
   app.get("/health", (req, res) => {
@@ -245,14 +328,21 @@ if (cluster.isPrimary) {
       success: true, 
       message: "API is running with cluster mode! 🚀",
       worker: process.pid,
+      features: [
+        "Rate Limiting ✅",
+        "File Uploads ✅", 
+        "JWT Authentication ✅",
+        "Cluster Mode ✅"
+      ],
       availableRoutes: [
         "GET  /",
         "GET  /health",
         "POST /api/auth/register",
-        "POST /api/auth/login",
+        "POST /api/auth/login", 
         "POST /api/auth/logout",
         "GET  /api/auth/me (protected)",
-        "GET  /api/auth/check-auth (protected)",
+        "POST /api/upload/single",
+        "POST /api/upload/multiple", 
         "GET  /api/protected (protected)"
       ]
     });

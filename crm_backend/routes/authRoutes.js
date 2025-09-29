@@ -276,5 +276,21 @@ router.get('/check-auth', protect, (req, res) => {
     }
   });
 });
+router.post('/forgot-password', strictLimiter, async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    // Implementation for password reset
+    res.json({
+      success: true,
+      message: 'If an account with that email exists, a reset link has been sent'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
 
 export default router;
