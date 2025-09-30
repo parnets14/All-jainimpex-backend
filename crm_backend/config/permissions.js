@@ -102,6 +102,26 @@ export const AVAILABLE_PERMISSIONS = {
       description: "Register employees"
     },
     {
+      id: "employees.create",
+      name: "Create Employees",
+      description: "Register new employees"
+    },
+    {
+      id: "employees.view", 
+      name: "View Employees",
+      description: "View employee records"
+    },
+    {
+      id: "employees.update",
+      name: "Update Employees", 
+      description: "Update employee information"
+    },
+    {
+      id: "employees.delete",
+      name: "Delete Employees",
+      description: "Delete employee records"
+    },
+    {
       id: "geo.attendance.monitoring",
       name: "Geo Attendance Monitoring",
       description: "Monitor geo attendance"
@@ -210,14 +230,19 @@ export const ROLE_PERMISSIONS = {
     "purchase.view",
     "purchase.manage",
     "finance.view",
-    "reports.view"
+    "reports.view",
+    "employees.create",
+    "employees.view",
+    "employees.update", 
+    "employees.delete"
   ],
   sub_admin: [
     "dashboard.view",
     "dealers.manage",
     "sales.view",
     "finance.customers",
-    "reports.view"
+    "reports.view",
+    "employees.view"
   ],
   sales_manager: [
     "dashboard.view",
@@ -226,7 +251,8 @@ export const ROLE_PERMISSIONS = {
     "sales.dispatch",
     "discounts.manage",
     "finance.customers",
-    "reports.view"
+    "reports.view",
+    "employees.view"
   ],
   purchase_manager: [
     "dashboard.view",
@@ -236,22 +262,43 @@ export const ROLE_PERMISSIONS = {
     "inventory.receive",
     "suppliers.incentives",
     "finance.suppliers",
-    "reports.view"
+    "reports.view",
+    "employees.view"
   ],
   finance_manager: [
     "dashboard.view",
     "finance.view",
     "finance.customers",
     "finance.suppliers",
-    "reports.view"
+    "reports.view",
+    "employees.view"
   ],
   hr_manager: [
     "dashboard.view",
     "employees.manage",
+    "employees.create",
+    "employees.view",
+    "employees.update",
+    "employees.delete",
     "hrms.manage",
     "reports.view"
   ],
-  sales_executive: ["dashboard.view", "dealers.manage", "sales.view"],
-  warehouse_manager: ["dashboard.view", "inventory.receive", "reports.view"],
-  inventory_manager: ["dashboard.view", "inventory.receive", "reports.view"]
+  sales_executive: [
+    "dashboard.view",
+    "dealers.manage",
+    "sales.view",
+    "employees.view"
+  ],
+  warehouse_manager: [
+    "dashboard.view",
+    "inventory.receive",
+    "reports.view",
+    "employees.view"
+  ],
+  inventory_manager: [
+    "dashboard.view",
+    "inventory.receive",
+    "reports.view",
+    "employees.view"
+  ]
 };

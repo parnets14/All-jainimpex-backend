@@ -376,6 +376,9 @@
 
 
 
+
+
+
 import cluster from "cluster";
 import { cpus } from "os";
 import express from "express";
@@ -394,6 +397,9 @@ import {
   strictLimiter 
 } from "./middleware/rateLimit.js";
  import fs from 'fs';
+import employeeRoutes from './routes/employeeRoutes.js';
+
+
 
 dotenv.config();
 
@@ -461,6 +467,7 @@ if (cluster.isPrimary) {
   // Routes
   app.use("/api/auth", authRoutes);
   app.use("/api/users", protect, userRoutes); // Add user routes
+  app.use("/api/employees", protect, employeeRoutes);
 
   // Protected route example with role-based access
   app.get("/api/protected", protect, strictLimiter, (req, res) => {
