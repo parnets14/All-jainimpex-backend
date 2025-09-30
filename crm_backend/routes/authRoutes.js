@@ -3,10 +3,12 @@
 // import { generateToken } from '../utils/jwtUtils.js';
 // import { protect } from '../middleware/authMiddleware.js';
 // import { validate, registerSchema, loginSchema } from '../validators/authValidator.js';
+// import { setAuthCookie, clearAuthCookie } from '../utils/cookieUtils.js';
+// import { strictLimiter } from '../middleware/rateLimit.js'; // Add this import
 
 // const router = express.Router();
 
-// // Register - with Joi validation
+// // Register - with Joi validation and cookie support
 // router.post('/register', validate(registerSchema), async (req, res) => {
 //   try {
 //     const { username, email, password } = req.body;
@@ -33,10 +35,13 @@
 //     // Generate token
 //     const token = generateToken(user._id);
 
+//     // Set HTTP-only cookie
+//     setAuthCookie(res, token);
+
 //     res.status(201).json({
 //       success: true,
 //       message: 'User registered successfully',
-//       token,
+//       token, // Still return token in response for flexibility
 //       user: {
 //         id: user._id,
 //         username: user.username,
@@ -52,7 +57,7 @@
 //   }
 // });
 
-// // Login - with Joi validation
+// // Login - with Joi validation and cookie support
 // router.post('/login', validate(loginSchema), async (req, res) => {
 //   try {
 //     const { email, password } = req.body;
@@ -78,10 +83,13 @@
 //     // Generate token
 //     const token = generateToken(user._id);
 
+//     // Set HTTP-only cookie
+//     setAuthCookie(res, token);
+
 //     res.json({
 //       success: true,
 //       message: 'Login successful',
-//       token,
+//       token, // Still return token in response for flexibility
 //       user: {
 //         id: user._id,
 //         username: user.username,
@@ -117,79 +125,104 @@
 //   }
 // });
 
+// // Logout route - Clear cookie
+// router.post('/logout', (req, res) => {
+//   try {
+//     clearAuthCookie(res);
+    
+//     res.json({
+//       success: true,
+//       message: 'Logged out successfully'
+//     });
+//   } catch (error) {
+//     console.error('Logout error:', error);
+//     res.status(500).json({
+//       success: false,
+//       message: error.message
+//     });
+//   }
+// });
+
+// // Check authentication status
+// router.get('/check-auth', protect, (req, res) => {
+//   res.json({
+//     success: true,
+//     message: 'User is authenticated',
+//     user: {
+//       id: req.user._id,
+//       username: req.user.username,
+//       email: req.user.email
+//     }
+//   });
+// });
+
+// // Password reset request (with strict rate limiting)
+// router.post('/forgot-password', strictLimiter, async (req, res) => {
+//   try {
+//     const { email } = req.body;
+    
+//     // Check if user exists
+//     const user = await User.findOne({ email });
+//     if (!user) {
+//       // For security, don't reveal if email exists or not
+//       return res.json({
+//         success: true,
+//         message: 'If an account with that email exists, a reset link has been sent'
+//       });
+//     }
+
+//     // In a real application, you would:
+//     // 1. Generate a reset token
+//     // 2. Save it to the user document with an expiration
+//     // 3. Send an email with the reset link
+    
+//     res.json({
+//       success: true,
+//       message: 'If an account with that email exists, a reset link has been sent'
+//     });
+//   } catch (error) {
+//     console.error('Forgot password error:', error);
+//     res.status(500).json({
+//       success: false,
+//       message: error.message
+//     });
+//   }
+// });
+
 // export default router;
+
+
+
 
 
 import express from 'express';
 import User from '../models/User.js';
 import { generateToken } from '../utils/jwtUtils.js';
 import { protect } from '../middleware/authMiddleware.js';
-import { validate, registerSchema, loginSchema } from '../validators/authValidator.js';
+import { validate, loginSchema } from '../validators/authValidator.js';
 import { setAuthCookie, clearAuthCookie } from '../utils/cookieUtils.js';
-import { strictLimiter } from '../middleware/rateLimit.js'; // Add this import
 
 const router = express.Router();
 
-// Register - with Joi validation and cookie support
-router.post('/register', validate(registerSchema), async (req, res) => {
-  try {
-    const { username, email, password } = req.body;
-
-    // Check if user exists
-    const existingUser = await User.findOne({
-      $or: [{ email }, { username }]
-    });
-
-    if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        message: 'User already exists with this email or username'
-      });
-    }
-
-    // Create user
-    const user = await User.create({
-      username,
-      email,
-      password
-    });
-
-    // Generate token
-    const token = generateToken(user._id);
-
-    // Set HTTP-only cookie
-    setAuthCookie(res, token);
-
-    res.status(201).json({
-      success: true,
-      message: 'User registered successfully',
-      token, // Still return token in response for flexibility
-      user: {
-        id: user._id,
-        username: user.username,
-        email: user.email
-      }
-    });
-  } catch (error) {
-    console.error('Registration error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-});
-
-// Login - with Joi validation and cookie support
+// Login - with role-based authentication
 router.post('/login', validate(loginSchema), async (req, res) => {
   try {
     const { email, password } = req.body;
 
     // Check if user exists
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email }).select('+password');
     if (!user) {
       return res.status(401).json({
         success: false,
         message: 'Invalid credentials'
+      });
+    }
+
+    // Check if user is active
+    if (user.status !== 'Active') {
+      return res.status(401).json({
+        success: false,
+        message: 'Your account has been deactivated. Please contact administrator.'
       });
     }
 
@@ -202,20 +235,34 @@ router.post('/login', validate(loginSchema), async (req, res) => {
       });
     }
 
+    // Update last login
+    await user.updateLastLogin();
+
     // Generate token
     const token = generateToken(user._id);
 
     // Set HTTP-only cookie
     setAuthCookie(res, token);
 
+    // Remove password from response
+    const userResponse = await User.findById(user._id).select('-password');
+
     res.json({
       success: true,
       message: 'Login successful',
-      token, // Still return token in response for flexibility
+      token,
       user: {
-        id: user._id,
-        username: user.username,
-        email: user.email
+        id: userResponse._id,
+        name: userResponse.name,
+        username: userResponse.username,
+        email: userResponse.email,
+        role: userResponse.role,
+        status: userResponse.status,
+        permissions: userResponse.permissions,
+        assignedRegions: userResponse.assignedRegions,
+        lastLogin: userResponse.lastLogin,
+        phone: userResponse.phone,
+        location: userResponse.location
       }
     });
   } catch (error) {
@@ -230,13 +277,24 @@ router.post('/login', validate(loginSchema), async (req, res) => {
 // Get current user (Protected route)
 router.get('/me', protect, async (req, res) => {
   try {
+    const user = await User.findById(req.user._id).select('-password');
+    
     res.json({
       success: true,
       user: {
-        id: req.user._id,
-        username: req.user.username,
-        email: req.user.email,
-        createdAt: req.user.createdAt
+        id: user._id,
+        name: user.name,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+        permissions: user.permissions,
+        assignedRegions: user.assignedRegions,
+        lastLogin: user.lastLogin,
+        phone: user.phone,
+        location: user.location,
+        joinDate: user.joinDate,
+        createdAt: user.createdAt
       }
     });
   } catch (error) {
@@ -272,43 +330,12 @@ router.get('/check-auth', protect, (req, res) => {
     message: 'User is authenticated',
     user: {
       id: req.user._id,
+      name: req.user.name,
       username: req.user.username,
-      email: req.user.email
+      email: req.user.email,
+      role: req.user.role
     }
   });
-});
-
-// Password reset request (with strict rate limiting)
-router.post('/forgot-password', strictLimiter, async (req, res) => {
-  try {
-    const { email } = req.body;
-    
-    // Check if user exists
-    const user = await User.findOne({ email });
-    if (!user) {
-      // For security, don't reveal if email exists or not
-      return res.json({
-        success: true,
-        message: 'If an account with that email exists, a reset link has been sent'
-      });
-    }
-
-    // In a real application, you would:
-    // 1. Generate a reset token
-    // 2. Save it to the user document with an expiration
-    // 3. Send an email with the reset link
-    
-    res.json({
-      success: true,
-      message: 'If an account with that email exists, a reset link has been sent'
-    });
-  } catch (error) {
-    console.error('Forgot password error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
 });
 
 export default router;
