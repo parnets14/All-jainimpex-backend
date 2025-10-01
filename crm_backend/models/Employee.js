@@ -124,9 +124,24 @@ const employeeSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   }
-}, {
+},
+
+{
   timestamps: true
 });
+
+// Add to employeeSchema
+employeeSchema.add({
+  faceEmbedding: {
+    type: [Number], // Array of numbers for face embedding
+    default: null
+  },
+  faceImage: {
+    type: String, // Path to face image
+    default: null
+  }
+});
+
 
 // Calculate salaries before saving
 employeeSchema.pre('save', function(next) {
@@ -233,6 +248,12 @@ employeeSchema.methods.calculateSalaries = function() {
     grossSalary: parseFloat(gross.toFixed(2)),
     netSalary: parseFloat(net.toFixed(2))
   };
+};
+
+// Add method to update face embedding
+employeeSchema.methods.updateFaceEmbedding = function(embedding) {
+  this.faceEmbedding = embedding;
+  return this.save();
 };
 
 export default mongoose.model('Employee', employeeSchema);

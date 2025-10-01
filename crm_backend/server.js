@@ -398,6 +398,8 @@ import {
 } from "./middleware/rateLimit.js";
  import fs from 'fs';
 import employeeRoutes from './routes/employeeRoutes.js';
+import attendanceRoutes from './routes/attendanceRoutes.js';
+import './cron/attendanceCron.js';
 
 
 
@@ -468,6 +470,16 @@ if (cluster.isPrimary) {
   app.use("/api/auth", authRoutes);
   app.use("/api/users", protect, userRoutes); // Add user routes
   app.use("/api/employees", protect, employeeRoutes);
+  app.use("/api/attendance", protect, attendanceRoutes);
+
+
+
+
+
+
+
+
+
 
   // Protected route example with role-based access
   app.get("/api/protected", protect, strictLimiter, (req, res) => {

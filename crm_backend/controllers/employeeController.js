@@ -1,4 +1,8 @@
 import Employee from '../models/Employee.js';
+import { uploadSingle,  } from '../middleware/upload.js';
+import { handleUploadErrors,  } from '../middleware/uploadErrorHandler.js';
+import path from 'path';
+import fs from 'fs';
 
 // Helper function to safely parse numbers
 const safeParseFloat = (value, defaultValue = 0) => {
@@ -7,6 +11,19 @@ const safeParseFloat = (value, defaultValue = 0) => {
   }
   const num = parseFloat(value);
   return isNaN(num) ? defaultValue : num;
+};
+
+// Helper function to generate face embedding (placeholder - integrate with your face recognition)
+const generateFaceEmbedding = async (imagePath) => {
+  try {
+    // This is a placeholder - integrate with your face-api.js or other face recognition
+    console.log('Generating face embedding for:', imagePath);
+    // Return a dummy embedding for now - replace with actual face recognition
+    return [0.1, 0.2, 0.3]; // Example dummy embedding
+  } catch (error) {
+    console.error('Error generating face embedding:', error);
+    return null;
+  }
 };
 
 // Get all employees with pagination and search
@@ -42,7 +59,7 @@ export const getEmployees = async (req, res) => {
       .sort(sort)
       .limit(limit * 1)
       .skip((page - 1) * limit)
-      .select('-__v');
+      .select('-__v -faceEmbedding'); // Exclude face embedding for list view
 
     const total = await Employee.countDocuments(filter);
 
@@ -87,9 +104,13 @@ export const getEmployee = async (req, res) => {
   }
 };
 
-// Create new employee
+// Create new employee with face image
 export const createEmployee = async (req, res) => {
   try {
+    console.log('Request body:', req.body);
+    console.log('Request file:', req.file);
+
+    // Extract data from form - when using multer, form data comes in req.body
     const {
       name,
       designation,
@@ -100,15 +121,15 @@ export const createEmployee = async (req, res) => {
       ifscCode,
       branch,
       basicSalary,
-      salaryType,
-      hra,
-      conveyance,
-      medicalAllowance,
-      specialAllowance,
-      pf,
-      professionalTax,
-      tds,
-      otherDeductions
+      salaryType = 'fixed',
+      hra = 0,
+      conveyance = 0,
+      medicalAllowance = 0,
+      specialAllowance = 0,
+      pf = 0,
+      professionalTax = 0,
+      tds = 0,
+      otherDeductions = 0
     } = req.body;
 
     // Validate required fields
@@ -126,10 +147,25 @@ export const createEmployee = async (req, res) => {
     // Check if employee with same account number exists
     const existingEmployee = await Employee.findOne({ accountNumber });
     if (existingEmployee) {
+      // Delete uploaded file if employee creation fails
+      if (req.file && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
       return res.status(400).json({
         success: false,
         message: 'Employee with this account number already exists'
       });
+    }
+
+    // Handle face image upload
+    let faceImagePath = null;
+    let faceEmbedding = null;
+
+    if (req.file) {
+      faceImagePath = req.file.path;
+      
+      // Generate face embedding from the uploaded image
+      faceEmbedding = await generateFaceEmbedding(faceImagePath);
     }
 
     // Parse all numeric values safely
@@ -144,7 +180,7 @@ export const createEmployee = async (req, res) => {
       ifscCode: ifscCode.toUpperCase().trim(),
       branch: branch.trim(),
       basicSalary: safeParseFloat(basicSalary),
-      salaryType: salaryType || 'fixed',
+      salaryType: salaryType,
       hra: safeParseFloat(hra),
       conveyance: safeParseFloat(conveyance),
       medicalAllowance: safeParseFloat(medicalAllowance),
@@ -153,10 +189,17 @@ export const createEmployee = async (req, res) => {
       professionalTax: safeParseFloat(professionalTax),
       tds: safeParseFloat(tds),
       otherDeductions: safeParseFloat(otherDeductions),
-      createdBy: req.user._id
+      createdBy: req.user._id,
+      faceImage: faceImagePath,
+      faceEmbedding: faceEmbedding
     };
 
-    console.log('Creating employee with data:', employeeData);
+    console.log('Creating employee with data:', { 
+      name: employeeData.name,
+      empId: employeeData.empId,
+      faceImage: employeeData.faceImage ? 'Uploaded' : 'Not uploaded',
+      faceEmbedding: employeeData.faceEmbedding ? 'Generated' : 'Not generated' 
+    });
 
     // Create employee - this will trigger the pre-save middleware
     const employee = await Employee.create(employeeData);
@@ -171,17 +214,52 @@ export const createEmployee = async (req, res) => {
 
     console.log('Employee created successfully:', {
       id: employee._id,
+      name: employee.name,
+      empId: employee.empId,
       grossSalary: employee.grossSalary,
-      netSalary: employee.netSalary
+      netSalary: employee.netSalary,
+      faceImage: employee.faceImage ? 'Uploaded' : 'Not uploaded'
     });
 
     res.status(201).json({
       success: true,
       message: 'Employee registered successfully',
-      employee
+      employee: {
+        _id: employee._id,
+        name: employee.name,
+        empId: employee.empId,
+        designation: employee.designation,
+        department: employee.department,
+        dateOfJoining: employee.dateOfJoining,
+        bankName: employee.bankName,
+        accountNumber: employee.accountNumber,
+        ifscCode: employee.ifscCode,
+        branch: employee.branch,
+        basicSalary: employee.basicSalary,
+        salaryType: employee.salaryType,
+        hra: employee.hra,
+        conveyance: employee.conveyance,
+        medicalAllowance: employee.medicalAllowance,
+        specialAllowance: employee.specialAllowance,
+        pf: employee.pf,
+        professionalTax: employee.professionalTax,
+        tds: employee.tds,
+        otherDeductions: employee.otherDeductions,
+        grossSalary: employee.grossSalary,
+        netSalary: employee.netSalary,
+        status: employee.status,
+        faceImage: employee.faceImage,
+        createdAt: employee.createdAt,
+        updatedAt: employee.updatedAt
+      }
     });
   } catch (error) {
     console.error('Create employee error:', error);
+    
+    // Delete uploaded file if employee creation fails
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
     
     // Handle duplicate key errors
     if (error.code === 11000) {
@@ -207,9 +285,26 @@ export const createEmployee = async (req, res) => {
   }
 };
 
-// Update employee
+// Update employee with optional face image
 export const updateEmployee = async (req, res) => {
   try {
+    console.log('Update request body:', req.body);
+    console.log('Update request file:', req.file);
+
+    // Check if employee exists
+    const existingEmployee = await Employee.findById(req.params.id);
+    if (!existingEmployee) {
+      // Delete uploaded file if employee not found
+      if (req.file && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+      return res.status(404).json({
+        success: false,
+        message: 'Employee not found'
+      });
+    }
+
+    // Extract data from form
     const {
       name,
       designation,
@@ -232,15 +327,6 @@ export const updateEmployee = async (req, res) => {
       status
     } = req.body;
 
-    // Check if employee exists
-    const existingEmployee = await Employee.findById(req.params.id);
-    if (!existingEmployee) {
-      return res.status(404).json({
-        success: false,
-        message: 'Employee not found'
-      });
-    }
-
     // Check if account number is already used by another employee
     if (accountNumber && accountNumber !== existingEmployee.accountNumber) {
       const employeeWithSameAccount = await Employee.findOne({
@@ -249,6 +335,10 @@ export const updateEmployee = async (req, res) => {
       });
       
       if (employeeWithSameAccount) {
+        // Delete uploaded file if account number conflict
+        if (req.file && fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
         return res.status(400).json({
           success: false,
           message: 'Another employee already uses this account number'
@@ -279,7 +369,23 @@ export const updateEmployee = async (req, res) => {
     if (otherDeductions !== undefined) updateData.otherDeductions = safeParseFloat(otherDeductions);
     if (status !== undefined) updateData.status = status;
 
-    console.log('Updating employee with data:', updateData);
+    // Handle face image upload for update
+    if (req.file) {
+      // Delete old face image if exists
+      if (existingEmployee.faceImage && fs.existsSync(existingEmployee.faceImage)) {
+        fs.unlinkSync(existingEmployee.faceImage);
+      }
+      
+      updateData.faceImage = req.file.path;
+      
+      // Generate new face embedding
+      updateData.faceEmbedding = await generateFaceEmbedding(req.file.path);
+    }
+
+    console.log('Updating employee with data:', { 
+      ...updateData, 
+      faceEmbedding: updateData.faceEmbedding ? 'Regenerated' : 'Not updated' 
+    });
 
     const employee = await Employee.findByIdAndUpdate(
       req.params.id,
@@ -300,10 +406,42 @@ export const updateEmployee = async (req, res) => {
     res.json({
       success: true,
       message: 'Employee updated successfully',
-      employee
+      employee: {
+        _id: employee._id,
+        name: employee.name,
+        empId: employee.empId,
+        designation: employee.designation,
+        department: employee.department,
+        dateOfJoining: employee.dateOfJoining,
+        bankName: employee.bankName,
+        accountNumber: employee.accountNumber,
+        ifscCode: employee.ifscCode,
+        branch: employee.branch,
+        basicSalary: employee.basicSalary,
+        salaryType: employee.salaryType,
+        hra: employee.hra,
+        conveyance: employee.conveyance,
+        medicalAllowance: employee.medicalAllowance,
+        specialAllowance: employee.specialAllowance,
+        pf: employee.pf,
+        professionalTax: employee.professionalTax,
+        tds: employee.tds,
+        otherDeductions: employee.otherDeductions,
+        grossSalary: employee.grossSalary,
+        netSalary: employee.netSalary,
+        status: employee.status,
+        faceImage: employee.faceImage,
+        createdAt: employee.createdAt,
+        updatedAt: employee.updatedAt
+      }
     });
   } catch (error) {
     console.error('Update employee error:', error);
+    
+    // Delete uploaded file if update fails
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
     
     if (error.name === 'ValidationError') {
       const messages = Object.values(error.errors).map(err => err.message);
@@ -330,6 +468,11 @@ export const deleteEmployee = async (req, res) => {
         success: false,
         message: 'Employee not found'
       });
+    }
+
+    // Delete face image file if exists
+    if (employee.faceImage && fs.existsSync(employee.faceImage)) {
+      fs.unlinkSync(employee.faceImage);
     }
 
     await Employee.findByIdAndDelete(req.params.id);
@@ -394,3 +537,84 @@ export const getEmployeeStats = async (req, res) => {
     });
   }
 };
+
+// Update face embedding for existing employee
+export const updateFaceEmbedding = async (req, res) => {
+  try {
+    const employee = await Employee.findById(req.params.id);
+    
+    if (!employee) {
+      return res.status(404).json({
+        success: false,
+        message: 'Employee not found'
+      });
+    }
+
+    if (!employee.faceImage) {
+      return res.status(400).json({
+        success: false,
+        message: 'Employee does not have a face image'
+      });
+    }
+
+    // Generate face embedding from existing image
+    const faceEmbedding = await generateFaceEmbedding(employee.faceImage);
+    
+    if (!faceEmbedding) {
+      return res.status(400).json({
+        success: false,
+        message: 'Failed to generate face embedding from image'
+      });
+    }
+
+    employee.faceEmbedding = faceEmbedding;
+    await employee.save();
+
+    res.json({
+      success: true,
+      message: 'Face embedding updated successfully',
+      employee: {
+        ...employee.toObject(),
+        faceEmbedding: undefined
+      }
+    });
+  } catch (error) {
+    console.error('Update face embedding error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Serve employee face image
+export const getEmployeeFaceImage = async (req, res) => {
+  try {
+    const employee = await Employee.findById(req.params.id);
+    
+    if (!employee || !employee.faceImage) {
+      return res.status(404).json({
+        success: false,
+        message: 'Employee or face image not found'
+      });
+    }
+
+    if (!fs.existsSync(employee.faceImage)) {
+      return res.status(404).json({
+        success: false,
+        message: 'Face image file not found'
+      });
+    }
+
+    res.sendFile(path.resolve(employee.faceImage));
+  } catch (error) {
+    console.error('Get employee face image error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Middleware for file upload
+export const uploadFaceImage = uploadSingle('faceImage');

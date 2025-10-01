@@ -5,10 +5,15 @@ import {
   createEmployee,
   updateEmployee,
   deleteEmployee,
-  getEmployeeStats
+  getEmployeeStats,
+  updateFaceEmbedding,
+  getEmployeeFaceImage,
+  uploadFaceImage,
+  
 } from '../controllers/employeeController.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { requirePermission } from '../middleware/authMiddleware.js';
+import { handleUploadErrors } from '../middleware/uploadErrorHandler.js';
 
 const router = express.Router();
 
@@ -24,11 +29,27 @@ router.get('/', requirePermission('employees.view'), getEmployees);
 // Get single employee
 router.get('/:id', requirePermission('employees.view'), getEmployee);
 
-// Create new employee
-router.post('/', requirePermission('employees.create'), createEmployee);
+// Get employee face image
+router.get('/:id/face-image', requirePermission('employees.view'), getEmployeeFaceImage);
 
-// Update employee
-router.put('/:id', requirePermission('employees.update'), updateEmployee);
+// Create new employee with face image upload
+router.post('/', 
+  requirePermission('employees.create'), 
+  uploadFaceImage,
+  handleUploadErrors,
+  createEmployee
+);
+
+// Update employee with optional face image upload
+router.put('/:id', 
+  requirePermission('employees.update'), 
+  uploadFaceImage,
+  handleUploadErrors,
+  updateEmployee
+);
+
+// Update face embedding for existing employee
+router.patch('/:id/face-embedding', requirePermission('employees.update'), updateFaceEmbedding);
 
 // Delete employee
 router.delete('/:id', requirePermission('employees.delete'), deleteEmployee);
