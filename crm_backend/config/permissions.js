@@ -1,5 +1,28 @@
+// config/permissions.js
 export const AVAILABLE_PERMISSIONS = {
+    "General": [
+    {
+      id: "dashboard.view",
+      name: "Dashboard View",
+      description: "Access to dashboard"
+    },
+    {
+      id: "system.management",
+      name: "System Management",
+      description: "Access to system management features"
+    },
+    {
+      id: "users.manage",
+      name: "User Management", 
+      description: "Manage users and permissions"
+    }
+  ],
   "Master Management": [
+    {
+      id: "master.management",
+      name: "Master Management Access",
+      description: "Access to all master management modules"
+    },
     {
       id: "product.master",
       name: "Product Master",
@@ -11,7 +34,7 @@ export const AVAILABLE_PERMISSIONS = {
       description: "Manage dealer master data"
     },
     {
-      id: "supplier.master",
+      id: "supplier.master", 
       name: "Supplier Master",
       description: "Manage supplier master data"
     },
@@ -22,7 +45,7 @@ export const AVAILABLE_PERMISSIONS = {
     },
     {
       id: "dealer.category",
-      name: "Dealer Category",
+      name: "Dealer Category", 
       description: "Manage dealer categories"
     },
     {
@@ -43,6 +66,11 @@ export const AVAILABLE_PERMISSIONS = {
   ],
   "Sales & Purchase Management": [
     {
+      id: "sales.purchase.management",
+      name: "Sales & Purchase Management Access",
+      description: "Access to all sales and purchase modules"
+    },
+    {
       id: "sales.order.dashboard",
       name: "Sales Order Dashboard",
       description: "Access sales order dashboard"
@@ -54,7 +82,7 @@ export const AVAILABLE_PERMISSIONS = {
     },
     {
       id: "purchasing.points",
-      name: "Purchasing Points",
+      name: "Purchasing Points", 
       description: "Manage purchasing points"
     },
     {
@@ -85,6 +113,11 @@ export const AVAILABLE_PERMISSIONS = {
   ],
   "Inventory & Warehouse Control": [
     {
+      id: "inventory.management",
+      name: "Inventory Management Access",
+      description: "Access to all inventory modules"
+    },
+    {
       id: "stock",
       name: "Stock",
       description: "Manage stock"
@@ -96,6 +129,11 @@ export const AVAILABLE_PERMISSIONS = {
     }
   ],
   "HRMS Administration": [
+    {
+      id: "hrms.management",
+      name: "HRMS Management Access", 
+      description: "Access to all HRMS modules"
+    },
     {
       id: "employee.registration",
       name: "Employee Registration",
@@ -139,6 +177,11 @@ export const AVAILABLE_PERMISSIONS = {
   ],
   "Finance & Accounts": [
     {
+      id: "finance.management",
+      name: "Finance Management Access",
+      description: "Access to all finance modules"
+    },
+    {
       id: "dealer.ledger",
       name: "Dealer Ledger",
       description: "Manage dealer ledgers"
@@ -160,6 +203,11 @@ export const AVAILABLE_PERMISSIONS = {
     }
   ],
   "Reports & Logs": [
+    {
+      id: "reports.management",
+      name: "Reports Management Access",
+      description: "Access to all reports modules"
+    },
     {
       id: "subadmin.activity.logs",
       name: "Subadmin Activity Logs",
@@ -193,6 +241,11 @@ export const AVAILABLE_PERMISSIONS = {
   ],
   "Expense Management": [
     {
+      id: "expense.management",
+      name: "Expense Management Access",
+      description: "Access to all expense modules"
+    },
+    {
       id: "expense.head.master",
       name: "Expense Head Master",
       description: "Manage expense head master"
@@ -202,103 +255,29 @@ export const AVAILABLE_PERMISSIONS = {
 
 export const AVAILABLE_REGIONS = [
   "Northern Region",
-  "Southern Region",
+  "Southern Region", 
   "Eastern Region",
   "Western Region",
   "Central Region",
   "North-East Region",
   "Mumbai Metro",
   "Delhi NCR",
-  "Bangalore Metro",
+  "Bangalore Metro", 
   "Chennai Metro",
   "Pune Metro",
   "Hyderabad Metro"
 ];
 
-// Default permissions for each role
+// Default permissions for each role - EMPTY by default
 export const ROLE_PERMISSIONS = {
-  super_admin: ["*"],
-  admin: [
-    "dashboard.view",
-    "masters.view",
-    "products.manage",
-    "categories.manage",
-    "dealers.manage",
-    "suppliers.manage",
-    "sales.view",
-    "sales.dispatch",
-    "purchase.view",
-    "purchase.manage",
-    "finance.view",
-    "reports.view",
-    "employees.create",
-    "employees.view",
-    "employees.update", 
-    "employees.delete"
-  ],
-  sub_admin: [
-    "dashboard.view",
-    "dealers.manage",
-    "sales.view",
-    "finance.customers",
-    "reports.view",
-    "employees.view"
-  ],
-  sales_manager: [
-    "dashboard.view",
-    "dealers.manage",
-    "sales.view",
-    "sales.dispatch",
-    "discounts.manage",
-    "finance.customers",
-    "reports.view",
-    "employees.view"
-  ],
-  purchase_manager: [
-    "dashboard.view",
-    "suppliers.manage",
-    "purchase.view",
-    "purchase.manage",
-    "inventory.receive",
-    "suppliers.incentives",
-    "finance.suppliers",
-    "reports.view",
-    "employees.view"
-  ],
-  finance_manager: [
-    "dashboard.view",
-    "finance.view",
-    "finance.customers",
-    "finance.suppliers",
-    "reports.view",
-    "employees.view"
-  ],
-  hr_manager: [
-    "dashboard.view",
-    "employees.manage",
-    "employees.create",
-    "employees.view",
-    "employees.update",
-    "employees.delete",
-    "hrms.manage",
-    "reports.view"
-  ],
-  sales_executive: [
-    "dashboard.view",
-    "dealers.manage",
-    "sales.view",
-    "employees.view"
-  ],
-  warehouse_manager: [
-    "dashboard.view",
-    "inventory.receive",
-    "reports.view",
-    "employees.view"
-  ],
-  inventory_manager: [
-    "dashboard.view",
-    "inventory.receive",
-    "reports.view",
-    "employees.view"
-  ]
+  super_admin: ["*"], // Full access
+  admin: [], // No permissions by default - must be assigned
+  sub_admin: [],
+  sales_manager: [],
+  purchase_manager: [],
+  finance_manager: [],
+  hr_manager: [],
+  sales_executive: [],
+  warehouse_manager: [],
+  inventory_manager: []
 };

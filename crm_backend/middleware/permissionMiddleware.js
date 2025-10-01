@@ -1,41 +1,33 @@
 // middleware/permissionMiddleware.js
-export const checkPermission = (permission) => {
-  return (req, res, next) => {
-    // Super admin has all permissions
-    if (req.user.role === 'super_admin') {
-      return next();
-    }
+export const validatePermissions = (req, res, next) => {
+  // Skip permission check for super admin
+  if (req.user.role === 'super_admin') {
+    return next();
+  }
 
-    // Check if user has the required permission
-    if (!req.user.permissions.includes(permission) && !req.user.permissions.includes('*')) {
-      return res.status(403).json({
-        success: false,
-        message: `Access denied. Required permission: ${permission}`
-      });
-    }
+  // Get the required permission from route
+  const requiredPermission = req.permission;
+  
+  if (!requiredPermission) {
+    return next(); // No permission required for this route
+  }
 
-    next();
-  };
+  // Check if user has the required permission
+  if (!req.user.permissions.includes(requiredPermission) && 
+      !req.user.permissions.includes('*')) {
+    return res.status(403).json({
+      success: false,
+      message: `Access denied. Required permission: ${requiredPermission}`
+    });
+  }
+
+  next();
 };
 
-// Check if user has any of the required permissions
-export const checkAnyPermission = (permissions) => {
+// Middleware to set required permission for route
+export const requirePermission = (permission) => {
   return (req, res, next) => {
-    if (req.user.role === 'super_admin') {
-      return next();
-    }
-
-    const hasAny = permissions.some(permission => 
-      req.user.permissions.includes(permission) || req.user.permissions.includes('*')
-    );
-
-    if (!hasAny) {
-      return res.status(403).json({
-        success: false,
-        message: `Access denied. Required one of: ${permissions.join(', ')}`
-      });
-    }
-
-    next();
+    req.permission = permission;
+    validatePermissions(req, res, next);
   };
 };

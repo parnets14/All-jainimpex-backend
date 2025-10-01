@@ -11,6 +11,7 @@ import {
   updateUserStatus
 } from '../controllers/userController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { requirePermission } from '../middleware/permissionMiddleware.js';
 
 const router = express.Router();
 
@@ -46,5 +47,11 @@ router.put('/:id', updateUser);
 router.put('/:id/permissions', updateUserPermissions);
 router.delete('/:id', deleteUser);
 router.patch('/:id/status', updateUserStatus);
+
+router.get('/', requirePermission('users.view'), getUsers);
+router.get('/:id', requirePermission('users.view'), getUserById);
+router.post('/', requirePermission('users.create'), createUser);
+router.put('/:id', requirePermission('users.update'), updateUser);
+router.delete('/:id', requirePermission('users.delete'), deleteUser);
 
 export default router;
