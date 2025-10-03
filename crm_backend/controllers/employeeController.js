@@ -1,6 +1,5 @@
 import Employee from '../models/Employee.js';
-import { uploadSingle,  } from '../middleware/upload.js';
-import { handleUploadErrors,  } from '../middleware/uploadErrorHandler.js';
+import { uploadSingle, handleUploadErrors } from '../middleware/upload.js';
 import path from 'path';
 import fs from 'fs';
 
@@ -13,13 +12,16 @@ const safeParseFloat = (value, defaultValue = 0) => {
   return isNaN(num) ? defaultValue : num;
 };
 
-// Helper function to generate face embedding (placeholder - integrate with your face recognition)
+// Helper function to generate face embedding using face-api.js
+// Note: This is a placeholder for server-side processing
+// In production, you might want to use Python/TensorFlow for better performance
 const generateFaceEmbedding = async (imagePath) => {
   try {
-    // This is a placeholder - integrate with your face-api.js or other face recognition
-    console.log('Generating face embedding for:', imagePath);
-    // Return a dummy embedding for now - replace with actual face recognition
-    return [0.1, 0.2, 0.3]; // Example dummy embedding
+    console.log('Face embedding generation requested for:', imagePath);
+    // For now, we'll let the frontend handle face detection and just store the image
+    // The frontend will generate descriptors on-the-fly when needed
+    // In production, you could use a Python service or TensorFlow.js on Node
+    return null; // Will be generated on frontend when needed
   } catch (error) {
     console.error('Error generating face embedding:', error);
     return null;
@@ -164,8 +166,19 @@ export const createEmployee = async (req, res) => {
     if (req.file) {
       faceImagePath = req.file.path;
       
-      // Generate face embedding from the uploaded image
-      faceEmbedding = await generateFaceEmbedding(faceImagePath);
+      // Use face embedding from frontend if provided, otherwise generate from image
+      if (req.body.faceEmbedding) {
+        try {
+          faceEmbedding = JSON.parse(req.body.faceEmbedding);
+          console.log('✅ Using face embedding from frontend:', faceEmbedding.length, 'dimensions');
+        } catch (error) {
+          console.error('Error parsing face embedding:', error);
+          faceEmbedding = await generateFaceEmbedding(faceImagePath);
+        }
+      } else {
+        // Generate face embedding from the uploaded image
+        faceEmbedding = await generateFaceEmbedding(faceImagePath);
+      }
     }
 
     // Parse all numeric values safely
@@ -378,8 +391,19 @@ export const updateEmployee = async (req, res) => {
       
       updateData.faceImage = req.file.path;
       
-      // Generate new face embedding
-      updateData.faceEmbedding = await generateFaceEmbedding(req.file.path);
+      // Use face embedding from frontend if provided, otherwise generate from image
+      if (req.body.faceEmbedding) {
+        try {
+          updateData.faceEmbedding = JSON.parse(req.body.faceEmbedding);
+          console.log('✅ Using face embedding from frontend for update:', updateData.faceEmbedding.length, 'dimensions');
+        } catch (error) {
+          console.error('Error parsing face embedding for update:', error);
+          updateData.faceEmbedding = await generateFaceEmbedding(req.file.path);
+        }
+      } else {
+        // Generate new face embedding
+        updateData.faceEmbedding = await generateFaceEmbedding(req.file.path);
+      }
     }
 
     console.log('Updating employee with data:', { 

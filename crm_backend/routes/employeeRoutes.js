@@ -8,12 +8,10 @@ import {
   getEmployeeStats,
   updateFaceEmbedding,
   getEmployeeFaceImage,
-  uploadFaceImage,
-  
 } from '../controllers/employeeController.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { requirePermission } from '../middleware/authMiddleware.js';
-import { handleUploadErrors } from '../middleware/uploadErrorHandler.js';
+import { uploadSingle, handleUploadErrors } from '../middleware/upload.js';
 
 const router = express.Router();
 
@@ -35,7 +33,7 @@ router.get('/:id/face-image', requirePermission('employees.view'), getEmployeeFa
 // Create new employee with face image upload
 router.post('/', 
   requirePermission('employees.create'), 
-  uploadFaceImage,
+  uploadSingle('faceImage'),
   handleUploadErrors,
   createEmployee
 );
@@ -43,7 +41,7 @@ router.post('/',
 // Update employee with optional face image upload
 router.put('/:id', 
   requirePermission('employees.update'), 
-  uploadFaceImage,
+  uploadSingle('faceImage'),
   handleUploadErrors,
   updateEmployee
 );
