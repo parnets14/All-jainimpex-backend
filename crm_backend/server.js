@@ -388,6 +388,9 @@ import fs from "fs";
 import employeeRoutes from "./routes/employeeRoutes.js";
 import attendanceRoutes from "./routes/attendanceRoutes.js";
 import "./cron/attendanceCron.js";
+import categoryRoutes from "./routes/categoryRoutes.js"; // Add this
+import subcategoryRoutes from "./routes/subcategoryRoutes.js"; // Add this
+import brandRoutes from "./routes/brandRoutes.js"; // Add this
 
 dotenv.config();
 
@@ -456,6 +459,11 @@ if (cluster.isPrimary) {
   app.use("/api/employees", employeeRoutes);
   app.use("/api/attendance", attendanceRoutes);
 
+  app.use("/api/categories", categoryRoutes);
+  app.use("/api/subcategories", subcategoryRoutes);
+  app.use("/api/brands", brandRoutes);
+
+
   // Serve uploaded files statically
   app.use("/uploads", express.static("uploads"));
 
@@ -471,6 +479,15 @@ if (cluster.isPrimary) {
         "Attendance Tracking ✅",
         "JWT Authentication ✅",
         "File Uploads ✅",
+      ],
+       availableRoutes: [
+        "GET  /api/categories",
+        "POST /api/categories",
+        "GET  /api/categories/:categoryId/subcategories",
+        "POST /api/categories/:categoryId/subcategories",
+        "GET  /api/subcategories/:subcategoryId/brands",
+        "POST /api/subcategories/:subcategoryId/brands",
+        "GET  /api/categories/stats"
       ],
     });
   });
