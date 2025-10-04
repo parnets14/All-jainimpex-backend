@@ -377,6 +377,11 @@ import dotenv from "dotenv";
 import connectDB from "./config/db.js";
 import authRoutes from "./routes/authRoutes.js";
 import userRoutes from "./routes/userRoutes.js"; // Add this import
+import dealertypeRoutes from "./routes/dealertypeRoutes.js";
+import dealercategoryRouter from "./routes/dealerCategoryRoutes.js";
+import expenseCategoryRoutes from "./routes/expenseCategoryRoutes.js";
+import regionRoutes from "./routes/regionRoutes.js";
+
 import { protect } from "./middleware/authMiddleware.js";
 import {
   generalLimiter,
@@ -461,6 +466,10 @@ if (cluster.isPrimary) {
   app.use("/api/users", userRoutes);
   app.use("/api/employees", employeeRoutes);
   app.use("/api/attendance", attendanceRoutes);
+    app.use("/api/dealers", dealertypeRoutes);
+  app.use("/api/dealer-categories", dealercategoryRouter);
+  app.use("/api/expense-categories", expenseCategoryRoutes);
+  app.use("/api/regions", regionRoutes);
 
   app.use("/api/categories", categoryRoutes);
   app.use("/api/subcategories", subcategoryRoutes);
