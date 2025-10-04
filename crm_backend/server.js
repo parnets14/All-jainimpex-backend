@@ -391,6 +391,9 @@ import "./cron/attendanceCron.js";
 import categoryRoutes from "./routes/categoryRoutes.js"; // Add this
 import subcategoryRoutes from "./routes/subcategoryRoutes.js"; // Add this
 import brandRoutes from "./routes/brandRoutes.js"; // Add this
+import salaryRoutes from "./routes/salaryRoutes.js";
+import productRoutes from './routes/productRoutes.js';
+import regionRoutes from './routes/regionRoutes.js';
 
 dotenv.config();
 
@@ -462,7 +465,9 @@ if (cluster.isPrimary) {
   app.use("/api/categories", categoryRoutes);
   app.use("/api/subcategories", subcategoryRoutes);
   app.use("/api/brands", brandRoutes);
-
+  app.use("/api/salary", salaryRoutes);
+  app.use("/api/products", productRoutes);
+  app.use("/api/regions", regionRoutes);
 
   // Serve uploaded files statically
   app.use("/uploads", express.static("uploads"));
@@ -481,13 +486,19 @@ if (cluster.isPrimary) {
         "File Uploads ✅",
       ],
        availableRoutes: [
-        "GET  /api/categories",
-        "POST /api/categories",
-        "GET  /api/categories/:categoryId/subcategories",
-        "POST /api/categories/:categoryId/subcategories",
-        "GET  /api/subcategories/:subcategoryId/brands",
-        "POST /api/subcategories/:subcategoryId/brands",
-        "GET  /api/categories/stats"
+       "GET  /api/categories",
+      "POST /api/categories",
+      "GET  /api/categories/:categoryId/subcategories",
+      "POST /api/categories/:categoryId/subcategories",
+      "GET  /api/subcategories/:subcategoryId/brands",
+      "POST /api/subcategories/:subcategoryId/brands",
+      "GET  /api/categories/stats",
+      "GET  /api/products",
+      "POST /api/products",
+      "GET  /api/products/:id",
+      "PUT  /api/products/:id",
+      "DELETE /api/products/:id",
+      "GET  /api/products/stats"
       ],
     });
   });

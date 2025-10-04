@@ -12,6 +12,14 @@ const safeParseFloat = (value, defaultValue = 0) => {
   return isNaN(num) ? defaultValue : num;
 };
 
+// Helper function to validate salary fields
+const validateSalaryFields = (salaryType, basicSalary) => {
+  if (!basicSalary || parseFloat(basicSalary) <= 0) {
+    return `${salaryType === 'fixed' ? 'Basic Salary' : salaryType === 'daily' ? 'Daily Rate' : 'Hourly Rate'} is required and must be greater than 0`;
+  }
+  return null;
+};
+
 // Helper function to generate face embedding using face-api.js
 // Note: This is a placeholder for server-side processing
 // In production, you might want to use Python/TensorFlow for better performance
@@ -118,6 +126,8 @@ export const createEmployee = async (req, res) => {
       designation,
       department,
       dateOfJoining,
+      phoneNumber, // NEW
+      email, 
       bankName,
       accountNumber,
       ifscCode,
@@ -136,10 +146,23 @@ export const createEmployee = async (req, res) => {
 
     // Validate required fields
     if (!name || !designation || !department || !dateOfJoining || 
-        !bankName || !accountNumber || !ifscCode || !branch || !basicSalary) {
+        !bankName || !accountNumber || !ifscCode || !branch) {
       return res.status(400).json({
         success: false,
         message: 'All required fields must be provided'
+      });
+    }
+
+    // Validate salary fields based on type
+    const salaryError = validateSalaryFields(salaryType, basicSalary);
+    if (salaryError) {
+      // Delete uploaded file if validation fails
+      if (req.file && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+      return res.status(400).json({
+        success: false,
+        message: salaryError
       });
     }
 
@@ -188,6 +211,8 @@ export const createEmployee = async (req, res) => {
       designation: designation.trim(),
       department: department.trim(),
       dateOfJoining,
+      phoneNumber: phoneNumber ? phoneNumber.trim() : '', // NEW
+      email: email ? email.trim().toLowerCase() : '', // NEW
       bankName: bankName.trim(),
       accountNumber: accountNumber.trim(),
       ifscCode: ifscCode.toUpperCase().trim(),
@@ -366,11 +391,12 @@ export const updateEmployee = async (req, res) => {
     if (designation !== undefined) updateData.designation = designation.trim();
     if (department !== undefined) updateData.department = department.trim();
     if (dateOfJoining !== undefined) updateData.dateOfJoining = dateOfJoining;
+    if (phoneNumber !== undefined) updateData.phoneNumber = phoneNumber.trim(); // NEW
+    if (email !== undefined) updateData.email = email.trim().toLowerCase(); // NEW
     if (bankName !== undefined) updateData.bankName = bankName.trim();
     if (accountNumber !== undefined) updateData.accountNumber = accountNumber.trim();
     if (ifscCode !== undefined) updateData.ifscCode = ifscCode.toUpperCase().trim();
     if (branch !== undefined) updateData.branch = branch.trim();
-    if (basicSalary !== undefined) updateData.basicSalary = safeParseFloat(basicSalary);
     if (salaryType !== undefined) updateData.salaryType = salaryType;
     if (hra !== undefined) updateData.hra = safeParseFloat(hra);
     if (conveyance !== undefined) updateData.conveyance = safeParseFloat(conveyance);
@@ -381,6 +407,23 @@ export const updateEmployee = async (req, res) => {
     if (tds !== undefined) updateData.tds = safeParseFloat(tds);
     if (otherDeductions !== undefined) updateData.otherDeductions = safeParseFloat(otherDeductions);
     if (status !== undefined) updateData.status = status;
+
+    // Handle basic salary validation and update
+    if (basicSalary !== undefined) {
+      const currentSalaryType = salaryType || existingEmployee.salaryType;
+      const salaryError = validateSalaryFields(currentSalaryType, basicSalary);
+      if (salaryError) {
+        // Delete uploaded file if validation fails
+        if (req.file && fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
+        return res.status(400).json({
+          success: false,
+          message: salaryError
+        });
+      }
+      updateData.basicSalary = safeParseFloat(basicSalary);
+    }
 
     // Handle face image upload for update
     if (req.file) {
