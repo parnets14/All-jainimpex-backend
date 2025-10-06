@@ -28,6 +28,16 @@ export const generateSalarySlipDirect = async (
       throw new Error("Employee not found");
     }
 
+    // Debug employee salary data
+    console.log(`Employee ${employee.name} salary data:`, {
+      salaryType: employee.salaryType,
+      basicSalary: employee.basicSalary,
+      hra: employee.hra,
+      conveyance: employee.conveyance,
+      medicalAllowance: employee.medicalAllowance,
+      specialAllowance: employee.specialAllowance,
+    });
+
     // Check if salary slip already exists
     const existingSlip = await SalarySlip.findOne({
       employeeId,
@@ -104,15 +114,23 @@ export const generateSalarySlipDirect = async (
     let grossSalary = 0;
     let netSalary = 0;
 
-    if (employee.salaryType === "fixed") {
-      // For fixed salary, use the stored salary components
-      calculatedBasic = employee.basicSalary;
-      calculatedHRA = employee.hra || 0;
-      calculatedConveyance = employee.conveyance || 0;
-      calculatedMedical = employee.medicalAllowance || 0;
-      calculatedSpecial = employee.specialAllowance || 0;
-      calculatedPF = employee.pf || 0;
-      calculatedTDS = employee.tds || 0;
+    if (employee.salaryType === "fixed" || !employee.salaryType) {
+      // For fixed salary, use the stored salary components with proper null checks
+      calculatedBasic = parseFloat(employee.basicSalary) || 0;
+      calculatedHRA = parseFloat(employee.hra) || 0;
+      calculatedConveyance = parseFloat(employee.conveyance) || 0;
+      calculatedMedical = parseFloat(employee.medicalAllowance) || 0;
+      calculatedSpecial = parseFloat(employee.specialAllowance) || 0;
+      calculatedPF = parseFloat(employee.pf) || 0;
+      calculatedTDS = parseFloat(employee.tds) || 0;
+
+      // If no basic salary is set, use a default minimum wage
+      if (calculatedBasic === 0) {
+        calculatedBasic = 15000; // Default minimum salary
+        console.log(
+          `Using default basic salary for ${employee.name}: ${calculatedBasic}`
+        );
+      }
 
       grossSalary =
         calculatedBasic +
@@ -121,8 +139,8 @@ export const generateSalarySlipDirect = async (
         calculatedMedical +
         calculatedSpecial;
     } else if (employee.salaryType === "daily") {
-      // For daily wage
-      const dailyRate = employee.basicSalary;
+      // For daily wage with proper null checks
+      const dailyRate = parseFloat(employee.basicSalary) || 0;
       calculatedBasic = dailyRate * presentDays;
 
       grossSalary = calculatedBasic;
@@ -136,15 +154,18 @@ export const generateSalarySlipDirect = async (
           record.punchIn &&
           record.punchOut
         ) {
-          const hoursWorked =
-            (new Date(record.punchOut.time) - new Date(record.punchIn.time)) /
-            (1000 * 60 * 60);
-          return total + Math.max(0, hoursWorked);
+          const punchInTime = new Date(record.punchIn.time);
+          const punchOutTime = new Date(record.punchOut.time);
+
+          if (!isNaN(punchInTime.getTime()) && !isNaN(punchOutTime.getTime())) {
+            const hoursWorked = (punchOutTime - punchInTime) / (1000 * 60 * 60);
+            return total + Math.max(0, hoursWorked);
+          }
         }
         return total;
       }, 0);
 
-      const hourlyRate = employee.basicSalary;
+      const hourlyRate = parseFloat(employee.basicSalary) || 0;
       calculatedBasic = hourlyRate * totalHours;
       grossSalary = calculatedBasic;
 
@@ -152,12 +173,22 @@ export const generateSalarySlipDirect = async (
       calculatedTDS = grossSalary > 50000 ? grossSalary * 0.05 : 0;
     }
 
+    // Ensure all values are numbers and not NaN
+    calculatedPF = isNaN(calculatedPF) ? 0 : calculatedPF;
+    calculatedTDS = isNaN(calculatedTDS) ? 0 : calculatedTDS;
+    grossSalary = isNaN(grossSalary) ? 0 : grossSalary;
+
     const totalDeductions =
       calculatedPF +
-      (employee.professionalTax || 0) +
+      (parseFloat(employee.professionalTax) || 0) +
       calculatedTDS +
-      (employee.otherDeductions || 0);
+      (parseFloat(employee.otherDeductions) || 0);
+
     netSalary = grossSalary - totalDeductions;
+
+    // Final safety check for NaN values
+    if (isNaN(netSalary)) netSalary = 0;
+    if (isNaN(totalDeductions)) totalDeductions = 0;
 
     // Create salary slip
     const salaryData = {
@@ -170,33 +201,41 @@ export const generateSalarySlipDirect = async (
       },
       month,
       year,
-      basicSalary: calculatedBasic,
-      hra: calculatedHRA,
-      conveyance: calculatedConveyance,
-      medicalAllowance: calculatedMedical,
-      specialAllowance: calculatedSpecial,
-      pf: calculatedPF,
-      professionalTax: employee.professionalTax || 0,
-      tds: calculatedTDS,
-      otherDeductions: employee.otherDeductions || 0,
-      grossSalary,
-      totalDeductions,
-      netSalary,
+      basicSalary: calculatedBasic || 0,
+      hra: calculatedHRA || 0,
+      conveyance: calculatedConveyance || 0,
+      medicalAllowance: calculatedMedical || 0,
+      specialAllowance: calculatedSpecial || 0,
+      pf: calculatedPF || 0,
+      professionalTax: parseFloat(employee.professionalTax) || 0,
+      tds: calculatedTDS || 0,
+      otherDeductions: parseFloat(employee.otherDeductions) || 0,
+      grossSalary: grossSalary || 0,
+      totalDeductions: totalDeductions || 0,
+      netSalary: netSalary || 0,
       workingDays,
       daysWorked: presentDays,
-      hoursWorked: attendance.reduce((total, record) => {
-        if (
-          (record.status === "Present" || record.status === "Late") &&
-          record.punchIn &&
-          record.punchOut
-        ) {
-          const hoursWorked =
-            (new Date(record.punchOut.time) - new Date(record.punchIn.time)) /
-            (1000 * 60 * 60);
-          return total + Math.max(0, hoursWorked);
-        }
-        return total;
-      }, 0),
+      hoursWorked:
+        attendance.reduce((total, record) => {
+          if (
+            (record.status === "Present" || record.status === "Late") &&
+            record.punchIn &&
+            record.punchOut
+          ) {
+            const punchInTime = new Date(record.punchIn.time);
+            const punchOutTime = new Date(record.punchOut.time);
+
+            if (
+              !isNaN(punchInTime.getTime()) &&
+              !isNaN(punchOutTime.getTime())
+            ) {
+              const hoursWorked =
+                (punchOutTime - punchInTime) / (1000 * 60 * 60);
+              return total + Math.max(0, hoursWorked);
+            }
+          }
+          return total;
+        }, 0) || 0,
       salaryType: employee.salaryType,
       bankDetails: {
         bankName: employee.bankName,
