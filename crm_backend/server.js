@@ -64,10 +64,15 @@ if (cluster.isPrimary) {
   connectDB();
 
   // Create uploads directory if it doesn't exist
-
   const uploadsDir = "./uploads";
+  const facesDir = "./uploads/faces";
+
   if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+
+  if (!fs.existsSync(facesDir)) {
+    fs.mkdirSync(facesDir, { recursive: true });
   }
 
   // Middleware
