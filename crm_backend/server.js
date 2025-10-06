@@ -29,6 +29,10 @@ import brandRoutes from "./routes/brandRoutes.js"; // Add this
 import salaryRoutes from "./routes/salaryRoutes.js";
 import productRoutes from "./routes/productRoutes.js";
 import regionRoutes from "./routes/regionRoutes.js";
+import supplierRoutes from "./routes/supplierRoutes.js";
+import referenceRoutes from "./routes/referenceRoutes.js";
+import discountMappingRoutes from "./routes/discountMappingRoutes.js";
+import pointsRoutes from "./routes/pointsRoutes.js";
 
 dotenv.config();
 
@@ -111,6 +115,12 @@ if (cluster.isPrimary) {
   app.use("/api/salary", salaryRoutes);
   app.use("/api/products", productRoutes);
   app.use("/api/regions", regionRoutes);
+  app.use("/api/suppliers", supplierRoutes);
+  app.use("/api/reference", referenceRoutes);
+  app.use("/api/discount-mappings", discountMappingRoutes);
+  app.use("/api/points", pointsRoutes);
+
+
 
   // Serve uploaded files statically
   app.use("/uploads", express.static("uploads"));
