@@ -10,6 +10,7 @@ import authRoutes from "./routes/authRoutes.js";
 import userRoutes from "./routes/userRoutes.js"; // Add this import
 import dealertypeRoutes from "./routes/dealertypeRoutes.js";
 import dealercategoryRouter from "./routes/dealerCategoryRoutes.js";
+import dealerRoutes from "./routes/dealerRoutes.js";
 import expenseCategoryRoutes from "./routes/expenseCategoryRoutes.js";
 
 import { protect } from "./middleware/authMiddleware.js";
@@ -105,8 +106,9 @@ if (cluster.isPrimary) {
   app.use("/api/users", userRoutes);
   app.use("/api/employees", employeeRoutes);
   app.use("/api/attendance", attendanceRoutes);
-  app.use("/api/dealers", dealertypeRoutes);
+  app.use("/api/dealer-types", dealertypeRoutes);
   app.use("/api/dealer-categories", dealercategoryRouter);
+  app.use("/api/dealers", dealerRoutes);
   app.use("/api/expense-categories", expenseCategoryRoutes);
 
   app.use("/api/categories", categoryRoutes);
@@ -119,8 +121,6 @@ if (cluster.isPrimary) {
   app.use("/api/reference", referenceRoutes);
   app.use("/api/discount-mappings", discountMappingRoutes);
   app.use("/api/points", pointsRoutes);
-
-
 
   // Serve uploaded files statically
   app.use("/uploads", express.static("uploads"));
