@@ -129,3 +129,4 @@ export const requireRole = (roles) => {
     next();
   };
 };
+export const admin = requireRole;

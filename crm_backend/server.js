@@ -11,6 +11,10 @@ import userRoutes from "./routes/userRoutes.js"; // Add this import
 import dealertypeRoutes from "./routes/dealertypeRoutes.js";
 import dealercategoryRouter from "./routes/dealerCategoryRoutes.js";
 import expenseCategoryRoutes from "./routes/expenseCategoryRoutes.js";
+import expenseTypeRoutes from "./routes/expenseTypeRoutes.js";
+import claimTypeRoutes from "./routes/claimTypeRoutes.js";
+import expenseRoutes from "./routes/expenseRoutes.js";
+import claimRoutes from "./routes/claimRoutes.js";
 
 import { protect } from "./middleware/authMiddleware.js";
 import {
@@ -108,6 +112,10 @@ if (cluster.isPrimary) {
   app.use("/api/dealers", dealertypeRoutes);
   app.use("/api/dealer-categories", dealercategoryRouter);
   app.use("/api/expense-categories", expenseCategoryRoutes);
+  app.use("/api/expense-types", expenseTypeRoutes);
+  app.use("/api/claim-types", claimTypeRoutes);
+  app.use("/api/expenses", expenseRoutes);
+  app.use("/api/claims", claimRoutes);
 
   app.use("/api/categories", categoryRoutes);
   app.use("/api/subcategories", subcategoryRoutes);
@@ -119,8 +127,6 @@ if (cluster.isPrimary) {
   app.use("/api/reference", referenceRoutes);
   app.use("/api/discount-mappings", discountMappingRoutes);
   app.use("/api/points", pointsRoutes);
-
-
 
   // Serve uploaded files statically
   app.use("/uploads", express.static("uploads"));
