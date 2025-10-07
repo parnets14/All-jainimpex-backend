@@ -10,6 +10,7 @@ import authRoutes from "./routes/authRoutes.js";
 import userRoutes from "./routes/userRoutes.js"; // Add this import
 import dealertypeRoutes from "./routes/dealertypeRoutes.js";
 import dealercategoryRouter from "./routes/dealerCategoryRoutes.js";
+import dealerRoutes from "./routes/dealerRoutes.js";
 import expenseCategoryRoutes from "./routes/expenseCategoryRoutes.js";
 import expenseTypeRoutes from "./routes/expenseTypeRoutes.js";
 import claimTypeRoutes from "./routes/claimTypeRoutes.js";
@@ -109,8 +110,9 @@ if (cluster.isPrimary) {
   app.use("/api/users", userRoutes);
   app.use("/api/employees", employeeRoutes);
   app.use("/api/attendance", attendanceRoutes);
-  app.use("/api/dealers", dealertypeRoutes);
+  app.use("/api/dealer-types", dealertypeRoutes);
   app.use("/api/dealer-categories", dealercategoryRouter);
+  app.use("/api/dealers", dealerRoutes);
   app.use("/api/expense-categories", expenseCategoryRoutes);
   app.use("/api/expense-types", expenseTypeRoutes);
   app.use("/api/claim-types", claimTypeRoutes);
