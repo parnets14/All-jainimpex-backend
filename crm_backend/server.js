@@ -38,6 +38,7 @@ import supplierRoutes from "./routes/supplierRoutes.js";
 import referenceRoutes from "./routes/referenceRoutes.js";
 import discountMappingRoutes from "./routes/discountMappingRoutes.js";
 import pointsRoutes from "./routes/pointsRoutes.js";
+import warehouseRoutes from "./routes/warehouseRoutes.js";
 
 dotenv.config();
 
@@ -146,6 +147,8 @@ app.use(
   app.use("/api/reference", referenceRoutes);
   app.use("/api/discount-mappings", discountMappingRoutes);
   app.use("/api/points", pointsRoutes);
+  app.use("/api/warehouses", warehouseRoutes);
+
 
   // Serve uploaded files statically
   app.use("/uploads", express.static("uploads"));
