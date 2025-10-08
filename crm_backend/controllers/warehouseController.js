@@ -126,12 +126,19 @@ export const createWarehouse = async (req, res) => {
     const {
       code,
       name,
-      address,
-      contact,
-      capacity,
-      facilities,
-      region
+      region,
+      status,
+      managerName,
+      phone,
+      email,
+      street,
+      city,
+      state,
+      pincode,
+      country
     } = req.body;
+
+    console.log("Received warehouse data:", req.body);
 
     // Check if warehouse code already exists
     const existingWarehouse = await Warehouse.findOne({ code });
@@ -151,21 +158,37 @@ export const createWarehouse = async (req, res) => {
       });
     }
 
-    const warehouse = new Warehouse({
+    // Build the warehouse object with nested structures
+    const warehouseData = {
       code: code.toUpperCase(),
       name,
-      address,
-      contact,
-      capacity: {
-        ...capacity,
-        usedArea: 0
-      },
-      facilities: facilities || [],
       region,
+      status: status || "active",
+      contact: {
+        managerName,
+        phone: phone || "",
+        email: email || ""
+      },
+      address: {
+        street,
+        city,
+        state,
+        pincode,
+        country: country || "India"
+      },
+      capacity: {
+        totalArea: 0,
+        usedArea: 0,
+        unit: "sq.ft"
+      },
+      facilities: [],
       createdBy: req.user._id
-    });
+    };
 
+    const warehouse = new Warehouse(warehouseData);
     const savedWarehouse = await warehouse.save();
+    
+    // Populate the saved warehouse
     await savedWarehouse.populate("region", "name code");
     await savedWarehouse.populate("createdBy", "name email");
 
@@ -176,6 +199,24 @@ export const createWarehouse = async (req, res) => {
     });
   } catch (error) {
     console.error("Create warehouse error:", error);
+    
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      const errors = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({
+        success: false,
+        message: errors.join(', ')
+      });
+    }
+
+    // Handle duplicate key error
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: "Warehouse code already exists"
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: "Error creating warehouse",
@@ -191,13 +232,19 @@ export const updateWarehouse = async (req, res) => {
   try {
     const {
       name,
-      address,
-      contact,
-      capacity,
-      facilities,
+      region,
       status,
-      region
+      managerName,
+      phone,
+      email,
+      street,
+      city,
+      state,
+      pincode,
+      country
     } = req.body;
+
+    console.log("Update warehouse data:", req.body);
 
     const warehouse = await Warehouse.findById(req.params.id);
 
@@ -229,11 +276,19 @@ export const updateWarehouse = async (req, res) => {
 
     // Update fields
     if (name) warehouse.name = name;
-    if (address) warehouse.address = { ...warehouse.address, ...address };
-    if (contact) warehouse.contact = { ...warehouse.contact, ...contact };
-    if (capacity) warehouse.capacity = { ...warehouse.capacity, ...capacity };
-    if (facilities) warehouse.facilities = facilities;
     if (status) warehouse.status = status;
+
+    // Update contact fields
+    if (managerName) warehouse.contact.managerName = managerName;
+    if (phone !== undefined) warehouse.contact.phone = phone;
+    if (email !== undefined) warehouse.contact.email = email;
+
+    // Update address fields
+    if (street) warehouse.address.street = street;
+    if (city) warehouse.address.city = city;
+    if (state) warehouse.address.state = state;
+    if (pincode) warehouse.address.pincode = pincode;
+    if (country) warehouse.address.country = country;
 
     const updatedWarehouse = await warehouse.save();
     await updatedWarehouse.populate("region", "name code");
@@ -246,6 +301,16 @@ export const updateWarehouse = async (req, res) => {
     });
   } catch (error) {
     console.error("Update warehouse error:", error);
+    
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      const errors = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({
+        success: false,
+        message: errors.join(', ')
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: "Error updating warehouse",

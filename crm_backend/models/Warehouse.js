@@ -21,12 +21,12 @@ const warehouseSchema = new mongoose.Schema({
     country: { type: String, default: "India" }
   },
   contact: {
-    phone: { type: String, required: true },
-    email: { type: String, lowercase: true },
+    phone: { type: String, default: "" },
+    email: { type: String, lowercase: true, default: "" },
     managerName: { type: String, required: true }
   },
   capacity: {
-    totalArea: { type: Number, required: true }, // in sq.ft
+    totalArea: { type: Number, default: 0 },
     usedArea: { type: Number, default: 0 },
     unit: { type: String, default: "sq.ft" }
   },
