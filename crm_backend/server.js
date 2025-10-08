@@ -91,7 +91,7 @@ app.use(
   cors({
     origin: [
       process.env.CLIENT_URL || "http://localhost:5173", // Local
-      "https://whimsical-elf-41a650.netlify.app/login",           // Replace with your actual Netlify URL
+      "https://jainimpex.netlify.app/login",           // Replace with your actual Netlify URL
     ],
     credentials: true,
   })
