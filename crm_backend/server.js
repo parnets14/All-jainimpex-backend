@@ -89,13 +89,24 @@ if (cluster.isPrimary) {
 
 app.use(
   cors({
-    origin: [
-      process.env.CLIENT_URL || "http://localhost:5173", // Local
-      "https://jainimpex.netlify.app/login",           // Replace with your actual Netlify URL
-    ],
+    origin: function (origin, callback) {
+      const allowedOrigins = [
+        "http://localhost:5173",             // local dev
+        "https://jainimpex.netlify.app",     // ✅ correct Netlify domain
+      ];
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
     credentials: true,
   })
 );
+
+// ✅ Handle preflight requests (important for POST, PUT, DELETE)
+app.options("*", cors());
+
 
   app.use(express.json({ limit: "10mb" }));
   app.use(express.urlencoded({ extended: true, limit: "10mb" }));
