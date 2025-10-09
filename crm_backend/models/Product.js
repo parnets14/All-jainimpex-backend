@@ -18,7 +18,7 @@ const rateSlabSchema = new mongoose.Schema({
 const productSchema = new mongoose.Schema({
   productCode: {
     type: String,
-    required: true,
+    required: false,
     unique: true,
     trim: true
   },
@@ -68,7 +68,8 @@ const productSchema = new mongoose.Schema({
   minStockLevel: {
     type: Number,
     required: true,
-    min: 0
+    min: 0,
+    default: 0
   },
   rateSlabs: [rateSlabSchema],
   totalAmount: {
@@ -110,7 +111,7 @@ productSchema.pre('save', function(next) {
 
 // Auto-generate product code before saving if not provided
 productSchema.pre('save', async function(next) {
-  if (!this.productCode) {
+  if (!this.productCode || this.productCode.trim() === '') {
     try {
       const brandDoc = await mongoose.model('Brand').findById(this.brand);
       const categoryDoc = await mongoose.model('Category').findById(this.category);
@@ -130,6 +131,8 @@ productSchema.pre('save', async function(next) {
         
         const postfix = String(count + 1).padStart(3, '0');
         this.productCode = `${brandInitial}${categoryInitial}${subcategoryInitial}${postfix}`;
+      } else {
+        return next(new Error('Brand, category, and subcategory must be valid for auto-generating product code'));
       }
     } catch (error) {
       return next(error);

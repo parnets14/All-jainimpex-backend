@@ -144,13 +144,15 @@ export const createProduct = async (req, res) => {
       brand,
       category,
       subcategory,
-      minStockLevel,
       rateSlabs
     } = req.body;
 
+    // Convert empty productCode to undefined for auto-generation
+    const finalProductCode = productCode && productCode.trim() !== '' ? productCode : undefined;
+
     // Check if product code already exists
-    if (productCode) {
-      const existingProduct = await Product.findOne({ productCode });
+    if (finalProductCode) {
+      const existingProduct = await Product.findOne({ productCode: finalProductCode });
       if (existingProduct) {
         return res.status(400).json({
           success: false,
@@ -201,7 +203,7 @@ export const createProduct = async (req, res) => {
     }
 
     const product = new Product({
-      productCode,
+      productCode: finalProductCode,
       HSNCode,
       itemName,
       description,
@@ -211,7 +213,6 @@ export const createProduct = async (req, res) => {
       brand,
       category,
       subcategory,
-      minStockLevel,
       rateSlabs,
       createdBy: req.user._id
     });
@@ -263,10 +264,12 @@ export const updateProduct = async (req, res) => {
       brand,
       category,
       subcategory,
-      minStockLevel,
       rateSlabs,
       status
     } = req.body;
+
+    // Convert empty productCode to undefined for auto-generation
+    const finalProductCode = productCode && productCode.trim() !== '' ? productCode : undefined;
 
     let product = await Product.findById(req.params.id);
 
@@ -278,8 +281,8 @@ export const updateProduct = async (req, res) => {
     }
 
     // Check if product code already exists (excluding current product)
-    if (productCode && productCode !== product.productCode) {
-      const existingProduct = await Product.findOne({ productCode });
+    if (finalProductCode && finalProductCode !== product.productCode) {
+      const existingProduct = await Product.findOne({ productCode: finalProductCode });
       if (existingProduct) {
         return res.status(400).json({
           success: false,
@@ -335,29 +338,25 @@ export const updateProduct = async (req, res) => {
       }
     }
 
-    // Update product
-    product = await Product.findByIdAndUpdate(
-      req.params.id,
-      {
-        productCode,
-        HSNCode,
-        itemName,
-        description,
-        unit,
-        alternateUnit,
-        gst,
-        brand,
-        category,
-        subcategory,
-        minStockLevel,
-        rateSlabs,
-        status
-      },
-      {
-        new: true,
-        runValidators: true
-      }
-    ).populate([
+    // Update product fields
+    product.productCode = finalProductCode;
+    product.HSNCode = HSNCode;
+    product.itemName = itemName;
+    product.description = description;
+    product.unit = unit;
+    product.alternateUnit = alternateUnit;
+    product.gst = gst;
+    product.brand = brand;
+    product.category = category;
+    product.subcategory = subcategory;
+    product.rateSlabs = rateSlabs;
+    product.status = status;
+
+    // Save the product to trigger pre-save hooks
+    await product.save();
+
+    // Populate the updated product
+    await product.populate([
       { path: 'category', select: 'name' },
       { path: 'subcategory', select: 'name' },
       { path: 'brand', select: 'name' },

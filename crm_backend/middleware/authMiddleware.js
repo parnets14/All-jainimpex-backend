@@ -130,3 +130,4 @@ export const requireRole = (roles) => {
   };
 };
 export const admin = requireRole;
+export const authenticate = requireRole;
