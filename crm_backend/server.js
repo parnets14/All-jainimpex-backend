@@ -40,6 +40,7 @@ import discountMappingRoutes from "./routes/discountMappingRoutes.js";
 import pointsRoutes from "./routes/pointsRoutes.js";
 import warehouseRoutes from "./routes/warehouseRoutes.js";
 import purchaseOrderRoutes from "./routes/purchaseOrderRoutes.js";
+import grnRoutes from './routes/grnRoutes.js';
 
 dotenv.config();
 
@@ -150,6 +151,7 @@ app.use(
   app.use("/api/points", pointsRoutes);
   app.use("/api/warehouses", warehouseRoutes);
   app.use("/api/purchase-orders", purchaseOrderRoutes);
+  app.use('/api/grn', grnRoutes);
 
 
   // Serve uploaded files statically

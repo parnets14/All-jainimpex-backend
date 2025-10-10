@@ -240,13 +240,14 @@ export const createPurchaseOrder = async (req, res) => {
 };
 
 // Other controller methods remain the same...
+// purchaseOrderController.js - Update getPurchaseOrders with pagination
 export const getPurchaseOrders = async (req, res) => {
   try {
     console.log("📦 [START] Getting purchase orders");
 
     const {
       page = 1,
-      limit = 50,
+      limit = 10, // Default to 10 items per page
       search,
       status,
       supplierId,
@@ -291,6 +292,15 @@ export const getPurchaseOrders = async (req, res) => {
 
     console.log("📦 [QUERY] Executing with filter:", JSON.stringify(query));
 
+    // Get total count for pagination
+    const total = await PurchaseOrder.countDocuments(query);
+    
+    // Calculate pagination
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const skip = (pageNum - 1) * limitNum;
+    const totalPages = Math.ceil(total / limitNum);
+
     // Use lean for better performance with selective population
     const purchaseOrders = await PurchaseOrder.find(query)
       .populate("supplierId", "name companyName email gstin contactPerson")
@@ -300,24 +310,24 @@ export const getPurchaseOrders = async (req, res) => {
         "itemName productCode HSNCode description gst"
       )
       .sort(sort)
-      .limit(Number(limit))
-      .skip((page - 1) * limit)
+      .limit(limitNum)
+      .skip(skip)
       .lean();
 
     console.log("📦 [RESULT] Found", purchaseOrders.length, "purchase orders");
 
-    const total = await PurchaseOrder.countDocuments(query);
-
-    console.log("📦 [COMPLETE] Sending response");
+    console.log("📦 [COMPLETE] Sending response with pagination");
 
     res.json({
       success: true,
       data: purchaseOrders,
       pagination: {
-        current: parseInt(page),
-        total: Math.ceil(total / limit),
-        pages: Math.ceil(total / limit),
+        currentPage: pageNum,
+        totalPages: totalPages,
         totalRecords: total,
+        hasNextPage: pageNum < totalPages,
+        hasPrevPage: pageNum > 1,
+        limit: limitNum
       },
     });
   } catch (error) {
