@@ -144,7 +144,8 @@ export const createProduct = async (req, res) => {
       brand,
       category,
       subcategory,
-      rateSlabs
+      rateSlabs,
+      minStockLevel
     } = req.body;
 
     // Convert empty productCode to undefined for auto-generation
@@ -213,6 +214,7 @@ export const createProduct = async (req, res) => {
       brand,
       category,
       subcategory,
+      minStockLevel, // Add this line
       rateSlabs,
       createdBy: req.user._id
     });
@@ -265,7 +267,8 @@ export const updateProduct = async (req, res) => {
       category,
       subcategory,
       rateSlabs,
-      status
+      status,
+      minStockLevel
     } = req.body;
 
     // Convert empty productCode to undefined for auto-generation
@@ -349,6 +352,7 @@ export const updateProduct = async (req, res) => {
     product.brand = brand;
     product.category = category;
     product.subcategory = subcategory;
+    product.minStockLevel = minStockLevel; // Add this line
     product.rateSlabs = rateSlabs;
     product.status = status;
 
