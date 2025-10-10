@@ -108,24 +108,44 @@ const purchaseOrderSchema = new mongoose.Schema({
 });
 
 // Calculate totals before saving
+// In PurchaseOrder.js - Update the pre-save hook
 purchaseOrderSchema.pre('save', function(next) {
-  this.subtotal = this.lines.reduce((sum, line) => sum + (line.quantity * line.price), 0);
-  this.gstTotal = this.lines.reduce((sum, line) => {
-    const lineSubtotal = line.quantity * line.price;
-    return sum + (lineSubtotal * (line.gst / 100));
-  }, 0);
-  this.total = this.subtotal + this.gstTotal;
-  
-  // Update line totals and ensure all required fields are set
-  this.lines.forEach(line => {
-    line.total = (line.quantity * line.price) * (1 + line.gst / 100);
-    // Ensure the new fields have default values if not set
-    line.lastPrice = line.lastPrice || 0;
-    line.currentPrice = line.currentPrice || 0;
-    line.last30DayPurchaseQuantity = line.last30DayPurchaseQuantity || 0;
-  });
-  
-  next();
+  try {
+    this.subtotal = this.lines.reduce((sum, line) => {
+      const quantity = Number(line.quantity) || 0;
+      const price = Number(line.price) || 0;
+      return sum + (quantity * price);
+    }, 0);
+    
+    this.gstTotal = this.lines.reduce((sum, line) => {
+      const quantity = Number(line.quantity) || 0;
+      const price = Number(line.price) || 0;
+      const gstRate = Number(line.gst) || 0;
+      const lineSubtotal = quantity * price;
+      return sum + (lineSubtotal * (gstRate / 100));
+    }, 0);
+    
+    this.total = this.subtotal + this.gstTotal;
+    
+    // Update line totals and ensure all required fields are set
+    this.lines.forEach(line => {
+      const quantity = Number(line.quantity) || 0;
+      const price = Number(line.price) || 0;
+      const gstRate = Number(line.gst) || 0;
+      
+      line.total = (quantity * price) * (1 + gstRate / 100);
+      
+      // Ensure the new fields have default values if not set
+      line.lastPrice = Number(line.lastPrice) || 0;
+      line.currentPrice = Number(line.currentPrice) || 0;
+      line.last30DayPurchaseQuantity = Number(line.last30DayPurchaseQuantity) || 0;
+    });
+    
+    next();
+  } catch (error) {
+    console.error('❌ [MODEL_ERROR] Error in pre-save hook:', error);
+    next(error);
+  }
 });
 
 export default mongoose.model('PurchaseOrder', purchaseOrderSchema);
