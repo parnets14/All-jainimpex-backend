@@ -41,6 +41,7 @@ import pointsRoutes from "./routes/pointsRoutes.js";
 import warehouseRoutes from "./routes/warehouseRoutes.js";
 import purchaseOrderRoutes from "./routes/purchaseOrderRoutes.js";
 import grnRoutes from './routes/grnRoutes.js';
+import stockRoutes from './routes/stockRoutes.js';
 
 dotenv.config();
 
@@ -152,6 +153,7 @@ app.use(
   app.use("/api/warehouses", warehouseRoutes);
   app.use("/api/purchase-orders", purchaseOrderRoutes);
   app.use('/api/grn', grnRoutes);
+  app.use('/api/stock', stockRoutes);
 
 
   // Serve uploaded files statically
