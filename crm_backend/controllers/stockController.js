@@ -1,6 +1,7 @@
 import StockMovement from '../models/Stock.js';
 import Product from '../models/Product.js';
 import GRN from '../models/GRN.js';
+import StockMovementService from '../services/stockMovementService.js';
 
 export const getStock = async (req, res) => {
   try {
@@ -12,6 +13,8 @@ export const getStock = async (req, res) => {
       lowStockOnly = false
     } = req.query;
 
+    // console.log(`🔍 [STOCK_DEBUG] Getting stock with filters:`, { search, warehouseId, lowStockOnly });
+
     // Get all products with their current stock
     const products = await Product.find({
       $or: [
@@ -21,61 +24,160 @@ export const getStock = async (req, res) => {
       ]
     });
 
+    // console.log(`🔍 [STOCK_DEBUG] Found ${products.length} products`);
+
     const stockData = [];
     
     for (const product of products) {
-      // Calculate current stock from GRNs
+      // Get all warehouses that have this product
       const grnQuery = { 'items.productId': product._id };
-      if (warehouseId) {
-        grnQuery.warehouseId = warehouseId;
-      }
-
       const grns = await GRN.find(grnQuery)
         .populate('warehouseId', 'name')
         .populate('supplierId', 'name');
 
-      let totalQty = 0;
-      let damagedQty = 0;
-      let warehouses = new Set();
-      let suppliers = new Set();
+      // console.log(`🔍 [STOCK_DEBUG] Product ${product.productCode}: Found ${grns.length} GRNs`);
+      if (grns.length > 0) {
+        // console.log(`🔍 [STOCK_DEBUG] Sample GRN:`, {
+        //   grnNo: grns[0].grnNo,
+        //   warehouse: grns[0].warehouseId?.name,
+        //   supplier: grns[0].supplierId?.name,
+        //   itemsCount: grns[0].items.length,
+        //   items: grns[0].items.map(item => ({
+        //     productId: item.productId,
+        //     productIdType: typeof item.productId,
+        //     productIdString: item.productId?.toString(),
+        //     unitPrice: item.unitPrice,
+        //     acceptedQuantity: item.acceptedQuantity,
+        //     damageQuantity: item.damageQuantity
+        //   }))
+        // });
+      }
+
+      // Group by warehouse
+      const warehouseStock = {};
 
       grns.forEach(grn => {
-        grn.items.forEach(item => {
-          if (item.productId.toString() === product._id.toString()) {
-            totalQty += item.acceptedQuantity;
-            damagedQty += item.damageQuantity;
-            warehouses.add(grn.warehouseId.name);
+        if (!grn.warehouseId) {
+          // console.log(`⚠️ [STOCK_DEBUG] GRN ${grn.grnNo} has no warehouseId`);
+          return;
+        }
+        
+        const warehouseId = grn.warehouseId._id.toString();
+        const warehouseName = grn.warehouseId.name;
+        
+        // console.log(`🔍 [STOCK_DEBUG] Processing GRN ${grn.grnNo} for warehouse: ${warehouseName} (${warehouseId})`);
+        // console.log(`🔍 [STOCK_DEBUG] GRN has ${grn.items?.length || 0} items`);
+        // console.log(`🔍 [STOCK_DEBUG] GRN items:`, grn.items);
+        
+        if (!warehouseStock[warehouseId]) {
+          warehouseStock[warehouseId] = {
+            warehouseId: warehouseId,
+            warehouseName: warehouseName,
+            totalQty: 0,
+            damagedQty: 0,
+            suppliers: new Set(),
+            weightedPriceSum: 0,
+            weightedGSTSum: 0,
+            totalAcceptedQty: 0,
+            totalValue: 0
+          };
+        }
+        
+        // Check if items exist and are valid
+        if (!grn.items || !Array.isArray(grn.items) || grn.items.length === 0) {
+          // console.log(`⚠️ [STOCK_DEBUG] GRN ${grn.grnNo} has no valid items array`);
+          return;
+        }
+        
+        // console.log(`🔍 [STOCK_DEBUG] Processing ${grn.items.length} items in GRN ${grn.grnNo}`);
+        
+        grn.items.forEach((item, index) => {
+          // console.log(`🔍 [STOCK_DEBUG] Processing item ${index + 1}/${grn.items.length} in GRN ${grn.grnNo}`);
+          // console.log(`🔍 [STOCK_DEBUG] Raw item.productId:`, item.productId);
+          // console.log(`🔍 [STOCK_DEBUG] Raw product._id:`, product._id);
+          
+          // Handle both populated and non-populated productId
+          const itemProductId = item.productId?._id ? item.productId._id.toString() : item.productId.toString();
+          const targetProductId = product._id.toString();
+          
+          // console.log(`🔍 [STOCK_DEBUG] Comparing product IDs:`, {
+          //   itemProductId,
+          //   targetProductId,
+          //   match: itemProductId === targetProductId,
+          //   itemAcceptedQty: item.acceptedQuantity,
+          //   itemDamagedQty: item.damageQuantity
+          // });
+          
+          if (itemProductId === targetProductId) {
+            // console.log(`✅ [STOCK_DEBUG] Match found! Processing item for ${product.productCode}:`, {
+            //   acceptedQuantity: item.acceptedQuantity,
+            //   damageQuantity: item.damageQuantity,
+            //   unitPrice: item.unitPrice,
+            //   totalPrice: item.totalPrice
+            // });
+            
+            warehouseStock[warehouseId].totalQty += item.acceptedQuantity || 0;
+            warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
+            warehouseStock[warehouseId].totalAcceptedQty += item.acceptedQuantity || 0;
+            
             if (grn.supplierId) {
-              suppliers.add(grn.supplierId.name);
+              warehouseStock[warehouseId].suppliers.add(grn.supplierId.name);
             }
+            
+            // Calculate weighted averages including GST
+            const itemValue = (item.acceptedQuantity || 0) * (item.unitPrice || 0);
+            warehouseStock[warehouseId].totalValue += itemValue;
+            warehouseStock[warehouseId].weightedPriceSum += itemValue;
+            
+            // Calculate weighted GST average
+            const itemGSTValue = (item.acceptedQuantity || 0) * (item.gst || 0);
+            warehouseStock[warehouseId].weightedGSTSum += itemGSTValue;
+          } else {
+            // console.log(`❌ [STOCK_DEBUG] No match for product ID: ${itemProductId}`);
           }
         });
       });
 
-      const blockedQty = 0; // You can implement blocked stock logic
-      const netStock = totalQty - damagedQty - blockedQty;
+      // Create separate stock entries for each warehouse
+      // console.log(`🔍 [STOCK_DEBUG] Creating ${Object.keys(warehouseStock).length} warehouse entries for product ${product.productCode}`);
+      
+      Object.values(warehouseStock).forEach(warehouse => {
+        // Apply warehouse filter if specified
+        if (warehouseId && warehouse.warehouseId !== warehouseId) {
+          return;
+        }
+
+        const averageUnitPrice = warehouse.totalAcceptedQty > 0 ? warehouse.weightedPriceSum / warehouse.totalAcceptedQty : 0;
+        const averageGST = warehouse.totalAcceptedQty > 0 ? warehouse.weightedGSTSum / warehouse.totalAcceptedQty : 0;
+        const blockedQty = 0; // This would come from blocked stock or reservations
+        const netStock = warehouse.totalQty - warehouse.damagedQty - blockedQty;
 
       // Skip if lowStockOnly is true and stock is not low
       if (lowStockOnly && (!product.minStockLevel || netStock > product.minStockLevel)) {
-        continue;
+          return;
       }
 
-      stockData.push({
+        const stockEntry = {
         productId: product._id,
         productCode: product.productCode,
         hsnCode: product.HSNCode,
         itemName: product.itemName,
         description: product.description,
-        supplier: Array.from(suppliers).join(', '),
-        warehouse: Array.from(warehouses).join(', '),
-        basePrice: product.basePrice || 0,
-        gst: product.gst || 0,
-        totalPrice: product.totalPrice || 0,
-        totalQty,
-        damagedQty,
+          supplier: Array.from(warehouse.suppliers).join(', '),
+          warehouse: warehouse.warehouseName,
+          warehouseId: warehouse.warehouseId,
+          basePrice: averageUnitPrice,
+          gst: averageGST,
+          totalPrice: warehouse.totalValue,
+          totalQty: warehouse.totalQty,
+          damagedQty: warehouse.damagedQty,
         blockedQty,
         netStock,
         minStockLevel: product.minStockLevel
+        };
+        
+        // console.log(`🔍 [STOCK_DEBUG] Adding stock entry for ${product.productCode} in warehouse ${warehouse.warehouseName}:`, stockEntry);
+        stockData.push(stockEntry);
       });
     }
 
@@ -86,6 +188,9 @@ export const getStock = async (req, res) => {
     const endIndex = pageNum * limitNum;
 
     const paginatedData = stockData.slice(startIndex, endIndex);
+
+    // console.log(`🔍 [STOCK_DEBUG] Final stock data: ${stockData.length} total entries`);
+    // console.log(`🔍 [STOCK_DEBUG] Sample entries:`, stockData.slice(0, 3));
 
     res.json({
       success: true,
@@ -111,37 +216,546 @@ export const getStock = async (req, res) => {
 export const getStockHistory = async (req, res) => {
   try {
     const { productId } = req.params;
-    const { page = 1, limit = 10 } = req.query;
+    const { page = 1, limit = 10, warehouseId } = req.query;
 
-    const query = { productId };
+    console.log(`🔍 [STOCK_HISTORY_DEBUG] Getting stock history for product: ${productId} at ${new Date().toISOString()}`);
 
-    // Manual pagination
-    const pageNum = parseInt(page);
-    const limitNum = parseInt(limit);
-    const skip = (pageNum - 1) * limitNum;
+    // Use StockMovementService to get stock history
+    const result = await StockMovementService.getStockHistory(productId, {
+      page,
+      limit,
+      warehouseId
+    });
 
-    const movements = await StockMovement.find(query)
-      .populate('warehouseId', 'name')
-      .sort({ date: -1 })
-      .skip(skip)
-      .limit(limitNum);
-
-    const totalRecords = await StockMovement.countDocuments(query);
+    console.log(`🔍 [STOCK_HISTORY_DEBUG] Found ${result.movements.length} movements for product ${productId}`);
 
     res.json({
       success: true,
-      data: movements,
-      pagination: {
-        currentPage: pageNum,
-        totalPages: Math.ceil(totalRecords / limitNum),
-        totalRecords,
-        hasNextPage: (pageNum * limitNum) < totalRecords,
-        hasPrevPage: pageNum > 1,
-        limit: limitNum
-      }
+      data: result.movements,
+      pagination: result.pagination
     });
   } catch (error) {
     console.error('Get stock history error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Stock Transfer Functions
+export const createStockTransfer = async (req, res) => {
+  try {
+    const {
+      fromWarehouse,
+      toWarehouse,
+      items,
+      transferDate,
+      notes,
+      status = 'pending'
+    } = req.body;
+
+    console.log(`🔍 [STOCK_TRANSFER] Creating transfer from ${fromWarehouse} to ${toWarehouse}`);
+
+    // Generate transfer ID
+    const transferId = `TRF-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+
+    // Create stock movements for each item
+    const movements = [];
+    
+    for (const item of items) {
+      // OUT movement from source warehouse
+      const outMovement = new StockMovement({
+        productId: item.productId,
+        warehouseId: fromWarehouse,
+        type: 'OUT',
+        quantity: item.quantity,
+        balance: 0, // Will be calculated
+        referenceNo: transferId,
+        referenceType: 'TRANSFER',
+        date: new Date(transferDate),
+        remarks: `Transfer to ${toWarehouse} - ${item.quantity} units`,
+        createdBy: req.user._id
+      });
+
+      // IN movement to destination warehouse
+      const inMovement = new StockMovement({
+        productId: item.productId,
+        warehouseId: toWarehouse,
+        type: 'IN',
+        quantity: item.quantity,
+        balance: 0, // Will be calculated
+        referenceNo: transferId,
+        referenceType: 'TRANSFER',
+        date: new Date(transferDate),
+        remarks: `Transfer from ${fromWarehouse} - ${item.quantity} units`,
+        createdBy: req.user._id
+      });
+
+      movements.push(outMovement, inMovement);
+    }
+
+    // Save all movements
+    await StockMovement.insertMany(movements);
+
+    // Recalculate balances
+    await StockMovementService.recalculateBalances();
+    
+    res.json({
+      success: true,
+      message: 'Stock transfer created successfully',
+      data: {
+        transferId,
+        movements: movements.length,
+        status: 'completed'
+      }
+    });
+
+  } catch (error) {
+    console.error('Create stock transfer error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+export const getStockTransfers = async (req, res) => {
+  try {
+    const { page = 1, limit = 10, status } = req.query;
+
+    // Get all transfer movements grouped by reference number
+    const query = { referenceType: 'TRANSFER' };
+    if (status) {
+      query.status = status;
+    }
+
+    const movements = await StockMovement.find(query)
+      .populate('productId', 'productCode itemName')
+      .populate('warehouseId', 'name')
+      .populate('createdBy', 'name')
+      .sort({ date: -1 });
+
+    // Group by transfer ID
+    const transfers = {};
+    movements.forEach(movement => {
+      if (!transfers[movement.referenceNo]) {
+        transfers[movement.referenceNo] = {
+          id: movement.referenceNo,
+          stockId: movement.referenceNo,
+          transferId: movement.referenceNo,
+          transferDate: movement.date,
+          date: movement.date,
+          status: 'completed',
+          items: [],
+          fromWarehouse: null,
+          toWarehouse: null,
+          createdBy: movement.createdBy
+        };
+      }
+
+      if (movement.type === 'OUT') {
+        transfers[movement.referenceNo].fromWarehouse = movement.warehouseId._id || movement.warehouseId;
+      } else if (movement.type === 'IN') {
+        transfers[movement.referenceNo].toWarehouse = movement.warehouseId._id || movement.warehouseId;
+      }
+
+      transfers[movement.referenceNo].items.push({
+        productId: movement.productId,
+        quantity: movement.quantity,
+        type: movement.type,
+        warehouse: movement.warehouseId
+      });
+    });
+
+    const transferList = Object.values(transfers);
+
+    // Pagination
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const startIndex = (pageNum - 1) * limitNum;
+    const endIndex = pageNum * limitNum;
+
+    const paginatedData = transferList.slice(startIndex, endIndex);
+
+    res.json({
+      success: true,
+      data: paginatedData,
+      pagination: {
+        currentPage: pageNum,
+        totalPages: Math.ceil(transferList.length / limitNum),
+        totalRecords: transferList.length,
+        hasNextPage: endIndex < transferList.length,
+        hasPrevPage: startIndex > 0,
+        limit: limitNum
+      }
+    });
+
+  } catch (error) {
+    console.error('Get stock transfers error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+export const getWarehouses = async (req, res) => {
+  try {
+    const Warehouse = (await import('../models/Warehouse.js')).default;
+    const warehouses = await Warehouse.find({}).select('name location');
+    
+    res.json({
+      success: true,
+      data: warehouses
+    });
+  } catch (error) {
+    console.error('Get warehouses error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Test endpoint to verify stock separation by warehouse
+export const testStockSeparation = async (req, res) => {
+  try {
+    console.log(`🧪 [TEST] Testing stock separation by warehouse`);
+    
+    // Get a sample product
+    const product = await Product.findOne({});
+    if (!product) {
+      return res.json({
+        success: false,
+        message: 'No products found'
+      });
+    }
+
+    // Get GRNs for this product
+    const grns = await GRN.find({ 'items.productId': product._id })
+      .populate('warehouseId', 'name')
+      .populate('supplierId', 'name');
+
+    console.log(`🧪 [TEST] Found ${grns.length} GRNs for product ${product.productCode}`);
+
+    // Group by warehouse
+    const warehouseStock = {};
+    
+    grns.forEach(grn => {
+      if (!grn.warehouseId) return;
+      
+      const warehouseId = grn.warehouseId._id.toString();
+      const warehouseName = grn.warehouseId.name;
+      
+      if (!warehouseStock[warehouseId]) {
+        warehouseStock[warehouseId] = {
+          warehouseId: warehouseId,
+          warehouseName: warehouseName,
+          totalQty: 0,
+          grns: []
+        };
+      }
+      
+      grn.items.forEach(item => {
+        if (item.productId.toString() === product._id.toString()) {
+          warehouseStock[warehouseId].totalQty += item.acceptedQuantity || 0;
+          warehouseStock[warehouseId].grns.push({
+            grnNo: grn.grnNo,
+            quantity: item.acceptedQuantity,
+            date: grn.grnDate
+          });
+        }
+      });
+    });
+    
+    res.json({
+      success: true,
+      message: 'Stock separation test completed',
+      data: {
+        product: {
+          productCode: product.productCode,
+          itemName: product.itemName
+        },
+        warehouses: Object.values(warehouseStock),
+        totalWarehouses: Object.keys(warehouseStock).length
+      }
+    });
+  } catch (error) {
+    console.error('Test stock separation error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+export const migrateStockMovements = async (req, res) => {
+  try {
+    console.log(`🔄 [MIGRATION] Starting stock movements migration`);
+    
+    // This is a placeholder migration function
+    // In a real scenario, this would migrate data from old system to new stock movement system
+    
+    res.json({
+      success: true,
+      message: 'Stock movements migration completed (placeholder)',
+      data: {
+        migrated: 0,
+        timestamp: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    console.error('Migrate stock movements error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+export const forceCreateStockMovements = async (req, res) => {
+  try {
+    console.log(`🔄 [FORCE_MIGRATION] Starting forced stock movements creation`);
+    
+    // This is a placeholder function for forced migration
+    // In a real scenario, this would force create stock movements from GRN data
+    
+    res.json({
+      success: true,
+      message: 'Forced stock movements creation completed (placeholder)',
+      data: {
+        created: 0,
+        timestamp: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    console.error('Force create stock movements error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+export const debugProductGRNs = async (req, res) => {
+  try {
+    const { productId } = req.params;
+    console.log(`🔍 [DEBUG] Getting GRN details for product: ${productId}`);
+
+    const product = await Product.findById(productId);
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
+
+    const grns = await GRN.find({ 'items.productId': productId })
+      .populate('warehouseId', 'name')
+      .populate('supplierId', 'name')
+      .populate('items.productId', 'productCode itemName');
+
+    console.log(`🔍 [DEBUG] Found ${grns.length} GRNs for product ${product.productCode}`);
+    
+    res.json({
+      success: true,
+      data: {
+        product: {
+          productCode: product.productCode,
+          itemName: product.itemName,
+          HSNCode: product.HSNCode
+        },
+        grns: grns.map(grn => ({
+          grnNo: grn.grnNo,
+          grnDate: grn.grnDate,
+          warehouse: grn.warehouseId?.name || 'No Warehouse',
+          supplier: grn.supplierId?.name || 'No Supplier',
+          items: grn.items.filter(item => item.productId.toString() === productId).map(item => ({
+            unitPrice: item.unitPrice,
+            gst: item.gst,
+            totalPrice: item.totalPrice,
+            acceptedQuantity: item.acceptedQuantity,
+            damageQuantity: item.damageQuantity
+          }))
+        }))
+      }
+    });
+  } catch (error) {
+    console.error('Debug product GRNs error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Simple test endpoint to debug GRN structure
+export const testGRNStructure = async (req, res) => {
+  try {
+    console.log(`🧪 [TEST] Testing GRN structure`);
+    
+    // Get a single GRN to test
+    const grn = await GRN.findOne({})
+      .populate('warehouseId', 'name')
+      .populate('supplierId', 'name');
+    
+    if (!grn) {
+      return res.json({
+        success: false,
+        message: 'No GRNs found'
+      });
+    }
+
+    console.log(`🧪 [TEST] Found GRN: ${grn.grnNo}`);
+    console.log(`🧪 [TEST] GRN items length: ${grn.items?.length || 0}`);
+    console.log(`🧪 [TEST] GRN items:`, grn.items);
+
+    res.json({
+      success: true,
+      data: {
+        grnNo: grn.grnNo,
+        warehouse: grn.warehouseId?.name,
+        supplier: grn.supplierId?.name,
+        itemsCount: grn.items?.length || 0,
+        items: grn.items?.map(item => ({
+          productId: item.productId,
+          productIdType: typeof item.productId,
+          productIdString: item.productId?.toString(),
+          acceptedQuantity: item.acceptedQuantity,
+          damageQuantity: item.damageQuantity,
+          unitPrice: item.unitPrice
+        })) || []
+      }
+    });
+  } catch (error) {
+    console.error('Test GRN structure error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Debug endpoint to test stock calculation for specific product
+export const debugStockCalculation = async (req, res) => {
+  try {
+    const { productId } = req.params;
+    console.log(`🔍 [DEBUG_STOCK] Testing stock calculation for product: ${productId}`);
+
+    // Get the product
+    const product = await Product.findById(productId);
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
+
+    // Get GRNs for this product
+    const grns = await GRN.find({ 'items.productId': productId })
+      .populate('warehouseId', 'name')
+      .populate('supplierId', 'name')
+      .populate('items.productId', 'productCode itemName');
+
+    console.log(`🔍 [DEBUG_STOCK] Found ${grns.length} GRNs for product ${product.productCode}`);
+
+    // Group by warehouse
+    const warehouseStock = {};
+    
+    grns.forEach(grn => {
+      if (!grn.warehouseId) {
+        console.log(`⚠️ [DEBUG_STOCK] GRN ${grn.grnNo} has no warehouseId`);
+        return;
+      }
+      
+      const warehouseId = grn.warehouseId._id.toString();
+      const warehouseName = grn.warehouseId.name;
+      
+      console.log(`🔍 [DEBUG_STOCK] Processing GRN ${grn.grnNo} for warehouse: ${warehouseName} (${warehouseId})`);
+      
+      if (!warehouseStock[warehouseId]) {
+        warehouseStock[warehouseId] = {
+          warehouseId: warehouseId,
+          warehouseName: warehouseName,
+          totalQty: 0,
+          damagedQty: 0,
+          suppliers: new Set(),
+          weightedPriceSum: 0,
+          totalAcceptedQty: 0,
+          totalValue: 0,
+          grns: []
+        };
+      }
+      
+      grn.items.forEach(item => {
+        if (item.productId.toString() === productId) {
+          console.log(`🔍 [DEBUG_STOCK] Processing item:`, {
+            acceptedQuantity: item.acceptedQuantity,
+            damageQuantity: item.damageQuantity,
+            unitPrice: item.unitPrice,
+            totalPrice: item.totalPrice,
+            gst: item.gst
+          });
+          
+          warehouseStock[warehouseId].totalQty += item.acceptedQuantity || 0;
+          warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
+          warehouseStock[warehouseId].totalAcceptedQty += item.acceptedQuantity || 0;
+          
+          if (grn.supplierId) {
+            warehouseStock[warehouseId].suppliers.add(grn.supplierId.name);
+          }
+          
+          // Calculate weighted averages
+          const itemValue = (item.acceptedQuantity || 0) * (item.unitPrice || 0);
+          warehouseStock[warehouseId].totalValue += itemValue;
+          warehouseStock[warehouseId].weightedPriceSum += itemValue;
+          
+          warehouseStock[warehouseId].grns.push({
+            grnNo: grn.grnNo,
+            acceptedQuantity: item.acceptedQuantity,
+            damageQuantity: item.damageQuantity,
+            unitPrice: item.unitPrice,
+            totalPrice: item.totalPrice
+          });
+        }
+      });
+    });
+
+    // Calculate final values
+    const finalWarehouses = Object.values(warehouseStock).map(warehouse => {
+      const averageUnitPrice = warehouse.totalAcceptedQty > 0 ? warehouse.weightedPriceSum / warehouse.totalAcceptedQty : 0;
+      const blockedQty = 0;
+      const netStock = warehouse.totalQty - warehouse.damagedQty - blockedQty;
+
+      return {
+        warehouseId: warehouse.warehouseId,
+        warehouseName: warehouse.warehouseName,
+        totalQty: warehouse.totalQty,
+        damagedQty: warehouse.damagedQty,
+        blockedQty,
+        netStock,
+        averageUnitPrice,
+        totalValue: warehouse.totalValue,
+        suppliers: Array.from(warehouse.suppliers),
+        grns: warehouse.grns
+      };
+    });
+    
+    res.json({
+      success: true,
+      data: {
+        product: {
+          productCode: product.productCode,
+          itemName: product.itemName,
+          HSNCode: product.HSNCode
+        },
+        warehouses: finalWarehouses,
+        totalWarehouses: finalWarehouses.length
+      }
+    });
+  } catch (error) {
+    console.error('Debug stock calculation error:', error);
     res.status(500).json({
       success: false,
       message: error.message
@@ -153,34 +767,55 @@ export const getStockAlerts = async (req, res) => {
   try {
     const { page = 1, limit = 10 } = req.query;
 
-    const products = await Product.find({
-      minStockLevel: { $exists: true, $gt: 0 }
-    });
-
+    // Get all products with their current stock
+    const products = await Product.find({ minStockLevel: { $gt: 0 } });
     const lowStockItems = [];
     
     for (const product of products) {
-      const grns = await GRN.find({ 'items.productId': product._id });
+      const grns = await GRN.find({ 'items.productId': product._id })
+        .populate('warehouseId', 'name');
+
+      const warehouseStock = {};
       
-      let totalStock = 0;
       grns.forEach(grn => {
+        if (!grn.warehouseId) return;
+        
+        const warehouseId = grn.warehouseId._id.toString();
+        const warehouseName = grn.warehouseId.name;
+        
+        if (!warehouseStock[warehouseId]) {
+          warehouseStock[warehouseId] = {
+            warehouseId: warehouseId,
+            warehouseName: warehouseName,
+            totalQty: 0,
+            damagedQty: 0
+          };
+        }
+        
         grn.items.forEach(item => {
           if (item.productId.toString() === product._id.toString()) {
-            totalStock += item.acceptedQuantity - item.damageQuantity;
+            warehouseStock[warehouseId].totalQty += item.acceptedQuantity || 0;
+            warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
           }
         });
       });
 
-      if (totalStock <= product.minStockLevel) {
+      Object.values(warehouseStock).forEach(warehouse => {
+        const netStock = warehouse.totalQty - warehouse.damagedQty;
+        
+        if (netStock <= product.minStockLevel) {
         lowStockItems.push({
           productId: product._id,
           productCode: product.productCode,
           itemName: product.itemName,
-          currentStock: totalStock,
+            warehouse: warehouse.warehouseName,
+            warehouseId: warehouse.warehouseId,
+            currentStock: netStock,
           minStockLevel: product.minStockLevel,
-          deficit: product.minStockLevel - totalStock
+            shortage: product.minStockLevel - netStock
         });
       }
+      });
     }
 
     // Manual pagination

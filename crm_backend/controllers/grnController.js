@@ -1,5 +1,6 @@
 import GRN from '../models/GRN.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
+import StockMovementService from '../services/stockMovementService.js';
 
 export const createGRN = async (req, res) => {
   try {
@@ -143,6 +144,15 @@ export const createGRN = async (req, res) => {
 
     const grn = new GRN(grnData);
     await grn.save();
+    
+    // Create stock movements for this GRN
+    try {
+      await StockMovementService.createStockMovementsFromGRN(grn);
+      console.log(`✅ Stock movements created for GRN: ${grn.grnNo}`);
+    } catch (stockError) {
+      console.error('Error creating stock movements:', stockError);
+      // Don't fail the GRN creation if stock movement creation fails
+    }
     
     // Populate the saved GRN for response
     const populatedGRN = await GRN.findById(grn._id)
