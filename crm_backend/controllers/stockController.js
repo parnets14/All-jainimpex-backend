@@ -13,7 +13,7 @@ export const getStock = async (req, res) => {
       lowStockOnly = false
     } = req.query;
 
-    // console.log(`🔍 [STOCK_DEBUG] Getting stock with filters:`, { search, warehouseId, lowStockOnly });
+    console.log(`🔍 [STOCK_DEBUG] Getting stock with filters:`, { search, warehouseId, lowStockOnly });
 
     // Get all products with their current stock
     const products = await Product.find({
@@ -24,50 +24,32 @@ export const getStock = async (req, res) => {
       ]
     });
 
-    // console.log(`🔍 [STOCK_DEBUG] Found ${products.length} products`);
+    console.log(`🔍 [STOCK_DEBUG] Found ${products.length} products`);
 
     const stockData = [];
     
     for (const product of products) {
-      // Get all warehouses that have this product
+      // Get all warehouses that have this product (from GRNs)
       const grnQuery = { 'items.productId': product._id };
       const grns = await GRN.find(grnQuery)
-        .populate('warehouseId', 'name')
+        .populate('warehouseId', 'name address')
         .populate('supplierId', 'name');
 
-      // console.log(`🔍 [STOCK_DEBUG] Product ${product.productCode}: Found ${grns.length} GRNs`);
-      if (grns.length > 0) {
-        // console.log(`🔍 [STOCK_DEBUG] Sample GRN:`, {
-        //   grnNo: grns[0].grnNo,
-        //   warehouse: grns[0].warehouseId?.name,
-        //   supplier: grns[0].supplierId?.name,
-        //   itemsCount: grns[0].items.length,
-        //   items: grns[0].items.map(item => ({
-        //     productId: item.productId,
-        //     productIdType: typeof item.productId,
-        //     productIdString: item.productId?.toString(),
-        //     unitPrice: item.unitPrice,
-        //     acceptedQuantity: item.acceptedQuantity,
-        //     damageQuantity: item.damageQuantity
-        //   }))
-        // });
-      }
+      console.log(`🔍 [STOCK_DEBUG] Product ${product.productCode}: Found ${grns.length} GRNs`);
 
       // Group by warehouse
       const warehouseStock = {};
 
       grns.forEach(grn => {
         if (!grn.warehouseId) {
-          // console.log(`⚠️ [STOCK_DEBUG] GRN ${grn.grnNo} has no warehouseId`);
+          console.log(`⚠️ [STOCK_DEBUG] GRN ${grn.grnNo} has no warehouseId`);
           return;
         }
         
         const warehouseId = grn.warehouseId._id.toString();
         const warehouseName = grn.warehouseId.name;
         
-        // console.log(`🔍 [STOCK_DEBUG] Processing GRN ${grn.grnNo} for warehouse: ${warehouseName} (${warehouseId})`);
-        // console.log(`🔍 [STOCK_DEBUG] GRN has ${grn.items?.length || 0} items`);
-        // console.log(`🔍 [STOCK_DEBUG] GRN items:`, grn.items);
+        console.log(`🔍 [STOCK_DEBUG] Processing GRN ${grn.grnNo} for warehouse: ${warehouseName} (${warehouseId})`);
         
         if (!warehouseStock[warehouseId]) {
           warehouseStock[warehouseId] = {
@@ -85,36 +67,22 @@ export const getStock = async (req, res) => {
         
         // Check if items exist and are valid
         if (!grn.items || !Array.isArray(grn.items) || grn.items.length === 0) {
-          // console.log(`⚠️ [STOCK_DEBUG] GRN ${grn.grnNo} has no valid items array`);
+          console.log(`⚠️ [STOCK_DEBUG] GRN ${grn.grnNo} has no valid items array`);
           return;
         }
         
-        // console.log(`🔍 [STOCK_DEBUG] Processing ${grn.items.length} items in GRN ${grn.grnNo}`);
-        
         grn.items.forEach((item, index) => {
-          // console.log(`🔍 [STOCK_DEBUG] Processing item ${index + 1}/${grn.items.length} in GRN ${grn.grnNo}`);
-          // console.log(`🔍 [STOCK_DEBUG] Raw item.productId:`, item.productId);
-          // console.log(`🔍 [STOCK_DEBUG] Raw product._id:`, product._id);
-          
           // Handle both populated and non-populated productId
           const itemProductId = item.productId?._id ? item.productId._id.toString() : item.productId.toString();
           const targetProductId = product._id.toString();
           
-          // console.log(`🔍 [STOCK_DEBUG] Comparing product IDs:`, {
-          //   itemProductId,
-          //   targetProductId,
-          //   match: itemProductId === targetProductId,
-          //   itemAcceptedQty: item.acceptedQuantity,
-          //   itemDamagedQty: item.damageQuantity
-          // });
-          
           if (itemProductId === targetProductId) {
-            // console.log(`✅ [STOCK_DEBUG] Match found! Processing item for ${product.productCode}:`, {
-            //   acceptedQuantity: item.acceptedQuantity,
-            //   damageQuantity: item.damageQuantity,
-            //   unitPrice: item.unitPrice,
-            //   totalPrice: item.totalPrice
-            // });
+            console.log(`✅ [STOCK_DEBUG] Match found! Processing item for ${product.productCode}:`, {
+              acceptedQuantity: item.acceptedQuantity,
+              damageQuantity: item.damageQuantity,
+              unitPrice: item.unitPrice,
+              totalPrice: item.totalPrice
+            });
             
             warehouseStock[warehouseId].totalQty += item.acceptedQuantity || 0;
             warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
@@ -132,14 +100,26 @@ export const getStock = async (req, res) => {
             // Calculate weighted GST average
             const itemGSTValue = (item.acceptedQuantity || 0) * (item.gst || 0);
             warehouseStock[warehouseId].weightedGSTSum += itemGSTValue;
-          } else {
-            // console.log(`❌ [STOCK_DEBUG] No match for product ID: ${itemProductId}`);
           }
         });
       });
 
+      // Now get current stock levels from stock movements for each warehouse
+      for (const warehouseId of Object.keys(warehouseStock)) {
+        try {
+          const currentStock = await StockMovementService.getCurrentStock(product._id, warehouseId);
+          console.log(`🔍 [STOCK_DEBUG] Current stock from movements for ${product.productCode} in warehouse ${warehouseId}: ${currentStock}`);
+          
+          // Update the warehouse stock with current stock from movements
+          warehouseStock[warehouseId].currentStock = currentStock;
+        } catch (error) {
+          console.error(`Error getting current stock for product ${product.productCode} in warehouse ${warehouseId}:`, error);
+          warehouseStock[warehouseId].currentStock = warehouseStock[warehouseId].totalQty;
+        }
+      }
+
       // Create separate stock entries for each warehouse
-      // console.log(`🔍 [STOCK_DEBUG] Creating ${Object.keys(warehouseStock).length} warehouse entries for product ${product.productCode}`);
+      console.log(`🔍 [STOCK_DEBUG] Creating ${Object.keys(warehouseStock).length} warehouse entries for product ${product.productCode}`);
       
       Object.values(warehouseStock).forEach(warehouse => {
         // Apply warehouse filter if specified
@@ -150,33 +130,43 @@ export const getStock = async (req, res) => {
         const averageUnitPrice = warehouse.totalAcceptedQty > 0 ? warehouse.weightedPriceSum / warehouse.totalAcceptedQty : 0;
         const averageGST = warehouse.totalAcceptedQty > 0 ? warehouse.weightedGSTSum / warehouse.totalAcceptedQty : 0;
         const blockedQty = 0; // This would come from blocked stock or reservations
-        const netStock = warehouse.totalQty - warehouse.damagedQty - blockedQty;
+        
+        // Use current stock from movements if available, otherwise fall back to GRN calculation
+        const currentStock = warehouse.currentStock !== undefined ? warehouse.currentStock : warehouse.totalQty;
+        const netStock = currentStock - warehouse.damagedQty - blockedQty;
 
-      // Skip if lowStockOnly is true and stock is not low
-      if (lowStockOnly && (!product.minStockLevel || netStock > product.minStockLevel)) {
+        console.log(`🔍 [STOCK_DEBUG] Final stock calculation for ${product.productCode} in ${warehouse.warehouseName}:`, {
+          currentStock,
+          damagedQty: warehouse.damagedQty,
+          blockedQty,
+          netStock
+        });
+
+        // Skip if lowStockOnly is true and stock is not low
+        if (lowStockOnly && (!product.minStockLevel || netStock > product.minStockLevel)) {
           return;
-      }
+        }
 
         const stockEntry = {
-        productId: product._id,
-        productCode: product.productCode,
-        hsnCode: product.HSNCode,
-        itemName: product.itemName,
-        description: product.description,
+          productId: product._id,
+          productCode: product.productCode,
+          hsnCode: product.HSNCode,
+          itemName: product.itemName,
+          description: product.description,
           supplier: Array.from(warehouse.suppliers).join(', '),
           warehouse: warehouse.warehouseName,
           warehouseId: warehouse.warehouseId,
           basePrice: averageUnitPrice,
           gst: averageGST,
           totalPrice: warehouse.totalValue,
-          totalQty: warehouse.totalQty,
+          totalQty: currentStock, // Use current stock from movements
           damagedQty: warehouse.damagedQty,
-        blockedQty,
-        netStock,
-        minStockLevel: product.minStockLevel
+          blockedQty,
+          netStock,
+          minStockLevel: product.minStockLevel
         };
         
-        // console.log(`🔍 [STOCK_DEBUG] Adding stock entry for ${product.productCode} in warehouse ${warehouse.warehouseName}:`, stockEntry);
+        console.log(`🔍 [STOCK_DEBUG] Adding stock entry for ${product.productCode} in warehouse ${warehouse.warehouseName}:`, stockEntry);
         stockData.push(stockEntry);
       });
     }
@@ -331,8 +321,8 @@ export const getStockTransfers = async (req, res) => {
     }
 
     const movements = await StockMovement.find(query)
-      .populate('productId', 'productCode itemName')
-      .populate('warehouseId', 'name')
+      .populate('productId', 'productCode itemName HSNCode rateSlabs')
+      .populate('warehouseId', 'name address')
       .populate('createdBy', 'name')
       .sort({ date: -1 });
 
@@ -348,6 +338,7 @@ export const getStockTransfers = async (req, res) => {
           date: movement.date,
           status: 'completed',
           items: [],
+          totalItems: 0,
           fromWarehouse: null,
           toWarehouse: null,
           createdBy: movement.createdBy
@@ -358,6 +349,11 @@ export const getStockTransfers = async (req, res) => {
         transfers[movement.referenceNo].fromWarehouse = movement.warehouseId._id || movement.warehouseId;
       } else if (movement.type === 'IN') {
         transfers[movement.referenceNo].toWarehouse = movement.warehouseId._id || movement.warehouseId;
+      }
+
+      // Only count OUT movements for total items (since IN and OUT are paired)
+      if (movement.type === 'OUT') {
+        transfers[movement.referenceNo].totalItems += movement.quantity;
       }
 
       transfers[movement.referenceNo].items.push({
@@ -403,7 +399,7 @@ export const getStockTransfers = async (req, res) => {
 export const getWarehouses = async (req, res) => {
   try {
     const Warehouse = (await import('../models/Warehouse.js')).default;
-    const warehouses = await Warehouse.find({}).select('name location');
+    const warehouses = await Warehouse.find({}).select('name address');
     
     res.json({
       success: true,
@@ -756,6 +752,171 @@ export const debugStockCalculation = async (req, res) => {
     });
   } catch (error) {
     console.error('Debug stock calculation error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Debug endpoint to check stock movements for a specific product-warehouse combination
+export const debugStockMovements = async (req, res) => {
+  try {
+    const { productId, warehouseId } = req.params;
+    
+    console.log(`🔍 [DEBUG_STOCK_MOVEMENTS] Checking movements for product: ${productId}, warehouse: ${warehouseId}`);
+    
+    // Get all movements for this product-warehouse combination
+    const movements = await StockMovement.find({
+      productId,
+      warehouseId
+    })
+    .populate('productId', 'productCode itemName')
+    .populate('warehouseId', 'name')
+    .sort({ date: 1, createdAt: 1 });
+    
+    // Get current stock from service
+    const currentStock = await StockMovementService.getCurrentStock(productId, warehouseId);
+    
+    // Get GRN data for this product-warehouse
+    const grns = await GRN.find({
+      'items.productId': productId,
+      warehouseId
+    })
+    .populate('warehouseId', 'name')
+    .populate('supplierId', 'name');
+    
+    let grnTotalQty = 0;
+    grns.forEach(grn => {
+      grn.items.forEach(item => {
+        if (item.productId.toString() === productId) {
+          grnTotalQty += item.acceptedQuantity || 0;
+        }
+      });
+    });
+    
+    res.json({
+      success: true,
+      data: {
+        productId,
+        warehouseId,
+        movements: movements.map(m => ({
+          type: m.type,
+          quantity: m.quantity,
+          balance: m.balance,
+          referenceNo: m.referenceNo,
+          referenceType: m.referenceType,
+          date: m.date,
+          remarks: m.remarks
+        })),
+        currentStockFromMovements: currentStock,
+        grnTotalQty,
+        difference: currentStock - grnTotalQty,
+        movementsCount: movements.length,
+        grnsCount: grns.length
+      }
+    });
+  } catch (error) {
+    console.error('Debug stock movements error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Debug endpoint to check warehouse data structure
+export const debugWarehouses = async (req, res) => {
+  try {
+    const Warehouse = (await import('../models/Warehouse.js')).default;
+    const warehouses = await Warehouse.find({}).select('name address');
+    
+    res.json({
+      success: true,
+      data: warehouses.map(wh => ({
+        _id: wh._id,
+        name: wh.name,
+        address: wh.address,
+        hasCity: !!wh.address?.city,
+        hasState: !!wh.address?.state,
+        city: wh.address?.city || 'No city',
+        state: wh.address?.state || 'No state'
+      }))
+    });
+  } catch (error) {
+    console.error('Debug warehouses error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Debug endpoint to check transfer data structure
+export const debugTransfers = async (req, res) => {
+  try {
+    const { limit = 2 } = req.query;
+    
+    const movements = await StockMovement.find({ referenceType: 'TRANSFER' })
+      .populate('productId', 'productCode itemName HSNCode rateSlabs')
+      .populate('warehouseId', 'name address')
+      .sort({ date: -1 })
+      .limit(parseInt(limit) * 2); // Get more to see grouping
+
+    // Group by transfer ID
+    const transfers = {};
+    movements.forEach(movement => {
+      if (!transfers[movement.referenceNo]) {
+        transfers[movement.referenceNo] = {
+          id: movement.referenceNo,
+          stockId: movement.referenceNo,
+          transferDate: movement.date,
+          status: 'completed',
+          items: [],
+          totalItems: 0,
+          fromWarehouse: null,
+          toWarehouse: null
+        };
+      }
+
+      if (movement.type === 'OUT') {
+        transfers[movement.referenceNo].fromWarehouse = movement.warehouseId._id || movement.warehouseId;
+      } else if (movement.type === 'IN') {
+        transfers[movement.referenceNo].toWarehouse = movement.warehouseId._id || movement.warehouseId;
+      }
+
+      if (movement.type === 'OUT') {
+        transfers[movement.referenceNo].totalItems += movement.quantity;
+      }
+
+      transfers[movement.referenceNo].items.push({
+        productId: movement.productId,
+        quantity: movement.quantity,
+        type: movement.type,
+        warehouse: movement.warehouseId
+      });
+    });
+
+    const transferList = Object.values(transfers).slice(0, parseInt(limit));
+
+    res.json({
+      success: true,
+      data: transferList,
+      debug: {
+        totalMovements: movements.length,
+        totalTransfers: Object.keys(transfers).length,
+        sampleMovement: movements[0] ? {
+          _id: movements[0]._id,
+          productId: movements[0].productId,
+          warehouseId: movements[0].warehouseId,
+          type: movements[0].type,
+          quantity: movements[0].quantity,
+          referenceNo: movements[0].referenceNo
+        } : null
+      }
+    });
+  } catch (error) {
+    console.error('Debug transfers error:', error);
     res.status(500).json({
       success: false,
       message: error.message

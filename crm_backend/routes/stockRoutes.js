@@ -10,7 +10,10 @@ import {
   getWarehouses,
   testStockSeparation,
   debugStockCalculation,
-  testGRNStructure
+  testGRNStructure,
+  debugStockMovements,
+  debugWarehouses,
+  debugTransfers
 } from '../controllers/stockController.js';
 import { protect } from '../middleware/authMiddleware.js';
 
@@ -21,6 +24,8 @@ router.post('/migrate-test', migrateStockMovements);
 router.get('/test-separation', testStockSeparation);
 router.get('/debug-calculation/:productId', debugStockCalculation);
 router.get('/test-grn-structure', testGRNStructure);
+router.get('/debug-warehouses', debugWarehouses);
+router.get('/debug-transfers', debugTransfers);
 
 router.use(protect);
 
@@ -30,6 +35,7 @@ router.get('/warehouses', getWarehouses);
 router.get('/transfers', getStockTransfers);
 router.get('/:productId/history', getStockHistory);
 router.get('/:productId/debug', debugProductGRNs);
+router.get('/debug-movements/:productId/:warehouseId', debugStockMovements);
 router.post('/transfer', createStockTransfer);
 router.post('/migrate', migrateStockMovements);
 
