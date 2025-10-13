@@ -399,7 +399,29 @@ export const getStockTransfers = async (req, res) => {
 export const getWarehouses = async (req, res) => {
   try {
     const Warehouse = (await import('../models/Warehouse.js')).default;
-    const warehouses = await Warehouse.find({}).select('name address');
+    const { search, status } = req.query;
+    
+    // Build query
+    let query = {};
+    
+    // Add search filter
+    if (search) {
+      query.$or = [
+        { code: { $regex: search, $options: 'i' } },
+        { name: { $regex: search, $options: 'i' } },
+        { 'contact.managerName': { $regex: search, $options: 'i' } }
+      ];
+    }
+    
+    // Add status filter
+    if (status && status !== 'all') {
+      query.status = status;
+    }
+    
+    const warehouses = await Warehouse.find(query)
+      .populate('region', 'name code')
+      .select('code name address contact status region')
+      .sort({ createdAt: -1 });
     
     res.json({
       success: true,
