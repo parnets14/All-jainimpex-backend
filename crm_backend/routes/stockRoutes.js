@@ -13,7 +13,8 @@ import {
   testGRNStructure,
   debugStockMovements,
   debugWarehouses,
-  debugTransfers
+  debugTransfers,
+  recalculateStockBalances
 } from '../controllers/stockController.js';
 import { protect } from '../middleware/authMiddleware.js';
 
@@ -26,6 +27,7 @@ router.get('/debug-calculation/:productId', debugStockCalculation);
 router.get('/test-grn-structure', testGRNStructure);
 router.get('/debug-warehouses', debugWarehouses);
 router.get('/debug-transfers', debugTransfers);
+router.post('/recalculate-balances-test', recalculateStockBalances);
 
 router.use(protect);
 
@@ -38,5 +40,6 @@ router.get('/:productId/debug', debugProductGRNs);
 router.get('/debug-movements/:productId/:warehouseId', debugStockMovements);
 router.post('/transfer', createStockTransfer);
 router.post('/migrate', migrateStockMovements);
+router.post('/recalculate-balances', recalculateStockBalances);
 
 export default router;

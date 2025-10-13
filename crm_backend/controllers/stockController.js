@@ -3,6 +3,33 @@ import Product from '../models/Product.js';
 import GRN from '../models/GRN.js';
 import StockMovementService from '../services/stockMovementService.js';
 
+// Utility function to recalculate all stock balances
+export const recalculateStockBalances = async (req, res) => {
+  try {
+    console.log('🔍 [STOCK_RECALC] Starting stock balance recalculation...');
+    
+    // Import StockMovementService
+    const StockMovementService = (await import('../services/stockMovementService.js')).default;
+    
+    // Recalculate all balances
+    await StockMovementService.recalculateBalances();
+    
+    console.log('🔍 [STOCK_RECALC] Stock balance recalculation completed');
+    
+    res.json({
+      success: true,
+      message: 'Stock balances recalculated successfully'
+    });
+  } catch (error) {
+    console.error('Error recalculating stock balances:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error recalculating stock balances',
+      error: error.message
+    });
+  }
+};
+
 export const getStock = async (req, res) => {
   try {
     const {
@@ -110,11 +137,42 @@ export const getStock = async (req, res) => {
           const currentStock = await StockMovementService.getCurrentStock(product._id, warehouseId);
           console.log(`🔍 [STOCK_DEBUG] Current stock from movements for ${product.productCode} in warehouse ${warehouseId}: ${currentStock}`);
           
+          // Calculate blocked stock (OUT movements with referenceType 'SALE' that are not unblocked)
+          const blockedMovements = await StockMovement.find({
+            productId: product._id,
+            warehouseId: warehouseId,
+            type: 'OUT',
+            referenceType: 'SALE'
+          });
+          
+          const unblockedMovements = await StockMovement.find({
+            productId: product._id,
+            warehouseId: warehouseId,
+            type: 'IN',
+            referenceType: 'SALE',
+            remarks: { $regex: /Stock Unblocked/ }
+          });
+          
+          let blockedQty = 0;
+          blockedMovements.forEach(movement => {
+            blockedQty += movement.quantity;
+          });
+          
+          unblockedMovements.forEach(movement => {
+            blockedQty -= movement.quantity;
+          });
+          
+          blockedQty = Math.max(0, blockedQty); // Ensure blocked quantity is not negative
+          
+          console.log(`🔍 [STOCK_DEBUG] Blocked quantity for ${product.productCode} in warehouse ${warehouseId}: ${blockedQty}`);
+          
           // Update the warehouse stock with current stock from movements
           warehouseStock[warehouseId].currentStock = currentStock;
+          warehouseStock[warehouseId].blockedQty = blockedQty;
         } catch (error) {
           console.error(`Error getting current stock for product ${product.productCode} in warehouse ${warehouseId}:`, error);
           warehouseStock[warehouseId].currentStock = warehouseStock[warehouseId].totalQty;
+          warehouseStock[warehouseId].blockedQty = 0;
         }
       }
 
@@ -129,7 +187,7 @@ export const getStock = async (req, res) => {
 
         const averageUnitPrice = warehouse.totalAcceptedQty > 0 ? warehouse.weightedPriceSum / warehouse.totalAcceptedQty : 0;
         const averageGST = warehouse.totalAcceptedQty > 0 ? warehouse.weightedGSTSum / warehouse.totalAcceptedQty : 0;
-        const blockedQty = 0; // This would come from blocked stock or reservations
+        const blockedQty = warehouse.blockedQty || 0; // Use calculated blocked quantity
         
         // Use current stock from movements if available, otherwise fall back to GRN calculation
         const currentStock = warehouse.currentStock !== undefined ? warehouse.currentStock : warehouse.totalQty;
@@ -161,7 +219,7 @@ export const getStock = async (req, res) => {
           totalPrice: warehouse.totalValue,
           totalQty: currentStock, // Use current stock from movements
           damagedQty: warehouse.damagedQty,
-          blockedQty,
+          blockedQty: blockedQty,
           netStock,
           minStockLevel: product.minStockLevel
         };
