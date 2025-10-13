@@ -62,6 +62,11 @@ export const AVAILABLE_PERMISSIONS = {
       id: "category.setup",
       name: "Category Setup",
       description: "Setup categories"
+    },
+    {
+      id: "categories.view",
+      name: "Categories View",
+      description: "View categories, subcategories, and brands"
     }
   ],
   "Sales & Purchase Management": [
