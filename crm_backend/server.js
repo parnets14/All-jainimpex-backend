@@ -43,6 +43,7 @@ import purchaseOrderRoutes from "./routes/purchaseOrderRoutes.js";
 import grnRoutes from './routes/grnRoutes.js';
 import stockRoutes from './routes/stockRoutes.js';
 import salesOrderRoutes from './routes/salesOrderRoutes.js';
+import chequeRoutes from './routes/chequeRoutes.js';
 import testRoutes from './routes/testRoutes.js';
 
 dotenv.config();
@@ -157,6 +158,7 @@ app.use(
   app.use('/api/grn', grnRoutes);
   app.use('/api/stock', stockRoutes);
   app.use('/api/sales-orders', salesOrderRoutes);
+  app.use('/api/cheques', chequeRoutes);
   app.use('/api/test', testRoutes);
 
 
@@ -200,6 +202,13 @@ app.use(
         "DELETE /api/sales-orders/:id",
         "GET  /api/sales-orders/stats/summary",
         "GET  /api/sales-orders/overdue",
+        "GET  /api/cheques",
+        "POST /api/cheques",
+        "GET  /api/cheques/:id",
+        "PUT  /api/cheques/:id",
+        "DELETE /api/cheques/:id",
+        "GET  /api/cheques/stats/summary",
+        "PATCH /api/cheques/:id/status",
       ],
     });
   });

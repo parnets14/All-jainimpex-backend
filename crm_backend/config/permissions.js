@@ -202,6 +202,26 @@ export const AVAILABLE_PERMISSIONS = {
       description: "Manage cheques"
     },
     {
+      id: "cheques.view",
+      name: "View Cheques",
+      description: "View cheque records"
+    },
+    {
+      id: "cheques.create",
+      name: "Create Cheques",
+      description: "Create new cheque records"
+    },
+    {
+      id: "cheques.update",
+      name: "Update Cheques",
+      description: "Update cheque information"
+    },
+    {
+      id: "cheques.delete",
+      name: "Delete Cheques",
+      description: "Delete cheque records"
+    },
+    {
       id: "auto.reconciliation",
       name: "Auto Reconciliation",
       description: "Handle auto reconciliation"

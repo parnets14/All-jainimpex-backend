@@ -698,7 +698,18 @@ export const updateSalesOrder = async (req, res) => {
 
     // Validate products if they are being updated
     if (req.body.products) {
+      console.log("Update order - received products:", req.body.products);
       for (const item of req.body.products) {
+        console.log("Validating product item:", item);
+        console.log("Product ID to validate:", item.product);
+        
+        if (!item.product) {
+          return res.status(400).json({
+            success: false,
+            message: `Product ID is missing in product data: ${JSON.stringify(item)}`
+          });
+        }
+        
         const product = await Product.findById(item.product);
         if (!product) {
           return res.status(404).json({
