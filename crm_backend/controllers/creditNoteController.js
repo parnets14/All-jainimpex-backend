@@ -1,0 +1,419 @@
+import CreditNote from "../models/CreditNote.js";
+import DealerInvoice from "../models/DealerInvoice.js";
+import Dealer from "../models/Dealer.js";
+
+// Create Credit Note
+export const createCreditNote = async (req, res) => {
+  try {
+    const {
+      originalInvoiceId,
+      creditAmount,
+      creditReason,
+      status = "Pending",
+      remarks,
+      internalNotes
+    } = req.body;
+
+    // Validate original invoice exists
+    const originalInvoice = await DealerInvoice.findById(originalInvoiceId)
+      .populate('dealer', 'name code')
+      .populate('items.product', 'itemName productCode');
+
+    if (!originalInvoice) {
+      return res.status(404).json({
+        success: false,
+        message: "Original invoice not found"
+      });
+    }
+
+    // Check if credit amount is valid
+    if (creditAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Credit amount must be greater than 0"
+      });
+    }
+
+    // Calculate remaining amount after this credit
+    const existingCredits = await CreditNote.find({ 
+      originalInvoice: originalInvoiceId,
+      status: { $in: ["Pending", "Approved"] }
+    });
+    
+    const totalCreditedAmount = existingCredits.reduce((sum, credit) => sum + credit.creditAmount, 0);
+    const remainingAmount = originalInvoice.totalAmount - totalCreditedAmount;
+
+    if (creditAmount > remainingAmount) {
+      return res.status(400).json({
+        success: false,
+        message: `Credit amount cannot exceed remaining amount of ₹${remainingAmount.toLocaleString()}`
+      });
+    }
+
+    // Create credit note
+    const creditNoteData = {
+      originalInvoice: originalInvoiceId,
+      originalInvoiceNumber: originalInvoice.invoiceNumber,
+      dealer: originalInvoice.dealer._id,
+      dealerName: originalInvoice.dealer.name,
+      dealerCode: originalInvoice.dealer.code,
+      creditAmount,
+      creditReason,
+      status,
+      originalInvoiceAmount: originalInvoice.totalAmount,
+      remainingAmount: remainingAmount - creditAmount,
+      remarks: remarks || '',
+      internalNotes: internalNotes || '',
+      createdBy: req.user._id
+    };
+
+    const creditNote = new CreditNote(creditNoteData);
+    await creditNote.save();
+
+    // Populate the response
+    const populatedCreditNote = await CreditNote.findById(creditNote._id)
+      .populate('originalInvoice', 'invoiceNumber invoiceDate totalAmount')
+      .populate('dealer', 'name code phone email address')
+      .populate('createdBy', 'name email')
+      .populate('approvedBy', 'name email');
+
+    res.status(201).json({
+      success: true,
+      message: "Credit note created successfully",
+      creditNote: populatedCreditNote
+    });
+
+  } catch (error) {
+    console.error("Error creating credit note:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error creating credit note",
+      error: error.message
+    });
+  }
+};
+
+// Get All Credit Notes
+export const getAllCreditNotes = async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 10,
+      status,
+      dealerId,
+      fromDate,
+      toDate,
+      search
+    } = req.query;
+
+    // Build filter object
+    const filter = {};
+    
+    if (status) {
+      filter.status = status;
+    }
+    
+    if (dealerId) {
+      filter.dealer = dealerId;
+    }
+    
+    if (fromDate || toDate) {
+      filter.creditNoteDate = {};
+      if (fromDate) filter.creditNoteDate.$gte = new Date(fromDate);
+      if (toDate) filter.creditNoteDate.$lte = new Date(toDate);
+    }
+    
+    if (search) {
+      filter.$or = [
+        { creditNoteNumber: { $regex: search, $options: 'i' } },
+        { originalInvoiceNumber: { $regex: search, $options: 'i' } },
+        { dealerName: { $regex: search, $options: 'i' } },
+        { creditReason: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const skip = (page - 1) * limit;
+    
+    const creditNotes = await CreditNote.find(filter)
+      .populate('originalInvoice', 'invoiceNumber invoiceDate totalAmount')
+      .populate('dealer', 'name code phone email address')
+      .populate('createdBy', 'name email')
+      .populate('approvedBy', 'name email')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await CreditNote.countDocuments(filter);
+
+    res.json({
+      success: true,
+      creditNotes,
+      pagination: {
+        current: parseInt(page),
+        total: Math.ceil(total / limit),
+        totalRecords: total
+      }
+    });
+
+  } catch (error) {
+    console.error("Error fetching credit notes:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching credit notes",
+      error: error.message
+    });
+  }
+};
+
+// Get Credit Note by ID
+export const getCreditNoteById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const creditNote = await CreditNote.findById(id)
+      .populate('originalInvoice', 'invoiceNumber invoiceDate totalAmount items')
+      .populate('dealer', 'name code phone email address gst')
+      .populate('createdBy', 'name email')
+      .populate('approvedBy', 'name email');
+
+    if (!creditNote) {
+      return res.status(404).json({
+        success: false,
+        message: "Credit note not found"
+      });
+    }
+
+    res.json({
+      success: true,
+      creditNote
+    });
+
+  } catch (error) {
+    console.error("Error fetching credit note:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching credit note",
+      error: error.message
+    });
+  }
+};
+
+// Update Credit Note
+export const updateCreditNote = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      creditAmount,
+      creditReason,
+      status,
+      remarks,
+      internalNotes,
+      rejectionReason
+    } = req.body;
+
+    const creditNote = await CreditNote.findById(id);
+    if (!creditNote) {
+      return res.status(404).json({
+        success: false,
+        message: "Credit note not found"
+      });
+    }
+
+    // If status is being changed to Approved or Rejected, set approval info
+    if (status && status !== creditNote.status && (status === "Approved" || status === "Rejected")) {
+      creditNote.approvedBy = req.user.id;
+      creditNote.approvedAt = new Date();
+      
+      if (status === "Rejected" && rejectionReason) {
+        creditNote.rejectionReason = rejectionReason;
+      }
+    }
+
+    // Update fields
+    if (creditAmount !== undefined) creditNote.creditAmount = creditAmount;
+    if (creditReason !== undefined) creditNote.creditReason = creditReason;
+    if (status !== undefined) creditNote.status = status;
+    if (remarks !== undefined) creditNote.remarks = remarks;
+    if (internalNotes !== undefined) creditNote.internalNotes = internalNotes;
+
+    await creditNote.save();
+
+    const updatedCreditNote = await CreditNote.findById(id)
+      .populate('originalInvoice', 'invoiceNumber invoiceDate totalAmount')
+      .populate('dealer', 'name code phone email address')
+      .populate('createdBy', 'name email')
+      .populate('approvedBy', 'name email');
+
+    res.json({
+      success: true,
+      message: "Credit note updated successfully",
+      creditNote: updatedCreditNote
+    });
+
+  } catch (error) {
+    console.error("Error updating credit note:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error updating credit note",
+      error: error.message
+    });
+  }
+};
+
+// Delete Credit Note
+export const deleteCreditNote = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const creditNote = await CreditNote.findById(id);
+    if (!creditNote) {
+      return res.status(404).json({
+        success: false,
+        message: "Credit note not found"
+      });
+    }
+
+    // Only allow deletion of pending credit notes
+    if (creditNote.status !== "Pending") {
+      return res.status(400).json({
+        success: false,
+        message: "Only pending credit notes can be deleted"
+      });
+    }
+
+    await CreditNote.findByIdAndDelete(id);
+
+    res.json({
+      success: true,
+      message: "Credit note deleted successfully"
+    });
+
+  } catch (error) {
+    console.error("Error deleting credit note:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error deleting credit note",
+      error: error.message
+    });
+  }
+};
+
+// Get Credit Notes for a specific dealer
+export const getCreditNotesByDealer = async (req, res) => {
+  try {
+    const { dealerId } = req.params;
+    const { status } = req.query;
+
+    const filter = { dealer: dealerId };
+    if (status) {
+      filter.status = status;
+    }
+
+    const creditNotes = await CreditNote.find(filter)
+      .populate('originalInvoice', 'invoiceNumber invoiceDate totalAmount')
+      .populate('dealer', 'name code')
+      .sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      creditNotes
+    });
+
+  } catch (error) {
+    console.error("Error fetching dealer credit notes:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching dealer credit notes",
+      error: error.message
+    });
+  }
+};
+
+// Get Credit Notes for a specific invoice
+export const getCreditNotesByInvoice = async (req, res) => {
+  try {
+    const { invoiceId } = req.params;
+
+    const creditNotes = await CreditNote.find({ originalInvoice: invoiceId })
+      .populate('dealer', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('approvedBy', 'name email')
+      .sort({ createdAt: -1 });
+
+    const totalCreditedAmount = creditNotes
+      .filter(cn => cn.status === "Approved")
+      .reduce((sum, cn) => sum + cn.creditAmount, 0);
+
+    res.json({
+      success: true,
+      creditNotes,
+      totalCreditedAmount
+    });
+
+  } catch (error) {
+    console.error("Error fetching invoice credit notes:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching invoice credit notes",
+      error: error.message
+    });
+  }
+};
+
+// Get Credit Note Statistics
+export const getCreditNoteStats = async (req, res) => {
+  try {
+    const { dealerId, fromDate, toDate } = req.query;
+
+    const filter = {};
+    if (dealerId) filter.dealer = dealerId;
+    if (fromDate || toDate) {
+      filter.creditNoteDate = {};
+      if (fromDate) filter.creditNoteDate.$gte = new Date(fromDate);
+      if (toDate) filter.creditNoteDate.$lte = new Date(toDate);
+    }
+
+    const [
+      totalNotes,
+      approvedNotes,
+      pendingNotes,
+      rejectedNotes,
+      totalAmount,
+      approvedAmount
+    ] = await Promise.all([
+      CreditNote.countDocuments(filter),
+      CreditNote.countDocuments({ ...filter, status: "Approved" }),
+      CreditNote.countDocuments({ ...filter, status: "Pending" }),
+      CreditNote.countDocuments({ ...filter, status: "Rejected" }),
+      CreditNote.aggregate([
+        { $match: filter },
+        { $group: { _id: null, total: { $sum: "$creditAmount" } } }
+      ]),
+      CreditNote.aggregate([
+        { $match: { ...filter, status: "Approved" } },
+        { $group: { _id: null, total: { $sum: "$creditAmount" } } }
+      ])
+    ]);
+
+    res.json({
+      success: true,
+      stats: {
+        totalNotes,
+        approvedNotes,
+        pendingNotes,
+        rejectedNotes,
+        totalAmount: totalAmount[0]?.total || 0,
+        approvedAmount: approvedAmount[0]?.total || 0,
+        averagePerNote: totalNotes > 0 ? (totalAmount[0]?.total || 0) / totalNotes : 0
+      }
+    });
+
+  } catch (error) {
+    console.error("Error fetching credit note stats:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching credit note statistics",
+      error: error.message
+    });
+  }
+};
