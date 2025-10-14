@@ -248,3 +248,4 @@ chequeSchema.statics.getStats = async function (filters = {}) {
 };
 
 export default mongoose.model("Cheque", chequeSchema);
+

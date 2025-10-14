@@ -44,6 +44,7 @@ import grnRoutes from './routes/grnRoutes.js';
 import stockRoutes from './routes/stockRoutes.js';
 import salesOrderRoutes from './routes/salesOrderRoutes.js';
 import chequeRoutes from './routes/chequeRoutes.js';
+import dealerInvoiceRoutes from './routes/dealerInvoiceRoutes.js';
 import testRoutes from './routes/testRoutes.js';
 
 dotenv.config();
@@ -159,6 +160,7 @@ app.use(
   app.use('/api/stock', stockRoutes);
   app.use('/api/sales-orders', salesOrderRoutes);
   app.use('/api/cheques', chequeRoutes);
+  app.use('/api/dealer-invoices', dealerInvoiceRoutes);
   app.use('/api/test', testRoutes);
 
 
