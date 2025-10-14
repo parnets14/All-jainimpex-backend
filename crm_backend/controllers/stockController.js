@@ -191,9 +191,12 @@ export const getStock = async (req, res) => {
         
         // Use current stock from movements if available, otherwise fall back to GRN calculation
         const currentStock = warehouse.currentStock !== undefined ? warehouse.currentStock : warehouse.totalQty;
+        // Total quantity should be the sum of all accepted quantities from GRNs (not the current balance)
+        const totalQty = warehouse.totalQty; // This is the sum of accepted quantities from GRNs
         const netStock = currentStock - warehouse.damagedQty - blockedQty;
 
         console.log(`🔍 [STOCK_DEBUG] Final stock calculation for ${product.productCode} in ${warehouse.warehouseName}:`, {
+          totalQty,
           currentStock,
           damagedQty: warehouse.damagedQty,
           blockedQty,
@@ -217,7 +220,7 @@ export const getStock = async (req, res) => {
           basePrice: averageUnitPrice,
           gst: averageGST,
           totalPrice: warehouse.totalValue,
-          totalQty: currentStock, // Use current stock from movements
+          totalQty: totalQty, // Use total accepted quantity from GRNs
           damagedQty: warehouse.damagedQty,
           blockedQty: blockedQty,
           netStock,
