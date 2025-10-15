@@ -11,7 +11,12 @@ export const createCreditNote = async (req, res) => {
       creditReason,
       status = "Pending",
       remarks,
-      internalNotes
+      internalNotes,
+      paymentMethod,
+      chequeDetails,
+      upiDetails,
+      bankTransferDetails,
+      chequeRecord
     } = req.body;
 
     // Validate original invoice exists
@@ -26,6 +31,44 @@ export const createCreditNote = async (req, res) => {
       });
     }
 
+    // Validate payment method
+    if (!paymentMethod) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment method is required"
+      });
+    }
+
+    const validPaymentMethods = ["Cash", "UPI", "Cheque", "Bank Transfer"];
+    if (!validPaymentMethods.includes(paymentMethod)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid payment method"
+      });
+    }
+
+    // Validate payment method specific details
+    if (paymentMethod === "Cheque" && !chequeDetails?.chequeNo) {
+      return res.status(400).json({
+        success: false,
+        message: "Cheque number is required when payment method is Cheque"
+      });
+    }
+
+    if (paymentMethod === "UPI" && !upiDetails?.upiId) {
+      return res.status(400).json({
+        success: false,
+        message: "UPI ID is required when payment method is UPI"
+      });
+    }
+
+    if (paymentMethod === "Bank Transfer" && !bankTransferDetails?.transactionId) {
+      return res.status(400).json({
+        success: false,
+        message: "Transaction ID is required when payment method is Bank Transfer"
+      });
+    }
+
     // Check if credit amount is valid
     if (creditAmount <= 0) {
       return res.status(400).json({
@@ -37,7 +80,7 @@ export const createCreditNote = async (req, res) => {
     // Calculate remaining amount after this credit
     const existingCredits = await CreditNote.find({ 
       originalInvoice: originalInvoiceId,
-      status: { $in: ["Pending", "Approved"] }
+      status: { $in: ["Pending", "Approved", "Partial"] }
     });
     
     const totalCreditedAmount = existingCredits.reduce((sum, credit) => sum + credit.creditAmount, 0);
@@ -64,6 +107,11 @@ export const createCreditNote = async (req, res) => {
       remainingAmount: remainingAmount - creditAmount,
       remarks: remarks || '',
       internalNotes: internalNotes || '',
+      paymentMethod,
+      chequeDetails: paymentMethod === "Cheque" ? chequeDetails : undefined,
+      upiDetails: paymentMethod === "UPI" ? upiDetails : undefined,
+      bankTransferDetails: paymentMethod === "Bank Transfer" ? bankTransferDetails : undefined,
+      chequeRecord: paymentMethod === "Cheque" && chequeRecord ? chequeRecord : undefined,
       createdBy: req.user._id
     };
 
@@ -208,7 +256,12 @@ export const updateCreditNote = async (req, res) => {
       status,
       remarks,
       internalNotes,
-      rejectionReason
+      rejectionReason,
+      paymentMethod,
+      chequeDetails,
+      upiDetails,
+      bankTransferDetails,
+      chequeRecord
     } = req.body;
 
     const creditNote = await CreditNote.findById(id);
@@ -235,6 +288,11 @@ export const updateCreditNote = async (req, res) => {
     if (status !== undefined) creditNote.status = status;
     if (remarks !== undefined) creditNote.remarks = remarks;
     if (internalNotes !== undefined) creditNote.internalNotes = internalNotes;
+    if (paymentMethod !== undefined) creditNote.paymentMethod = paymentMethod;
+    if (chequeDetails !== undefined) creditNote.chequeDetails = chequeDetails;
+    if (upiDetails !== undefined) creditNote.upiDetails = upiDetails;
+    if (bankTransferDetails !== undefined) creditNote.bankTransferDetails = bankTransferDetails;
+    if (chequeRecord !== undefined) creditNote.chequeRecord = chequeRecord;
 
     await creditNote.save();
 
@@ -378,6 +436,7 @@ export const getCreditNoteStats = async (req, res) => {
       approvedNotes,
       pendingNotes,
       rejectedNotes,
+      partialNotes,
       totalAmount,
       approvedAmount
     ] = await Promise.all([
@@ -385,6 +444,7 @@ export const getCreditNoteStats = async (req, res) => {
       CreditNote.countDocuments({ ...filter, status: "Approved" }),
       CreditNote.countDocuments({ ...filter, status: "Pending" }),
       CreditNote.countDocuments({ ...filter, status: "Rejected" }),
+      CreditNote.countDocuments({ ...filter, status: "Partial" }),
       CreditNote.aggregate([
         { $match: filter },
         { $group: { _id: null, total: { $sum: "$creditAmount" } } }
@@ -402,6 +462,7 @@ export const getCreditNoteStats = async (req, res) => {
         approvedNotes,
         pendingNotes,
         rejectedNotes,
+        partialNotes,
         totalAmount: totalAmount[0]?.total || 0,
         approvedAmount: approvedAmount[0]?.total || 0,
         averagePerNote: totalNotes > 0 ? (totalAmount[0]?.total || 0) / totalNotes : 0

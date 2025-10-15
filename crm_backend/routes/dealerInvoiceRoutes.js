@@ -63,3 +63,4 @@ router.patch("/:id/status", updateInvoiceStatus);
 router.delete("/:id", deleteDealerInvoice);
 
 export default router;
+

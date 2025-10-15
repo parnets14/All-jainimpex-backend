@@ -48,7 +48,7 @@ const creditNoteSchema = new mongoose.Schema({
   // Status Management
   status: {
     type: String,
-    enum: ["Pending", "Approved", "Rejected"],
+    enum: ["Pending", "Approved", "Rejected", "Partial"],
     default: "Pending"
   },
   
@@ -73,6 +73,43 @@ const creditNoteSchema = new mongoose.Schema({
   // Additional Information
   remarks: String,
   internalNotes: String,
+  
+  // Payment Method Information
+  paymentMethod: {
+    type: String,
+    enum: ["Cash", "UPI", "Cheque", "Bank Transfer"],
+    required: true
+  },
+  
+  // Cheque Information (if payment method is Cheque)
+  chequeDetails: {
+    chequeNo: String,
+    bankName: String,
+    chequeDate: Date,
+    chequeAmount: Number,
+    remarks: String
+  },
+  
+  // Reference to Cheque Management record (if applicable)
+  chequeRecord: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Cheque"
+  },
+  
+  // UPI Information (if payment method is UPI)
+  upiDetails: {
+    upiId: String,
+    transactionId: String,
+    remarks: String
+  },
+  
+  // Bank Transfer Information (if payment method is Bank Transfer)
+  bankTransferDetails: {
+    bankName: String,
+    accountNumber: String,
+    transactionId: String,
+    remarks: String
+  },
   
   // System Fields
   createdBy: {
