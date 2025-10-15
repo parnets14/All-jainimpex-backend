@@ -85,6 +85,11 @@ const dealerSchema = new mongoose.Schema(
       default: 0,
       min: [0, "Credit days cannot be negative"],
     },
+    salesTarget: {
+      type: Number,
+      default: 0,
+      min: [0, "Sales target cannot be negative"],
+    },
 
     // Legal Information
     gst: {

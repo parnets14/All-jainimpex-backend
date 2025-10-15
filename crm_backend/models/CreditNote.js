@@ -123,15 +123,28 @@ const creditNoteSchema = new mongoose.Schema({
 
 // Pre-save middleware to generate credit note number
 creditNoteSchema.pre("save", async function(next) {
-  if (this.isNew) {
-    // Generate sequential credit note number
-    const lastCreditNote = await this.constructor.findOne({}, {}, { sort: { 'createdAt': -1 } });
-    let nextNumber = 1;
-    if (lastCreditNote && lastCreditNote.creditNoteNumber) {
-      const lastNum = parseInt(lastCreditNote.creditNoteNumber.split("-")[1]);
-      nextNumber = lastNum + 1;
+  if (this.isNew && !this.creditNoteNumber) {
+    try {
+      // Generate sequential credit note number
+      const lastCreditNote = await this.constructor.findOne({}, {}, { sort: { 'createdAt': -1 } });
+      let nextNumber = 1;
+      
+      if (lastCreditNote && lastCreditNote.creditNoteNumber) {
+        const parts = lastCreditNote.creditNoteNumber.split("-");
+        if (parts.length >= 2) {
+          const lastNum = parseInt(parts[1]);
+          if (!isNaN(lastNum) && lastNum > 0) {
+            nextNumber = lastNum + 1;
+          }
+        }
+      }
+      
+      this.creditNoteNumber = `CN-${String(nextNumber).padStart(3, "0")}`;
+    } catch (error) {
+      console.error("Error generating credit note number:", error);
+      // Fallback to timestamp-based number if generation fails
+      this.creditNoteNumber = `CN-${Date.now().toString().slice(-6)}`;
     }
-    this.creditNoteNumber = `CN-${String(nextNumber).padStart(3, "0")}`;
   }
   next();
 });

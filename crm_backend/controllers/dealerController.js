@@ -139,6 +139,7 @@ export const createDealer = async (req, res) => {
       salesExecutiveId,
       creditLimit,
       creditDays,
+      salesTarget,
       gst,
       pan,
       aadhar,
@@ -195,6 +196,7 @@ export const createDealer = async (req, res) => {
       salesExecutiveId,
       creditLimit: parseFloat(creditLimit) || 0,
       creditDays: parseInt(creditDays) || 0,
+      salesTarget: parseFloat(salesTarget) || 0,
       gst: gst ? gst.trim().toUpperCase() : "",
       pan: pan ? pan.trim().toUpperCase() : "",
       aadhar: aadhar ? aadhar.trim() : "",
@@ -270,6 +272,7 @@ export const updateDealer = async (req, res) => {
       salesExecutiveId,
       creditLimit,
       creditDays,
+      salesTarget,
       gst,
       pan,
       aadhar,
@@ -328,6 +331,8 @@ export const updateDealer = async (req, res) => {
       updateData.creditLimit = parseFloat(creditLimit) || 0;
     if (creditDays !== undefined)
       updateData.creditDays = parseInt(creditDays) || 0;
+    if (salesTarget !== undefined)
+      updateData.salesTarget = parseFloat(salesTarget) || 0;
     if (gst !== undefined) updateData.gst = gst ? gst.trim().toUpperCase() : "";
     if (pan !== undefined) updateData.pan = pan ? pan.trim().toUpperCase() : "";
     if (aadhar !== undefined) updateData.aadhar = aadhar ? aadhar.trim() : "";

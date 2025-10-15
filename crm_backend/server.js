@@ -47,6 +47,7 @@ import chequeRoutes from './routes/chequeRoutes.js';
 import dealerInvoiceRoutes from './routes/dealerInvoiceRoutes.js';
 import creditNoteRoutes from './routes/creditNoteRoutes.js';
 import dealerLedgerRoutes from './routes/dealerLedgerRoutes.js';
+import dealerPerformanceRoutes from './routes/dealerPerformanceRoutes.js';
 import testRoutes from './routes/testRoutes.js';
 
 dotenv.config();
@@ -165,6 +166,7 @@ app.use(
   app.use('/api/dealer-invoices', dealerInvoiceRoutes);
   app.use('/api/credit-notes', creditNoteRoutes);
   app.use('/api/dealer-ledger', dealerLedgerRoutes);
+  app.use('/api/dealer-performance', dealerPerformanceRoutes);
   app.use('/api/test', testRoutes);
 
 
