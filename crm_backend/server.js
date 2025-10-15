@@ -116,7 +116,7 @@ app.use(
 );
 
 // ✅ Handle preflight requests (important for POST, PUT, DELETE)
- app.options("*", cors());
+// app.options("*", cors())
 
 
   app.use(express.json({ limit: "10mb" }));
