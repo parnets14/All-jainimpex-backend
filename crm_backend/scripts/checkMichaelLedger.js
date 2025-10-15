@@ -46,3 +46,4 @@ mongoose.connect(process.env.MONGO_URL).then(async () => {
 }).catch(error => {
   console.error('MongoDB connection error:', error);
 });
+
