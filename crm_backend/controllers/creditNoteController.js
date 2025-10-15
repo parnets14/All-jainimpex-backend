@@ -1,6 +1,7 @@
 import CreditNote from "../models/CreditNote.js";
 import DealerInvoice from "../models/DealerInvoice.js";
 import Dealer from "../models/Dealer.js";
+import DealerLedger from "../models/DealerLedger.js";
 
 // Create Credit Note
 export const createCreditNote = async (req, res) => {
@@ -118,6 +119,47 @@ export const createCreditNote = async (req, res) => {
     const creditNote = new CreditNote(creditNoteData);
     await creditNote.save();
 
+    // Create dealer ledger entry for the credit note
+    try {
+      // Get the last entry for this dealer to calculate running balance
+      const lastEntry = await DealerLedger.findOne(
+        { dealer: originalInvoice.dealer._id },
+        {},
+        { sort: { 'createdAt': -1 } }
+      );
+      
+      let previousBalance = 0;
+      if (lastEntry) {
+        previousBalance = lastEntry.runningBalance;
+      }
+      
+      const ledgerEntry = new DealerLedger({
+        dealer: originalInvoice.dealer._id,
+        dealerName: originalInvoice.dealer.name,
+        dealerCode: originalInvoice.dealer.code,
+        entryDate: creditNote.creditNoteDate,
+        transactionType: "Credit Note",
+        creditNote: creditNote._id,
+        creditNoteNumber: creditNote.creditNoteNumber,
+        creditAmount: creditNote.creditAmount,
+        debitAmount: 0,
+        runningBalance: previousBalance - creditNote.creditAmount,
+        description: `Credit Note ${creditNote.creditNoteNumber}`,
+        remarks: creditNote.creditReason,
+        paymentMethod: creditNote.paymentMethod,
+        chequeDetails: creditNote.chequeDetails,
+        upiDetails: creditNote.upiDetails,
+        bankTransferDetails: creditNote.bankTransferDetails,
+        createdBy: req.user._id
+      });
+      
+      await ledgerEntry.save();
+      console.log(`Created ledger entry for credit note: ${creditNote.creditNoteNumber}`);
+    } catch (ledgerError) {
+      console.error("Error creating ledger entry for credit note:", ledgerError);
+      // Don't fail the credit note creation if ledger entry fails
+    }
+
     // Populate the response
     const populatedCreditNote = await CreditNote.findById(creditNote._id)
       .populate('originalInvoice', 'invoiceNumber invoiceDate totalAmount')
@@ -197,9 +239,12 @@ export const getAllCreditNotes = async (req, res) => {
       success: true,
       creditNotes,
       pagination: {
-        current: parseInt(page),
-        total: Math.ceil(total / limit),
-        totalRecords: total
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / parseInt(limit)),
+        totalItems: total,
+        itemsPerPage: parseInt(limit),
+        hasNextPage: parseInt(page) < Math.ceil(total / parseInt(limit)),
+        hasPrevPage: parseInt(page) > 1
       }
     });
 

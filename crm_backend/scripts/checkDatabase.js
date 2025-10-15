@@ -1,63 +1,62 @@
 import mongoose from 'mongoose';
+import Dealer from '../models/Dealer.js';
+import DealerInvoice from '../models/DealerInvoice.js';
+import CreditNote from '../models/CreditNote.js';
+import User from '../models/User.js';
 
-const connectDB = async () => {
+// Connect to MongoDB
+mongoose.connect('mongodb://localhost:27017/jaininpexcrm', {
+  useNewUrlParser: true,
+  useUnifiedTopology: true
+}).then(async () => {
+  console.log('Connected to MongoDB');
+  
   try {
-    await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/crm_backend');
-    console.log('MongoDB connected successfully');
-    console.log('Database name:', mongoose.connection.db.databaseName);
-    console.log('Connection state:', mongoose.connection.readyState);
-  } catch (error) {
-    console.error('MongoDB connection error:', error);
-    process.exit(1);
-  }
-};
-
-const checkDatabase = async () => {
-  try {
-    console.log('🔍 Checking database...');
+    // Check what data exists
+    const dealers = await Dealer.find({});
+    const invoices = await DealerInvoice.find({});
+    const creditNotes = await CreditNote.find({});
+    const users = await User.find({});
     
-    // List all collections
-    const collections = await mongoose.connection.db.listCollections().toArray();
-    console.log('\n📋 Collections in database:');
-    collections.forEach((collection, index) => {
-      console.log(`${index + 1}. ${collection.name}`);
-    });
+    console.log(`\nDatabase Summary:`);
+    console.log(`- Dealers: ${dealers.length}`);
+    console.log(`- Invoices: ${invoices.length}`);
+    console.log(`- Credit Notes: ${creditNotes.length}`);
+    console.log(`- Users: ${users.length}`);
     
-    // Check if collections exist
-    const collectionNames = collections.map(c => c.name);
-    console.log('\n🔍 Checking specific collections:');
-    
-    const collectionsToCheck = ['salesorders', 'products', 'dealers', 'warehouses', 'stockmovements'];
-    for (const collectionName of collectionsToCheck) {
-      const exists = collectionNames.includes(collectionName);
-      console.log(`${collectionName}: ${exists ? '✅ EXISTS' : '❌ NOT FOUND'}`);
-      
-      if (exists) {
-        const count = await mongoose.connection.db.collection(collectionName).countDocuments();
-        console.log(`   Documents: ${count}`);
-      }
+    if (dealers.length > 0) {
+      console.log(`\nDealers:`);
+      dealers.forEach(dealer => {
+        console.log(`  - ${dealer.code}: ${dealer.name}`);
+      });
     }
     
-    // Check for alternative collection names
-    console.log('\n🔍 Checking for alternative collection names:');
-    const alternativeNames = ['salesOrders', 'Products', 'Dealers', 'Warehouses', 'StockMovements'];
-    for (const collectionName of alternativeNames) {
-      const exists = collectionNames.includes(collectionName);
-      if (exists) {
-        const count = await mongoose.connection.db.collection(collectionName).countDocuments();
-        console.log(`${collectionName}: ✅ EXISTS (${count} documents)`);
-      }
+    if (invoices.length > 0) {
+      console.log(`\nInvoices:`);
+      invoices.forEach(invoice => {
+        console.log(`  - ${invoice.invoiceNumber}: ${invoice.dealerName} (₹${invoice.totalAmount})`);
+      });
+    }
+    
+    if (creditNotes.length > 0) {
+      console.log(`\nCredit Notes:`);
+      creditNotes.forEach(cn => {
+        console.log(`  - ${cn.creditNoteNumber}: ${cn.dealerName} (₹${cn.creditAmount})`);
+      });
+    }
+    
+    if (users.length > 0) {
+      console.log(`\nUsers:`);
+      users.forEach(user => {
+        console.log(`  - ${user.email}: ${user.role}`);
+      });
     }
     
   } catch (error) {
     console.error('Error checking database:', error);
   } finally {
-    await mongoose.disconnect();
-    console.log('Disconnected from MongoDB');
-    process.exit(0);
+    mongoose.connection.close();
   }
-};
-
-connectDB().then(() => {
-  checkDatabase();
+}).catch(error => {
+  console.error('MongoDB connection error:', error);
 });

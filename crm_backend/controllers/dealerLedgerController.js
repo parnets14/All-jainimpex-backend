@@ -240,7 +240,15 @@ export const getAllDealerLedgerEntries = async (req, res) => {
 export const getDealerLedgerByDealer = async (req, res) => {
   try {
     const { dealerId } = req.params;
-    const { startDate, endDate, transactionType } = req.query;
+    const { 
+      startDate, 
+      endDate, 
+      transactionType,
+      page = 1,
+      limit = 20,
+      sortBy = 'entryDate',
+      sortOrder = 'asc'
+    } = req.query;
 
     // Build filter
     const filter = { dealer: dealerId };
@@ -251,24 +259,42 @@ export const getDealerLedgerByDealer = async (req, res) => {
     }
     if (transactionType) filter.transactionType = transactionType;
 
+    // Calculate pagination
+    const pageNumber = parseInt(page);
+    const limitNumber = parseInt(limit);
+    const skip = (pageNumber - 1) * limitNumber;
+
+    // Build sort object
+    const sort = {};
+    sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
+
+    // Get total count for pagination
+    const total = await DealerLedger.countDocuments(filter);
+
+    // Get paginated entries
     const entries = await DealerLedger.find(filter)
       .populate('invoice', 'invoiceNumber totalAmount invoiceDate items')
       .populate('creditNote', 'creditNoteNumber creditAmount creditNoteDate')
       .populate('createdBy', 'name email')
-      .sort({ entryDate: 1 });
+      .sort(sort)
+      .skip(skip)
+      .limit(limitNumber);
 
     // Get dealer information
     const dealer = await Dealer.findById(dealerId);
 
-    // Calculate summary
+    // Calculate summary from ALL entries (not just current page)
+    const allEntries = await DealerLedger.find({ dealer: dealerId })
+      .sort({ entryDate: 1 });
+    
     const summary = {
-      totalDebit: entries.reduce((sum, entry) => sum + (entry.debitAmount || 0), 0),
-      totalCredit: entries.reduce((sum, entry) => sum + (entry.creditAmount || 0), 0),
-      currentBalance: entries.length > 0 ? entries[entries.length - 1].runningBalance : 0,
-      totalInvoices: entries.filter(e => e.transactionType === 'Invoice').length,
-      totalPayments: entries.filter(e => e.transactionType === 'Payment').length,
-      totalCreditNotes: entries.filter(e => e.transactionType === 'Credit Note').length,
-      overdueAmount: entries.filter(e => e.agingDays > 0).reduce((sum, entry) => sum + entry.runningBalance, 0)
+      totalDebit: allEntries.reduce((sum, entry) => sum + (entry.debitAmount || 0), 0),
+      totalCredit: allEntries.reduce((sum, entry) => sum + (entry.creditAmount || 0), 0),
+      currentBalance: allEntries.length > 0 ? allEntries[allEntries.length - 1].runningBalance : 0,
+      totalInvoices: allEntries.filter(e => e.transactionType === 'Invoice').length,
+      totalPayments: allEntries.filter(e => e.transactionType === 'Payment').length,
+      totalCreditNotes: allEntries.filter(e => e.transactionType === 'Credit Note').length,
+      overdueAmount: allEntries.filter(e => e.agingDays > 0).reduce((sum, entry) => sum + entry.runningBalance, 0)
     };
 
     res.status(200).json({
@@ -277,6 +303,14 @@ export const getDealerLedgerByDealer = async (req, res) => {
         dealer,
         entries,
         summary
+      },
+      pagination: {
+        currentPage: pageNumber,
+        totalPages: Math.ceil(total / limitNumber),
+        totalItems: total,
+        itemsPerPage: limitNumber,
+        hasNextPage: pageNumber < Math.ceil(total / limitNumber),
+        hasPrevPage: pageNumber > 1
       }
     });
 
@@ -560,5 +594,6 @@ export const syncLedgerEntries = async (req, res) => {
     });
   }
 };
+
 
 

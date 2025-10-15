@@ -5,6 +5,7 @@ import Product from "../models/Product.js";
 import DiscountMapping from "../models/DiscountMapping.js";
 import Points from "../models/Points.js";
 import Stock from "../models/Stock.js";
+import DealerLedger from "../models/DealerLedger.js";
 
 // Generate unique invoice number
 const generateInvoiceNumber = async () => {
@@ -408,6 +409,47 @@ export const createDealerInvoice = async (req, res) => {
     // Create the invoice
     const invoice = new DealerInvoice(invoiceData);
     await invoice.save();
+
+    // Create dealer ledger entry for the invoice
+    try {
+      // Get the last entry for this dealer to calculate running balance
+      const lastEntry = await DealerLedger.findOne(
+        { dealer: dealerId },
+        {},
+        { sort: { 'createdAt': -1 } }
+      );
+      
+      let previousBalance = 0;
+      if (lastEntry) {
+        previousBalance = lastEntry.runningBalance;
+      }
+      
+      const ledgerEntry = new DealerLedger({
+        dealer: dealerId,
+        dealerName: dealer.name,
+        dealerCode: dealer.code,
+        entryDate: invoice.invoiceDate,
+        transactionType: "Invoice",
+        invoice: invoice._id,
+        invoiceNumber: invoice.invoiceNumber,
+        invoiceValue: invoice.totalAmount,
+        debitAmount: invoice.totalAmount,
+        creditAmount: 0,
+        runningBalance: previousBalance + invoice.totalAmount,
+        description: `Invoice ${invoice.invoiceNumber}`,
+        creditDays: invoice.creditDays || 0,
+        dueDate: invoice.dueDate,
+        pointsEarned: invoice.totalPoints || 0,
+        schemeAmount: invoice.totalDiscount || 0,
+        createdBy: req.user.id
+      });
+      
+      await ledgerEntry.save();
+      console.log(`Created ledger entry for invoice: ${invoice.invoiceNumber}`);
+    } catch (ledgerError) {
+      console.error("Error creating ledger entry for invoice:", ledgerError);
+      // Don't fail the invoice creation if ledger entry fails
+    }
 
     // Populate the created invoice
     const populatedInvoice = await DealerInvoice.findById(invoice._id)
