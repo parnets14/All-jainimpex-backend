@@ -117,7 +117,20 @@ export const createCreditNote = async (req, res) => {
     };
 
     const creditNote = new CreditNote(creditNoteData);
-    await creditNote.save();
+    
+    try {
+      await creditNote.save();
+    } catch (saveError) {
+      // Handle duplicate key error for credit note number
+      if (saveError.code === 11000 && saveError.keyPattern?.creditNoteNumber) {
+        console.error("Duplicate credit note number detected, retrying...");
+        // Retry with a different number
+        creditNote.creditNoteNumber = `CN-${Date.now().toString().slice(-6)}`;
+        await creditNote.save();
+      } else {
+        throw saveError;
+      }
+    }
 
     // Create dealer ledger entry for the credit note
     try {
@@ -195,6 +208,9 @@ export const getAllCreditNotes = async (req, res) => {
       toDate,
       search
     } = req.query;
+    
+    console.log("🔍 Backend received query params:", req.query);
+    console.log("🔍 Parsed params:", { page, limit, status, dealerId, fromDate, toDate, search });
 
     // Build filter object
     const filter = {};
@@ -234,18 +250,28 @@ export const getAllCreditNotes = async (req, res) => {
       .limit(parseInt(limit));
 
     const total = await CreditNote.countDocuments(filter);
+    
+    const paginationData = {
+      currentPage: parseInt(page),
+      totalPages: Math.ceil(total / parseInt(limit)),
+      totalItems: total,
+      itemsPerPage: parseInt(limit),
+      hasNextPage: parseInt(page) < Math.ceil(total / parseInt(limit)),
+      hasPrevPage: parseInt(page) > 1
+    };
+    
+    console.log("🔢 Pagination calculation:", {
+      total,
+      limit: parseInt(limit),
+      page: parseInt(page),
+      totalPages: paginationData.totalPages,
+      calculation: `${total} / ${parseInt(limit)} = ${total / parseInt(limit)} -> ceil = ${Math.ceil(total / parseInt(limit))}`
+    });
 
     res.json({
       success: true,
       creditNotes,
-      pagination: {
-        currentPage: parseInt(page),
-        totalPages: Math.ceil(total / parseInt(limit)),
-        totalItems: total,
-        itemsPerPage: parseInt(limit),
-        hasNextPage: parseInt(page) < Math.ceil(total / parseInt(limit)),
-        hasPrevPage: parseInt(page) > 1
-      }
+      pagination: paginationData
     });
 
   } catch (error) {

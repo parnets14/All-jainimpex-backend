@@ -125,21 +125,50 @@ const creditNoteSchema = new mongoose.Schema({
 creditNoteSchema.pre("save", async function(next) {
   if (this.isNew && !this.creditNoteNumber) {
     try {
-      // Generate sequential credit note number
-      const lastCreditNote = await this.constructor.findOne({}, {}, { sort: { 'createdAt': -1 } });
-      let nextNumber = 1;
+      // Use a more robust approach to generate sequential credit note number
+      let attempts = 0;
+      const maxAttempts = 10;
       
-      if (lastCreditNote && lastCreditNote.creditNoteNumber) {
-        const parts = lastCreditNote.creditNoteNumber.split("-");
-        if (parts.length >= 2) {
-          const lastNum = parseInt(parts[1]);
-          if (!isNaN(lastNum) && lastNum > 0) {
-            nextNumber = lastNum + 1;
+      while (attempts < maxAttempts) {
+        // Get the highest existing credit note number
+        const lastCreditNote = await this.constructor.findOne(
+          { creditNoteNumber: { $regex: /^CN-\d+$/ } },
+          {},
+          { sort: { 'creditNoteNumber': -1 } }
+        );
+        
+        let nextNumber = 1;
+        
+        if (lastCreditNote && lastCreditNote.creditNoteNumber) {
+          const parts = lastCreditNote.creditNoteNumber.split("-");
+          if (parts.length >= 2) {
+            const lastNum = parseInt(parts[1]);
+            if (!isNaN(lastNum) && lastNum > 0) {
+              nextNumber = lastNum + 1;
+            }
           }
         }
+        
+        const newCreditNoteNumber = `CN-${String(nextNumber).padStart(3, "0")}`;
+        
+        // Check if this number already exists (race condition protection)
+        const existingCreditNote = await this.constructor.findOne({ 
+          creditNoteNumber: newCreditNoteNumber 
+        });
+        
+        if (!existingCreditNote) {
+          this.creditNoteNumber = newCreditNoteNumber;
+          break;
+        }
+        
+        attempts++;
+        
+        // If we've tried too many times, use timestamp fallback
+        if (attempts >= maxAttempts) {
+          this.creditNoteNumber = `CN-${Date.now().toString().slice(-6)}`;
+          break;
+        }
       }
-      
-      this.creditNoteNumber = `CN-${String(nextNumber).padStart(3, "0")}`;
     } catch (error) {
       console.error("Error generating credit note number:", error);
       // Fallback to timestamp-based number if generation fails
