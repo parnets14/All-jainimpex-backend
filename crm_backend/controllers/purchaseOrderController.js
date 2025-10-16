@@ -260,9 +260,27 @@ export const getPurchaseOrders = async (req, res) => {
 
     const query = {};
 
-    // Search
+    // Search - we'll handle this with aggregation since we need to search populated fields
+    let searchPipeline = [];
     if (search) {
-      query.poNumber = { $regex: search, $options: "i" };
+      searchPipeline.push({
+        $lookup: {
+          from: "suppliers",
+          localField: "supplierId",
+          foreignField: "_id",
+          as: "supplier"
+        }
+      });
+      
+      searchPipeline.push({
+        $match: {
+          $or: [
+            { poNumber: { $regex: search, $options: "i" } },
+            { "supplier.name": { $regex: search, $options: "i" } },
+            { "supplier.companyName": { $regex: search, $options: "i" } }
+          ]
+        }
+      });
     }
 
     // Filter by status
@@ -291,31 +309,67 @@ export const getPurchaseOrders = async (req, res) => {
     sort[sortBy] = sortOrder === "desc" ? -1 : 1;
 
     console.log("📦 [QUERY] Executing with filter:", JSON.stringify(query));
+    console.log("📦 [SEARCH] Search pipeline:", searchPipeline.length > 0 ? "Using aggregation" : "Using find");
 
-    // Get total count for pagination
-    const total = await PurchaseOrder.countDocuments(query);
+    let purchaseOrders;
+    let total;
+
+    if (searchPipeline.length > 0) {
+      // Use aggregation for search - simplified approach
+      const aggregationPipeline = [
+        ...searchPipeline,
+        { $match: query }, // Apply other filters
+        { $sort: sort },
+        { $skip: (parseInt(page) - 1) * parseInt(limit) },
+        { $limit: parseInt(limit) }
+      ];
+
+      // Get total count for search
+      const countPipeline = [
+        ...searchPipeline,
+        { $match: query },
+        { $count: "total" }
+      ];
+      
+      const countResult = await PurchaseOrder.aggregate(countPipeline);
+      total = countResult.length > 0 ? countResult[0].total : 0;
+      
+      purchaseOrders = await PurchaseOrder.aggregate(aggregationPipeline);
+      
+      // Now populate the results using regular populate
+      const poIds = purchaseOrders.map(po => po._id);
+      purchaseOrders = await PurchaseOrder.find({ _id: { $in: poIds } })
+        .populate("supplierId", "name companyName email gstin contactPerson")
+        .populate("warehouseId", "name address contact")
+        .populate(
+          "lines.productId",
+          "itemName productCode HSNCode description gst"
+        )
+        .sort(sort)
+        .lean();
+    } else {
+      // Use regular find for non-search queries
+      total = await PurchaseOrder.countDocuments(query);
+      
+      purchaseOrders = await PurchaseOrder.find(query)
+        .populate("supplierId", "name companyName email gstin contactPerson")
+        .populate("warehouseId", "name address contact")
+        .populate(
+          "lines.productId",
+          "itemName productCode HSNCode description gst"
+        )
+        .sort(sort)
+        .limit(parseInt(limit))
+        .skip((parseInt(page) - 1) * parseInt(limit))
+        .lean();
+    }
     
     // Calculate pagination
     const pageNum = parseInt(page);
     const limitNum = parseInt(limit);
-    const skip = (pageNum - 1) * limitNum;
     const totalPages = Math.ceil(total / limitNum);
 
-    // Use lean for better performance with selective population
-    const purchaseOrders = await PurchaseOrder.find(query)
-      .populate("supplierId", "name companyName email gstin contactPerson")
-      .populate("warehouseId", "name address contact")
-      .populate(
-        "lines.productId",
-        "itemName productCode HSNCode description gst"
-      )
-      .sort(sort)
-      .limit(limitNum)
-      .skip(skip)
-      .lean();
-
     console.log("📦 [RESULT] Found", purchaseOrders.length, "purchase orders");
-
     console.log("📦 [COMPLETE] Sending response with pagination");
 
     res.json({

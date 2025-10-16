@@ -1,4 +1,4 @@
-const Supplier = require('../models/Supplier');
+import Supplier from '../models/Supplier.js';
 
 const generateSupplierCode = async (supplierName, companyName) => {
   if (!supplierName && !companyName) {
@@ -39,6 +39,6 @@ const generateSupplierCode = async (supplierName, companyName) => {
   return `${initials}${nextNum.toString().padStart(3, '0')}`;
 };
 
-module.exports = {
+export {
   generateSupplierCode
 };

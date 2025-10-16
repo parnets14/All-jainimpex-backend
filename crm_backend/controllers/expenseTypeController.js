@@ -1,4 +1,5 @@
 import ExpenseType from "../models/ExpenseType.js";
+import Expense from "../models/Expense.js";
 import asyncHandler from "express-async-handler";
 
 // @desc    Create new expense type
@@ -104,7 +105,6 @@ export const deleteExpenseType = asyncHandler(async (req, res) => {
   }
 
   // Check if expense type is being used in any expense
-  const Expense = require("../models/Expense").default;
   const expenseCount = await Expense.countDocuments({ type: req.params.id });
   if (expenseCount > 0) {
     res.status(400);

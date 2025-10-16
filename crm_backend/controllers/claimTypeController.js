@@ -1,4 +1,5 @@
 import ClaimType from "../models/ClaimType.js";
+import Claim from "../models/Claim.js";
 import asyncHandler from "express-async-handler";
 
 // @desc    Create new claim type
@@ -106,7 +107,6 @@ export const deleteClaimType = asyncHandler(async (req, res) => {
   }
 
   // Check if claim type is being used in any claim
-  const Claim = require("../models/Claim").default;
   const claimCount = await Claim.countDocuments({ type: req.params.id });
   if (claimCount > 0) {
     res.status(400);

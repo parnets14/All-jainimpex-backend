@@ -11,11 +11,10 @@ export const getDealerPerformance = async (req, res) => {
       limit = 10,
       dealerSearch = "",
       dealerSelect = "",
-      category = "",
       dealerType = "",
       fromDate = "",
       toDate = "",
-      period = "Monthly",
+      period = "Monthly Growth",
       sortBy = "performance",
       sortOrder = "desc"
     } = req.query;
@@ -38,10 +37,6 @@ export const getDealerPerformance = async (req, res) => {
       filter.dealerName = dealerSelect;
     }
 
-    // Filter by category
-    if (category) {
-      filter.category = category;
-    }
 
     // Filter by dealer type
     if (dealerType) {
@@ -334,16 +329,93 @@ export const deleteDealerPerformance = async (req, res) => {
   }
 };
 
+// Helper function to calculate date ranges based on period
+const getDateRanges = (period, currentDate = new Date()) => {
+  const ranges = {
+    current: { start: null, end: null },
+    previous: { start: null, end: null }
+  };
+
+  switch (period) {
+    case "Daily Growth":
+      ranges.current.start = new Date(currentDate);
+      ranges.current.start.setHours(0, 0, 0, 0);
+      ranges.current.end = new Date(currentDate);
+      ranges.current.end.setHours(23, 59, 59, 999);
+      
+      ranges.previous.start = new Date(currentDate);
+      ranges.previous.start.setDate(ranges.previous.start.getDate() - 1);
+      ranges.previous.start.setHours(0, 0, 0, 0);
+      ranges.previous.end = new Date(currentDate);
+      ranges.previous.end.setDate(ranges.previous.end.getDate() - 1);
+      ranges.previous.end.setHours(23, 59, 59, 999);
+      break;
+
+    case "Weekly Growth":
+      const startOfWeek = new Date(currentDate);
+      startOfWeek.setDate(currentDate.getDate() - currentDate.getDay());
+      startOfWeek.setHours(0, 0, 0, 0);
+      
+      ranges.current.start = startOfWeek;
+      ranges.current.end = new Date(startOfWeek);
+      ranges.current.end.setDate(startOfWeek.getDate() + 6);
+      ranges.current.end.setHours(23, 59, 59, 999);
+      
+      ranges.previous.start = new Date(startOfWeek);
+      ranges.previous.start.setDate(startOfWeek.getDate() - 7);
+      ranges.previous.end = new Date(startOfWeek);
+      ranges.previous.end.setDate(startOfWeek.getDate() - 1);
+      ranges.previous.end.setHours(23, 59, 59, 999);
+      break;
+
+    case "Monthly Growth":
+      ranges.current.start = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+      ranges.current.end = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0, 23, 59, 59, 999);
+      
+      ranges.previous.start = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
+      ranges.previous.end = new Date(currentDate.getFullYear(), currentDate.getMonth(), 0, 23, 59, 59, 999);
+      break;
+
+    case "Quarterly Growth":
+      const currentQuarter = Math.floor(currentDate.getMonth() / 3);
+      ranges.current.start = new Date(currentDate.getFullYear(), currentQuarter * 3, 1);
+      ranges.current.end = new Date(currentDate.getFullYear(), (currentQuarter + 1) * 3, 0, 23, 59, 59, 999);
+      
+      ranges.previous.start = new Date(currentDate.getFullYear(), (currentQuarter - 1) * 3, 1);
+      ranges.previous.end = new Date(currentDate.getFullYear(), currentQuarter * 3, 0, 23, 59, 59, 999);
+      break;
+
+    case "Yearly Growth":
+      ranges.current.start = new Date(currentDate.getFullYear(), 0, 1);
+      ranges.current.end = new Date(currentDate.getFullYear(), 11, 31, 23, 59, 59, 999);
+      
+      ranges.previous.start = new Date(currentDate.getFullYear() - 1, 0, 1);
+      ranges.previous.end = new Date(currentDate.getFullYear() - 1, 11, 31, 23, 59, 59, 999);
+      break;
+
+    default:
+      // Default to monthly
+      ranges.current.start = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+      ranges.current.end = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0, 23, 59, 59, 999);
+      
+      ranges.previous.start = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
+      ranges.previous.end = new Date(currentDate.getFullYear(), currentDate.getMonth(), 0, 23, 59, 59, 999);
+  }
+
+  return ranges;
+};
+
 // Generate dealer performance from invoices and credit notes
 export const generateDealerPerformance = async (req, res) => {
   try {
     const {
       fromDate,
       toDate,
-      period = "Monthly"
+      period = "Monthly Growth"
     } = req.body;
 
     console.log("Starting dealer performance generation...");
+    console.log(`Period: ${period}`);
 
     // Clear existing performance records for the period
     await DealerPerformance.deleteMany({ period });
@@ -362,27 +434,66 @@ export const generateDealerPerformance = async (req, res) => {
     for (const dealer of dealers) {
       console.log(`Processing dealer: ${dealer.name} (${dealer.code})`);
 
-      // Get invoices for the dealer in the date range
-      const invoiceFilter = { dealer: dealer._id };
-      if (Object.keys(dateFilter).length > 0) {
-        invoiceFilter.invoiceDate = dateFilter;
-      }
+      // Get date ranges for current and previous periods
+      const dateRanges = getDateRanges(period, fromDate ? new Date(fromDate) : new Date());
 
-      const invoices = await DealerInvoice.find(invoiceFilter);
-      const creditNotes = await CreditNote.find({ 
+      // Get invoices for current period
+      const currentPeriodInvoices = await DealerInvoice.find({
         dealer: dealer._id,
-        ...(Object.keys(dateFilter).length > 0 && { creditNoteDate: dateFilter })
+        invoiceDate: {
+          $gte: dateRanges.current.start,
+          $lte: dateRanges.current.end
+        }
       });
 
-      console.log(`  - Found ${invoices.length} invoices and ${creditNotes.length} credit notes`);
+      // Get invoices for previous period
+      const previousPeriodInvoices = await DealerInvoice.find({
+        dealer: dealer._id,
+        invoiceDate: {
+          $gte: dateRanges.previous.start,
+          $lte: dateRanges.previous.end
+        }
+      });
 
-        // Calculate performance metrics
-        const totalSales = invoices.reduce((sum, inv) => sum + (inv.totalAmount || 0), 0);
-        const totalCreditAmount = creditNotes.reduce((sum, cn) => sum + (cn.creditAmount || 0), 0);
-        // Sales = Total Invoice Amount (credit notes are payments, not returns)
-        const netSales = totalSales;
+      // Get credit notes for current period
+      const currentPeriodCreditNotes = await CreditNote.find({
+        dealer: dealer._id,
+        creditNoteDate: {
+          $gte: dateRanges.current.start,
+          $lte: dateRanges.current.end
+        }
+      });
+
+      console.log(`  - Current period: ${currentPeriodInvoices.length} invoices, ${currentPeriodCreditNotes.length} credit notes`);
+      console.log(`  - Previous period: ${previousPeriodInvoices.length} invoices`);
+
+      // Calculate current period metrics
+      const currentPeriodSales = currentPeriodInvoices.reduce((sum, inv) => sum + (inv.totalAmount || 0), 0);
+      const currentPeriodCreditAmount = currentPeriodCreditNotes.reduce((sum, cn) => sum + (cn.creditAmount || 0), 0);
+      const netSales = currentPeriodSales;
+
+      // Calculate previous period sales for growth calculation
+      const previousPeriodSales = previousPeriodInvoices.reduce((sum, inv) => sum + (inv.totalAmount || 0), 0);
+
+      // Calculate growth percentage
+      let growthPercentage = 0;
+      if (previousPeriodSales > 0) {
+        growthPercentage = ((netSales - previousPeriodSales) / previousPeriodSales) * 100;
+      } else if (netSales > 0) {
+        growthPercentage = 100; // 100% growth if no previous sales but current sales exist
+      }
+
+      // Calculate target achievement (assuming target is 10% more than previous period)
+      const targetSales = previousPeriodSales * 1.1; // 10% growth target
+      let targetAchieved = 0;
+      if (targetSales > 0) {
+        targetAchieved = (netSales / targetSales) * 100;
+      }
+
+      console.log(`  - Current Sales: ${netSales}, Previous Sales: ${previousPeriodSales}`);
+      console.log(`  - Growth: ${growthPercentage.toFixed(2)}%, Target Achieved: ${targetAchieved.toFixed(2)}%`);
       
-      const totalQuantity = invoices.reduce((sum, inv) => {
+      const totalQuantity = currentPeriodInvoices.reduce((sum, inv) => {
         return sum + (inv.items ? inv.items.reduce((itemSum, item) => itemSum + (item.quantity || 0), 0) : 0);
       }, 0);
 
@@ -391,7 +502,7 @@ export const generateDealerPerformance = async (req, res) => {
       // Only create performance record if dealer has sales
       if (netSales > 0) {
         // Calculate scheme points (assuming 10% of sales as scheme)
-        const schemeEarned = Math.round(totalSales * 0.1);
+        const schemeEarned = Math.round(netSales * 0.1);
 
         // Determine discount level based on sales
         let discountLevel = "Level 1";
@@ -407,7 +518,7 @@ export const generateDealerPerformance = async (req, res) => {
         const products = [];
         const productMap = new Map();
 
-        invoices.forEach(invoice => {
+        currentPeriodInvoices.forEach(invoice => {
           if (invoice.items) {
             invoice.items.forEach(item => {
               const productKey = item.productName || item.itemName || 'Unknown Product';
@@ -443,36 +554,22 @@ export const generateDealerPerformance = async (req, res) => {
 
         // Calculate additional financial metrics
         // Paid amount should come from credit notes (payments), not invoice status
-        const paid = creditNotes.reduce((sum, cn) => sum + (cn.creditAmount || 0), 0);
+        const paid = currentPeriodCreditNotes.reduce((sum, cn) => sum + (cn.creditAmount || 0), 0);
         
         const outstanding = netSales - paid;
-        
-        // Calculate growth percentage (comparing with previous period)
-        const previousPeriodStart = new Date(toDate || new Date());
-        previousPeriodStart.setMonth(previousPeriodStart.getMonth() - 1);
-        const previousInvoices = await DealerInvoice.find({
-          dealer: dealer._id,
-          invoiceDate: { $gte: previousPeriodStart, $lt: new Date(toDate || new Date()) }
-        });
-        const previousSales = previousInvoices.reduce((sum, inv) => sum + (inv.totalAmount || 0), 0);
-        const growthPercentage = previousSales > 0 ? ((netSales - previousSales) / previousSales) * 100 : 0;
-        
-        // Calculate target achieved percentage
-        const salesTarget = dealer.salesTarget || 1000000; // Default target
-        const targetAchieved = Math.min(100, (netSales / salesTarget) * 100);
         
         // Calculate returns percentage (based on actual returns, not payments)
         // For now, we'll calculate this based on credit notes that are actual returns
         // This is a simplified calculation - in reality, you'd need to distinguish between payments and returns
-        const returnsPercentage = netSales > 0 ? Math.min(100, (totalCreditAmount / netSales) * 100) : 0;
+        const returnsPercentage = netSales > 0 ? Math.min(100, (currentPeriodCreditAmount / netSales) * 100) : 0;
         
         // Calculate total points earned
-        const totalPoints = invoices.reduce((sum, inv) => {
+        const totalPoints = currentPeriodInvoices.reduce((sum, inv) => {
           return sum + (inv.items ? inv.items.reduce((itemSum, item) => itemSum + (item.pointsEarned || 0), 0) : 0);
         }, 0);
         
         // Calculate average discount availed
-        const totalDiscountAmount = invoices.reduce((sum, inv) => sum + (inv.totalDiscount || 0), 0);
+        const totalDiscountAmount = currentPeriodInvoices.reduce((sum, inv) => sum + (inv.totalDiscount || 0), 0);
         const averageDiscountAvailed = netSales > 0 ? Math.min(100, (totalDiscountAmount / netSales) * 100) : 0;
 
         performanceRecords.push({
