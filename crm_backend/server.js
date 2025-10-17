@@ -135,118 +135,116 @@ app.use(
 
 // ✅ Preflight requests are handled by the CORS middleware above
 
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+app.use(cookieParser());
+app.use(helmet());
 
-  app.use(express.json({ limit: "10mb" }));
-  app.use(express.urlencoded({ extended: true, limit: "10mb" }));
-  app.use(cookieParser());
-  app.use(helmet());
+// Apply general rate limiting to all routes
+app.use(generalLimiter);
 
-  // Apply general rate limiting to all routes
-  app.use(generalLimiter);
+// Optional: Logging middleware
+app.use((req, res, next) => {
+  console.log(`[Worker ${process.pid}] ${req.method} ${req.url}`);
+  next();
+});
 
-  // Optional: Logging middleware
-  app.use((req, res, next) => {
-    console.log(`[Worker ${process.pid}] ${req.method} ${req.url}`);
-    next();
+// Routes
+// Health check route
+app.get("/api/", (req, res) => {
+  res.json({
+    success: true,
+    message: "CRM API is running! 🚀",
+    worker: process.pid,
+    features: [
+      "Employee Management ✅",
+      "Face Recognition ✅", 
+      "Attendance Tracking ✅",
+      "JWT Authentication ✅",
+      "File Uploads ✅"
+    ],
+    availableRoutes: [
+      "GET  /api/categories",
+      "POST /api/categories",
+      "GET  /api/categories/:categoryId/subcategories",
+      "POST /api/categories/:categoryId/subcategories",
+      "GET  /api/subcategories/:subcategoryId/brands",
+      "POST /api/subcategories/:subcategoryId/brands",
+      "GET  /api/categories/stats",
+      "GET  /api/products",
+      "POST /api/products",
+      "GET  /api/products/:id",
+      "PUT  /api/products/:id",
+      "DELETE /api/products/:id",
+      "GET  /api/products/stats",
+      "GET  /api/sales-orders",
+      "POST /api/sales-orders",
+      "GET  /api/sales-orders/:id",
+      "PUT  /api/sales-orders/:id",
+      "DELETE /api/sales-orders/:id",
+      "GET  /api/sales-orders/stats/summary",
+      "GET  /api/sales-orders/overdue",
+      "GET  /api/cheques",
+      "POST /api/cheques",
+      "GET  /api/cheques/:id",
+      "PUT  /api/cheques/:id",
+      "DELETE /api/cheques/:id",
+      "GET  /api/cheques/stats/summary",
+      "PATCH /api/cheques/:id/status"
+    ]
   });
+});
 
-  // Routes
-  // Health check route
-  app.get("/api/", (req, res) => {
-    res.json({
-      success: true,
-      message: "CRM API is running! 🚀",
-      worker: process.pid,
-      features: [
-        "Employee Management ✅",
-        "Face Recognition ✅", 
-        "Attendance Tracking ✅",
-        "JWT Authentication ✅",
-        "File Uploads ✅"
-      ],
-      availableRoutes: [
-        "GET  /api/categories",
-        "POST /api/categories",
-        "GET  /api/categories/:categoryId/subcategories",
-        "POST /api/categories/:categoryId/subcategories",
-        "GET  /api/subcategories/:subcategoryId/brands",
-        "POST /api/subcategories/:subcategoryId/brands",
-        "GET  /api/categories/stats",
-        "GET  /api/products",
-        "POST /api/products",
-        "GET  /api/products/:id",
-        "PUT  /api/products/:id",
-        "DELETE /api/products/:id",
-        "GET  /api/products/stats",
-        "GET  /api/sales-orders",
-        "POST /api/sales-orders",
-        "GET  /api/sales-orders/:id",
-        "PUT  /api/sales-orders/:id",
-        "DELETE /api/sales-orders/:id",
-        "GET  /api/sales-orders/stats/summary",
-        "GET  /api/sales-orders/overdue",
-        "GET  /api/cheques",
-        "POST /api/cheques",
-        "GET  /api/cheques/:id",
-        "PUT  /api/cheques/:id",
-        "DELETE /api/cheques/:id",
-        "GET  /api/cheques/stats/summary",
-        "PATCH /api/cheques/:id/status"
-      ]
-    });
-  });
+app.use("/api/auth", authRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/employees", employeeRoutes);
+app.use("/api/attendance", attendanceRoutes);
+app.use("/api/dealer-types", dealertypeRoutes);
+app.use("/api/dealer-categories", dealercategoryRouter);
+app.use("/api/dealers", dealerRoutes);
+app.use("/api/expense-categories", expenseCategoryRoutes);
+app.use("/api/expense-types", expenseTypeRoutes);
+app.use("/api/claim-types", claimTypeRoutes);
+app.use("/api/expenses", expenseRoutes);
+app.use("/api/claims", claimRoutes);
 
-  app.use("/api/auth", authRoutes);
-  app.use("/api/users", userRoutes);
-  app.use("/api/employees", employeeRoutes);
-  app.use("/api/attendance", attendanceRoutes);
-  app.use("/api/dealer-types", dealertypeRoutes);
-  app.use("/api/dealer-categories", dealercategoryRouter);
-  app.use("/api/dealers", dealerRoutes);
-  app.use("/api/expense-categories", expenseCategoryRoutes);
-  app.use("/api/expense-types", expenseTypeRoutes);
-  app.use("/api/claim-types", claimTypeRoutes);
-  app.use("/api/expenses", expenseRoutes);
-  app.use("/api/claims", claimRoutes);
+app.use("/api/categories", categoryRoutes);
+app.use("/api/subcategories", subcategoryRoutes);
+app.use("/api/brands", brandRoutes);
+app.use("/api/salary", salaryRoutes);
+app.use("/api/products", productRoutes);
+app.use("/api/regions", regionRoutes);
+app.use("/api/suppliers", supplierRoutes);
+app.use("/api/reference", referenceRoutes);
+app.use("/api/discount-mappings", discountMappingRoutes);
+app.use("/api/points", pointsRoutes);
+app.use("/api/warehouses", warehouseRoutes);
+app.use("/api/purchase-orders", purchaseOrderRoutes);
+app.use('/api/grn', grnRoutes);
+app.use('/api/stock', stockRoutes);
+app.use('/api/sales-orders', salesOrderRoutes);
+app.use('/api/cheques', chequeRoutes);
+app.use('/api/dealer-invoices', dealerInvoiceRoutes);
+app.use('/api/supplier-invoices', supplierInvoiceRoutes);
+app.use('/api/supplier-payments', supplierPaymentRoutes);
+app.use('/api/debit-notes', debitNoteRoutes);
+app.use('/api/credit-notes', creditNoteRoutes);
+app.use('/api/dealer-ledger', dealerLedgerRoutes);
+app.use('/api/supplier-ledger', supplierLedgerRoutes);
+app.use('/api/reconciliation', reconciliationRoutes);
+app.use('/api/profit-analysis', profitAnalysisRoutes);
+app.use('/api/margin-analysis', marginAnalysisRoutes);
+app.use('/api/dealer-performance', dealerPerformanceRoutes);
+app.use('/api/activity-logs', activityLogRoutes);
+app.use('/api/download-logs', downloadLogRoutes);
+app.use('/api/sample-data', sampleDataRoutes);
+app.use('/api/test', testRoutes);
 
-  app.use("/api/categories", categoryRoutes);
-  app.use("/api/subcategories", subcategoryRoutes);
-  app.use("/api/brands", brandRoutes);
-  app.use("/api/salary", salaryRoutes);
-  app.use("/api/products", productRoutes);
-  app.use("/api/regions", regionRoutes);
-  app.use("/api/suppliers", supplierRoutes);
-  app.use("/api/reference", referenceRoutes);
-  app.use("/api/discount-mappings", discountMappingRoutes);
-  app.use("/api/points", pointsRoutes);
-  app.use("/api/warehouses", warehouseRoutes);
-  app.use("/api/purchase-orders", purchaseOrderRoutes);
-  app.use('/api/grn', grnRoutes);
-  app.use('/api/stock', stockRoutes);
-  app.use('/api/sales-orders', salesOrderRoutes);
-  app.use('/api/cheques', chequeRoutes);
-  app.use('/api/dealer-invoices', dealerInvoiceRoutes);
-  app.use('/api/supplier-invoices', supplierInvoiceRoutes);
-  app.use('/api/supplier-payments', supplierPaymentRoutes);
-  app.use('/api/debit-notes', debitNoteRoutes);
-  app.use('/api/credit-notes', creditNoteRoutes);
-  app.use('/api/dealer-ledger', dealerLedgerRoutes);
-  app.use('/api/supplier-ledger', supplierLedgerRoutes);
-  app.use('/api/reconciliation', reconciliationRoutes);
-  app.use('/api/profit-analysis', profitAnalysisRoutes);
-  app.use('/api/margin-analysis', marginAnalysisRoutes);
-  app.use('/api/dealer-performance', dealerPerformanceRoutes);
-  app.use('/api/activity-logs', activityLogRoutes);
-  app.use('/api/download-logs', downloadLogRoutes);
-  app.use('/api/sample-data', sampleDataRoutes);
-  app.use('/api/test', testRoutes);
+// Serve uploaded files statically
+app.use("/uploads", express.static("uploads"));
 
-
-  // Serve uploaded files statically
-  app.use("/uploads", express.static("uploads"));
-
-  // Serve public files (logo, etc.)
-  app.use("/public", express.static("public"));
+// Serve public files (logo, etc.)
+app.use("/public", express.static("public"));
 
   // Root route
   app.get("/", (req, res) => {
