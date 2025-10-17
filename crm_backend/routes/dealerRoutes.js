@@ -11,6 +11,7 @@ import {
 import { protect } from "../middleware/authMiddleware.js";
 import { requirePermission } from "../middleware/authMiddleware.js";
 import { uploadFields } from "../middleware/upload.js";
+import { logActivity } from "../middleware/activityLogMiddleware.js";
 
 const router = express.Router();
 
@@ -18,23 +19,24 @@ const router = express.Router();
 router.use(protect);
 
 // Get dealer statistics
-router.get("/stats", requirePermission("dealers.view"), getDealerStats);
+router.get("/stats", logActivity("Dealer Management", "Viewed dealer statistics", "READ"), requirePermission("dealers.view"), getDealerStats);
 
 // Get all dealers with pagination
-router.get("/", requirePermission("dealers.view"), getDealers);
+router.get("/", logActivity("Dealer Management", "Viewed dealers list", "READ"), requirePermission("dealers.view"), getDealers);
 
 // Get single dealer
-router.get("/:id", requirePermission("dealers.view"), getDealer);
+router.get("/:id", logActivity("Dealer Management", "Viewed dealer details", "READ"), requirePermission("dealers.view"), getDealer);
 
 // Create new dealer
-router.post("/", requirePermission("dealers.create"), createDealer);
+router.post("/", logActivity("Dealer Management", "Created new dealer", "CREATE"), requirePermission("dealers.create"), createDealer);
 
 // Update dealer
-router.put("/:id", requirePermission("dealers.update"), updateDealer);
+router.put("/:id", logActivity("Dealer Management", "Updated dealer", "UPDATE"), requirePermission("dealers.update"), updateDealer);
 
 // Upload dealer documents
 router.post(
   "/:id/documents",
+  logActivity("Dealer Management", "Uploaded dealer documents", "UPDATE"),
   (req, res, next) => {
     console.log("=== UPLOAD ROUTE HIT ===");
     console.log("Method:", req.method);
@@ -53,6 +55,6 @@ router.post(
 );
 
 // Delete dealer
-router.delete("/:id", requirePermission("dealers.delete"), deleteDealer);
+router.delete("/:id", logActivity("Dealer Management", "Deleted dealer", "DELETE"), requirePermission("dealers.delete"), deleteDealer);
 
 export default router;

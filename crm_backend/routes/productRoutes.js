@@ -11,6 +11,7 @@ import {
 } from '../controllers/productController.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { generalLimiter } from '../middleware/rateLimit.js';
+import { logActivity } from '../middleware/activityLogMiddleware.js';
 
 const router = express.Router();
 
@@ -24,21 +25,21 @@ router.use(generalLimiter);
 router.use(protect);
 
 router.route('/')
-  .get(getProducts)
-  .post(createProduct);
+  .get(logActivity("Product Management", "Viewed products list", "READ"), getProducts)
+  .post(logActivity("Product Management", "Created new product", "CREATE"), createProduct);
 
 router.route('/stats')
-  .get(getProductStats);
+  .get(logActivity("Product Management", "Viewed product statistics", "READ"), getProductStats);
 
 router.route('/category/:categoryId')
-  .get(getProductsByCategory);
+  .get(logActivity("Product Management", "Viewed products by category", "READ"), getProductsByCategory);
 
 router.route('/brand/:brandId')
-  .get(getProductsByBrand);
+  .get(logActivity("Product Management", "Viewed products by brand", "READ"), getProductsByBrand);
 
 router.route('/:id')
-  .get(getProduct)
-  .put(updateProduct)
-  .delete(deleteProduct);
+  .get(logActivity("Product Management", "Viewed product details", "READ"), getProduct)
+  .put(logActivity("Product Management", "Updated product", "UPDATE"), updateProduct)
+  .delete(logActivity("Product Management", "Deleted product", "DELETE"), deleteProduct);
 
 export default router;

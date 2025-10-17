@@ -12,6 +12,7 @@ import {
 } from '../controllers/userController.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { requirePermission } from '../middleware/permissionMiddleware.js';
+import { logActivity } from '../middleware/activityLogMiddleware.js';
 
 const router = express.Router();
 
@@ -38,20 +39,14 @@ router.use(protect);
 // Apply super admin middleware to all routes
 router.use(requireSuperAdmin);
 
-// Routes
-router.get('/', getUsers);
-router.get('/config/permissions', getPermissionsConfig);
-router.get('/:id', getUserById);
-router.post('/', createUser);
-router.put('/:id', updateUser);
-router.put('/:id/permissions', updateUserPermissions);
-router.delete('/:id', deleteUser);
-router.patch('/:id/status', updateUserStatus);
-
-router.get('/', requirePermission('users.view'), getUsers);
-router.get('/:id', requirePermission('users.view'), getUserById);
-router.post('/', requirePermission('users.create'), createUser);
-router.put('/:id', requirePermission('users.update'), updateUser);
-router.delete('/:id', requirePermission('users.delete'), deleteUser);
+// Routes with activity logging
+router.get('/', logActivity("User Management", "Viewed users list", "READ"), getUsers);
+router.get('/config/permissions', logActivity("User Management", "Viewed permissions config", "READ"), getPermissionsConfig);
+router.get('/:id', logActivity("User Management", "Viewed user details", "READ"), getUserById);
+router.post('/', logActivity("User Management", "Created new user", "CREATE"), createUser);
+router.put('/:id', logActivity("User Management", "Updated user", "UPDATE"), updateUser);
+router.put('/:id/permissions', logActivity("User Management", "Updated user permissions", "UPDATE"), updateUserPermissions);
+router.delete('/:id', logActivity("User Management", "Deleted user", "DELETE"), deleteUser);
+router.patch('/:id/status', logActivity("User Management", "Updated user status", "UPDATE"), updateUserStatus);
 
 export default router;

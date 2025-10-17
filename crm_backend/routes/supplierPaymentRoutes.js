@@ -51,3 +51,4 @@ router.put("/:id/status", updateSupplierPaymentStatus);
 router.delete("/:id", deleteSupplierPayment);
 
 export default router;
+

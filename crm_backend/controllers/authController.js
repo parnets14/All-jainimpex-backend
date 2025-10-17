@@ -2,6 +2,7 @@
 import User from '../models/User.js';
 import { generateToken } from '../utils/jwtUtils.js';
 import { setAuthCookie, clearAuthCookie } from '../utils/cookieUtils.js';
+import { logAuthActivity } from '../middleware/activityLogMiddleware.js';
 
 // Login - with role-based authentication
 export const login = async (req, res) => {
@@ -45,6 +46,12 @@ export const login = async (req, res) => {
 
     // Remove password from response
     const userResponse = await User.findById(user._id).select('-password');
+
+    // Log login activity
+    await logAuthActivity(userResponse, 'LOGIN', {
+      ipAddress: req.ip || req.connection.remoteAddress,
+      userAgent: req.get('User-Agent'),
+    });
 
     res.json({
       success: true,
@@ -105,8 +112,16 @@ export const getCurrentUser = async (req, res) => {
 };
 
 // Logout route - Clear cookie
-export const logout = (req, res) => {
+export const logout = async (req, res) => {
   try {
+    // Log logout activity
+    if (req.user) {
+      await logAuthActivity(req.user, 'LOGOUT', {
+        ipAddress: req.ip || req.connection.remoteAddress,
+        userAgent: req.get('User-Agent'),
+      });
+    }
+
     clearAuthCookie(res);
     
     res.json({

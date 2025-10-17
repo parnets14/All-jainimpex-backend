@@ -9,18 +9,19 @@ import {
   getPurchaseOrderStats,
 } from "../controllers/purchaseOrderController.js";
 import { protect } from "../middleware/authMiddleware.js";
+import { logActivity } from "../middleware/activityLogMiddleware.js";
 
 const router = express.Router();
 
 router.use(protect);
 
-// Purchase Order Routes
-router.post("/", createPurchaseOrder);
-router.get("/", getPurchaseOrders);
-router.get("/stats", getPurchaseOrderStats);
-router.get("/:id", getPurchaseOrderById);
-router.put("/:id", updatePurchaseOrder);
-router.patch("/:id/status", updatePurchaseOrderStatus);
-router.delete("/:id", deletePurchaseOrder);
+// Purchase Order Routes with activity logging
+router.post("/", logActivity("Purchase Order Management", "Created new purchase order", "CREATE"), createPurchaseOrder);
+router.get("/", logActivity("Purchase Order Management", "Viewed purchase orders list", "READ"), getPurchaseOrders);
+router.get("/stats", logActivity("Purchase Order Management", "Viewed purchase order statistics", "READ"), getPurchaseOrderStats);
+router.get("/:id", logActivity("Purchase Order Management", "Viewed purchase order details", "READ"), getPurchaseOrderById);
+router.put("/:id", logActivity("Purchase Order Management", "Updated purchase order", "UPDATE"), updatePurchaseOrder);
+router.patch("/:id/status", logActivity("Purchase Order Management", "Updated purchase order status", "UPDATE"), updatePurchaseOrderStatus);
+router.delete("/:id", logActivity("Purchase Order Management", "Deleted purchase order", "DELETE"), deletePurchaseOrder);
 
 export default router;

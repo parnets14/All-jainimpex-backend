@@ -36,3 +36,4 @@ router.route("/:id/status")
   .patch(updateDebitNoteStatus);
 
 export default router;
+

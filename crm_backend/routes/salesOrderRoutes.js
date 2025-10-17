@@ -12,6 +12,7 @@ import {
   getOverdueSalesOrders
 } from "../controllers/salesOrderController.js";
 import { protect } from "../middleware/authMiddleware.js";
+import { logActivity } from "../middleware/activityLogMiddleware.js";
 
 const router = express.Router();
 
@@ -21,27 +22,27 @@ const router = express.Router();
 router.use(protect);
 
 router.route("/")
-  .get(getSalesOrders)
-  .post(createSalesOrder);
+  .get(logActivity("Sales Order Dashboard", "Viewed sales orders list", "READ"), getSalesOrders)
+  .post(logActivity("Sales Order Dashboard", "Created new sales order", "CREATE"), createSalesOrder);
 
 router.route("/overdue")
-  .get(getOverdueSalesOrders);
+  .get(logActivity("Sales Order Dashboard", "Viewed overdue sales orders", "READ"), getOverdueSalesOrders);
 
 router.route("/stats/summary")
-  .get(getSalesOrderStats);
+  .get(logActivity("Sales Order Dashboard", "Viewed sales order statistics", "READ"), getSalesOrderStats);
 
 router.route("/dealer/:dealerId")
-  .get(getSalesOrdersByDealer);
+  .get(logActivity("Sales Order Dashboard", "Viewed sales orders by dealer", "READ"), getSalesOrdersByDealer);
 
 router.route("/product/:productId/stock")
-  .get(getProductStock);
+  .get(logActivity("Sales Order Dashboard", "Viewed product stock for sales", "READ"), getProductStock);
 
 router.route("/:id")
-  .get(getSalesOrder)
-  .put(updateSalesOrder)
-  .delete(deleteSalesOrder);
+  .get(logActivity("Sales Order Dashboard", "Viewed sales order details", "READ"), getSalesOrder)
+  .put(logActivity("Sales Order Dashboard", "Updated sales order", "UPDATE"), updateSalesOrder)
+  .delete(logActivity("Sales Order Dashboard", "Deleted sales order", "DELETE"), deleteSalesOrder);
 
 router.route("/:id/status")
-  .patch(updateSalesOrderStatus);
+  .patch(logActivity("Sales Order Dashboard", "Updated sales order status", "UPDATE"), updateSalesOrderStatus);
 
 export default router;
