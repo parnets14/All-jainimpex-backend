@@ -114,19 +114,27 @@ app.use(
       const allowedOrigins = [
         "http://localhost:5173",             // local dev
         "https://jainimpex.netlify.app",     // ✅ correct Netlify domain
+        "https://jainimpex.netlify.app/",    // ✅ with trailing slash
       ];
+      
+      console.log('🌐 CORS Origin Check:', { origin, allowedOrigins });
+      
       if (!origin || allowedOrigins.includes(origin)) {
+        console.log('✅ CORS: Origin allowed');
         callback(null, true);
       } else {
+        console.log('❌ CORS: Origin blocked');
         callback(new Error("Not allowed by CORS"));
       }
     },
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   })
 );
 
 // ✅ Handle preflight requests (important for POST, PUT, DELETE)
-// app.options("*", cors())
+app.options("*", cors())
 
 
   app.use(express.json({ limit: "10mb" }));
