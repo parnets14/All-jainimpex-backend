@@ -64,7 +64,10 @@ dotenv.config();
 
 const numCPUs = cpus().length;
 
-if (cluster.isPrimary) {
+// Disable cluster mode for free Render.com tier to avoid memory issues
+const useCluster = process.env.NODE_ENV === 'production' && process.env.USE_CLUSTER === 'true';
+
+if (useCluster && cluster.isPrimary) {
   console.log(`\n${"=".repeat(50)}`);
   console.log(`🚀 Primary process ${process.pid} is running`);
   console.log(`💻 CPU Cores: ${numCPUs}`);
@@ -87,7 +90,8 @@ if (cluster.isPrimary) {
     console.log(`✅ Worker ${worker.process.pid} is online`);
   });
 } else {
-  // Worker process
+  // Single process mode (for free tier) or worker process
+  console.log(`🚀 Running in single process mode (PID: ${process.pid})`);
   const app = express();
 
   // Connect to MongoDB (each worker connects)
