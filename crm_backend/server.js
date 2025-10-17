@@ -151,6 +151,51 @@ app.use(
   });
 
   // Routes
+  // Health check route
+  app.get("/api/", (req, res) => {
+    res.json({
+      success: true,
+      message: "CRM API is running! 🚀",
+      worker: process.pid,
+      features: [
+        "Employee Management ✅",
+        "Face Recognition ✅", 
+        "Attendance Tracking ✅",
+        "JWT Authentication ✅",
+        "File Uploads ✅"
+      ],
+      availableRoutes: [
+        "GET  /api/categories",
+        "POST /api/categories",
+        "GET  /api/categories/:categoryId/subcategories",
+        "POST /api/categories/:categoryId/subcategories",
+        "GET  /api/subcategories/:subcategoryId/brands",
+        "POST /api/subcategories/:subcategoryId/brands",
+        "GET  /api/categories/stats",
+        "GET  /api/products",
+        "POST /api/products",
+        "GET  /api/products/:id",
+        "PUT  /api/products/:id",
+        "DELETE /api/products/:id",
+        "GET  /api/products/stats",
+        "GET  /api/sales-orders",
+        "POST /api/sales-orders",
+        "GET  /api/sales-orders/:id",
+        "PUT  /api/sales-orders/:id",
+        "DELETE /api/sales-orders/:id",
+        "GET  /api/sales-orders/stats/summary",
+        "GET  /api/sales-orders/overdue",
+        "GET  /api/cheques",
+        "POST /api/cheques",
+        "GET  /api/cheques/:id",
+        "PUT  /api/cheques/:id",
+        "DELETE /api/cheques/:id",
+        "GET  /api/cheques/stats/summary",
+        "PATCH /api/cheques/:id/status"
+      ]
+    });
+  });
+
   app.use("/api/auth", authRoutes);
   app.use("/api/users", userRoutes);
   app.use("/api/employees", employeeRoutes);
