@@ -108,14 +108,23 @@ if (cluster.isPrimary) {
   // Middleware
 
 
-  app.use(
-    cors({
-      origin: "https://jainimpex.netlify.app", // Your frontend domain
-      credentials: true, // Allow cookies or authorization headers
-    })
-  );
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      const allowedOrigins = [
+        "http://localhost:5173",             // local dev
+        "https://jainimpex.netlify.app",     // ✅ correct Netlify domain
+      ];
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
+    credentials: true,
+  })
+);
 
-// app.use()
 // ✅ Handle preflight requests (important for POST, PUT, DELETE)
 // app.options("*", cors())
 
