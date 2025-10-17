@@ -50,6 +50,10 @@ import supplierPaymentRoutes from './routes/supplierPaymentRoutes.js';
 import debitNoteRoutes from './routes/debitNoteRoutes.js';
 import creditNoteRoutes from './routes/creditNoteRoutes.js';
 import dealerLedgerRoutes from './routes/dealerLedgerRoutes.js';
+import supplierLedgerRoutes from './routes/supplierLedgerRoutes.js';
+import reconciliationRoutes from './routes/reconciliationRoutes.js';
+import profitAnalysisRoutes from './routes/profitAnalysisRoutes.js';
+import marginAnalysisRoutes from './routes/marginAnalysisRoutes.js';
 import dealerPerformanceRoutes from './routes/dealerPerformanceRoutes.js';
 import testRoutes from './routes/testRoutes.js';
 
@@ -172,6 +176,10 @@ app.use(
   app.use('/api/debit-notes', debitNoteRoutes);
   app.use('/api/credit-notes', creditNoteRoutes);
   app.use('/api/dealer-ledger', dealerLedgerRoutes);
+  app.use('/api/supplier-ledger', supplierLedgerRoutes);
+  app.use('/api/reconciliation', reconciliationRoutes);
+  app.use('/api/profit-analysis', profitAnalysisRoutes);
+  app.use('/api/margin-analysis', marginAnalysisRoutes);
   app.use('/api/dealer-performance', dealerPerformanceRoutes);
   app.use('/api/test', testRoutes);
 

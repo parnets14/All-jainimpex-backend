@@ -1,4 +1,5 @@
 import SupplierPayment from "../models/SupplierPayment.js";
+import SupplierLedger from "../models/SupplierLedger.js";
 import SupplierInvoice from "../models/SupplierInvoice.js";
 import Supplier from "../models/Supplier.js";
 import mongoose from "mongoose";
@@ -296,6 +297,49 @@ export const updateSupplierPaymentStatus = async (req, res) => {
         }
         
         await invoice.save();
+        
+        // Create supplier ledger entry for the payment
+        try {
+          // Get the last entry for this supplier to calculate running balance
+          const lastEntry = await SupplierLedger.findOne(
+            { supplier: payment.supplier },
+            {},
+            { sort: { 'createdAt': -1 } }
+          );
+          
+          let previousBalance = 0;
+          if (lastEntry) {
+            previousBalance = lastEntry.runningBalance;
+          }
+          
+          const ledgerEntry = new SupplierLedger({
+            supplier: payment.supplier,
+            supplierName: invoice.supplier.name,
+            supplierCode: invoice.supplier.code,
+            entryDate: payment.paymentDate,
+            transactionType: "Payment",
+            invoice: payment.supplierInvoice,
+            invoiceNumber: payment.invoiceNumber,
+            invoiceValue: payment.invoiceAmount,
+            paymentMade: payment.paymentAmount,
+            paymentMethod: payment.paymentMethod,
+            chequeDetails: payment.chequeDetails,
+            upiDetails: payment.upiDetails,
+            bankTransferDetails: payment.bankTransferDetails,
+            debitAmount: 0,
+            creditAmount: payment.paymentAmount,
+            runningBalance: previousBalance - payment.paymentAmount,
+            description: `Payment ${payment.paymentNumber} for Invoice ${payment.invoiceNumber}`,
+            remarks: payment.remarks,
+            createdBy: req.user._id
+          });
+          
+          await ledgerEntry.save();
+          console.log(`Created supplier ledger entry for payment: ${payment.paymentNumber}`);
+        } catch (ledgerError) {
+          console.error("Error creating supplier ledger entry for payment:", ledgerError);
+          // Don't fail the payment approval if ledger entry fails
+        }
       }
     } else if (status === "Rejected") {
       payment.rejectedBy = req.user._id;

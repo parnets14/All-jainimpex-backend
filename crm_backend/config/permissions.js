@@ -225,6 +225,26 @@ export const AVAILABLE_PERMISSIONS = {
       id: "auto.reconciliation",
       name: "Auto Reconciliation",
       description: "Handle auto reconciliation"
+    },
+    {
+      id: "reconciliation.read",
+      name: "View Reconciliation",
+      description: "View reconciliation data and reports"
+    },
+    {
+      id: "reconciliation.create",
+      name: "Create Reconciliation",
+      description: "Perform reconciliation operations"
+    },
+    {
+      id: "reconciliation.update",
+      name: "Update Reconciliation",
+      description: "Update reconciliation records"
+    },
+    {
+      id: "reconciliation.delete",
+      name: "Delete Reconciliation",
+      description: "Delete reconciliation records"
     }
   ],
   "Reports & Logs": [
@@ -262,6 +282,26 @@ export const AVAILABLE_PERMISSIONS = {
       id: "dealer.performance",
       name: "Dealer Performance",
       description: "View dealer performance reports"
+    },
+    {
+      id: "marginAnalysis.read",
+      name: "Margin Analysis Read",
+      description: "View margin analysis reports"
+    },
+    {
+      id: "marginAnalysis.create",
+      name: "Margin Analysis Create", 
+      description: "Create margin analysis reports"
+    },
+    {
+      id: "marginAnalysis.update",
+      name: "Margin Analysis Update",
+      description: "Update margin analysis reports"
+    },
+    {
+      id: "marginAnalysis.delete",
+      name: "Margin Analysis Delete",
+      description: "Delete margin analysis reports"
     }
   ],
   "Expense Management": [

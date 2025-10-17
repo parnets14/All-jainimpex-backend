@@ -1,4 +1,5 @@
 import SupplierInvoice from "../models/SupplierInvoice.js";
+import SupplierLedger from "../models/SupplierLedger.js";
 import GRN from "../models/GRN.js";
 import Supplier from "../models/Supplier.js";
 import Product from "../models/Product.js";
@@ -247,6 +248,45 @@ export const createSupplierInvoice = async (req, res) => {
 
     // Save supplier invoice
     await supplierInvoice.save();
+
+    // Create supplier ledger entry for the invoice
+    try {
+      // Get the last entry for this supplier to calculate running balance
+      const lastEntry = await SupplierLedger.findOne(
+        { supplier: supplierId },
+        {},
+        { sort: { 'createdAt': -1 } }
+      );
+      
+      let previousBalance = 0;
+      if (lastEntry) {
+        previousBalance = lastEntry.runningBalance;
+      }
+      
+      const ledgerEntry = new SupplierLedger({
+        supplier: supplierId,
+        supplierName: supplier.name,
+        supplierCode: supplier.code,
+        entryDate: supplierInvoice.invoiceDate,
+        transactionType: "Invoice",
+        invoice: supplierInvoice._id,
+        invoiceNumber: supplierInvoice.invoiceNumber,
+        invoiceValue: supplierInvoice.totalAmount,
+        debitAmount: supplierInvoice.totalAmount,
+        creditAmount: 0,
+        runningBalance: previousBalance + supplierInvoice.totalAmount,
+        description: `Invoice ${supplierInvoice.invoiceNumber}`,
+        creditDays: supplierInvoice.creditDays || 0,
+        dueDate: supplierInvoice.dueDate,
+        createdBy: req.user._id
+      });
+      
+      await ledgerEntry.save();
+      console.log(`Created supplier ledger entry for invoice: ${supplierInvoice.invoiceNumber}`);
+    } catch (ledgerError) {
+      console.error("Error creating supplier ledger entry for invoice:", ledgerError);
+      // Don't fail the invoice creation if ledger entry fails
+    }
 
     // Populate the created invoice for response
     const populatedInvoice = await SupplierInvoice.findById(supplierInvoice._id)
