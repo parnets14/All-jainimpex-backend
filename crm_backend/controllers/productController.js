@@ -2,6 +2,7 @@ import Product from '../models/Product.js';
 import Category from '../models/Category.js';
 import Subcategory from '../models/Subcategory.js';
 import Brand from '../models/Brand.js';
+import GRN from '../models/GRN.js';
 
 // @desc    Get all products
 // @route   GET /api/products
@@ -480,12 +481,78 @@ export const getProductStats = async (req, res) => {
       }
     ]);
 
+    // Calculate low stock items using same logic as Stock Management page
+    // The Stock Management page counts individual warehouse entries, not unique products
+    const products = await Product.find({});
+    let lowStockCount = 0;
+    const lowStockDetails = [];
+
+    for (const product of products) {
+      // Get all GRNs for this product
+      const grns = await GRN.find({ 'items.productId': product._id });
+      
+      // Group by warehouse (same as Stock Management page)
+      const warehouseStock = {};
+      
+      grns.forEach(grn => {
+        if (!grn.warehouseId) return;
+        
+        const warehouseId = grn.warehouseId.toString();
+        
+        if (!warehouseStock[warehouseId]) {
+          warehouseStock[warehouseId] = {
+            totalQty: 0,
+            damagedQty: 0,
+            blockedQty: 0
+          };
+        }
+        
+        grn.items.forEach(item => {
+          const itemProductId = item.productId?._id ? item.productId._id.toString() : item.productId.toString();
+          const targetProductId = product._id.toString();
+          
+          if (itemProductId === targetProductId) {
+            warehouseStock[warehouseId].totalQty += item.acceptedQuantity || 0;
+            warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
+            // Note: blockedQty is not in GRN data, so it stays 0
+          }
+        });
+      });
+
+      // Check each warehouse entry for low stock (same as Stock Management page)
+      Object.values(warehouseStock).forEach(warehouse => {
+        const netStock = warehouse.totalQty - warehouse.damagedQty - warehouse.blockedQty;
+        
+        if (product.minStockLevel && netStock <= product.minStockLevel) {
+          lowStockCount++;
+          lowStockDetails.push({
+            productId: product._id,
+            productName: product.itemName,
+            totalQty: warehouse.totalQty,
+            damagedQty: warehouse.damagedQty,
+            blockedQty: warehouse.blockedQty,
+            netStock: netStock,
+            minStockLevel: product.minStockLevel
+          });
+        }
+      });
+    }
+
+    console.log('Low stock calculation:', {
+      lowStockCount,
+      lowStockDetails,
+      totalProducts,
+      activeProducts
+    });
+
     res.json({
       success: true,
-      stats: {
+      data: {
         totalProducts,
         activeProducts,
         inactiveProducts,
+        lowStockItems: lowStockCount,
+        lowStock: lowStockCount, // Alternative key for compatibility
         productsByCategory,
         productsByBrand
       }
