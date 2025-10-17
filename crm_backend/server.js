@@ -108,9 +108,12 @@ if (cluster.isPrimary) {
   // Middleware
 
 
-app.use(
-  cors()
-);
+  app.use(
+    cors({
+      origin: "https://jainimpex.netlify.app", // Your frontend domain
+      credentials: true, // Allow cookies or authorization headers
+    })
+  );
 
 // app.use()
 // ✅ Handle preflight requests (important for POST, PUT, DELETE)
