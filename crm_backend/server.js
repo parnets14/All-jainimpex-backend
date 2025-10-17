@@ -314,8 +314,8 @@ app.use("/public", express.static("public"));
   console.log("📝 Using direct salary processing (no queue system)");
 
   // Start server
-  const PORT = process.env.PORT || 5000;
-  app.listen(PORT, () => {
+  const PORT = process.env.PORT || 10000;
+  app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Worker ${process.pid}] 🎯 Server running on port ${PORT}`);
   });
 }
