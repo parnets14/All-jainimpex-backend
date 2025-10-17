@@ -57,6 +57,7 @@ import marginAnalysisRoutes from './routes/marginAnalysisRoutes.js';
 import dealerPerformanceRoutes from './routes/dealerPerformanceRoutes.js';
 import activityLogRoutes from './routes/activityLogRoutes.js';
 import downloadLogRoutes from './routes/downloadLogRoutes.js';
+import priceDeviationRoutes from './routes/priceDeviationRoutes.js';
 import sampleDataRoutes from './routes/sampleDataRoutes.js';
 import testRoutes from './routes/testRoutes.js';
 
@@ -241,6 +242,7 @@ app.use('/api/margin-analysis', marginAnalysisRoutes);
 app.use('/api/dealer-performance', dealerPerformanceRoutes);
 app.use('/api/activity-logs', activityLogRoutes);
 app.use('/api/download-logs', downloadLogRoutes);
+app.use('/api/reports', priceDeviationRoutes);
 app.use('/api/sample-data', sampleDataRoutes);
 app.use('/api/test', testRoutes);
 
