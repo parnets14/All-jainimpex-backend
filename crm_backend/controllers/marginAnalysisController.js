@@ -55,21 +55,19 @@ export const getMarginAnalysisByCategory = async (req, res) => {
     let totalCount;
 
     if (dataSource === 'dealer') {
+      // Get ALL invoices for proper aggregation (no pagination here)
       invoices = await DealerInvoice.find(query)
         .populate('dealer', 'name code')
         .populate('items.product', 'itemName productCode category')
         .sort({ invoiceDate: -1 })
-        .skip(skip)
-        .limit(limitNumber)
         .lean();
       totalCount = await DealerInvoice.countDocuments(query);
     } else {
+      // Get ALL invoices for proper aggregation (no pagination here)
       invoices = await SupplierInvoice.find(query)
         .populate('supplier', 'name code')
         .populate('items.product', 'itemName productCode category')
         .sort({ invoiceDate: -1 })
-        .skip(skip)
-        .limit(limitNumber)
         .lean();
       totalCount = await SupplierInvoice.countDocuments(query);
     }
@@ -120,7 +118,7 @@ export const getMarginAnalysisByCategory = async (req, res) => {
       });
     }
 
-    const categoryResults = Object.values(categoryData).map(item => ({
+    const allCategoryResults = Object.values(categoryData).map(item => ({
       category: item.categoryName,
       [dataSource]: item[dataSource],
       revenue: Math.round(item.revenue),
@@ -130,15 +128,18 @@ export const getMarginAnalysisByCategory = async (req, res) => {
       profit: Math.round(item.revenue * (item.margin / 100))
     }));
 
-    // Calculate summary statistics
+    // Apply pagination to results AFTER aggregation
+    const categoryResults = allCategoryResults.slice(skip, skip + limitNumber);
+
+    // Calculate summary statistics from ALL results (not just paginated)
     const summaryStats = {
-      totalRevenue: categoryResults.reduce((sum, item) => sum + item.revenue, 0),
-      totalUnits: categoryResults.reduce((sum, item) => sum + item.units, 0),
-      avgMargin: categoryResults.length > 0 
-        ? categoryResults.reduce((sum, item) => sum + item.margin, 0) / categoryResults.length 
+      totalRevenue: allCategoryResults.reduce((sum, item) => sum + item.revenue, 0),
+      totalUnits: allCategoryResults.reduce((sum, item) => sum + item.units, 0),
+      avgMargin: allCategoryResults.length > 0 
+        ? allCategoryResults.reduce((sum, item) => sum + item.margin, 0) / allCategoryResults.length 
         : 0,
-      avgGrowth: categoryResults.length > 0 
-        ? categoryResults.reduce((sum, item) => sum + item.growth, 0) / categoryResults.length 
+      avgGrowth: allCategoryResults.length > 0 
+        ? allCategoryResults.reduce((sum, item) => sum + item.growth, 0) / allCategoryResults.length 
         : 0
     };
 
@@ -148,10 +149,10 @@ export const getMarginAnalysisByCategory = async (req, res) => {
       summary: summaryStats,
       pagination: {
         currentPage: pageNumber,
-        totalPages: Math.ceil(totalCount / limitNumber),
-        totalItems: totalCount,
+        totalPages: Math.ceil(allCategoryResults.length / limitNumber),
+        totalItems: allCategoryResults.length,
         itemsPerPage: limitNumber,
-        hasNextPage: pageNumber * limitNumber < totalCount,
+        hasNextPage: pageNumber * limitNumber < allCategoryResults.length,
         hasPrevPage: pageNumber > 1
       }
     });
@@ -207,21 +208,19 @@ export const getMarginAnalysisByProduct = async (req, res) => {
     let totalCount;
 
     if (dataSource === 'dealer') {
+      // Get ALL invoices for proper aggregation (no pagination here)
       invoices = await DealerInvoice.find(query)
         .populate('dealer', 'name code')
         .populate('items.product', 'itemName productCode category')
         .sort({ invoiceDate: -1 })
-        .skip(skip)
-        .limit(limitNumber)
         .lean();
       totalCount = await DealerInvoice.countDocuments(query);
     } else {
+      // Get ALL invoices for proper aggregation (no pagination here)
       invoices = await SupplierInvoice.find(query)
         .populate('supplier', 'name code')
         .populate('items.product', 'itemName productCode category')
         .sort({ invoiceDate: -1 })
-        .skip(skip)
-        .limit(limitNumber)
         .lean();
       totalCount = await SupplierInvoice.countDocuments(query);
     }
@@ -276,7 +275,7 @@ export const getMarginAnalysisByProduct = async (req, res) => {
       });
     }
 
-    const productResults = Object.values(productData).map(item => ({
+    const allProductResults = Object.values(productData).map(item => ({
       product: item.product,
       category: item.category,
       [dataSource]: item[dataSource],
@@ -287,15 +286,18 @@ export const getMarginAnalysisByProduct = async (req, res) => {
       profit: Math.round(item.revenue * (item.margin / 100))
     }));
 
-    // Calculate summary statistics
+    // Apply pagination to results AFTER aggregation
+    const productResults = allProductResults.slice(skip, skip + limitNumber);
+
+    // Calculate summary statistics from ALL results (not just paginated)
     const summaryStats = {
-      totalRevenue: productResults.reduce((sum, item) => sum + item.revenue, 0),
-      totalUnits: productResults.reduce((sum, item) => sum + item.units, 0),
-      avgMargin: productResults.length > 0 
-        ? productResults.reduce((sum, item) => sum + item.margin, 0) / productResults.length 
+      totalRevenue: allProductResults.reduce((sum, item) => sum + item.revenue, 0),
+      totalUnits: allProductResults.reduce((sum, item) => sum + item.units, 0),
+      avgMargin: allProductResults.length > 0 
+        ? allProductResults.reduce((sum, item) => sum + item.margin, 0) / allProductResults.length 
         : 0,
-      avgGrowth: productResults.length > 0 
-        ? productResults.reduce((sum, item) => sum + item.growth, 0) / productResults.length 
+      avgGrowth: allProductResults.length > 0 
+        ? allProductResults.reduce((sum, item) => sum + item.growth, 0) / allProductResults.length 
         : 0
     };
 
@@ -305,10 +307,10 @@ export const getMarginAnalysisByProduct = async (req, res) => {
       summary: summaryStats,
       pagination: {
         currentPage: pageNumber,
-        totalPages: Math.ceil(totalCount / limitNumber),
-        totalItems: totalCount,
+        totalPages: Math.ceil(allProductResults.length / limitNumber),
+        totalItems: allProductResults.length,
         itemsPerPage: limitNumber,
-        hasNextPage: pageNumber * limitNumber < totalCount,
+        hasNextPage: pageNumber * limitNumber < allProductResults.length,
         hasPrevPage: pageNumber > 1
       }
     });

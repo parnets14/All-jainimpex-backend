@@ -3,14 +3,19 @@ import {
   getPriceDeviationReport,
   getCreditDeviationReport,
   getPaymentDeviationReport,
-  getDiscountDeviationReport
+  getDiscountDeviationReport,
+  testConnection
 } from "../controllers/priceDeviationController.js";
 import { protect } from "../middleware/authMiddleware.js";
 import { logActivity } from "../middleware/activityLogMiddleware.js";
 
 const router = express.Router();
 
-// All routes are protected
+// Test endpoint (without auth for testing)
+router.route("/test-no-auth")
+  .get(testConnection);
+
+// All other routes are protected
 router.use(protect);
 
 // Price Deviation Reports
@@ -27,3 +32,5 @@ router.route("/discount-deviation")
   .get(logActivity("Price Deviation Report", "Viewed discount deviation report", "READ"), getDiscountDeviationReport);
 
 export default router;
+
+

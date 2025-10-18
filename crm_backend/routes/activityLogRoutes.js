@@ -34,3 +34,5 @@ router.delete("/:id", requirePermission("activity_logs", "delete"), deleteActivi
 router.post("/cleanup", requirePermission("activity_logs", "delete"), cleanupOldLogs);
 
 export default router;
+
+

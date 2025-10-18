@@ -130,3 +130,5 @@ export const logAuthActivity = async (user, action, details = {}) => {
     console.error("Auth activity logging error:", error);
   }
 };
+
+

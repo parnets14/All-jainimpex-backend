@@ -664,3 +664,125 @@ export const getPurchaseOrderStats = async (req, res) => {
     });
   }
 };
+
+// Get Last Purchase Price for a Product
+export const getLastPurchasePrice = async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const { supplierId } = req.query; // Optional: filter by supplier
+
+    console.log("🔍 [START] Getting last purchase price for product:", productId);
+
+    // Build match query
+    const matchQuery = {
+      "lines.productId": productId,
+      status: { $in: ["Approved", "Completed"] } // Only consider approved/completed orders
+    };
+
+    // If supplierId is provided, filter by supplier
+    if (supplierId) {
+      matchQuery.supplierId = supplierId;
+    }
+
+    // Find the most recent purchase order containing this product
+    const lastPurchaseOrder = await PurchaseOrder.findOne(matchQuery)
+      .populate("supplierId", "name companyName")
+      .populate("lines.productId", "itemName productCode")
+      .sort({ orderDate: -1, createdAt: -1 })
+      .lean();
+
+    if (!lastPurchaseOrder) {
+      console.log("🔍 [NOT_FOUND] No previous purchase found for product:", productId);
+      return res.json({
+        success: true,
+        data: {
+          lastPrice: 0,
+          lastPurchaseDate: null,
+          lastSupplier: null,
+          lastQuantity: 0,
+          last30DayQuantity: 0,
+          message: "No previous purchase found for this product"
+        }
+      });
+    }
+
+    // Find the specific line item for this product
+    const productLine = lastPurchaseOrder.lines.find(
+      line => line.productId._id.toString() === productId
+    );
+
+    if (!productLine) {
+      console.log("🔍 [NOT_FOUND] Product line not found in purchase order");
+      return res.json({
+        success: true,
+        data: {
+          lastPrice: 0,
+          lastPurchaseDate: null,
+          lastSupplier: null,
+          lastQuantity: 0,
+          last30DayQuantity: 0,
+          message: "Product line not found in purchase order"
+        }
+      });
+    }
+
+    // Calculate last 30 days quantity for this product
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const last30DayOrders = await PurchaseOrder.aggregate([
+      {
+        $match: {
+          "lines.productId": productId,
+          status: { $in: ["Approved", "Completed"] },
+          orderDate: { $gte: thirtyDaysAgo }
+        }
+      },
+      {
+        $unwind: "$lines"
+      },
+      {
+        $match: {
+          "lines.productId": productId
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalQuantity: { $sum: "$lines.quantity" }
+        }
+      }
+    ]);
+
+    const last30DayQuantity = last30DayOrders.length > 0 ? last30DayOrders[0].totalQuantity : 0;
+
+    console.log("🔍 [SUCCESS] Found last purchase price:", {
+      productId,
+      lastPrice: productLine.price,
+      lastPurchaseDate: lastPurchaseOrder.orderDate,
+      lastSupplier: lastPurchaseOrder.supplierId?.name,
+      lastQuantity: productLine.quantity,
+      last30DayQuantity
+    });
+
+    res.json({
+      success: true,
+      data: {
+        lastPrice: productLine.price || 0,
+        lastPurchaseDate: lastPurchaseOrder.orderDate,
+        lastSupplier: lastPurchaseOrder.supplierId?.name || lastPurchaseOrder.supplierId?.companyName,
+        lastQuantity: productLine.quantity || 0,
+        last30DayQuantity,
+        poNumber: lastPurchaseOrder.poNumber
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ [ERROR] Get last purchase price error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching last purchase price",
+      error: error.message,
+    });
+  }
+};
