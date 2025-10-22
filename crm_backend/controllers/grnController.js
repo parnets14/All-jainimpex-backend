@@ -1,6 +1,7 @@
 import GRN from '../models/GRN.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import StockMovementService from '../services/stockMovementService.js';
+import schemeService from '../services/schemeService.js';
 
 export const createGRN = async (req, res) => {
   try {
@@ -163,6 +164,42 @@ export const createGRN = async (req, res) => {
     } catch (stockError) {
       console.error('Error creating stock movements:', stockError);
       // Don't fail the GRN creation if stock movement creation fails
+    }
+    
+    // Auto-Apply Purchase Schemes for GRN
+    try {
+      const grnData = {
+        supplierId: purchaseOrder.supplierId._id,
+        items: grnItems.map(item => ({
+          productId: item.productId,
+          category: item.productId?.category,
+          subcategory: item.productId?.subcategory,
+          brand: item.productId?.brand,
+          acceptedQuantity: item.acceptedQuantity,
+          unitPrice: item.unitPrice,
+          totalPrice: item.totalPrice
+        })),
+        totalAmount: totalAmount,
+        grnDate: new Date().toISOString()
+      };
+
+      const schemeResult = await schemeService.checkAndApplyPurchaseSchemesForGRN(grnData);
+      
+      if (schemeResult.appliedSchemes.length > 0) {
+        console.log(`✅ Applied ${schemeResult.appliedSchemes.length} purchase schemes for GRN: ${grn.grnNo}`);
+        
+        // Log scheme applications
+        await schemeService.logSchemeApplication({
+          grnId: grn._id,
+          supplierId: purchaseOrder.supplierId._id,
+          appliedSchemes: schemeResult.appliedSchemes,
+          totalBenefits: schemeResult.totalBenefits,
+          appliedAt: new Date().toISOString()
+        });
+      }
+    } catch (schemeError) {
+      console.error('Error applying purchase schemes for GRN:', schemeError);
+      // Don't fail the GRN creation if scheme application fails
     }
     
     // Populate the saved GRN for response

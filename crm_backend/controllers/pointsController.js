@@ -15,7 +15,16 @@ const addPoints = async (req, res) => {
       subcategory,
       calculationType,
       inputValue,
-      points
+      benefitType,
+      points,
+      extraQuantity,
+      discountPercentage,
+      cashbackAmount,
+      validFrom,
+      validTo,
+      autoApplyGRN,
+      autoApplySupplierInvoice,
+      description
     } = req.body;
 
     // Validate relationships
@@ -49,7 +58,16 @@ const addPoints = async (req, res) => {
       subcategory,
       calculationType,
       inputValue,
-      points,
+      benefitType: benefitType || 'points',
+      points: points || 0,
+      extraQuantity: extraQuantity || 0,
+      discountPercentage: discountPercentage || 0,
+      cashbackAmount: cashbackAmount || 0,
+      validFrom: validFrom ? new Date(validFrom) : new Date(),
+      validTo: validTo ? new Date(validTo) : new Date(Date.now() + 365 * 24 * 60 * 60 * 1000), // 1 year from now
+      autoApplyGRN: autoApplyGRN || false,
+      autoApplySupplierInvoice: autoApplySupplierInvoice || false,
+      description: description || '',
       createdBy: req.user._id
     });
 
@@ -298,6 +316,111 @@ const getPointsByBrand = async (req, res) => {
   }
 };
 
+// @desc    Update points entry
+// @route   PUT /api/points/:id
+// @access  Private
+const updatePoints = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      type,
+      brand,
+      category,
+      subcategory,
+      calculationType,
+      inputValue,
+      benefitType,
+      points,
+      extraQuantity,
+      discountPercentage,
+      cashbackAmount,
+      validFrom,
+      validTo,
+      autoApplyGRN,
+      autoApplySupplierInvoice,
+      description
+    } = req.body;
+
+    const pointsEntry = await Points.findById(id);
+
+    if (!pointsEntry) {
+      return res.status(404).json({ success: false, message: "Points entry not found" });
+    }
+
+    // Validate relationships if brand/category/subcategory are being updated
+    if (brand || category || subcategory) {
+      const brandExists = await Brand.findById(brand || pointsEntry.brand)
+        .populate("category")
+        .populate("subcategory");
+
+      if (!brandExists) {
+        return res.status(404).json({ success: false, message: "Brand not found" });
+      }
+
+      // Verify category and subcategory relationships
+      const finalCategory = category || pointsEntry.category;
+      const finalSubcategory = subcategory || pointsEntry.subcategory;
+
+      if (brandExists.category._id.toString() !== finalCategory) {
+        return res.status(400).json({ 
+          success: false, 
+          message: "Brand does not belong to the selected category" 
+        });
+      }
+
+      if (brandExists.subcategory._id.toString() !== finalSubcategory) {
+        return res.status(400).json({ 
+          success: false, 
+          message: "Brand does not belong to the selected subcategory" 
+        });
+      }
+    }
+
+    // Update the points entry with default values for missing fields
+    const updatedPoints = await Points.findByIdAndUpdate(
+      id,
+      {
+        type: type || pointsEntry.type,
+        brand: brand || pointsEntry.brand,
+        category: category || pointsEntry.category,
+        subcategory: subcategory || pointsEntry.subcategory,
+        calculationType: calculationType || pointsEntry.calculationType,
+        inputValue: inputValue !== undefined ? inputValue : pointsEntry.inputValue,
+        benefitType: benefitType !== undefined ? benefitType : (pointsEntry.benefitType || 'points'),
+        points: points !== undefined ? points : (pointsEntry.points || 0),
+        extraQuantity: extraQuantity !== undefined ? extraQuantity : (pointsEntry.extraQuantity || 0),
+        discountPercentage: discountPercentage !== undefined ? discountPercentage : (pointsEntry.discountPercentage || 0),
+        cashbackAmount: cashbackAmount !== undefined ? cashbackAmount : (pointsEntry.cashbackAmount || 0),
+        validFrom: validFrom !== undefined ? new Date(validFrom) : (pointsEntry.validFrom || new Date()),
+        validTo: validTo !== undefined ? new Date(validTo) : (pointsEntry.validTo || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)),
+        autoApplyGRN: autoApplyGRN !== undefined ? autoApplyGRN : (pointsEntry.autoApplyGRN || false),
+        autoApplySupplierInvoice: autoApplySupplierInvoice !== undefined ? autoApplySupplierInvoice : (pointsEntry.autoApplySupplierInvoice || false),
+        description: description !== undefined ? description : (pointsEntry.description || ''),
+        updatedBy: req.user._id,
+        updatedAt: new Date()
+      },
+      { new: true, runValidators: true }
+    );
+
+    // Populate the updated points with related data
+    await updatedPoints.populate([
+      { path: "brand", select: "name" },
+      { path: "category", select: "name" },
+      { path: "subcategory", select: "name" },
+      { path: "createdBy", select: "name email" },
+      { path: "updatedBy", select: "name email" }
+    ]);
+
+    res.json({
+      success: true,
+      message: "Points updated successfully",
+      points: updatedPoints
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
 // @desc    Delete points entry
 // @route   DELETE /api/points/:id
 // @access  Private
@@ -321,5 +444,6 @@ export {
   getPoints,
   getPointsStats,
   getPointsByBrand,
+  updatePoints,
   deletePoints
 };

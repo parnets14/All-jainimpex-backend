@@ -5,7 +5,8 @@ import {
   getPoints,
   getPointsStats,
   getPointsByBrand,
-  deletePoints
+  deletePoints,
+  updatePoints
 } from "../controllers/pointsController.js";
 
 const router = express.Router();
@@ -14,6 +15,7 @@ router.post("/", protect, addPoints);
 router.get("/", protect, getPoints);
 router.get("/stats", protect, getPointsStats);
 router.get("/brand/:brandId", protect, getPointsByBrand);
+router.put("/:id", protect, updatePoints);
 router.delete("/:id", protect, deletePoints);
 
 export default router;
