@@ -82,6 +82,38 @@ class StockMovementService {
   }
   
   /**
+   * Delete stock movements for a specific GRN
+   * @param {String} grnId - GRN ID
+   */
+  static async deleteStockMovementsForGRN(grnId) {
+    try {
+      console.log(`🔍 [STOCK_MOVEMENT_SERVICE] Deleting stock movements for GRN: ${grnId}`);
+      
+      // Get the GRN to find its GRN number
+      const GRN = (await import('../models/GRN.js')).default;
+      const grn = await GRN.findById(grnId);
+      
+      if (!grn) {
+        console.log(`🔍 [STOCK_MOVEMENT_SERVICE] GRN not found: ${grnId}`);
+        return;
+      }
+      
+      // Delete all stock movements with this GRN reference
+      const result = await StockMovement.deleteMany({
+        referenceNo: grn.grnNo,
+        referenceType: 'GRN'
+      });
+      
+      console.log(`🔍 [STOCK_MOVEMENT_SERVICE] Deleted ${result.deletedCount} stock movements for GRN: ${grn.grnNo}`);
+      
+      return result.deletedCount;
+    } catch (error) {
+      console.error('Error deleting stock movements for GRN:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Calculate running balance for a product in a warehouse
    * @param {String} productId - Product ID
    * @param {String} warehouseId - Warehouse ID

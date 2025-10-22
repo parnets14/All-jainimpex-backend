@@ -345,7 +345,16 @@ export const updateGRN = async (req, res) => {
     const { id } = req.params;
     const updateData = req.body;
 
-    // If items are being updated, recalculate status
+    // Get the existing GRN to compare changes
+    const existingGRN = await GRN.findById(id);
+    if (!existingGRN) {
+      return res.status(404).json({
+        success: false,
+        message: 'GRN not found'
+      });
+    }
+
+    // If items are being updated, recalculate status and handle stock movements
     if (updateData.items && Array.isArray(updateData.items)) {
       let grnStatus = 'Received'; // Default to fully received
       
@@ -358,31 +367,62 @@ export const updateGRN = async (req, res) => {
       }
       
       updateData.status = grnStatus;
-    }
 
-    const grn = await GRN.findByIdAndUpdate(
-      id,
-      updateData,
-      { new: true, runValidators: true }
-    )
-      .populate('poId')
-      .populate('supplierId')
-      .populate('warehouseId')
-      .populate('items.productId')
-      .populate('createdBy', 'name email');
+      // Handle stock movements for updated items
+      try {
+        // Delete existing stock movements for this GRN
+        await StockMovementService.deleteStockMovementsForGRN(id);
+        console.log(`✅ Deleted existing stock movements for GRN: ${existingGRN.grnNo}`);
 
-    if (!grn) {
-      return res.status(404).json({
-        success: false,
-        message: 'GRN not found'
+        // Update the GRN first
+        const updatedGRN = await GRN.findByIdAndUpdate(
+          id,
+          updateData,
+          { new: true, runValidators: true }
+        )
+          .populate('poId')
+          .populate('supplierId')
+          .populate('warehouseId')
+          .populate('items.productId')
+          .populate('createdBy', 'name email');
+
+        // Create new stock movements for the updated GRN
+        await StockMovementService.createStockMovementsFromGRN(updatedGRN);
+        console.log(`✅ Created new stock movements for updated GRN: ${updatedGRN.grnNo}`);
+
+        res.json({
+          success: true,
+          message: 'GRN updated successfully',
+          data: updatedGRN
+        });
+      } catch (stockError) {
+        console.error('Error updating stock movements:', stockError);
+        // Still return success for GRN update, but log the stock error
+        res.json({
+          success: true,
+          message: 'GRN updated successfully, but there was an issue updating stock movements',
+          data: updatedGRN
+        });
+      }
+    } else {
+      // If no items are being updated, just update the GRN normally
+      const grn = await GRN.findByIdAndUpdate(
+        id,
+        updateData,
+        { new: true, runValidators: true }
+      )
+        .populate('poId')
+        .populate('supplierId')
+        .populate('warehouseId')
+        .populate('items.productId')
+        .populate('createdBy', 'name email');
+
+      res.json({
+        success: true,
+        message: 'GRN updated successfully',
+        data: grn
       });
     }
-
-    res.json({
-      success: true,
-      message: 'GRN updated successfully',
-      data: grn
-    });
   } catch (error) {
     console.error('Update GRN error:', error);
     res.status(500).json({
@@ -394,14 +434,26 @@ export const updateGRN = async (req, res) => {
 
 export const deleteGRN = async (req, res) => {
   try {
-    const grn = await GRN.findByIdAndDelete(req.params.id);
-
+    const grn = await GRN.findById(req.params.id);
+    
     if (!grn) {
       return res.status(404).json({
         success: false,
         message: 'GRN not found'
       });
     }
+
+    // Delete associated stock movements first
+    try {
+      await StockMovementService.deleteStockMovementsForGRN(req.params.id);
+      console.log(`✅ Deleted stock movements for GRN: ${grn.grnNo}`);
+    } catch (stockError) {
+      console.error('Error deleting stock movements:', stockError);
+      // Continue with GRN deletion even if stock movement deletion fails
+    }
+
+    // Delete the GRN
+    await GRN.findByIdAndDelete(req.params.id);
 
     res.json({
       success: true,
