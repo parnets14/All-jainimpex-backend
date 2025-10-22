@@ -36,3 +36,9 @@ router.post("/cleanup", requirePermission("activity_logs", "delete"), cleanupOld
 export default router;
 
 
+
+
+
+
+
+

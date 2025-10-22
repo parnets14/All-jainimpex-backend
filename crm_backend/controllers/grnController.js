@@ -126,6 +126,17 @@ export const createGRN = async (req, res) => {
     const grnNo = await generateGRNNumber();
     console.log('Generated GRN No in controller:', grnNo);
 
+    // Determine GRN status based on received quantities
+    let grnStatus = 'Received'; // Default to fully received
+    
+    // Check if any item is partially received
+    for (const item of grnItems) {
+      if (item.receivedQuantity < item.poQuantity) {
+        grnStatus = 'Partially Received';
+        break;
+      }
+    }
+
     const grnData = {
       grnNo, // Explicitly set the GRN number
       poId,
@@ -137,7 +148,7 @@ export const createGRN = async (req, res) => {
       receivedBy: receivedBy || '',
       inspectedBy: inspectedBy || '',
       createdBy: req.user._id,
-      status: 'Received'
+      status: grnStatus
     };
 
     console.log('GRN data to save:', grnData);
@@ -297,6 +308,21 @@ export const updateGRN = async (req, res) => {
     const { id } = req.params;
     const updateData = req.body;
 
+    // If items are being updated, recalculate status
+    if (updateData.items && Array.isArray(updateData.items)) {
+      let grnStatus = 'Received'; // Default to fully received
+      
+      // Check if any item is partially received
+      for (const item of updateData.items) {
+        if (item.receivedQuantity < item.poQuantity) {
+          grnStatus = 'Partially Received';
+          break;
+        }
+      }
+      
+      updateData.status = grnStatus;
+    }
+
     const grn = await GRN.findByIdAndUpdate(
       id,
       updateData,
@@ -425,15 +451,24 @@ export const getApprovedPOs = async (req, res) => {
       ];
     }
 
-    const purchaseOrders = await PurchaseOrder.find(query)
+    // Get all approved POs
+    const allPurchaseOrders = await PurchaseOrder.find(query)
       .populate('supplierId', 'name companyName contactPerson email')
       .populate('warehouseId', 'name location')
       .populate('lines.productId', 'itemName productCode HSNCode description gst')
       .select('poNumber supplierId warehouseId lines orderDate expectedDate status')
-      .sort({ createdAt: -1 })
-      .limit(20);
+      .sort({ createdAt: -1 });
 
-    console.log(`Found ${purchaseOrders.length} approved POs`);
+    // Get all PO IDs that already have GRNs
+    const existingGRNs = await GRN.find({}, { poId: 1 });
+    const poIdsWithGRNs = existingGRNs.map(grn => grn.poId.toString());
+
+    // Filter out POs that already have GRNs
+    const purchaseOrders = allPurchaseOrders.filter(po => 
+      !poIdsWithGRNs.includes(po._id.toString())
+    ).slice(0, 20); // Limit to 20 after filtering
+
+    console.log(`Found ${allPurchaseOrders.length} approved POs, ${purchaseOrders.length} without existing GRNs`);
 
     res.json({
       success: true,

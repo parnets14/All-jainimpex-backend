@@ -24,47 +24,71 @@ export const getSupplierPayments = async (req, res) => {
     const query = {};
 
     // Search functionality
+    let searchQuery = {};
     if (search) {
-      query.$or = [
-        { paymentNumber: { $regex: search, $options: "i" } },
-        { invoiceNumber: { $regex: search, $options: "i" } },
-        { supplierName: { $regex: search, $options: "i" } }
-      ];
+      // First, try to find suppliers that match the search term
+      const Supplier = mongoose.model('Supplier');
+      const matchingSuppliers = await Supplier.find({
+        $or: [
+          { name: { $regex: search, $options: "i" } },
+          { code: { $regex: search, $options: "i" } },
+          { companyName: { $regex: search, $options: "i" } }
+        ]
+      }).select('_id');
+      
+      const supplierIds = matchingSuppliers.map(s => s._id);
+      
+      // Build search query
+      searchQuery = {
+        $or: [
+          { paymentNumber: { $regex: search, $options: "i" } },
+          { invoiceNumber: { $regex: search, $options: "i" } },
+          ...(supplierIds.length > 0 ? [{ supplier: { $in: supplierIds } }] : [])
+        ]
+      };
+    }
+    
+    // Combine search query with other filters
+    const finalQuery = { ...query };
+    
+    // If we have a search query, merge it properly
+    if (search && searchQuery.$or) {
+      finalQuery.$or = searchQuery.$or;
     }
 
     // Filter by status
     if (status && status !== "all") {
-      query.status = status;
+      finalQuery.status = status;
     }
 
     // Filter by supplier
     if (supplier) {
-      query.supplier = supplier;
+      finalQuery.supplier = supplier;
     }
 
     // Filter by payment method
     if (paymentMethod && paymentMethod !== "all") {
-      query.paymentMethod = paymentMethod;
+      finalQuery.paymentMethod = paymentMethod;
     }
 
     // Date range filter
     if (startDate || endDate) {
-      query.paymentDate = {};
+      finalQuery.paymentDate = {};
       if (startDate) {
-        query.paymentDate.$gte = new Date(startDate);
+        finalQuery.paymentDate.$gte = new Date(startDate);
       }
       if (endDate) {
-        query.paymentDate.$lte = new Date(endDate);
+        finalQuery.paymentDate.$lte = new Date(endDate);
       }
     }
 
     // Calculate pagination
     const skip = (parseInt(page) - 1) * parseInt(limit);
-    const totalCount = await SupplierPayment.countDocuments(query);
+    const totalCount = await SupplierPayment.countDocuments(finalQuery);
     const totalPages = Math.ceil(totalCount / parseInt(limit));
 
     // Fetch payments with pagination
-    const payments = await SupplierPayment.find(query)
+    const payments = await SupplierPayment.find(finalQuery)
       .populate("supplier", "name code companyName")
       .populate("supplierInvoice", "invoiceNumber totalAmount paymentStatus")
       .populate("createdBy", "name email")

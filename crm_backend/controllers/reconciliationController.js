@@ -273,14 +273,16 @@ export const performAutoReconciliation = async (req, res) => {
     console.log('Pagination:', { page: pageNumber, limit: limitNumber, skip });
 
     // Build base query for supplier
-    const baseQuery = { supplierId };
+    const poQuery = { supplierId };
+    const grnQuery = { supplierId };
     const invoiceQuery = { supplier: supplierId };
     const paymentQuery = { supplier: supplierId };
     const ledgerQuery = { supplier: supplierId };
 
     // Add date filters
     if (Object.keys(dateFilter).length > 0) {
-      baseQuery.orderDate = dateFilter;
+      poQuery.orderDate = dateFilter;
+      grnQuery.grnDate = dateFilter;
       invoiceQuery.invoiceDate = dateFilter;
       paymentQuery.paymentDate = dateFilter;
       ledgerQuery.entryDate = dateFilter;
@@ -288,8 +290,8 @@ export const performAutoReconciliation = async (req, res) => {
 
     // Get total counts for pagination
     const [totalPOs, totalGRNs, totalInvoices, totalPayments, totalLedgerEntries] = await Promise.all([
-      PurchaseOrder.countDocuments(baseQuery),
-      GRN.countDocuments(baseQuery),
+      PurchaseOrder.countDocuments(poQuery),
+      GRN.countDocuments(grnQuery),
       SupplierInvoice.countDocuments(invoiceQuery),
       SupplierPayment.countDocuments(paymentQuery),
       SupplierLedger.countDocuments(ledgerQuery)
@@ -297,14 +299,14 @@ export const performAutoReconciliation = async (req, res) => {
 
     // Get paginated data for the supplier
     const [purchaseOrders, grns, invoices, payments, ledgerEntries] = await Promise.all([
-      PurchaseOrder.find(baseQuery)
+      PurchaseOrder.find(poQuery)
         .populate('lines.productId', 'productCode itemName')
         .sort({ orderDate: 1 })
         .skip(skip)
         .limit(limitNumber)
         .lean(),
       
-      GRN.find(baseQuery)
+      GRN.find(grnQuery)
         .populate('poId', 'poNumber orderDate')
         .populate('items.productId', 'productCode itemName')
         .sort({ grnDate: 1 })
@@ -425,7 +427,11 @@ export const performAutoReconciliation = async (req, res) => {
         const totalReceivedQuantity = grnItems.reduce((sum, item) => sum + (item.receivedQuantity || 0), 0);
         const totalAcceptedQuantity = grnItems.reduce((sum, item) => sum + (item.acceptedQuantity || 0), 0);
 
-        if (totalReceivedQuantity !== poLine.quantity || totalAcceptedQuantity !== poLine.quantity) {
+        // Check for discrepancies - be more lenient with matching
+        const quantityDifference = Math.abs((poLine.quantity || 0) - totalAcceptedQuantity);
+        const isSignificantDifference = quantityDifference > 0.01; // Allow for small rounding differences
+
+        if (isSignificantDifference) {
           reconciliationResults.discrepancies.push({
             type: 'PO_GRN_MISMATCH',
             poId: po._id,
@@ -440,14 +446,20 @@ export const performAutoReconciliation = async (req, res) => {
             grnDetails: grnItems
           });
         } else {
-          reconciliationResults.matches.push({
-            type: 'PO_GRN_MATCH',
-            poId: po._id,
-            poNumber: po.poNumber,
-            productId: productId,
-            productName: poLine.productId.itemName || 'Unknown Product',
-            quantity: poLine.quantity || 0
-          });
+          // Only add to matches if we have GRNs for this PO line
+          if (grnItems.length > 0) {
+            reconciliationResults.matches.push({
+              type: 'PO_GRN_MATCH',
+              poId: po._id,
+              poNumber: po.poNumber,
+              productId: productId,
+              productName: poLine.productId.itemName || 'Unknown Product',
+              quantity: poLine.quantity || 0,
+              receivedQuantity: totalReceivedQuantity,
+              acceptedQuantity: totalAcceptedQuantity,
+              grnCount: grnItems.length
+            });
+          }
         }
       });
     });
@@ -493,7 +505,11 @@ export const performAutoReconciliation = async (req, res) => {
         const totalInvoiceQuantity = invoiceItems.reduce((sum, item) => sum + (item.quantity || 0), 0);
         const totalInvoiceAmount = invoiceItems.reduce((sum, item) => sum + (item.totalPrice || 0), 0);
 
-        if (totalInvoiceQuantity !== (grnItem.acceptedQuantity || 0)) {
+        // Check for discrepancies - be more lenient with matching
+        const quantityDifference = Math.abs((grnItem.acceptedQuantity || 0) - totalInvoiceQuantity);
+        const isSignificantDifference = quantityDifference > 0.01; // Allow for small rounding differences
+
+        if (isSignificantDifference) {
           reconciliationResults.discrepancies.push({
             type: 'GRN_INVOICE_MISMATCH',
             grnId: grn._id,
@@ -506,6 +522,21 @@ export const performAutoReconciliation = async (req, res) => {
             difference: (grnItem.acceptedQuantity || 0) - totalInvoiceQuantity,
             invoiceDetails: invoiceItems
           });
+        } else {
+          // Only add to matches if we have invoices for this GRN item
+          if (invoiceItems.length > 0) {
+            reconciliationResults.matches.push({
+              type: 'GRN_INVOICE_MATCH',
+              grnId: grn._id,
+              grnNo: grn.grnNo,
+              productId: productId,
+              productName: grnItem.productId.itemName || 'Unknown Product',
+              quantity: grnItem.acceptedQuantity || 0,
+              invoiceQuantity: totalInvoiceQuantity,
+              amount: totalInvoiceAmount,
+              invoiceCount: invoiceItems.length
+            });
+          }
         }
       });
     });
@@ -522,8 +553,9 @@ export const performAutoReconciliation = async (req, res) => {
       }, 0);
 
       const outstandingAmount = (invoice.totalAmount || 0) - totalPaidAmount;
+      const isSignificantOutstanding = Math.abs(outstandingAmount) > 0.01; // Allow for small rounding differences
 
-      if (outstandingAmount > 0) {
+      if (isSignificantOutstanding && outstandingAmount > 0) {
         reconciliationResults.discrepancies.push({
           type: 'INVOICE_PAYMENT_MISMATCH',
           invoiceId: invoice._id,
@@ -540,12 +572,16 @@ export const performAutoReconciliation = async (req, res) => {
             status: payment.status
           }))
         });
-      } else if (outstandingAmount === 0) {
+      } else if (!isSignificantOutstanding || outstandingAmount <= 0) {
+        // Add to matches if fully paid or overpaid (within tolerance)
         reconciliationResults.matches.push({
           type: 'INVOICE_PAYMENT_MATCH',
           invoiceId: invoice._id,
           invoiceNumber: invoice.invoiceNumber,
-          amount: invoice.totalAmount || 0
+          invoiceDate: invoice.invoiceDate,
+          amount: invoice.totalAmount || 0,
+          paidAmount: totalPaidAmount,
+          paymentCount: relatedPayments.length
         });
       }
     });
@@ -562,7 +598,9 @@ export const performAutoReconciliation = async (req, res) => {
     console.log('Reconciliation completed:', {
       totalMatches,
       totalDiscrepancies,
-      reconciliationRate: reconciliationResults.summary.reconciliationRate
+      reconciliationRate: reconciliationResults.summary.reconciliationRate,
+      matches: reconciliationResults.matches.map(m => ({ type: m.type, productName: m.productName, quantity: m.quantity })),
+      discrepancies: reconciliationResults.discrepancies.map(d => ({ type: d.type, productName: d.productName, difference: d.difference }))
     });
 
     res.json({

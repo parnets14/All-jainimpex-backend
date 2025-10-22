@@ -1,11 +1,12 @@
 // controllers/userController.js
 import User from '../models/User.js';
 import { AVAILABLE_PERMISSIONS, AVAILABLE_REGIONS, ROLE_PERMISSIONS } from '../config/permissions.js';
+import { generatePDF } from '../utils/pdfGenerator.js';
 
 // Get all users (Super admin only)
 export const getUsers = async (req, res) => {
   try {
-    const { page = 1, limit = 10, search = '', status, role } = req.query;
+    const { page = 1, limit = 10, search = '', status, role, startDate, endDate } = req.query;
     
     // Build filter object
     const filter = {};
@@ -24,6 +25,13 @@ export const getUsers = async (req, res) => {
     
     if (role && role !== 'All') {
       filter.role = role;
+    }
+
+    // Date range filter
+    if (startDate || endDate) {
+      filter.createdAt = {};
+      if (startDate) filter.createdAt.$gte = new Date(startDate);
+      if (endDate) filter.createdAt.$lte = new Date(endDate);
     }
 
     const users = await User.find(filter)
@@ -316,6 +324,221 @@ export const updateUserStatus = async (req, res) => {
     res.status(500).json({
       success: false,
       message: error.message
+    });
+  }
+};
+
+// Export users to PDF
+export const exportUsersToPDF = async (req, res) => {
+  try {
+    console.log('Export users PDF request:', req.query);
+    console.log('Current user:', req.user);
+    
+    const { search = '', status, role, startDate, endDate } = req.query;
+    
+    // Build filter object (same as getUsers)
+    const filter = {};
+    
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { username: { $regex: search, $options: 'i' } }
+      ];
+    }
+    
+    if (status && status !== 'All') {
+      filter.status = status;
+    }
+    
+    if (role && role !== 'All') {
+      filter.role = role;
+    }
+
+    // Date range filter
+    if (startDate || endDate) {
+      filter.createdAt = {};
+      if (startDate) filter.createdAt.$gte = new Date(startDate);
+      if (endDate) filter.createdAt.$lte = new Date(endDate);
+    }
+
+    console.log('Filter applied:', filter);
+
+    // Get all users matching the filter
+    const users = await User.find(filter)
+      .select('-password')
+      .sort({ createdAt: -1 });
+
+    console.log('Found users:', users.length);
+
+    // Check if we have any users
+    if (users.length === 0) {
+      console.log('No users found, creating empty report');
+      // Create a report with no data message
+      const pdfData = {
+        title: 'User Management Report',
+        subtitle: 'No Users Found',
+        generatedAt: new Date().toLocaleString(),
+        filters: {
+          search: search || 'All',
+          status: status || 'All',
+          role: role || 'All',
+          dateRange: startDate && endDate ? `${startDate} to ${endDate}` : 'All'
+        },
+        data: [{
+          'Name': 'No users found',
+          'Username': 'N/A',
+          'Email': 'N/A',
+          'Phone': 'N/A',
+          'Role': 'N/A',
+          'Status': 'N/A',
+          'Location': 'N/A',
+          'Permissions': 0,
+          'Regions': 0,
+          'Created': 'N/A',
+          'Last Login': 'N/A'
+        }]
+      };
+
+      console.log('PDF data prepared for empty report:', {
+        title: pdfData.title,
+        subtitle: pdfData.subtitle,
+        dataLength: pdfData.data.length,
+        filters: pdfData.filters
+      });
+
+      // Generate PDF
+      const pdfBuffer = await generatePDF(pdfData);
+      console.log('PDF generated for empty report, buffer size:', pdfBuffer.length);
+
+      // Set response headers
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="users-report-empty-${new Date().toISOString().split('T')[0]}.pdf"`);
+      res.setHeader('Content-Length', pdfBuffer.length);
+
+      return res.send(pdfBuffer);
+    }
+
+    // Prepare data for PDF
+    const pdfData = {
+      title: 'User Management Report',
+      subtitle: `Complete User List (${users.length} users)`,
+      generatedAt: new Date().toLocaleString(),
+      filters: {
+        search: search || 'All',
+        status: status || 'All',
+        role: role || 'All',
+        dateRange: startDate && endDate ? `${startDate} to ${endDate}` : 'All'
+      },
+      data: users.map(user => ({
+        'Name': user.name || 'N/A',
+        'Username': user.username || 'N/A',
+        'Email': user.email || 'N/A',
+        'Phone': user.phone || 'N/A',
+        'Role': user.role ? user.role.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase()) : 'N/A',
+        'Status': user.status || 'N/A',
+        'Location': user.location || 'N/A',
+        'Permissions': user.permissions?.length || 0,
+        'Regions': user.assignedRegions?.length || 0,
+        'Created': user.createdAt ? new Date(user.createdAt).toLocaleDateString() : 'N/A',
+        'Last Login': user.lastLogin ? new Date(user.lastLogin).toLocaleString() : 'Never'
+      }))
+    };
+
+    console.log('PDF data prepared:', {
+      title: pdfData.title,
+      subtitle: pdfData.subtitle,
+      dataLength: pdfData.data.length,
+      filters: pdfData.filters
+    });
+
+    // Generate PDF
+    try {
+      const pdfBuffer = await generatePDF(pdfData);
+
+      console.log('PDF generated, buffer size:', pdfBuffer.length);
+
+      if (!pdfBuffer || pdfBuffer.length === 0) {
+        throw new Error('PDF generation failed - empty buffer');
+      }
+
+      // Set response headers
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="users-report-${new Date().toISOString().split('T')[0]}.pdf"`);
+      res.setHeader('Content-Length', pdfBuffer.length);
+
+      res.send(pdfBuffer);
+    } catch (pdfError) {
+      console.error('PDF generation error:', pdfError);
+      throw new Error(`PDF generation failed: ${pdfError.message}`);
+    }
+  } catch (error) {
+    console.error('Export users PDF error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Test PDF generation
+export const testPDFGeneration = async (req, res) => {
+  try {
+    console.log('Testing PDF generation...');
+    
+    // Create test data
+    const testData = {
+      title: 'Test PDF Generation',
+      subtitle: 'This is a test to verify PDF generation works',
+      generatedAt: new Date().toLocaleString(),
+      filters: {
+        search: 'Test',
+        status: 'Test',
+        role: 'Test',
+        dateRange: 'Test'
+      },
+      data: [
+        {
+          'Name': 'Test User',
+          'Username': 'testuser',
+          'Email': 'test@example.com',
+          'Phone': '1234567890',
+          'Role': 'Test Role',
+          'Status': 'Active',
+          'Location': 'Test Location',
+          'Permissions': 5,
+          'Regions': 2,
+          'Created': new Date().toLocaleDateString(),
+          'Last Login': new Date().toLocaleString()
+        }
+      ]
+    };
+
+    console.log('Test data prepared:', testData);
+
+    // Generate PDF
+    const pdfBuffer = await generatePDF(testData);
+    
+    console.log('Test PDF generated, buffer size:', pdfBuffer.length);
+
+    if (!pdfBuffer || pdfBuffer.length === 0) {
+      return res.status(500).json({
+        success: false,
+        message: 'PDF generation failed - empty buffer'
+      });
+    }
+
+    // Set response headers
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="test-pdf-${new Date().toISOString().split('T')[0]}.pdf"`);
+    res.setHeader('Content-Length', pdfBuffer.length);
+
+    res.send(pdfBuffer);
+  } catch (error) {
+    console.error('Test PDF generation error:', error);
+    res.status(500).json({
+      success: false,
+      message: `Test PDF generation failed: ${error.message}`
     });
   }
 };

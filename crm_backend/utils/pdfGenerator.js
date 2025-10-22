@@ -266,3 +266,237 @@ export const generateSalaryPDF = (salary) => {
     }
   });
 };
+
+// Generic PDF generator for reports
+export const generatePDF = (data) => {
+  return new Promise((resolve, reject) => {
+    try {
+      const doc = new PDFDocument({
+        margin: 50,
+        size: "A4",
+        info: {
+          Title: data.title || "Report",
+          Author: "Jain Impex",
+          Subject: data.subtitle || "Generated Report",
+        },
+      });
+
+      const buffers = [];
+      doc.on("data", buffers.push.bind(buffers));
+      doc.on("end", () => {
+        const pdfData = Buffer.concat(buffers);
+        resolve(pdfData);
+      });
+
+      // Add company header with background
+      doc.fillColor("#1e3a8a").rect(0, 0, doc.page.width, 120).fill();
+
+      // Add company logo
+      try {
+        const logoPath = path.join(__dirname, "../public/logo.jpeg");
+        doc.image(logoPath, 50, 30, { width: 60, height: 45 });
+      } catch (error) {
+        console.log("Logo not found, continuing without it");
+      }
+
+      // Add company text
+      doc
+        .fillColor("#ffffff")
+        .fontSize(24)
+        .font("Helvetica-Bold")
+        .text("JAIN IMPEX", 120, 40)
+        .fontSize(12)
+        .font("Helvetica")
+        .text("Plumbing Solutions & Services", 120, 70)
+        .text("123 Market Road, New Delhi - 110001", 120, 85)
+        .text("GSTIN: 07ABCDE1234F125 | PAN: ABCDE1234F", 120, 100);
+
+      // Report title
+      doc
+        .fillColor("#1e3a8a")
+        .fontSize(18)
+        .font("Helvetica-Bold")
+        .text(data.title || "REPORT", 0, 140, { align: "center" })
+        .fontSize(12)
+        .font("Helvetica")
+        .text(data.subtitle || "", 0, 160, { align: "center" });
+
+      // Report info section
+      const infoTop = 190;
+      doc
+        .fillColor("#f8fafc")
+        .rect(50, infoTop, doc.page.width - 100, 60)
+        .fill()
+        .strokeColor("#e2e8f0")
+        .rect(50, infoTop, doc.page.width - 100, 60)
+        .stroke();
+
+      doc
+        .fillColor("#1e293b")
+        .fontSize(10)
+        .font("Helvetica-Bold")
+        .text("Report Information", 60, infoTop + 10)
+        .fontSize(9)
+        .font("Helvetica")
+        .text(`Generated At: ${data.generatedAt || new Date().toLocaleString()}`, 60, infoTop + 25)
+        .text(`Total Records: ${data.data?.length || 0}`, 60, infoTop + 40);
+
+      // Filters section
+      if (data.filters) {
+        const filtersTop = infoTop + 80;
+        doc
+          .fillColor("#f8fafc")
+          .rect(50, filtersTop, doc.page.width - 100, 40)
+          .fill()
+          .strokeColor("#e2e8f0")
+          .rect(50, filtersTop, doc.page.width - 100, 40)
+          .stroke();
+
+        doc
+          .fillColor("#1e293b")
+          .fontSize(10)
+          .font("Helvetica-Bold")
+          .text("Applied Filters", 60, filtersTop + 10)
+          .fontSize(9)
+          .font("Helvetica");
+
+        let filterY = filtersTop + 25;
+        Object.entries(data.filters).forEach(([key, value]) => {
+          if (value && value !== 'All') {
+            doc.text(`${key}: ${value}`, 60, filterY);
+            filterY += 12;
+          }
+        });
+      }
+
+      // Data table
+      if (data.data && data.data.length > 0) {
+        const tableTop = (data.filters ? infoTop + 140 : infoTop + 80);
+        
+        // Define optimal column widths for better readability
+        const columnWidths = {
+          'Name': 90,
+          'Username': 80,
+          'Email': 120,
+          'Phone': 80,
+          'Role': 90,
+          'Status': 60,
+          'Location': 80,
+          'Permissions': 60,
+          'Regions': 60,
+          'Created': 80,
+          'Last Login': 100
+        };
+        
+        const headers = Object.keys(data.data[0]);
+        const totalWidth = Object.values(columnWidths).reduce((sum, width) => sum + width, 0);
+        const startX = Math.max(30, (doc.page.width - totalWidth) / 2);
+        
+        // Draw table headers with proper styling
+        doc
+          .fillColor("#1e3a8a")
+          .fontSize(9)
+          .font("Helvetica-Bold");
+
+        let currentX = startX;
+        headers.forEach((header, index) => {
+          const width = columnWidths[header] || 80;
+          
+          // Draw header background
+          doc.fillColor("#e3f2fd")
+            .rect(currentX, tableTop, width, 18)
+            .fill();
+          
+          // Draw header border
+          doc.strokeColor("#1e3a8a")
+            .rect(currentX, tableTop, width, 18)
+            .stroke();
+          
+          // Draw header text
+          doc.fillColor("#1e3a8a")
+            .text(header, currentX + 4, tableTop + 5, { 
+              width: width - 8,
+              align: 'left'
+            });
+          
+          currentX += width;
+        });
+
+        // Table rows with better formatting
+        let currentY = tableTop + 18;
+        doc.fontSize(7).font("Helvetica");
+
+        data.data.forEach((row, rowIndex) => {
+          // Check if we need a new page
+          if (currentY > doc.page.height - 80) {
+            doc.addPage();
+            currentY = 50;
+          }
+
+          // Alternate row colors for better readability
+          const isEvenRow = rowIndex % 2 === 0;
+          if (isEvenRow) {
+            doc.fillColor("#f8f9fa")
+              .rect(startX, currentY, totalWidth, 16)
+              .fill();
+          }
+
+          currentX = startX;
+          headers.forEach((header, colIndex) => {
+            const width = columnWidths[header] || 80;
+            let value = row[header] || '';
+            
+            // Truncate long values to prevent wrapping
+            if (header === 'Email' && value.length > 20) {
+              value = value.substring(0, 17) + '...';
+            } else if (header === 'Last Login' && value.length > 15) {
+              value = value.substring(0, 12) + '...';
+            } else if (header === 'Phone' && value.length > 12) {
+              value = value.substring(0, 9) + '...';
+            }
+            
+            // Draw cell border
+            doc.strokeColor("#dee2e6")
+              .rect(currentX, currentY, width, 16)
+              .stroke();
+            
+            // Draw cell text
+            doc.fillColor("#495057")
+              .text(String(value), currentX + 3, currentY + 4, { 
+                width: width - 6,
+                align: 'left'
+              });
+            
+            currentX += width;
+          });
+          
+          currentY += 16;
+        });
+      } else {
+        // No data message
+        const noDataTop = (data.filters ? infoTop + 140 : infoTop + 80);
+        doc
+          .fillColor("#64748b")
+          .fontSize(12)
+          .font("Helvetica")
+          .text("No data available for the selected criteria", 0, noDataTop, { align: "center" });
+      }
+
+      // Footer
+      const footerTop = doc.page.height - 60;
+      doc
+        .strokeColor("#e2e8f0")
+        .moveTo(50, footerTop)
+        .lineTo(doc.page.width - 50, footerTop)
+        .stroke()
+        .fillColor("#94a3b8")
+        .fontSize(8)
+        .text("This is a computer generated document and does not require a physical signature.", 0, footerTop + 10, { align: "center" })
+        .text(`Generated on: ${new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" })}`, 0, footerTop + 25, { align: "center" });
+
+      doc.end();
+    } catch (error) {
+      reject(error);
+    }
+  });
+};

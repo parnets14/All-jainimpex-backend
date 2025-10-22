@@ -8,7 +8,8 @@ import {
   deleteUser,
   updateUserPermissions,
   getPermissionsConfig,
-  updateUserStatus
+  updateUserStatus,
+  exportUsersToPDF
 } from '../controllers/userController.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { requirePermission } from '../middleware/permissionMiddleware.js';
@@ -41,6 +42,7 @@ router.use(requireSuperAdmin);
 
 // Routes with activity logging
 router.get('/', logActivity("User Management", "Viewed users list", "READ"), getUsers);
+router.get('/export/pdf', logActivity("User Management", "Exported users to PDF", "EXPORT"), exportUsersToPDF);
 router.get('/config/permissions', logActivity("User Management", "Viewed permissions config", "READ"), getPermissionsConfig);
 router.get('/:id', logActivity("User Management", "Viewed user details", "READ"), getUserById);
 router.post('/', logActivity("User Management", "Created new user", "CREATE"), createUser);

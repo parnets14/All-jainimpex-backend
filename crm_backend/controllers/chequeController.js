@@ -31,10 +31,22 @@ export const getCheques = async (req, res) => {
     const filter = { isDeleted: false };
 
     if (search) {
+      // First, find dealers that match the search term
+      const matchingDealers = await Dealer.find({
+        $or: [
+          { name: { $regex: search, $options: "i" } },
+          { code: { $regex: search, $options: "i" } }
+        ]
+      }).select('_id');
+      
+      const dealerIds = matchingDealers.map(d => d._id);
+      
+      // Build search query including dealer matches
       filter.$or = [
         { chequeNo: { $regex: search, $options: "i" } },
         { bankName: { $regex: search, $options: "i" } },
         { remarks: { $regex: search, $options: "i" } },
+        ...(dealerIds.length > 0 ? [{ dealerId: { $in: dealerIds } }] : [])
       ];
     }
 
