@@ -94,7 +94,8 @@ const userSchema = new mongoose.Schema({
       'hr_manager',
       'sales_executive',
       'warehouse_manager',
-      'inventory_manager'
+      'inventory_manager',
+      'dealer'
     ],
     default: 'sales_executive'
   },

@@ -25,6 +25,8 @@ import {
   strictLimiter,
 } from "./middleware/rateLimit.js";
 import fs from "fs";
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import employeeRoutes from "./routes/employeeRoutes.js";
 import attendanceRoutes from "./routes/attendanceRoutes.js";
 import "./cron/attendanceCron.js";
@@ -33,6 +35,7 @@ import subcategoryRoutes from "./routes/subcategoryRoutes.js"; // Add this
 import brandRoutes from "./routes/brandRoutes.js"; // Add this
 import salaryRoutes from "./routes/salaryRoutes.js";
 import productRoutes from "./routes/productRoutes.js";
+import dealerPricingRoutes from "./routes/dealerPricingRoutes.js";
 import regionRoutes from "./routes/regionRoutes.js";
 import supplierRoutes from "./routes/supplierRoutes.js";
 import referenceRoutes from "./routes/referenceRoutes.js";
@@ -60,6 +63,14 @@ import downloadLogRoutes from './routes/downloadLogRoutes.js';
 import priceDeviationRoutes from './routes/priceDeviationRoutes.js';
 import sampleDataRoutes from './routes/sampleDataRoutes.js';
 import testRoutes from './routes/testRoutes.js';
+
+// Dealer App Routes
+import appAuthRoutes from './app/routes/authRoutes.js';
+import appProductRoutes from './app/routes/productRoutes.js';
+import appOrderRoutes from './app/routes/orderRoutes.js';
+import appInvoiceRoutes from './app/routes/invoiceRoutes.js';
+import appLedgerRoutes from './app/routes/ledgerRoutes.js';
+import appDashboardRoutes from './app/routes/dashboardRoutes.js';
 
 dotenv.config();
 
@@ -117,24 +128,39 @@ app.use(
   cors({
     origin: function (origin, callback) {
       const allowedOrigins = [
-        "http://localhost:5173",             // local dev
+        "http://localhost:5173",             // local web dev
         "https://jainimpex.netlify.app",     // ✅ correct Netlify domain
         "https://jainimpex.netlify.app/",    // ✅ with trailing slash
+        "http://localhost:3000",             // local dealer app (React Native Metro)
+        "http://localhost:8081",             // local dealer app (React Native alternative)
+        "exp://localhost:19000",             // Expo dev
       ];
       
       console.log('🌐 CORS Origin Check:', { origin, allowedOrigins });
       
+      // Allow requests with no origin (mobile apps, Postman, etc.)
+      // Mobile apps typically don't send origin header, so allow null
       if (!origin || allowedOrigins.includes(origin)) {
-        console.log('✅ CORS: Origin allowed');
+        console.log('✅ CORS: Origin allowed', { origin: origin || 'null (mobile app)' });
         callback(null, true);
       } else {
-        console.log('❌ CORS: Origin blocked');
-        callback(new Error("Not allowed by CORS"));
+        console.log('❌ CORS: Origin blocked', { origin });
+        // For development, allow all origins to avoid issues
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('⚠️ Development mode: Allowing origin anyway');
+          callback(null, true);
+        } else {
+          callback(new Error("Not allowed by CORS"));
+        }
       }
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+    exposedHeaders: ['Content-Type', 'Authorization'],
+    // Allow preflight requests
+    preflightContinue: false,
+    optionsSuccessStatus: 204
   })
 );
 
@@ -143,7 +169,10 @@ app.use(
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use(cookieParser());
-app.use(helmet());
+// Configure helmet to allow images and static files
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" }
+}));
 
 // Apply general rate limiting to all routes
 app.use(generalLimiter);
@@ -218,6 +247,10 @@ app.use("/api/subcategories", subcategoryRoutes);
 app.use("/api/brands", brandRoutes);
 app.use("/api/salary", salaryRoutes);
 app.use("/api/products", productRoutes);
+// Register dealer pricing routes
+console.log('🔧 Registering dealer pricing routes...');
+app.use("/api/dealer-pricing", dealerPricingRoutes);
+console.log('✅ Dealer pricing routes registered at /api/dealer-pricing');
 app.use("/api/regions", regionRoutes);
 app.use("/api/suppliers", supplierRoutes);
 app.use("/api/reference", referenceRoutes);
@@ -246,11 +279,30 @@ app.use('/api/reports', priceDeviationRoutes);
 app.use('/api/sample-data', sampleDataRoutes);
 app.use('/api/test', testRoutes);
 
-// Serve uploaded files statically
-app.use("/uploads", express.static("uploads"));
+// Dealer App Routes (separate API prefix for app)
+app.use('/api/app/auth', appAuthRoutes);
+app.use('/api/app/products', appProductRoutes);
+app.use('/api/app/orders', appOrderRoutes);
+app.use('/api/app/invoices', appInvoiceRoutes);
+app.use('/api/app/ledger', appLedgerRoutes);
+app.use('/api/app/dashboard', appDashboardRoutes);
+
+// Serve uploaded files statically - use absolute path
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Serve uploaded files statically with proper headers
+app.use("/uploads", express.static(join(__dirname, "uploads"), {
+  setHeaders: (res, path) => {
+    // Set CORS headers for images
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Access-Control-Allow-Methods', 'GET');
+    res.set('Cache-Control', 'public, max-age=31536000'); // Cache for 1 year
+  }
+}));
 
 // Serve public files (logo, etc.)
-app.use("/public", express.static("public"));
+app.use("/public", express.static(join(__dirname, "public")));
 
   // Root route
   app.get("/", (req, res) => {
@@ -320,7 +372,7 @@ app.use("/public", express.static("public"));
   console.log("📝 Using direct salary processing (no queue system)");
 
   // Start server
-  const PORT = process.env.PORT || 10000;
+  const PORT = process.env.PORT || 5000;
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Worker ${process.pid}] 🎯 Server running on port ${PORT}`);
   });

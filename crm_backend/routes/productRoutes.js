@@ -7,11 +7,13 @@ import {
   deleteProduct,
   getProductStats,
   getProductsByCategory,
-  getProductsByBrand
+  getProductsByBrand,
+  uploadProductImage
 } from '../controllers/productController.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { generalLimiter } from '../middleware/rateLimit.js';
 import { logActivity } from '../middleware/activityLogMiddleware.js';
+import { imageUpload, handleUploadErrors } from '../middleware/upload.js';
 
 const router = express.Router();
 
@@ -36,6 +38,14 @@ router.route('/category/:categoryId')
 
 router.route('/brand/:brandId')
   .get(logActivity("Product Management", "Viewed products by brand", "READ"), getProductsByBrand);
+
+// Upload image route - must be before /:id route to avoid route conflicts
+router.post('/upload-image', 
+  imageUpload.single('image'),
+  handleUploadErrors,
+  logActivity("Product Management", "Uploaded product image", "CREATE"),
+  uploadProductImage
+);
 
 router.route('/:id')
   .get(logActivity("Product Management", "Viewed product details", "READ"), getProduct)

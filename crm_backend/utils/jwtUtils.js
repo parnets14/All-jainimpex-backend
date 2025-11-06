@@ -2,7 +2,7 @@
 import jwt from 'jsonwebtoken';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-fallback-secret-key-for-development-only';
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '30d'; // 30 days for persistent login
 
 export const generateToken = (userId) => {
   if (!JWT_SECRET) {

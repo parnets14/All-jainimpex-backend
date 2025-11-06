@@ -146,7 +146,8 @@ export const createProduct = async (req, res) => {
       category,
       subcategory,
       rateSlabs,
-      minStockLevel
+      minStockLevel,
+      images
     } = req.body;
 
     // Convert empty productCode to undefined for auto-generation
@@ -215,10 +216,13 @@ export const createProduct = async (req, res) => {
       brand,
       category,
       subcategory,
-      minStockLevel, // Add this line
+      minStockLevel,
       rateSlabs,
+      images: Array.isArray(images) ? images : [],
       createdBy: req.user._id
     });
+    
+    console.log('📸 Creating product with images:', product.images);
 
     await product.save();
 
@@ -269,7 +273,8 @@ export const updateProduct = async (req, res) => {
       subcategory,
       rateSlabs,
       status,
-      minStockLevel
+      minStockLevel,
+      images
     } = req.body;
 
     // Convert empty productCode to undefined for auto-generation
@@ -353,9 +358,22 @@ export const updateProduct = async (req, res) => {
     product.brand = brand;
     product.category = category;
     product.subcategory = subcategory;
-    product.minStockLevel = minStockLevel; // Add this line
+    product.minStockLevel = minStockLevel;
     product.rateSlabs = rateSlabs;
     product.status = status;
+    
+    // Update images if provided
+    if (images !== undefined) {
+      product.images = Array.isArray(images) ? images : [];
+      console.log('📸 Updating product images:', {
+        count: product.images.length,
+        images: product.images,
+        productId: product._id,
+        productCode: product.productCode
+      });
+    } else {
+      console.log('⚠️ Images field not provided in request body');
+    }
 
     // Save the product to trigger pre-save hooks
     await product.save();
@@ -391,6 +409,36 @@ export const updateProduct = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Server error while updating product'
+    });
+  }
+};
+
+// @desc    Upload product image
+// @route   POST /api/products/upload-image
+// @access  Private
+export const uploadProductImage = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'No image file provided'
+      });
+    }
+
+    // Return the image URL
+    const imageUrl = `/uploads/${req.file.filename}`;
+
+    res.status(200).json({
+      success: true,
+      message: 'Image uploaded successfully',
+      url: imageUrl,
+      filename: req.file.filename
+    });
+  } catch (error) {
+    console.error('Upload product image error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while uploading image'
     });
   }
 };

@@ -81,6 +81,10 @@ const productSchema = new mongoose.Schema({
     enum: ['active', 'inactive'],
     default: 'active'
   },
+  images: {
+    type: [String],
+    default: []
+  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
