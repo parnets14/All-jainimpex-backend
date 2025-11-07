@@ -3,7 +3,9 @@ import {
   getDashboardStats,
   getRecentOrders,
   getRecentInvoices,
-  getNotifications
+  getNotifications,
+  markNotificationAsRead,
+  markAllNotificationsAsRead
 } from '../controllers/dashboardController.js';
 import { protect } from '../../middleware/authMiddleware.js';
 import { generalLimiter } from '../../middleware/rateLimit.js';
@@ -27,6 +29,12 @@ router.get('/recent-invoices', getRecentInvoices);
 
 // Get notifications
 router.get('/notifications', getNotifications);
+
+// Mark notification as read
+router.patch('/notifications/:id/read', markNotificationAsRead);
+
+// Mark all notifications as read
+router.patch('/notifications/read-all', markAllNotificationsAsRead);
 
 export default router;
 

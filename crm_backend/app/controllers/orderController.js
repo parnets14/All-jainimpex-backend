@@ -1,7 +1,10 @@
 import SalesOrder from '../../models/SalesOrder.js';
 import Product from '../../models/Product.js';
 import Dealer from '../../models/Dealer.js';
-import Stock from '../../models/Stock.js';
+import StockMovement from '../../models/Stock.js';
+import GRN from '../../models/GRN.js';
+import StockMovementService from '../../services/stockMovementService.js';
+import DealerPricing from '../../models/DealerPricing.js';
 
 // Generate unique order number
 const generateOrderNumber = async () => {
@@ -52,7 +55,8 @@ export const getMyOrders = async (req, res) => {
 
     const query = { dealer: dealerId };
 
-    if (status && status !== 'all') {
+    // Handle status filter - check for both 'all' and 'All'
+    if (status && status.toLowerCase() !== 'all') {
       query.status = status;
     }
 
@@ -66,6 +70,7 @@ export const getMyOrders = async (req, res) => {
 
     const orders = await SalesOrder.find(query)
       .populate('dealer', 'name code')
+      .populate('products.product', 'itemName productCode')
       .sort({ orderDate: -1 })
       .limit(parseInt(limit))
       .skip(skip);
@@ -160,7 +165,8 @@ export const createOrder = async (req, res) => {
     }
 
     // Calculate totals and validate products
-    let totalAmount = 0;
+    let grossAmount = 0;
+    let totalGst = 0;
     const orderProducts = [];
 
     for (const item of products) {
@@ -172,45 +178,156 @@ export const createOrder = async (req, res) => {
         });
       }
 
-      // Check stock availability
-      const stock = await Stock.findOne({
-        product: item.productId,
-        warehouse: dealer.regionId // Assuming warehouse by region
-      });
+      // Check total stock availability across all warehouses
+      let totalAvailableStock = 0;
+      try {
+        const grnQuery = { 'items.productId': product._id };
+        const grns = await GRN.find(grnQuery).select('warehouseId items');
 
-      if (!stock || stock.availableQuantity < item.quantity) {
+        const warehouseStock = {};
+        
+        grns.forEach(grn => {
+          if (!grn.warehouseId) return;
+          
+          const warehouseId = grn.warehouseId.toString();
+          
+          if (!warehouseStock[warehouseId]) {
+            warehouseStock[warehouseId] = {
+              totalQty: 0,
+              damagedQty: 0
+            };
+          }
+          
+          grn.items.forEach(grnItem => {
+            const itemProductId = grnItem.productId?._id ? grnItem.productId._id.toString() : grnItem.productId.toString();
+            if (itemProductId === product._id.toString()) {
+              warehouseStock[warehouseId].totalQty += grnItem.acceptedQuantity || 0;
+              warehouseStock[warehouseId].damagedQty += grnItem.damageQuantity || 0;
+            }
+          });
+        });
+
+        for (const warehouseId of Object.keys(warehouseStock)) {
+          try {
+            const currentStock = await StockMovementService.getCurrentStock(product._id, warehouseId);
+            
+            const blockedMovements = await StockMovement.find({
+              productId: product._id,
+              warehouseId: warehouseId,
+              type: 'OUT',
+              referenceType: 'SALE'
+            });
+            
+            const unblockedMovements = await StockMovement.find({
+              productId: product._id,
+              warehouseId: warehouseId,
+              type: 'IN',
+              referenceType: 'SALE',
+              remarks: { $regex: /Stock Unblocked/ }
+            });
+            
+            let blockedQty = 0;
+            blockedMovements.forEach(movement => {
+              blockedQty += movement.quantity;
+            });
+            
+            unblockedMovements.forEach(movement => {
+              blockedQty -= movement.quantity;
+            });
+            
+            blockedQty = Math.max(0, blockedQty);
+            
+            const currentStockValue = currentStock !== undefined ? currentStock : warehouseStock[warehouseId].totalQty;
+            const netStock = currentStockValue - warehouseStock[warehouseId].damagedQty - blockedQty;
+            
+            totalAvailableStock += Math.max(0, netStock);
+          } catch (error) {
+            const netStock = warehouseStock[warehouseId].totalQty - warehouseStock[warehouseId].damagedQty;
+            totalAvailableStock += Math.max(0, netStock);
+          }
+        }
+      } catch (error) {
+        console.error(`Error calculating stock for product ${product._id}:`, error);
+      }
+
+      if (totalAvailableStock < item.quantity) {
         return res.status(400).json({
           success: false,
-          message: `Insufficient stock for product ${product.itemName}`
+          message: `Insufficient stock for product ${product.itemName}. Available: ${totalAvailableStock}, Requested: ${item.quantity}`
         });
       }
 
-      const itemTotal = product.dealerPrice * item.quantity;
-      totalAmount += itemTotal;
+      // Get dealer pricing
+      const dealerPricing = await DealerPricing.findOne({ 
+        product: product._id, 
+        isActive: true 
+      });
+
+      let unitPrice = 0;
+      if (dealerPricing) {
+        unitPrice = dealerPricing.sellingPrice;
+      } else {
+        unitPrice = product.rateSlabs && product.rateSlabs.length > 0
+          ? product.rateSlabs[0].rate
+          : product.totalAmount || 0;
+      }
+
+      const baseAmount = unitPrice * item.quantity;
+      const gstAmount = (baseAmount * product.gst) / 100;
+      const itemTotal = baseAmount + gstAmount;
+
+      grossAmount += baseAmount;
+      totalGst += gstAmount;
 
       orderProducts.push({
         product: item.productId,
         productName: product.itemName,
         productCode: product.productCode,
+        HSNCode: product.HSNCode,
         quantity: item.quantity,
-        unitPrice: product.dealerPrice,
-        total: itemTotal
+        unitPrice: unitPrice,
+        gst: product.gst,
+        gstAmount: gstAmount,
+        totalPrice: itemTotal,
+        warehouse: null, // Will be assigned later in dashboard
+        warehouseName: null
       });
     }
 
+    const totalAmount = grossAmount + totalGst;
+
     const orderNumber = await generateOrderNumber();
+
+    // Determine order type based on dealer type
+    let orderType = 'Independent Sales Order';
+    if (dealer.type) {
+      const typeMap = {
+        'Retail': 'Retail Sales Order',
+        'Wholesale': 'Wholesale Sales Order',
+        'Enterprise': 'Enterprise Sales Order',
+        'Reseller': 'Reseller Sales Order'
+      };
+      orderType = typeMap[dealer.type] || 'Independent Sales Order';
+    }
 
     const salesOrder = await SalesOrder.create({
       orderNumber,
       dealer: dealerId,
       dealerName: dealer.name,
       dealerCode: dealer.code,
+      dealerType: dealer.type,
+      region: dealer.regionId,
+      pinCode: dealer.pinCode,
       products: orderProducts,
+      grossAmount,
+      totalGst,
       totalAmount,
       deliveryAddress: deliveryAddress || dealer.address,
       notes,
       status: 'Pending',
-      orderDate: new Date()
+      type: orderType,
+      orderDate: new Date(),
+      createdBy: req.user._id
     });
 
     res.status(201).json({
@@ -254,16 +371,69 @@ export const cancelOrder = async (req, res) => {
       });
     }
 
-    if (order.status === 'Delivered' || order.status === 'Cancelled') {
+    // Allow cancellation for Pending and Confirmed orders from app
+    if (order.status === 'Cancelled') {
       return res.status(400).json({
         success: false,
-        message: `Cannot cancel order with status: ${order.status}`
+        message: 'Order is already cancelled'
       });
+    }
+
+    // Allow cancellation for Pending and Confirmed orders
+    // Processing, Delivered, and Rejected orders cannot be cancelled from app
+    if (!['Pending', 'Confirmed'].includes(order.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `You can only cancel orders with "Pending" or "Confirmed" status. Current status: ${order.status}. Orders in "Processing" or "Delivered" status cannot be cancelled.`
+      });
+    }
+
+    // Restore stock when cancelling
+    const StockMovement = (await import("../../models/Stock.js")).default;
+    const StockMovementService = (await import("../../services/stockMovementService.js")).default;
+    
+    for (const product of order.products) {
+      if (product.warehouse) {
+        // Create stock movement to restore blocked stock
+        const latestMovement = await StockMovement.findOne({
+          productId: product.product,
+          warehouseId: product.warehouse
+        }).sort({ date: -1, createdAt: -1 });
+        
+        const currentBalance = latestMovement ? latestMovement.balance : 0;
+        const newBalance = currentBalance + product.quantity;
+        
+        // Create IN movement to unblock stock
+        const unblockMovement = new StockMovement({
+          productId: product.product,
+          warehouseId: product.warehouse,
+          type: 'IN',
+          quantity: product.quantity,
+          balance: newBalance,
+          referenceNo: order.orderNumber,
+          referenceType: 'SALE',
+          date: new Date(),
+          remarks: `Order ${order.orderNumber} - Cancelled (Stock Unblocked)`,
+          createdBy: req.user._id
+        });
+        await unblockMovement.save();
+        
+        console.log(`Order ${order.orderNumber} cancelled - stock unblocked for product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
+      }
     }
 
     order.status = 'Cancelled';
     order.cancelledAt = new Date();
     await order.save();
+
+    // Create notification for dealer
+    try {
+      const message = `Your order ${order.orderNumber} has been cancelled.`;
+      console.log(`📧 Notification for dealer ${order.dealer}: ${message}`);
+      // TODO: Create Notification document and save to database
+    } catch (notificationError) {
+      console.error('Error creating notification:', notificationError);
+    }
 
     res.json({
       success: true,

@@ -50,6 +50,7 @@ const salesOrderSchema = new mongoose.Schema({
     required: true
   },
   dealerName: String,
+  dealerCode: String,
   dealerType: String,
   region: {
     type: mongoose.Schema.Types.ObjectId,

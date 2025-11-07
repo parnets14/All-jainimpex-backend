@@ -3,6 +3,7 @@ import DealerInvoice from '../../models/DealerInvoice.js';
 import DealerLedger from '../../models/DealerLedger.js';
 import Dealer from '../../models/Dealer.js';
 import Points from '../../models/Points.js';
+import Notification from '../../models/Notification.js';
 
 // @desc    Get dashboard stats
 // @route   GET /api/app/dashboard/stats
@@ -51,70 +52,35 @@ export const getDashboardStats = async (req, res) => {
       status: 'Pending'
     });
 
-    // Get points
-    const points = await Points.aggregate([
-      {
-        $match: { dealer: dealerId }
-      },
-      {
-        $group: {
-          _id: null,
-          totalPoints: { $sum: '$points' }
-        }
-      }
-    ]);
-
-    const totalPoints = points[0]?.totalPoints || 0;
-
-    // Get ageing buckets
-    const now = new Date();
-    const buckets = [
-      { range: '0-30 Days', days: 30, amount: 0, color: '#4CAF50' },
-      { range: '31-60 Days', days: 60, amount: 0, color: '#FF9800' },
-      { range: '61-90 Days', days: 90, amount: 0, color: '#FF5722' },
-      { range: '90+ Days', days: Infinity, amount: 0, color: '#F44336' }
-    ];
-
-    const ledgerEntries = await DealerLedger.find({
-      dealer: dealerId,
-      type: 'Debit'
+    // Get total orders count
+    const totalOrdersCount = await SalesOrder.countDocuments({
+      dealer: dealerId
     });
 
-    for (const entry of ledgerEntries) {
-      const daysDiff = Math.floor((now - entry.date) / (1000 * 60 * 60 * 24));
-      
-      if (daysDiff <= 30) {
-        buckets[0].amount += entry.amount;
-      } else if (daysDiff <= 60) {
-        buckets[1].amount += entry.amount;
-      } else if (daysDiff <= 90) {
-        buckets[2].amount += entry.amount;
-      } else {
-        buckets[3].amount += entry.amount;
-      }
-    }
+    // Get ageing buckets (simplified for now)
+    const ageingBuckets = [];
+
+    // Get points
+    const pointsData = await Points.findOne({ dealer: dealerId });
+    const totalPoints = pointsData?.totalPoints || 0;
 
     res.json({
       success: true,
       stats: {
-        dealer: {
-          name: dealer.name,
-          code: dealer.code
-        },
         financial: {
           outstanding: totalOutstanding,
-          creditLimit,
-          availableBalance,
-          creditDaysLeft: dealer.creditDays || 0
+          creditLimit: creditLimit,
+          availableBalance: availableBalance
         },
-        orders: {
-          recent: recentOrdersCount,
-          pending: pendingOrdersCount
-        },
+        ageingBuckets: ageingBuckets,
         points: {
           total: totalPoints
         },
-        ageingBuckets: buckets
+        orders: {
+          recent: recentOrdersCount,
+          pending: pendingOrdersCount,
+          total: totalOrdersCount
+        }
       }
     });
   } catch (error) {
@@ -132,15 +98,23 @@ export const getDashboardStats = async (req, res) => {
 // @access  Private (Dealer)
 export const getRecentOrders = async (req, res) => {
   try {
-    const dealerId = req.user.dealerId || req.user.id;
-    const { limit = 5 } = req.query;
+    // Get dealer by username (dealer code) - consistent with other app controllers
+    const dealer = await Dealer.findOne({ code: req.user.username });
+    if (!dealer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Dealer not found'
+      });
+    }
+    const dealerId = dealer._id;
+    
+    const limit = parseInt(req.query.limit) || 5;
 
-    const orders = await SalesOrder.find({
-      dealer: dealerId
-    })
+    const orders = await SalesOrder.find({ dealer: dealerId })
       .sort({ orderDate: -1 })
-      .limit(parseInt(limit))
-      .select('orderNumber orderDate status totalAmount');
+      .limit(limit)
+      .select('orderNumber orderDate status totalAmount')
+      .lean();
 
     res.json({
       success: true,
@@ -161,15 +135,23 @@ export const getRecentOrders = async (req, res) => {
 // @access  Private (Dealer)
 export const getRecentInvoices = async (req, res) => {
   try {
-    const dealerId = req.user.dealerId || req.user.id;
-    const { limit = 5 } = req.query;
+    // Get dealer by username (dealer code) - consistent with other app controllers
+    const dealer = await Dealer.findOne({ code: req.user.username });
+    if (!dealer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Dealer not found'
+      });
+    }
+    const dealerId = dealer._id;
+    
+    const limit = parseInt(req.query.limit) || 5;
 
-    const invoices = await DealerInvoice.find({
-      dealer: dealerId
-    })
+    const invoices = await DealerInvoice.find({ dealer: dealerId })
       .sort({ invoiceDate: -1 })
-      .limit(parseInt(limit))
-      .select('invoiceNumber invoiceDate paymentStatus totalAmount outstandingAmount');
+      .limit(limit)
+      .select('invoiceNumber invoiceDate totalAmount paymentStatus')
+      .lean();
 
     res.json({
       success: true,
@@ -190,93 +172,159 @@ export const getRecentInvoices = async (req, res) => {
 // @access  Private (Dealer)
 export const getNotifications = async (req, res) => {
   try {
-    const dealerId = req.user.dealerId || req.user.id;
+    console.log('📬 Getting notifications for user:', req.user.username);
     
-    // Get pending orders
-    const pendingOrders = await SalesOrder.countDocuments({
+    // Get dealer by username (dealer code) - consistent with other app controllers
+    const dealer = await Dealer.findOne({ code: req.user.username });
+    if (!dealer) {
+      console.error('❌ Dealer not found for code:', req.user.username);
+      return res.status(404).json({
+        success: false,
+        message: 'Dealer not found'
+      });
+    }
+    const dealerId = dealer._id;
+    console.log('✅ Dealer found:', dealer.name, 'ID:', dealerId);
+    
+    const { limit = 50, unreadOnly = false } = req.query;
+    
+    // Build query
+    const query = { dealer: dealerId };
+    if (unreadOnly === 'true') {
+      query.read = false;
+    }
+
+    console.log('🔍 Querying notifications with:', query);
+    
+    // Fetch notifications from database
+    const dbNotifications = await Notification.find(query)
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .lean();
+
+    console.log(`✅ Found ${dbNotifications.length} notifications`);
+
+    // Format notifications for response
+    const notifications = dbNotifications.map(notif => ({
+      id: notif._id.toString(),
+      type: notif.type,
+      title: notif.title,
+      message: notif.message,
+      orderId: notif.orderId ? notif.orderId.toString() : null,
+      orderNumber: notif.orderNumber,
+      status: notif.status,
+      priority: notif.priority,
+      read: notif.read,
+      timestamp: notif.createdAt,
+      createdAt: notif.createdAt
+    }));
+
+    // Get unread count
+    const unreadCount = await Notification.countDocuments({
       dealer: dealerId,
-      status: 'Pending'
+      read: false
     });
 
-    // Get overdue invoices
-    const now = new Date();
-    const overdueInvoices = await DealerInvoice.countDocuments({
-      dealer: dealerId,
-      paymentStatus: { $ne: 'Paid' },
-      dueDate: { $lt: now }
-    });
-
-    // Get low credit balance
-    const outstanding = await DealerLedger.aggregate([
-      {
-        $match: {
-          dealer: dealerId,
-          type: 'Debit'
-        }
-      },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: '$amount' }
-        }
-      }
-    ]);
-
-    const totalOutstanding = outstanding[0]?.total || 0;
-    const creditLimit = dealer?.creditLimit || 0;
-    const availableBalance = creditLimit - totalOutstanding;
-    const creditUtilization = creditLimit > 0 ? (totalOutstanding / creditLimit) * 100 : 0;
-
-    const notifications = [];
-
-    if (pendingOrders > 0) {
-      notifications.push({
-        type: 'order',
-        title: 'Pending Orders',
-        message: `You have ${pendingOrders} pending order(s)`,
-        priority: 'medium'
-      });
-    }
-
-    if (overdueInvoices > 0) {
-      notifications.push({
-        type: 'payment',
-        title: 'Overdue Invoices',
-        message: `You have ${overdueInvoices} overdue invoice(s)`,
-        priority: 'high'
-      });
-    }
-
-    if (creditUtilization > 80) {
-      notifications.push({
-        type: 'credit',
-        title: 'Credit Limit Warning',
-        message: `Your credit utilization is ${creditUtilization.toFixed(0)}%`,
-        priority: 'high'
-      });
-    }
-
-    if (availableBalance < creditLimit * 0.2) {
-      notifications.push({
-        type: 'credit',
-        title: 'Low Available Balance',
-        message: `Available balance is ₹${availableBalance.toFixed(2)}`,
-        priority: 'medium'
-      });
-    }
+    console.log(`✅ Unread count: ${unreadCount}`);
 
     res.json({
       success: true,
       notifications,
-      unreadCount: notifications.length
+      unreadCount
     });
   } catch (error) {
-    console.error('Error getting notifications:', error);
+    console.error('❌ Error getting notifications:', error);
+    console.error('Error stack:', error.stack);
     res.status(500).json({
       success: false,
       message: 'Error fetching notifications',
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+};
+
+// @desc    Mark notification as read
+// @route   PATCH /api/app/dashboard/notifications/:id/read
+// @access  Private (Dealer)
+export const markNotificationAsRead = async (req, res) => {
+  try {
+    // Get dealer by username (dealer code) - consistent with other app controllers
+    const dealer = await Dealer.findOne({ code: req.user.username });
+    if (!dealer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Dealer not found'
+      });
+    }
+    const dealerId = dealer._id;
+    
+    const { id } = req.params;
+
+    const notification = await Notification.findOne({
+      _id: id,
+      dealer: dealerId
+    });
+
+    if (!notification) {
+      return res.status(404).json({
+        success: false,
+        message: 'Notification not found'
+      });
+    }
+
+    notification.read = true;
+    await notification.save();
+
+    res.json({
+      success: true,
+      message: 'Notification marked as read',
+      notification: {
+        id: notification._id.toString(),
+        read: notification.read
+      }
+    });
+  } catch (error) {
+    console.error('Error marking notification as read:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error marking notification as read',
       error: error.message
     });
   }
 };
 
+// @desc    Mark all notifications as read
+// @route   PATCH /api/app/dashboard/notifications/read-all
+// @access  Private (Dealer)
+export const markAllNotificationsAsRead = async (req, res) => {
+  try {
+    // Get dealer by username (dealer code) - consistent with other app controllers
+    const dealer = await Dealer.findOne({ code: req.user.username });
+    if (!dealer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Dealer not found'
+      });
+    }
+    const dealerId = dealer._id;
+
+    const result = await Notification.updateMany(
+      { dealer: dealerId, read: false },
+      { read: true }
+    );
+
+    res.json({
+      success: true,
+      message: 'All notifications marked as read',
+      updatedCount: result.modifiedCount
+    });
+  } catch (error) {
+    console.error('Error marking all notifications as read:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error marking all notifications as read',
+      error: error.message
+    });
+  }
+};

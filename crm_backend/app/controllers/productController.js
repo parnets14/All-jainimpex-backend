@@ -4,6 +4,9 @@ import Brand from '../../models/Brand.js';
 import Dealer from '../../models/Dealer.js';
 import DiscountMapping from '../../models/DiscountMapping.js';
 import DealerPricing from '../../models/DealerPricing.js';
+import StockMovement from '../../models/Stock.js';
+import GRN from '../../models/GRN.js';
+import StockMovementService from '../../services/stockMovementService.js';
 
 // @desc    Get products for dealer (with dealer-specific pricing)
 // @route   GET /api/app/products
@@ -72,7 +75,7 @@ export const getProductsForDealer = async (req, res) => {
 
     const total = await Product.countDocuments(filter);
 
-    // Get dealer-specific pricing from DealerPricing model
+        // Get dealer-specific pricing from DealerPricing model
     const productsWithPricing = await Promise.all(
       products.map(async (product) => {
         // Get pricing from DealerPricing model
@@ -97,15 +100,161 @@ export const getProductsForDealer = async (req, res) => {
           dealerPrice = mrp;
         }
 
-        // Get dealer-specific discount
-        const discountMapping = await DiscountMapping.findOne({
-          dealerCategory: { $in: dealer.dealerCategory },
-          product: product._id
+        // Get dealer-specific discount based on brand/category/subcategory
+        const discountMappings = await DiscountMapping.find({
+          mappingType: 'sales',
+          status: 'Approved',
+          brand: product.brand?._id || product.brand,
+          category: product.category?._id || product.category,
+          subcategory: product.subcategory?._id || product.subcategory,
+          validFrom: { $lte: new Date() },
+          validTo: { $gte: new Date() }
         });
 
-        // Apply discount if exists
-        if (discountMapping && discountMapping.discountPercentage > 0) {
-          dealerPrice = dealerPrice * (1 - discountMapping.discountPercentage / 100);
+        // Calculate maximum discount percentage from all applicable discounts
+        let maxDiscountPercentage = 0;
+        let appliedDiscount = null;
+
+        if (discountMappings.length > 0) {
+          // Find the highest discount from all levels
+          discountMappings.forEach(discount => {
+            discount.levels.forEach(level => {
+              if (level.discountPercentage > maxDiscountPercentage) {
+                maxDiscountPercentage = level.discountPercentage;
+                appliedDiscount = {
+                  discountId: discount._id,
+                  discountPercentage: level.discountPercentage,
+                  level: level.level || 'Direct',
+                  validFrom: discount.validFrom,
+                  validTo: discount.validTo
+                };
+              }
+            });
+          });
+
+          // Apply discount to dealer price
+          if (maxDiscountPercentage > 0) {
+            dealerPrice = dealerPrice * (1 - maxDiscountPercentage / 100);
+          }
+        }
+
+        // Calculate total available stock across all warehouses
+        // Use a more efficient approach: Get all GRNs for this product and calculate net stock
+        let totalAvailableStock = 0;
+        try {
+          // Get all warehouses that have this product (from GRNs)
+          const grnQuery = { 'items.productId': product._id };
+          const grns = await GRN.find(grnQuery).select('warehouseId items').lean();
+
+          // Group by warehouse
+          const warehouseStock = {};
+          
+          grns.forEach(grn => {
+            if (!grn.warehouseId) return;
+            
+            const warehouseId = grn.warehouseId.toString();
+            
+            if (!warehouseStock[warehouseId]) {
+              warehouseStock[warehouseId] = {
+                totalQty: 0,
+                damagedQty: 0
+              };
+            }
+            
+            grn.items.forEach(item => {
+              const itemProductId = item.productId?._id ? item.productId._id.toString() : item.productId.toString();
+              if (itemProductId === product._id.toString()) {
+                warehouseStock[warehouseId].totalQty += item.acceptedQuantity || 0;
+                warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
+              }
+            });
+          });
+
+          // Calculate net stock for each warehouse using StockMovements
+          const warehouseIds = Object.keys(warehouseStock);
+          
+          // Get all stock movements for this product in one query
+          const allMovements = await StockMovement.find({
+            productId: product._id,
+            warehouseId: { $in: warehouseIds }
+          }).lean();
+
+          // Group movements by warehouse
+          const movementsByWarehouse = {};
+          allMovements.forEach(movement => {
+            const whId = movement.warehouseId.toString();
+            if (!movementsByWarehouse[whId]) {
+              movementsByWarehouse[whId] = [];
+            }
+            movementsByWarehouse[whId].push(movement);
+          });
+
+          // Calculate net stock for each warehouse
+          for (const warehouseId of warehouseIds) {
+            try {
+              // Get latest balance from movements
+              const movements = movementsByWarehouse[warehouseId] || [];
+              let currentStock = 0;
+              
+              if (movements.length > 0) {
+                // Sort by date descending to get latest
+                const sortedMovements = movements.sort((a, b) => {
+                  const dateA = new Date(a.date || a.createdAt);
+                  const dateB = new Date(b.date || b.createdAt);
+                  return dateB - dateA;
+                });
+                currentStock = sortedMovements[0]?.balance || 0;
+              } else {
+                // Fallback to GRN total if no movements
+                currentStock = warehouseStock[warehouseId].totalQty;
+              }
+              
+              // Calculate blocked stock from movements
+              const blockedMovements = movements.filter(m => 
+                m.type === 'OUT' && m.referenceType === 'SALE'
+              );
+              
+              const unblockedMovements = movements.filter(m => 
+                m.type === 'IN' && m.referenceType === 'SALE' && 
+                m.remarks && m.remarks.includes('Stock Unblocked')
+              );
+              
+              let blockedQty = 0;
+              blockedMovements.forEach(movement => {
+                blockedQty += movement.quantity || 0;
+              });
+              
+              unblockedMovements.forEach(movement => {
+                blockedQty -= movement.quantity || 0;
+              });
+              
+              blockedQty = Math.max(0, blockedQty);
+              
+              // Calculate net stock
+              const netStock = currentStock - warehouseStock[warehouseId].damagedQty - blockedQty;
+              
+              // Only add positive net stock
+              if (netStock > 0) {
+                totalAvailableStock += netStock;
+              }
+            } catch (error) {
+              console.error(`Error calculating stock for warehouse ${warehouseId} for product ${product.productCode}:`, error.message);
+              // Fallback: use GRN calculation
+              const netStock = warehouseStock[warehouseId].totalQty - warehouseStock[warehouseId].damagedQty;
+              if (netStock > 0) {
+                totalAvailableStock += netStock;
+              }
+            }
+          }
+          
+          // Debug logging
+          if (totalAvailableStock > 0) {
+            console.log(`✅ Stock calculated for ${product.productCode}: ${totalAvailableStock} units across ${warehouseIds.length} warehouses`);
+          }
+        } catch (error) {
+          console.error(`❌ Error calculating stock for product ${product.productCode || product._id}:`, error.message);
+          console.error('Stack:', error.stack);
+          totalAvailableStock = 0;
         }
 
         return {
@@ -113,11 +262,26 @@ export const getProductsForDealer = async (req, res) => {
           mrp: Math.round(mrp * 100) / 100,
           dealerPrice: Math.round(dealerPrice * 100) / 100,
           purchasePrice: dealerPricing?.purchasePrice || 0,
-          hasOffer: discountMapping ? true : false,
-          offerText: discountMapping ? discountMapping.description : null
+          hasOffer: maxDiscountPercentage > 0,
+          discountPercentage: maxDiscountPercentage,
+          discount: appliedDiscount,
+          originalDealerPrice: Math.round((dealerPricing?.sellingPrice || mrp) * 100) / 100,
+          availableStock: Math.max(0, Math.round(totalAvailableStock)),
+          isOutOfStock: totalAvailableStock <= 0
         };
       })
     );
+
+    // Log sample product with stock for debugging
+    if (productsWithPricing.length > 0) {
+      const sampleProduct = productsWithPricing[0];
+      console.log('📦 Sample product response:', {
+        productCode: sampleProduct.productCode,
+        itemName: sampleProduct.itemName,
+        availableStock: sampleProduct.availableStock,
+        isOutOfStock: sampleProduct.isOutOfStock
+      });
+    }
 
     res.json({
       success: true,
@@ -186,15 +350,116 @@ export const getProductDetailsForDealer = async (req, res) => {
       dealerPrice = mrp;
     }
 
-    // Get dealer-specific discount
-    const discountMapping = await DiscountMapping.findOne({
-      dealerCategory: { $in: dealer.dealerCategory },
-      product: product._id
+    // Get dealer-specific discount based on brand/category/subcategory
+    const discountMappings = await DiscountMapping.find({
+      mappingType: 'sales',
+      status: 'Approved',
+      brand: product.brand?._id || product.brand,
+      category: product.category?._id || product.category,
+      subcategory: product.subcategory?._id || product.subcategory,
+      validFrom: { $lte: new Date() },
+      validTo: { $gte: new Date() }
     });
 
-    // Apply discount if exists
-    if (discountMapping && discountMapping.discountPercentage > 0) {
-      dealerPrice = dealerPrice * (1 - discountMapping.discountPercentage / 100);
+    // Calculate maximum discount percentage from all applicable discounts
+    let maxDiscountPercentage = 0;
+    let appliedDiscount = null;
+
+    if (discountMappings.length > 0) {
+      // Find the highest discount from all levels
+      discountMappings.forEach(discount => {
+        discount.levels.forEach(level => {
+          if (level.discountPercentage > maxDiscountPercentage) {
+            maxDiscountPercentage = level.discountPercentage;
+            appliedDiscount = {
+              discountId: discount._id,
+              discountPercentage: level.discountPercentage,
+              level: level.level || 'Direct',
+              validFrom: discount.validFrom,
+              validTo: discount.validTo,
+              remarks: discount.remarks
+            };
+          }
+        });
+      });
+
+      // Apply discount to dealer price
+      if (maxDiscountPercentage > 0) {
+        dealerPrice = dealerPrice * (1 - maxDiscountPercentage / 100);
+      }
+    }
+
+    // Calculate total available stock across all warehouses
+    let totalAvailableStock = 0;
+    try {
+      const grnQuery = { 'items.productId': product._id };
+      const grns = await GRN.find(grnQuery).select('warehouseId items');
+
+      const warehouseStock = {};
+      
+      grns.forEach(grn => {
+        if (!grn.warehouseId) return;
+        
+        const warehouseId = grn.warehouseId.toString();
+        
+        if (!warehouseStock[warehouseId]) {
+          warehouseStock[warehouseId] = {
+            totalQty: 0,
+            damagedQty: 0
+          };
+        }
+        
+        grn.items.forEach(item => {
+          const itemProductId = item.productId?._id ? item.productId._id.toString() : item.productId.toString();
+          if (itemProductId === product._id.toString()) {
+            warehouseStock[warehouseId].totalQty += item.acceptedQuantity || 0;
+            warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
+          }
+        });
+      });
+
+      for (const warehouseId of Object.keys(warehouseStock)) {
+        try {
+          const currentStock = await StockMovementService.getCurrentStock(product._id, warehouseId);
+          
+          const blockedMovements = await StockMovement.find({
+            productId: product._id,
+            warehouseId: warehouseId,
+            type: 'OUT',
+            referenceType: 'SALE'
+          });
+          
+          const unblockedMovements = await StockMovement.find({
+            productId: product._id,
+            warehouseId: warehouseId,
+            type: 'IN',
+            referenceType: 'SALE',
+            remarks: { $regex: /Stock Unblocked/ }
+          });
+          
+          let blockedQty = 0;
+          blockedMovements.forEach(movement => {
+            blockedQty += movement.quantity;
+          });
+          
+          unblockedMovements.forEach(movement => {
+            blockedQty -= movement.quantity;
+          });
+          
+          blockedQty = Math.max(0, blockedQty);
+          
+          const currentStockValue = currentStock !== undefined ? currentStock : warehouseStock[warehouseId].totalQty;
+          const netStock = currentStockValue - warehouseStock[warehouseId].damagedQty - blockedQty;
+          
+          totalAvailableStock += Math.max(0, netStock);
+        } catch (error) {
+          const netStock = warehouseStock[warehouseId].totalQty - warehouseStock[warehouseId].damagedQty;
+          totalAvailableStock += Math.max(0, netStock);
+        }
+      }
+    } catch (error) {
+      console.error(`Error calculating stock for product ${product._id}:`, error);
+      totalAvailableStock = 0;
     }
 
     res.json({
@@ -204,8 +469,12 @@ export const getProductDetailsForDealer = async (req, res) => {
         mrp: Math.round(mrp * 100) / 100,
         dealerPrice: Math.round(dealerPrice * 100) / 100,
         purchasePrice: dealerPricing?.purchasePrice || 0,
-        hasOffer: discountMapping ? true : false,
-        offerText: discountMapping ? discountMapping.description : null
+        hasOffer: maxDiscountPercentage > 0,
+        discountPercentage: maxDiscountPercentage,
+        discount: appliedDiscount,
+        originalDealerPrice: Math.round((dealerPricing?.sellingPrice || mrp) * 100) / 100,
+        availableStock: Math.max(0, Math.round(totalAvailableStock)),
+        isOutOfStock: totalAvailableStock <= 0
       }
     });
   } catch (error) {

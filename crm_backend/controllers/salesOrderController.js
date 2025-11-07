@@ -3,6 +3,7 @@ import Product from "../models/Product.js";
 import Dealer from "../models/Dealer.js";
 import Stock from "../models/Stock.js";
 import User from "../models/User.js";
+import Notification from "../models/Notification.js";
 
 // Generate unique order number
 const generateOrderNumber = async () => {
@@ -99,7 +100,7 @@ export const getSalesOrders = async (req, res) => {
 
     // Execute query with pagination
     const salesOrders = await SalesOrder.find(query)
-      .populate("dealer", "name contactPerson phone email address dealerType")
+      .populate("dealer", "name code contactPerson phone email address dealerType")
       .populate("region", "name")
       .populate("products.product", "productCode itemName HSNCode gst rateSlabs")
       .populate("products.warehouse", "name")
@@ -154,7 +155,7 @@ export const getSalesOrders = async (req, res) => {
 export const getSalesOrder = async (req, res) => {
   try {
     const salesOrder = await SalesOrder.findById(req.params.id)
-      .populate("dealer")
+      .populate("dealer", "name code contactPerson phone email address dealerType gstNumber panNumber")
       .populate("region", "name")
       .populate("products.product")
       .populate("products.warehouse", "name")
@@ -214,6 +215,11 @@ export const createSalesOrder = async (req, res) => {
         message: "Dealer not found"
       });
     }
+    
+    // Use dealer's credit days if not provided in request
+    const finalCreditDays = creditDays !== undefined && creditDays !== null 
+      ? parseInt(creditDays) 
+      : (dealerData.creditDays || 30);
 
     // Validate and process each product
     const validatedProducts = [];
@@ -275,26 +281,27 @@ export const createSalesOrder = async (req, res) => {
 
     // Calculate due date
     let dueDate = null;
-    if (orderDate && creditDays) {
+    if (orderDate && finalCreditDays) {
       dueDate = new Date(orderDate);
-      dueDate.setDate(dueDate.getDate() + parseInt(creditDays));
+      dueDate.setDate(dueDate.getDate() + finalCreditDays);
     }
 
     // Create sales order
     console.log("Creating sales order with orderNumber:", orderNumber);
-    console.log("All values:", { orderNumber, dealer, dealerName: dealerData.name, dealerType: dealerData.dealerType, region, pinCode, products: validatedProducts.length, orderDate, deliveryDate, creditDays, grossAmount, totalGst, totalAmount, type, remarks });
+    console.log("All values:", { orderNumber, dealer, dealerName: dealerData.name, dealerCode: dealerData.code, dealerType: dealerData.dealerType, region, pinCode, products: validatedProducts.length, orderDate, deliveryDate, creditDays: finalCreditDays, grossAmount, totalGst, totalAmount, type, remarks });
     
     const salesOrder = new SalesOrder({
       orderNumber,
       dealer,
       dealerName: dealerData.name,
+      dealerCode: dealerData.code,
       dealerType: dealerData.dealerType,
       region,
       pinCode,
       products: validatedProducts,
       orderDate,
       deliveryDate,
-      creditDays: parseInt(creditDays) || 30,
+      creditDays: finalCreditDays,
       dueDate,
       grossAmount,
       totalGst,
@@ -374,7 +381,7 @@ export const createSalesOrder = async (req, res) => {
 
     // Populate the created order for response
     const populatedOrder = await SalesOrder.findById(salesOrder._id)
-      .populate("dealer")
+      .populate("dealer", "name code contactPerson phone email address dealerType")
       .populate("region", "name")
       .populate("products.product")
       .populate("products.warehouse", "name")
@@ -419,7 +426,7 @@ export const createSalesOrder = async (req, res) => {
 // @access  Private
 export const updateSalesOrderStatus = async (req, res) => {
   try {
-    const { status, remarks } = req.body;
+    const { status, remarks, products } = req.body; // products array with warehouse info
     const { id } = req.params;
 
     // Find the sales order
@@ -442,6 +449,16 @@ export const updateSalesOrderStatus = async (req, res) => {
 
     // Store original status for rollback if needed
     const originalStatus = salesOrder.status;
+
+    // Update product warehouses if provided in request (when status is updated from web)
+    if (products && Array.isArray(products) && products.length > 0) {
+      for (let i = 0; i < salesOrder.products.length && i < products.length; i++) {
+        if (products[i].warehouse) {
+          salesOrder.products[i].warehouse = products[i].warehouse;
+          salesOrder.products[i].warehouseName = products[i].warehouseName || null;
+        }
+      }
+    }
 
     // Special handling for Confirmed status (stock allocation)
     if (status === "Confirmed") {
@@ -648,9 +665,59 @@ export const updateSalesOrderStatus = async (req, res) => {
 
     await salesOrder.save();
 
+    // Create notification for dealer about status change (for any status change)
+    if (originalStatus !== status) {
+      try {
+        const statusMessages = {
+          'Confirmed': `Your order ${salesOrder.orderNumber} has been confirmed.`,
+          'Processing': `Your order ${salesOrder.orderNumber} is now being processed.`,
+          'Delivered': `Your order ${salesOrder.orderNumber} has been delivered.`,
+          'Rejected': `Your order ${salesOrder.orderNumber} has been rejected.`,
+          'Cancelled': `Your order ${salesOrder.orderNumber} has been cancelled.`
+        };
+
+        const statusTitles = {
+          'Confirmed': 'Order Confirmed',
+          'Processing': 'Order Processing',
+          'Delivered': 'Order Delivered',
+          'Rejected': 'Order Rejected',
+          'Cancelled': 'Order Cancelled'
+        };
+
+        const message = statusMessages[status] || `Your order ${salesOrder.orderNumber} status has been updated to ${status}.`;
+        const title = statusTitles[status] || `Order ${status}`;
+        
+        // Determine priority based on status
+        let priority = 'medium';
+        if (status === 'Delivered' || status === 'Confirmed') {
+          priority = 'high';
+        } else if (status === 'Rejected' || status === 'Cancelled') {
+          priority = 'high';
+        }
+        
+        // Create and save notification
+        await Notification.create({
+          dealer: salesOrder.dealer,
+          type: 'order_status',
+          title: title,
+          message: message,
+          orderId: salesOrder._id,
+          orderNumber: salesOrder.orderNumber,
+          status: status,
+          read: false,
+          priority: priority
+        });
+        
+        console.log(`📧 Notification created for dealer ${salesOrder.dealer}: ${message} (Status changed from ${originalStatus} to ${status})`);
+      } catch (notificationError) {
+        console.error('Error creating notification:', notificationError);
+        // Don't fail the request if notification fails
+      }
+    }
+
     // Populate updated order for response
     const updatedOrder = await SalesOrder.findById(id)
-      .populate("dealer")
+      .populate("dealer", "name code contactPerson phone email address dealerType")
       .populate("region", "name")
       .populate("products.product")
       .populate("products.warehouse", "name")
@@ -688,13 +755,33 @@ export const updateSalesOrder = async (req, res) => {
       });
     }
 
-    // Only allow editing of pending orders
-    if (salesOrder.status !== "Pending") {
+    // Only allow editing of Pending, Confirmed, and Processing orders
+    // Delivered, Cancelled, and Rejected orders cannot be edited
+    const editableStatuses = ["Pending", "Confirmed", "Processing"];
+    
+    // Normalize status for comparison (trim whitespace, ensure proper case)
+    const currentStatus = salesOrder.status ? String(salesOrder.status).trim() : null;
+    
+    // Debug logging
+    console.log("🔍 Update Sales Order - Status Check:");
+    console.log("  - Order ID:", id);
+    console.log("  - Order Number:", salesOrder.orderNumber);
+    console.log("  - Current Status (raw):", salesOrder.status);
+    console.log("  - Current Status (normalized):", currentStatus);
+    console.log("  - Status Type:", typeof salesOrder.status);
+    console.log("  - Editable Statuses:", editableStatuses);
+    console.log("  - Is Editable:", editableStatuses.includes(currentStatus));
+    
+    if (!currentStatus || !editableStatuses.includes(currentStatus)) {
+      const errorMessage = `Can only edit orders with status "Pending", "Confirmed", or "Processing". Current status: ${currentStatus || 'undefined'}. Orders with status "Delivered", "Cancelled", or "Rejected" cannot be edited.`;
+      console.log("❌ Edit Rejected:", errorMessage);
       return res.status(400).json({
         success: false,
-        message: "Can only edit pending orders"
+        message: errorMessage
       });
     }
+    
+    console.log("✅ Edit Allowed for status:", currentStatus);
 
     // Validate products if they are being updated
     if (req.body.products) {
@@ -742,6 +829,133 @@ export const updateSalesOrder = async (req, res) => {
       }
     }
 
+    // Store original status before update
+    const originalStatus = salesOrder.status;
+    const newStatus = req.body.status;
+
+    // If status is being changed, handle stock management
+    if (newStatus && newStatus !== originalStatus) {
+      // When changing to Confirmed, Processing, or Delivered, ensure warehouses are selected
+      const statusesRequiringWarehouse = ['Confirmed', 'Processing', 'Delivered'];
+      if (statusesRequiringWarehouse.includes(newStatus)) {
+        const productsToCheck = req.body.products || salesOrder.products;
+        for (const product of productsToCheck) {
+          if (!product.warehouse) {
+            return res.status(400).json({
+              success: false,
+              message: `Warehouse must be selected for all products before updating status to ${newStatus}`
+            });
+          }
+        }
+      }
+
+      // Handle stock management for status changes (reuse logic from updateSalesOrderStatus)
+      // For Confirmed status - block stock
+      if (newStatus === "Confirmed" && originalStatus !== "Confirmed") {
+        const StockMovement = (await import("../models/Stock.js")).default;
+        for (const product of req.body.products || salesOrder.products) {
+          if (product.warehouse) {
+            const latestMovement = await StockMovement.findOne({
+              productId: product.product,
+              warehouseId: product.warehouse
+            }).sort({ date: -1, createdAt: -1 });
+            
+            const currentBalance = latestMovement ? latestMovement.balance : 0;
+            const newBalance = currentBalance - product.quantity;
+            
+            const blockMovement = new StockMovement({
+              productId: product.product,
+              warehouseId: product.warehouse,
+              type: 'OUT',
+              quantity: product.quantity,
+              balance: newBalance,
+              referenceNo: salesOrder.orderNumber,
+              referenceType: 'SALE',
+              date: new Date(),
+              remarks: `Order ${salesOrder.orderNumber} - Stock Blocked`,
+              createdBy: req.user._id
+            });
+            await blockMovement.save();
+          }
+        }
+      }
+      // For Delivered status - permanently reduce stock
+      else if (newStatus === "Delivered") {
+        const StockMovement = (await import("../models/Stock.js")).default;
+        for (const product of req.body.products || salesOrder.products) {
+          if (product.warehouse) {
+            const latestMovement = await StockMovement.findOne({
+              productId: product.product,
+              warehouseId: product.warehouse
+            }).sort({ date: -1, createdAt: -1 });
+            
+            const currentBalance = latestMovement ? latestMovement.balance : 0;
+            if (originalStatus === "Confirmed") {
+              // Stock already blocked, just create tracking record
+              const deliveryMovement = new StockMovement({
+                productId: product.product,
+                warehouseId: product.warehouse,
+                type: 'OUT',
+                quantity: 0,
+                balance: currentBalance,
+                referenceNo: salesOrder.orderNumber,
+                referenceType: 'SALE',
+                date: new Date(),
+                remarks: `Order ${salesOrder.orderNumber} - Delivered (Stock Permanently Reduced)`,
+                createdBy: req.user._id
+              });
+              await deliveryMovement.save();
+            } else {
+              // Direct delivery - reduce stock permanently
+              const newBalance = currentBalance - product.quantity;
+              const deliveryMovement = new StockMovement({
+                productId: product.product,
+                warehouseId: product.warehouse,
+                type: 'OUT',
+                quantity: product.quantity,
+                balance: newBalance,
+                referenceNo: salesOrder.orderNumber,
+                referenceType: 'SALE',
+                date: new Date(),
+                remarks: `Order ${salesOrder.orderNumber} - Delivered (Stock Permanently Reduced)`,
+                createdBy: req.user._id
+              });
+              await deliveryMovement.save();
+            }
+          }
+        }
+      }
+      // For Cancelled/Rejected - restore stock if it was Confirmed
+      else if ((newStatus === "Cancelled" || newStatus === "Rejected") && originalStatus === "Confirmed") {
+        const StockMovement = (await import("../models/Stock.js")).default;
+        for (const product of req.body.products || salesOrder.products) {
+          if (product.warehouse) {
+            const latestMovement = await StockMovement.findOne({
+              productId: product.product,
+              warehouseId: product.warehouse
+            }).sort({ date: -1, createdAt: -1 });
+            
+            const currentBalance = latestMovement ? latestMovement.balance : 0;
+            const newBalance = currentBalance + product.quantity;
+            
+            const unblockMovement = new StockMovement({
+              productId: product.product,
+              warehouseId: product.warehouse,
+              type: 'IN',
+              quantity: product.quantity,
+              balance: newBalance,
+              referenceNo: salesOrder.orderNumber,
+              referenceType: 'SALE',
+              date: new Date(),
+              remarks: `Order ${salesOrder.orderNumber} - Stock Unblocked (${newStatus})`,
+              createdBy: req.user._id
+            });
+            await unblockMovement.save();
+          }
+        }
+      }
+    }
+
     // Update the sales order
     const updatedOrder = await SalesOrder.findByIdAndUpdate(
       id,
@@ -751,11 +965,59 @@ export const updateSalesOrder = async (req, res) => {
         runValidators: true 
       }
     )
-      .populate("dealer")
+      .populate("dealer", "name code contactPerson phone email address dealerType")
       .populate("region", "name")
       .populate("products.product")
       .populate("products.warehouse", "name")
       .populate("createdBy", "name email");
+
+    // If status changed, trigger notification (for any status change)
+    if (newStatus && newStatus !== originalStatus) {
+      try {
+        const Notification = (await import("../models/Notification.js")).default;
+        const statusMessages = {
+          'Confirmed': `Your order ${updatedOrder.orderNumber} has been confirmed.`,
+          'Processing': `Your order ${updatedOrder.orderNumber} is now being processed.`,
+          'Delivered': `Your order ${updatedOrder.orderNumber} has been delivered.`,
+          'Rejected': `Your order ${updatedOrder.orderNumber} has been rejected.`,
+          'Cancelled': `Your order ${updatedOrder.orderNumber} has been cancelled.`
+        };
+
+        const statusTitles = {
+          'Confirmed': 'Order Confirmed',
+          'Processing': 'Order Processing',
+          'Delivered': 'Order Delivered',
+          'Rejected': 'Order Rejected',
+          'Cancelled': 'Order Cancelled'
+        };
+
+        const message = statusMessages[newStatus] || `Your order ${updatedOrder.orderNumber} status has been updated to ${newStatus}.`;
+        const title = statusTitles[newStatus] || `Order ${newStatus}`;
+        
+        let priority = 'medium';
+        if (newStatus === 'Delivered' || newStatus === 'Confirmed') {
+          priority = 'high';
+        } else if (newStatus === 'Rejected' || newStatus === 'Cancelled') {
+          priority = 'high';
+        }
+        
+        await Notification.create({
+          dealer: updatedOrder.dealer,
+          type: 'order_status',
+          title: title,
+          message: message,
+          orderId: updatedOrder._id,
+          orderNumber: updatedOrder.orderNumber,
+          status: newStatus,
+          read: false,
+          priority: priority
+        });
+        
+        console.log(`📧 Notification created for dealer ${updatedOrder.dealer}: ${message} (Status changed from ${originalStatus} to ${newStatus})`);
+      } catch (notificationError) {
+        console.error('Error creating notification:', notificationError);
+      }
+    }
 
     res.json({
       success: true,
