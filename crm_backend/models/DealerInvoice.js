@@ -143,6 +143,10 @@ const dealerInvoiceSchema = new mongoose.Schema({
     enum: ["Pending", "Partial", "Paid", "Overdue"],
     default: "Pending"
   },
+  paidAmount: {
+    type: Number,
+    default: 0
+  },
   paymentDate: Date,
   
   // Dispatch Information

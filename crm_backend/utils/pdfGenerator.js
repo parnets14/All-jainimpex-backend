@@ -500,3 +500,372 @@ export const generatePDF = (data) => {
     }
   });
 };
+
+// Generate Invoice PDF - Matching web invoice format
+export const generateInvoicePDF = (invoice) => {
+  return new Promise((resolve, reject) => {
+    try {
+      const doc = new PDFDocument({
+        margin: 50,
+        size: "A4",
+        info: {
+          Title: `Invoice - ${invoice.invoiceNumber}`,
+          Author: "Jain Impex",
+          Subject: `Invoice for ${invoice.dealerName || invoice.dealerCode}`,
+        },
+      });
+
+      const buffers = [];
+      doc.on("data", buffers.push.bind(buffers));
+      doc.on("end", () => {
+        const pdfData = Buffer.concat(buffers);
+        resolve(pdfData);
+      });
+
+      // Invoice Header - matching web format
+      let currentY = 50;
+
+      // Company Logo
+      try {
+        const logoPath = path.join(__dirname, "../public/logo.jpeg");
+        doc.image(logoPath, doc.page.width / 2 - 40, currentY, { width: 80, height: 60 });
+        currentY += 80;
+      } catch (error) {
+        console.log("Logo not found, continuing without it");
+        currentY += 20;
+      }
+
+      // Invoice Title - matching web
+      doc
+        .fillColor("#000000")
+        .fontSize(28)
+        .font("Helvetica-Bold")
+        .text("INVOICE", 0, currentY, { align: "center" });
+      
+      currentY += 25;
+      doc
+        .fontSize(14)
+        .font("Helvetica")
+        .text(`Invoice No: ${invoice.invoiceNumber}`, 0, currentY, { align: "center" });
+      
+      currentY += 20;
+      const invoiceDate = invoice.invoiceDate
+        ? new Date(invoice.invoiceDate).toLocaleDateString("en-IN")
+        : "N/A";
+      doc
+        .fontSize(11)
+        .text(`Date: ${invoiceDate}`, 0, currentY, { align: "center" });
+
+      currentY += 40;
+
+      // Company Info - matching web format
+      doc
+        .fillColor("#000000")
+        .fontSize(14)
+        .font("Helvetica-Bold")
+        .text("JAIN IMPEX PLUMBING SOLUTIONS", 50, currentY);
+      
+      currentY += 20;
+      doc
+        .fontSize(11)
+        .font("Helvetica")
+        .text("123 Market Road, New Delhi - 110001", 50, currentY)
+        .text("GSTIN: 07ABCDE1234F125 | PAN: ABCDE1234F", 50, currentY + 12)
+        .text("Contact: +91 99999 88888 | Email: info@jainimpex.com", 50, currentY + 24);
+
+      currentY += 50;
+
+      // Bill To section - matching web format
+      doc
+        .fillColor("#000000")
+        .fontSize(14)
+        .font("Helvetica-Bold")
+        .text("Bill To:", 50, currentY);
+      
+      currentY += 20;
+      doc
+        .fontSize(11)
+        .font("Helvetica");
+
+      const customerName = invoice.customerName || invoice.dealerName || (invoice.dealer?.name) || "N/A";
+      const customerAddress = invoice.customerAddress || invoice.dealer?.address || "N/A";
+      const customerPhone = invoice.customerPhone || invoice.dealer?.phone || "N/A";
+      const customerGST = invoice.customerGST || invoice.dealer?.gst || "";
+      const customerEmail = invoice.customerEmail || invoice.dealer?.email || "";
+
+      doc
+        .text(customerName, 50, currentY)
+        .text(customerAddress, 50, currentY + 12)
+        .text(`Phone: ${customerPhone}`, 50, currentY + 24);
+      if (customerEmail) {
+        doc.text(`Email: ${customerEmail}`, 50, currentY + 36);
+        currentY += 12;
+      }
+      if (customerGST) {
+        doc.text(`GST: ${customerGST}`, 50, currentY + (customerEmail ? 36 : 24));
+        currentY += 12;
+      }
+
+      currentY += 40;
+
+      // Items Table - matching web format (S.No, Product, HSN, Qty, Rate, Amount, GST, Total)
+      const tableTop = currentY;
+      const tableStartX = 50;
+      const availableWidth = doc.page.width - 100; // Total available width
+      const rowHeight = 25;
+
+      // Define column positions matching web format - optimized to fit page
+      // Total columns: 8 (S.No, Product, HSN, Qty, Rate, Amount, GST, Total)
+      // Page width: 595px, margins: 50px each side = 495px available
+      const colSNo = tableStartX;
+      const colSNoWidth = 30;
+      const colProduct = colSNo + colSNoWidth;
+      const colProductWidth = 100; // Reduced to fit
+      const colHSN = colProduct + colProductWidth;
+      const colHSNWidth = 45;
+      const colQty = colHSN + colHSNWidth;
+      const colQtyWidth = 35;
+      const colRate = colQty + colQtyWidth;
+      const colRateWidth = 50;
+      const colAmount = colRate + colRateWidth;
+      const colAmountWidth = 55;
+      const colGST = colAmount + colAmountWidth;
+      const colGSTWidth = 40; // For GST percentage (e.g., "18%")
+      const colTotal = colGST + colGSTWidth;
+      const colTotalWidth = 60;
+      
+      // Calculate actual table width (should be ~455px, well within 495px)
+      const tableWidth = colTotal + colTotalWidth - tableStartX;
+
+      // Helper function for right-aligned header text
+      const drawHeaderRightText = (text, colStart, colWidth, y) => {
+        doc.fontSize(10).font("Helvetica-Bold");
+        const textWidth = doc.widthOfString(text);
+        const rightEdge = colStart + colWidth;
+        doc.text(text, rightEdge - textWidth - 5, y);
+      };
+
+      // Table header - matching web format
+      doc
+        .fillColor("#f3f4f6")
+        .rect(tableStartX, tableTop, tableWidth, rowHeight)
+        .fill()
+        .strokeColor("#d1d5db")
+        .rect(tableStartX, tableTop, tableWidth, rowHeight)
+        .stroke()
+        .fillColor("#000000")
+        .fontSize(10)
+        .font("Helvetica-Bold")
+        .text("S.No", colSNo + 10, tableTop + 8)
+        .text("Product", colProduct + 10, tableTop + 8)
+        .text("HSN", colHSN + 10, tableTop + 8);
+      
+      // Right-aligned header columns
+      drawHeaderRightText("Qty", colQty, colQtyWidth, tableTop + 8);
+      drawHeaderRightText("Rate", colRate, colRateWidth, tableTop + 8);
+      drawHeaderRightText("Amount", colAmount, colAmountWidth, tableTop + 8);
+      drawHeaderRightText("GST", colGST, colGSTWidth, tableTop + 8);
+      drawHeaderRightText("Total", colTotal, colTotalWidth, tableTop + 8);
+
+      // Table rows - matching web format
+      currentY = tableTop + rowHeight;
+      doc.fillColor("#000000").fontSize(10).font("Helvetica");
+
+      if (invoice.items && invoice.items.length > 0) {
+        invoice.items.forEach((item, index) => {
+          // Check if we need a new page (but limit to 2 pages max)
+          if (currentY > doc.page.height - 200 && doc.pageCount < 2) {
+            doc.addPage();
+            currentY = 50;
+            // Redraw header on new page
+            doc
+              .fillColor("#f3f4f6")
+              .rect(tableStartX, currentY, tableWidth, rowHeight)
+              .fill()
+              .strokeColor("#d1d5db")
+              .rect(tableStartX, currentY, tableWidth, rowHeight)
+              .stroke()
+              .fillColor("#000000")
+              .fontSize(10)
+              .font("Helvetica-Bold")
+              .text("S.No", colSNo + 10, currentY + 8)
+              .text("Product", colProduct + 10, currentY + 8)
+              .text("HSN", colHSN + 10, currentY + 8);
+            
+            // Right-aligned header columns on new page
+            drawHeaderRightText("Qty", colQty, colQtyWidth, currentY + 8);
+            drawHeaderRightText("Rate", colRate, colRateWidth, currentY + 8);
+            drawHeaderRightText("Amount", colAmount, colAmountWidth, currentY + 8);
+            drawHeaderRightText("GST", colGST, colGSTWidth, currentY + 8);
+            drawHeaderRightText("Total", colTotal, colTotalWidth, currentY + 8);
+            currentY += rowHeight;
+          }
+
+          // Draw row border
+          doc
+            .strokeColor("#d1d5db")
+            .rect(tableStartX, currentY, tableWidth, rowHeight)
+            .stroke();
+
+          const productName = item.productName || item.product?.itemName || "N/A";
+          const hsnCode = item.HSNCode || "N/A";
+          const quantity = item.quantity || 0;
+          const unitPrice = item.unitPrice || 0;
+          const gstPercent = item.gst || 0;
+          const discountPercent = item.discountPercentage || 0;
+          
+          // Calculate amounts matching web format
+          const baseAmount = quantity * unitPrice; // Amount before discount
+          const discountAmount = item.discountAmount || (baseAmount * discountPercent) / 100;
+          const amountAfterDiscount = baseAmount - discountAmount; // Amount after discount, before GST
+          const gstAmount = item.gstAmount || (amountAfterDiscount * gstPercent) / 100;
+          const itemTotal = amountAfterDiscount + gstAmount; // Final total (after discount + GST)
+
+          // Format amounts
+          const formatAmount = (amount) => {
+            return amount.toLocaleString('en-IN', { 
+              minimumFractionDigits: 2, 
+              maximumFractionDigits: 2 
+            });
+          };
+
+          // Helper to draw right-aligned text in table cells
+          const drawTableRightText = (text, colStart, colWidth, y) => {
+            doc.fontSize(10);
+            const textWidth = doc.widthOfString(text);
+            const rightEdge = colStart + colWidth;
+            doc.text(text, rightEdge - textWidth - 5, y);
+          };
+
+          doc
+            .text(String(index + 1), colSNo + 10, currentY + 8)
+            .text(productName, colProduct + 10, currentY + 8, { width: colProductWidth - 20 })
+            .text(hsnCode, colHSN + 10, currentY + 8, { width: colHSNWidth - 20 });
+          
+          // Right-aligned columns using absolute positioning
+          // Amount column shows: quantity * unitPrice (before discount, matching web)
+          drawTableRightText(quantity.toFixed(0), colQty, colQtyWidth, currentY + 8);
+          drawTableRightText(`₹${formatAmount(unitPrice)}`, colRate, colRateWidth, currentY + 8);
+          drawTableRightText(`₹${formatAmount(baseAmount)}`, colAmount, colAmountWidth, currentY + 8);
+          drawTableRightText(`${gstPercent}%`, colGST, colGSTWidth, currentY + 8);
+          drawTableRightText(`₹${formatAmount(itemTotal)}`, colTotal, colTotalWidth, currentY + 8);
+
+          currentY += rowHeight;
+        });
+      } else {
+        doc
+          .fillColor("#64748b")
+          .fontSize(10)
+          .text("No items in this invoice", tableStartX + 10, currentY + 8);
+        currentY += rowHeight;
+      }
+
+      // Totals section - matching web format with proper alignment
+      currentY += 20;
+      const summaryWidth = 250;
+      const summaryStartX = doc.page.width - summaryWidth - 50;
+      const labelX = summaryStartX + 15;
+      const amountRightEdge = summaryStartX + summaryWidth - 15;
+
+      doc
+        .strokeColor("#d1d5db")
+        .rect(summaryStartX, currentY, summaryWidth, 100)
+        .stroke();
+
+      const subtotal = invoice.subtotal || 0;
+      const totalDiscount = invoice.totalDiscount || 0;
+      const totalGst = invoice.totalGst || 0;
+      const totalAmount = invoice.totalAmount || 0;
+
+      let summaryY = currentY + 15;
+      const formatAmount = (amount) => {
+        return amount.toLocaleString('en-IN', { 
+          minimumFractionDigits: 2, 
+          maximumFractionDigits: 2 
+        });
+      };
+
+      // Helper function to draw right-aligned text without wrapping
+      const drawRightAlignedText = (text, x, y, fontSize = 10) => {
+        doc.fontSize(fontSize);
+        const textWidth = doc.widthOfString(text);
+        doc.text(text, x - textWidth, y);
+      };
+
+      // Subtotal - using absolute positioning to prevent wrapping
+      doc
+        .fontSize(10)
+        .font("Helvetica")
+        .text("Subtotal:", labelX, summaryY);
+      
+      const subtotalText = `₹${formatAmount(subtotal)}`;
+      drawRightAlignedText(subtotalText, amountRightEdge, summaryY, 10);
+
+      summaryY += 20;
+      // Draw border
+      doc
+        .strokeColor("#d1d5db")
+        .moveTo(labelX, summaryY - 5)
+        .lineTo(amountRightEdge, summaryY - 5)
+        .stroke();
+
+      // Discount
+      if (totalDiscount > 0) {
+        doc.text("Discount:", labelX, summaryY);
+        const discountText = `₹${formatAmount(totalDiscount)}`;
+        drawRightAlignedText(discountText, amountRightEdge, summaryY, 10);
+        summaryY += 20;
+        doc
+          .strokeColor("#d1d5db")
+          .moveTo(labelX, summaryY - 5)
+          .lineTo(amountRightEdge, summaryY - 5)
+          .stroke();
+      }
+
+      // GST
+      doc.text("GST:", labelX, summaryY);
+      const gstText = `₹${formatAmount(totalGst)}`;
+      drawRightAlignedText(gstText, amountRightEdge, summaryY, 10);
+
+      summaryY += 20;
+      doc
+        .strokeColor("#d1d5db")
+        .moveTo(labelX, summaryY - 5)
+        .lineTo(amountRightEdge, summaryY - 5)
+        .stroke();
+
+      // Total - matching web format (bold, gray background)
+      doc
+        .fillColor("#f3f4f6")
+        .rect(summaryStartX, summaryY, summaryWidth, 25)
+        .fill();
+      
+      doc
+        .fillColor("#000000")
+        .fontSize(11)
+        .font("Helvetica-Bold")
+        .text("Total:", labelX, summaryY + 8);
+      
+      const totalText = `₹${formatAmount(totalAmount)}`;
+      drawRightAlignedText(totalText, amountRightEdge, summaryY + 8, 11);
+
+      // Footer - matching web format
+      currentY = summaryY + 50;
+      doc
+        .fillColor("#000000")
+        .fontSize(11)
+        .font("Helvetica")
+        .text("Thank you for your business!", 0, currentY, { align: "center" });
+      
+      if (invoice.totalPoints > 0) {
+        currentY += 20;
+        doc
+          .text(`Points Earned: ${invoice.totalPoints}`, 0, currentY, { align: "center" });
+      }
+
+      doc.end();
+    } catch (error) {
+      reject(error);
+    }
+  });
+};

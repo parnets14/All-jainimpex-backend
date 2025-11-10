@@ -74,11 +74,13 @@ const creditNoteSchema = new mongoose.Schema({
   remarks: String,
   internalNotes: String,
   
-  // Payment Method Information
+  // Payment Method Information (optional - only needed if credit note involves a refund)
+  // Credit notes are for returns/adjustments, not payments
+  // Use DealerPayment for actual payments
   paymentMethod: {
     type: String,
     enum: ["Cash", "UPI", "Cheque", "Bank Transfer"],
-    required: true
+    required: false // Optional - only needed for refunds
   },
   
   // Cheque Information (if payment method is Cheque)

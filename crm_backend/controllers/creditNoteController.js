@@ -32,42 +32,39 @@ export const createCreditNote = async (req, res) => {
       });
     }
 
-    // Validate payment method
-    if (!paymentMethod) {
-      return res.status(400).json({
-        success: false,
-        message: "Payment method is required"
-      });
-    }
+    // Credit notes are for returns/adjustments only, not payments
+    // Payment method is optional - only needed if credit note involves a refund
+    // If payment method is provided, validate it
+    if (paymentMethod) {
+      const validPaymentMethods = ["Cash", "UPI", "Cheque", "Bank Transfer"];
+      if (!validPaymentMethods.includes(paymentMethod)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid payment method"
+        });
+      }
 
-    const validPaymentMethods = ["Cash", "UPI", "Cheque", "Bank Transfer"];
-    if (!validPaymentMethods.includes(paymentMethod)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid payment method"
-      });
-    }
+      // Validate payment method specific details only if payment method is provided
+      if (paymentMethod === "Cheque" && !chequeDetails?.chequeNo) {
+        return res.status(400).json({
+          success: false,
+          message: "Cheque number is required when payment method is Cheque"
+        });
+      }
 
-    // Validate payment method specific details
-    if (paymentMethod === "Cheque" && !chequeDetails?.chequeNo) {
-      return res.status(400).json({
-        success: false,
-        message: "Cheque number is required when payment method is Cheque"
-      });
-    }
+      if (paymentMethod === "UPI" && !upiDetails?.upiId) {
+        return res.status(400).json({
+          success: false,
+          message: "UPI ID is required when payment method is UPI"
+        });
+      }
 
-    if (paymentMethod === "UPI" && !upiDetails?.upiId) {
-      return res.status(400).json({
-        success: false,
-        message: "UPI ID is required when payment method is UPI"
-      });
-    }
-
-    if (paymentMethod === "Bank Transfer" && !bankTransferDetails?.transactionId) {
-      return res.status(400).json({
-        success: false,
-        message: "Transaction ID is required when payment method is Bank Transfer"
-      });
+      if (paymentMethod === "Bank Transfer" && !bankTransferDetails?.transactionId) {
+        return res.status(400).json({
+          success: false,
+          message: "Transaction ID is required when payment method is Bank Transfer"
+        });
+      }
     }
 
     // Check if credit amount is valid
@@ -157,12 +154,13 @@ export const createCreditNote = async (req, res) => {
         creditAmount: creditNote.creditAmount,
         debitAmount: 0,
         runningBalance: previousBalance - creditNote.creditAmount,
-        description: `Credit Note ${creditNote.creditNoteNumber}`,
+        description: `Credit Note ${creditNote.creditNoteNumber} - ${creditNote.creditReason}`,
         remarks: creditNote.creditReason,
-        paymentMethod: creditNote.paymentMethod,
-        chequeDetails: creditNote.chequeDetails,
-        upiDetails: creditNote.upiDetails,
-        bankTransferDetails: creditNote.bankTransferDetails,
+        // Payment method details only if provided (for refunds)
+        paymentMethod: creditNote.paymentMethod || undefined,
+        chequeDetails: creditNote.chequeDetails || undefined,
+        upiDetails: creditNote.upiDetails || undefined,
+        bankTransferDetails: creditNote.bankTransferDetails || undefined,
         createdBy: req.user._id
       });
       

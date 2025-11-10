@@ -1,5 +1,6 @@
 import DealerInvoice from '../../models/DealerInvoice.js';
 import Dealer from '../../models/Dealer.js';
+import { generateInvoicePDF } from '../../utils/pdfGenerator.js';
 
 // @desc    Get dealer's invoices
 // @route   GET /api/app/invoices
@@ -117,7 +118,9 @@ export const getInvoiceDetails = async (req, res) => {
       dealer: dealerId
     })
       .populate('dealer', 'name code phone email address gst')
-      .populate('products.product', 'itemName productCode mrp');
+      .populate('items.product', 'itemName productCode mrp HSNCode')
+      .populate('salesOrder', 'orderNumber')
+      .populate('region', 'name');
 
     if (!invoice) {
       return res.status(404).json({
@@ -157,7 +160,9 @@ export const downloadInvoice = async (req, res) => {
     const invoice = await DealerInvoice.findOne({
       _id: req.params.id,
       dealer: dealerId
-    });
+    })
+      .populate('dealer', 'name code phone email address gst')
+      .populate('items.product', 'itemName productCode mrp');
 
     if (!invoice) {
       return res.status(404).json({
@@ -166,13 +171,19 @@ export const downloadInvoice = async (req, res) => {
       });
     }
 
-    // TODO: Generate PDF using pdfGenerator utility
-    // For now, return invoice data
-    res.json({
-      success: true,
-      message: 'PDF download functionality will be implemented',
-      invoice
-    });
+    // Generate PDF using pdfGenerator utility
+    const pdfBuffer = await generateInvoicePDF(invoice);
+
+    // Set headers for PDF download
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="invoice-${invoice.invoiceNumber}.pdf"`
+    );
+    res.setHeader('Content-Length', pdfBuffer.length);
+
+    // Send the PDF buffer
+    res.send(pdfBuffer);
   } catch (error) {
     console.error('Error downloading invoice:', error);
     res.status(500).json({

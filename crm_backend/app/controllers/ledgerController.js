@@ -158,30 +158,35 @@ export const getOutstandingAmount = async (req, res) => {
     }
     const dealerId = dealer._id;
 
-    const outstanding = await DealerLedger.aggregate([
+    // Calculate outstanding as Debit - Credit (net outstanding)
+    // DealerLedger uses debitAmount and creditAmount fields, not a type field
+    const totals = await DealerLedger.aggregate([
       {
         $match: {
-          dealer: dealerId,
-          type: 'Debit'
+          dealer: dealerId
         }
       },
       {
         $group: {
           _id: null,
-          totalOutstanding: { $sum: '$amount' }
+          totalDebit: { $sum: '$debitAmount' },
+          totalCredit: { $sum: '$creditAmount' }
         }
       }
     ]);
 
+    const totalDebit = totals[0]?.totalDebit || 0;
+    const totalCredit = totals[0]?.totalCredit || 0;
+    const totalOutstanding = Math.max(0, totalDebit - totalCredit);
     const creditLimit = dealer?.creditLimit || 0;
-    const availableBalance = creditLimit - (outstanding[0]?.totalOutstanding || 0);
+    const availableBalance = Math.max(0, creditLimit - totalOutstanding);
 
     res.json({
       success: true,
       outstanding: {
-        totalOutstanding: outstanding[0]?.totalOutstanding || 0,
+        totalOutstanding: totalOutstanding,
         creditLimit,
-        availableBalance: Math.max(0, availableBalance),
+        availableBalance: availableBalance,
         creditDaysLeft: dealer?.creditDays || 0
       }
     });

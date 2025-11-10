@@ -52,6 +52,7 @@ import supplierInvoiceRoutes from './routes/supplierInvoiceRoutes.js';
 import supplierPaymentRoutes from './routes/supplierPaymentRoutes.js';
 import debitNoteRoutes from './routes/debitNoteRoutes.js';
 import creditNoteRoutes from './routes/creditNoteRoutes.js';
+import dealerPaymentRoutes from './routes/dealerPaymentRoutes.js';
 import dealerLedgerRoutes from './routes/dealerLedgerRoutes.js';
 import supplierLedgerRoutes from './routes/supplierLedgerRoutes.js';
 import reconciliationRoutes from './routes/reconciliationRoutes.js';
@@ -71,7 +72,9 @@ import appProductRoutes from './app/routes/productRoutes.js';
 import appOrderRoutes from './app/routes/orderRoutes.js';
 import appInvoiceRoutes from './app/routes/invoiceRoutes.js';
 import appLedgerRoutes from './app/routes/ledgerRoutes.js';
+import appPaymentRoutes from './app/routes/paymentRoutes.js';
 import appDashboardRoutes from './app/routes/dashboardRoutes.js';
+import appPointsRoutes from './app/routes/pointsRoutes.js';
 
 dotenv.config();
 
@@ -266,6 +269,7 @@ app.use('/api/cheques', chequeRoutes);
 app.use('/api/dealer-invoices', dealerInvoiceRoutes);
 app.use('/api/supplier-invoices', supplierInvoiceRoutes);
 app.use('/api/supplier-payments', supplierPaymentRoutes);
+app.use('/api/dealer-payments', dealerPaymentRoutes);
 app.use('/api/debit-notes', debitNoteRoutes);
 app.use('/api/credit-notes', creditNoteRoutes);
 app.use('/api/dealer-ledger', dealerLedgerRoutes);
@@ -287,7 +291,9 @@ app.use('/api/app/products', appProductRoutes);
 app.use('/api/app/orders', appOrderRoutes);
 app.use('/api/app/invoices', appInvoiceRoutes);
 app.use('/api/app/ledger', appLedgerRoutes);
+app.use('/api/app/payments', appPaymentRoutes);
 app.use('/api/app/dashboard', appDashboardRoutes);
+app.use('/api/app/points', appPointsRoutes);
 
 // Serve uploaded files statically - use absolute path
 const __filename = fileURLToPath(import.meta.url);

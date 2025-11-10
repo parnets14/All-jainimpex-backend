@@ -6,6 +6,7 @@ import DiscountMapping from "../models/DiscountMapping.js";
 import Points from "../models/Points.js";
 import Stock from "../models/Stock.js";
 import DealerLedger from "../models/DealerLedger.js";
+import Notification from "../models/Notification.js";
 
 // Generate unique invoice number
 const generateInvoiceNumber = async () => {
@@ -449,6 +450,79 @@ export const createDealerInvoice = async (req, res) => {
     } catch (ledgerError) {
       console.error("Error creating ledger entry for invoice:", ledgerError);
       // Don't fail the invoice creation if ledger entry fails
+    }
+
+    // Create notification for dealer about invoice generation
+    try {
+      // Build notification message
+      let message = `Invoice ${invoice.invoiceNumber} has been generated for an amount of ₹${invoice.totalAmount.toLocaleString()}.`;
+      
+      // Include sales order number if available
+      if (salesOrder && salesOrder.orderNumber) {
+        message = `Invoice ${invoice.invoiceNumber} has been generated for your purchase order ${salesOrder.orderNumber} with an amount of ₹${invoice.totalAmount.toLocaleString()}.`;
+      }
+      
+      const title = salesOrder && salesOrder.orderNumber 
+        ? `Invoice Generated for Order ${salesOrder.orderNumber}`
+        : `Invoice ${invoice.invoiceNumber} Generated`;
+      
+      // Create notification
+      await Notification.create({
+        dealer: dealerId,
+        type: 'system',
+        title: title,
+        message: message,
+        orderId: salesOrderId || null,
+        orderNumber: salesOrder?.orderNumber || null,
+        status: null,
+        read: false,
+        priority: 'high',
+        metadata: {
+          originalType: 'invoice_created',
+          invoiceId: invoice._id.toString(),
+          invoiceNumber: invoice.invoiceNumber,
+          invoiceAmount: invoice.totalAmount,
+          salesOrderNumber: salesOrder?.orderNumber || null
+        }
+      });
+      
+      console.log(`📧 Notification created for dealer ${dealerId} (${dealer.name}): Invoice ${invoice.invoiceNumber} generated`);
+    } catch (notificationError) {
+      console.error('Error creating notification for invoice:', notificationError);
+      // Don't fail the invoice creation if notification fails
+    }
+
+    // Create notification for points earned if points > 0
+    if (invoice.totalPoints && invoice.totalPoints > 0) {
+      try {
+        const pointsMessage = salesOrder && salesOrder.orderNumber
+          ? `You have earned ${invoice.totalPoints} points from invoice ${invoice.invoiceNumber} for your purchase order ${salesOrder.orderNumber}.`
+          : `You have earned ${invoice.totalPoints} points from invoice ${invoice.invoiceNumber}.`;
+        
+        await Notification.create({
+          dealer: dealerId,
+          type: 'system',
+          title: 'Points Earned! 🎉',
+          message: pointsMessage,
+          orderId: salesOrderId || null,
+          orderNumber: salesOrder?.orderNumber || null,
+          status: null,
+          read: false,
+          priority: 'high',
+          metadata: {
+            originalType: 'points_earned',
+            invoiceId: invoice._id.toString(),
+            invoiceNumber: invoice.invoiceNumber,
+            pointsEarned: invoice.totalPoints,
+            salesOrderNumber: salesOrder?.orderNumber || null
+          }
+        });
+        
+        console.log(`🎉 Points notification created for dealer ${dealerId} (${dealer.name}): ${invoice.totalPoints} points earned from invoice ${invoice.invoiceNumber}`);
+      } catch (pointsNotificationError) {
+        console.error('Error creating points notification:', pointsNotificationError);
+        // Don't fail the invoice creation if notification fails
+      }
     }
 
     // Populate the created invoice

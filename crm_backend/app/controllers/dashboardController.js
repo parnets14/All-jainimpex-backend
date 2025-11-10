@@ -20,23 +20,26 @@ export const getDashboardStats = async (req, res) => {
     }
     const dealerId = dealer._id;
 
-    // Get outstanding amount
-    const outstanding = await DealerLedger.aggregate([
+    // Get outstanding amount (Debit - Credit = Net Outstanding)
+    // DealerLedger uses debitAmount and creditAmount fields, not a type field
+    const totals = await DealerLedger.aggregate([
       {
         $match: {
-          dealer: dealerId,
-          type: 'Debit'
+          dealer: dealerId
         }
       },
       {
         $group: {
           _id: null,
-          total: { $sum: '$amount' }
+          totalDebit: { $sum: '$debitAmount' },
+          totalCredit: { $sum: '$creditAmount' }
         }
       }
     ]);
 
-    const totalOutstanding = outstanding[0]?.total || 0;
+    const totalDebit = totals[0]?.totalDebit || 0;
+    const totalCredit = totals[0]?.totalCredit || 0;
+    const totalOutstanding = Math.max(0, totalDebit - totalCredit);
     const creditLimit = dealer.creditLimit || 0;
     const availableBalance = Math.max(0, creditLimit - totalOutstanding);
 
@@ -60,9 +63,22 @@ export const getDashboardStats = async (req, res) => {
     // Get ageing buckets (simplified for now)
     const ageingBuckets = [];
 
-    // Get points
-    const pointsData = await Points.findOne({ dealer: dealerId });
-    const totalPoints = pointsData?.totalPoints || 0;
+    // Get total points from all invoices (points are earned from invoices)
+    const pointsAggregation = await DealerInvoice.aggregate([
+      {
+        $match: {
+          dealer: dealerId,
+          totalPoints: { $gt: 0 }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalPoints: { $sum: '$totalPoints' }
+        }
+      }
+    ]);
+    const totalPoints = pointsAggregation[0]?.totalPoints || 0;
 
     res.json({
       success: true,
