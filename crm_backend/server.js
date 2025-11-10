@@ -63,6 +63,7 @@ import downloadLogRoutes from './routes/downloadLogRoutes.js';
 import priceDeviationRoutes from './routes/priceDeviationRoutes.js';
 import sampleDataRoutes from './routes/sampleDataRoutes.js';
 import testRoutes from './routes/testRoutes.js';
+import notificationRoutes from './routes/notificationRoutes.js';
 
 // Dealer App Routes
 import appAuthRoutes from './app/routes/authRoutes.js';
@@ -278,6 +279,7 @@ app.use('/api/download-logs', downloadLogRoutes);
 app.use('/api/reports', priceDeviationRoutes);
 app.use('/api/sample-data', sampleDataRoutes);
 app.use('/api/test', testRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // Dealer App Routes (separate API prefix for app)
 app.use('/api/app/auth', appAuthRoutes);
