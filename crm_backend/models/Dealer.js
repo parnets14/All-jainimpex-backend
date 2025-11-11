@@ -130,6 +130,12 @@ const dealerSchema = new mongoose.Schema(
       },
     },
 
+    // Profile Image
+    image: {
+      type: String,
+      trim: true,
+    },
+
     // Documents - using Mixed type to avoid casting issues
     panDocument: [mongoose.Schema.Types.Mixed],
     aadharDocument: [mongoose.Schema.Types.Mixed],

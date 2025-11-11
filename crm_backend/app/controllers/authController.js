@@ -76,7 +76,8 @@ export const loginDealer = async (req, res) => {
         name: dealer.name,
         phone: dealer.phone,
         email: dealer.email,
-        address: dealer.address
+        address: dealer.address,
+        image: dealer.image
       }
     });
   } catch (error) {
@@ -240,7 +241,8 @@ export const verifyOTP = async (req, res) => {
         name: dealer.name,
         phone: dealer.phone,
         email: dealer.email,
-        address: dealer.address
+        address: dealer.address,
+        image: dealer.image
       }
     });
   } catch (error) {
@@ -303,7 +305,8 @@ export const getDealerProfile = async (req, res) => {
         aadhar: dealer.aadhar,
         creditLimit: dealer.creditLimit,
         creditDays: dealer.creditDays,
-        salesTarget: dealer.salesTarget
+        salesTarget: dealer.salesTarget,
+        image: dealer.image
       }
     });
   } catch (error) {

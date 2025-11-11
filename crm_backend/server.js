@@ -65,6 +65,7 @@ import priceDeviationRoutes from './routes/priceDeviationRoutes.js';
 import sampleDataRoutes from './routes/sampleDataRoutes.js';
 import testRoutes from './routes/testRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
+import chatRoutes from './routes/chatRoutes.js';
 
 // Dealer App Routes
 import appAuthRoutes from './app/routes/authRoutes.js';
@@ -75,6 +76,8 @@ import appLedgerRoutes from './app/routes/ledgerRoutes.js';
 import appPaymentRoutes from './app/routes/paymentRoutes.js';
 import appDashboardRoutes from './app/routes/dashboardRoutes.js';
 import appPointsRoutes from './app/routes/pointsRoutes.js';
+import appChatRoutes from './app/routes/chatRoutes.js';
+import appDealerRoutes from './app/routes/dealerRoutes.js';
 
 dotenv.config();
 
@@ -284,6 +287,7 @@ app.use('/api/reports', priceDeviationRoutes);
 app.use('/api/sample-data', sampleDataRoutes);
 app.use('/api/test', testRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/support/chat', chatRoutes);
 
 // Dealer App Routes (separate API prefix for app)
 app.use('/api/app/auth', appAuthRoutes);
@@ -294,6 +298,8 @@ app.use('/api/app/ledger', appLedgerRoutes);
 app.use('/api/app/payments', appPaymentRoutes);
 app.use('/api/app/dashboard', appDashboardRoutes);
 app.use('/api/app/points', appPointsRoutes);
+app.use('/api/app/support/chat', appChatRoutes);
+app.use('/api/app/dealer', appDealerRoutes);
 
 // Serve uploaded files statically - use absolute path
 const __filename = fileURLToPath(import.meta.url);
