@@ -79,6 +79,10 @@ import appPointsRoutes from './app/routes/pointsRoutes.js';
 import appChatRoutes from './app/routes/chatRoutes.js';
 import appDealerRoutes from './app/routes/dealerRoutes.js';
 
+// Sales Executive App Routes
+import seAuthRoutes from './SalesExecutiveAppBackend/routes/authRoutes.js';
+import seAttendanceRoutes from './SalesExecutiveAppBackend/routes/attendanceRoutes.js';
+
 dotenv.config();
 
 const numCPUs = cpus().length;
@@ -300,6 +304,19 @@ app.use('/api/app/dashboard', appDashboardRoutes);
 app.use('/api/app/points', appPointsRoutes);
 app.use('/api/app/support/chat', appChatRoutes);
 app.use('/api/app/dealer', appDealerRoutes);
+
+// Sales Executive App Routes (separate API prefix for SE app)
+console.log('🔧 Registering Sales Executive App routes...');
+
+// Add logging middleware for SE routes
+app.use('/api/se', (req, res, next) => {
+  console.log(`📍 SE Route Hit: ${req.method} ${req.url}`);
+  next();
+});
+
+app.use('/api/se/auth', seAuthRoutes);
+app.use('/api/se/attendance', seAttendanceRoutes);
+console.log('✅ Sales Executive App routes registered at /api/se/*');
 
 // Serve uploaded files statically - use absolute path
 const __filename = fileURLToPath(import.meta.url);
