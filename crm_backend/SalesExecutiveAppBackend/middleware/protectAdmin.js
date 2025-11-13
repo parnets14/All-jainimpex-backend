@@ -2,7 +2,7 @@ import { verifyToken } from '../../utils/jwtUtils.js';
 import User from '../../models/User.js';
 
 // Protect routes for admin/web access - verify JWT token
-export const protectAdmin = async (req, res, next) => {
+const protectAdmin = async (req, res, next) => {
   try {
     let token;
 
@@ -70,3 +70,5 @@ export const protectAdmin = async (req, res, next) => {
     });
   }
 };
+
+export default protectAdmin;

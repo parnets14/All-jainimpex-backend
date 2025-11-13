@@ -6,8 +6,8 @@ import {
   getAttendanceHistory,
   getAllAttendance,
 } from '../controllers/attendanceController.js';
-import { protect } from '../middleware/protect.js';
-import { protectAdmin } from '../middleware/protectAdmin.js';
+import protect from '../middleware/protect.js';
+import protectAdmin from '../middleware/protectAdmin.js';
 import { upload } from '../middleware/upload.js';
 
 const router = express.Router();

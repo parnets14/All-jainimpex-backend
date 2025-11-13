@@ -59,6 +59,7 @@ import reconciliationRoutes from './routes/reconciliationRoutes.js';
 import profitAnalysisRoutes from './routes/profitAnalysisRoutes.js';
 import marginAnalysisRoutes from './routes/marginAnalysisRoutes.js';
 import dealerPerformanceRoutes from './routes/dealerPerformanceRoutes.js';
+import productRecommendationRoutes from './routes/productRecommendationRoutes.js';
 import activityLogRoutes from './routes/activityLogRoutes.js';
 import downloadLogRoutes from './routes/downloadLogRoutes.js';
 import priceDeviationRoutes from './routes/priceDeviationRoutes.js';
@@ -82,6 +83,9 @@ import appDealerRoutes from './app/routes/dealerRoutes.js';
 // Sales Executive App Routes
 import seAuthRoutes from './SalesExecutiveAppBackend/routes/authRoutes.js';
 import seAttendanceRoutes from './SalesExecutiveAppBackend/routes/attendanceRoutes.js';
+import seRoutePlanRoutes from './SalesExecutiveAppBackend/routes/routePlanRoutes.js';
+import seDealerInsightsRoutes from './SalesExecutiveAppBackend/routes/dealerInsightsRoutes.js';
+import seDealerRoutes from './SalesExecutiveAppBackend/routes/dealerRoutes.js';
 
 dotenv.config();
 
@@ -285,6 +289,7 @@ app.use('/api/reconciliation', reconciliationRoutes);
 app.use('/api/profit-analysis', profitAnalysisRoutes);
 app.use('/api/margin-analysis', marginAnalysisRoutes);
 app.use('/api/dealer-performance', dealerPerformanceRoutes);
+app.use('/api/product-recommendations', productRecommendationRoutes);
 app.use('/api/activity-logs', activityLogRoutes);
 app.use('/api/download-logs', downloadLogRoutes);
 app.use('/api/reports', priceDeviationRoutes);
@@ -316,6 +321,9 @@ app.use('/api/se', (req, res, next) => {
 
 app.use('/api/se/auth', seAuthRoutes);
 app.use('/api/se/attendance', seAttendanceRoutes);
+app.use('/api/se/route-plan', seRoutePlanRoutes);
+app.use('/api/se/dealer-insights', seDealerInsightsRoutes);
+app.use('/api/se/dealers', seDealerRoutes);
 console.log('✅ Sales Executive App routes registered at /api/se/*');
 
 // Serve uploaded files statically - use absolute path

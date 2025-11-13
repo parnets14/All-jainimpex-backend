@@ -2,7 +2,7 @@ import { verifyToken } from '../../utils/jwtUtils.js';
 import User from '../../models/User.js';
 
 // Protect routes - verify JWT token
-export const protect = async (req, res, next) => {
+const protect = async (req, res, next) => {
   try {
     let token;
 
@@ -32,8 +32,10 @@ export const protect = async (req, res, next) => {
         });
       }
 
-      // Check if user is sales executive
-      if (req.user.role !== 'sales_executive') {
+      // Check if user is sales executive (case-insensitive check)
+      const userRole = req.user.role?.toLowerCase().replace(/\s+/g, '_');
+      if (userRole !== 'sales_executive') {
+        console.log(`⚠️ Access denied for role: ${req.user.role} (normalized: ${userRole})`);
         return res.status(403).json({
           success: false,
           message: 'Access denied. Sales Executive role required.',
@@ -55,3 +57,5 @@ export const protect = async (req, res, next) => {
     });
   }
 };
+
+export default protect;

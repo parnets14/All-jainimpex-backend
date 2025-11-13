@@ -186,9 +186,12 @@ export const getAllDealerLedgerEntries = async (req, res) => {
       sortOrder = 'desc'
     } = req.query;
 
-    // Build filter object
-    const filter = {};
+    // Build filter object - exclude Credit Notes by default
+    const filter = {
+      transactionType: { $in: ['Invoice', 'Payment'] } // Only show invoices and payments
+    };
     if (dealerId) filter.dealer = dealerId;
+    // Allow override if specific transaction type is requested
     if (transactionType) filter.transactionType = transactionType;
     if (status) filter.status = status;
     
@@ -250,13 +253,17 @@ export const getDealerLedgerByDealer = async (req, res) => {
       sortOrder = 'asc'
     } = req.query;
 
-    // Build filter
-    const filter = { dealer: dealerId };
+    // Build filter - exclude Credit Notes by default
+    const filter = { 
+      dealer: dealerId,
+      transactionType: { $in: ['Invoice', 'Payment'] } // Only show invoices and payments
+    };
     if (startDate || endDate) {
       filter.entryDate = {};
       if (startDate) filter.entryDate.$gte = new Date(startDate);
       if (endDate) filter.entryDate.$lte = new Date(endDate);
     }
+    // Allow override if specific transaction type is requested
     if (transactionType) filter.transactionType = transactionType;
 
     // Calculate pagination

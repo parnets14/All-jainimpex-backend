@@ -108,7 +108,8 @@ const userSchema = new mongoose.Schema({
     type: String
   }],
   assignedRegions: [{
-    type: String
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Region'
   }],
   lastLogin: {
     type: Date,
