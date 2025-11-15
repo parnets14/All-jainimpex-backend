@@ -33,7 +33,7 @@ const storage = multer.diskStorage({
     // Determine upload path based on field name
     if (file.fieldname === 'receipt') {
       uploadPath = receiptsDir;
-    } else if (file.fieldname === 'bill') {
+    } else if (file.fieldname === 'bill' || file.fieldname === 'document') {
       uploadPath = expensesDir;
     } else if (file.fieldname === 'visitImage') {
       uploadPath = visitsDir;
@@ -65,3 +65,30 @@ export const upload = multer({
     fileSize: 5 * 1024 * 1024, // 5MB limit
   },
 });
+
+// Helper for single file upload
+export const uploadSingle = (fieldName) => upload.single(fieldName);
+
+// Error handling middleware for multer
+export const handleUploadErrors = (err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    // Multer-specific errors
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({
+        success: false,
+        message: 'File size too large. Maximum size is 5MB.'
+      });
+    }
+    return res.status(400).json({
+      success: false,
+      message: `Upload error: ${err.message}`
+    });
+  } else if (err) {
+    // Other errors
+    return res.status(400).json({
+      success: false,
+      message: err.message || 'File upload failed'
+    });
+  }
+  next();
+};

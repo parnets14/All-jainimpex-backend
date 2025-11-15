@@ -67,6 +67,7 @@ import sampleDataRoutes from './routes/sampleDataRoutes.js';
 import testRoutes from './routes/testRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
+import collectionRoutes from './routes/collectionRoutes.js';
 
 // Dealer App Routes
 import appAuthRoutes from './app/routes/authRoutes.js';
@@ -86,6 +87,10 @@ import seAttendanceRoutes from './SalesExecutiveAppBackend/routes/attendanceRout
 import seRoutePlanRoutes from './SalesExecutiveAppBackend/routes/routePlanRoutes.js';
 import seDealerInsightsRoutes from './SalesExecutiveAppBackend/routes/dealerInsightsRoutes.js';
 import seDealerRoutes from './SalesExecutiveAppBackend/routes/dealerRoutes.js';
+import seSalesOrderRoutes from './SalesExecutiveAppBackend/routes/salesOrderRoutes.js';
+import seCollectionRoutes from './SalesExecutiveAppBackend/routes/collectionRoutes.js';
+import seTargetRoutes from './SalesExecutiveAppBackend/routes/targetRoutes.js';
+import seExpenseRoutes from './SalesExecutiveAppBackend/routes/expenseRoutes.js';
 
 dotenv.config();
 
@@ -297,6 +302,7 @@ app.use('/api/sample-data', sampleDataRoutes);
 app.use('/api/test', testRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/support/chat', chatRoutes);
+app.use('/api/collections', collectionRoutes);
 
 // Dealer App Routes (separate API prefix for app)
 app.use('/api/app/auth', appAuthRoutes);
@@ -324,6 +330,10 @@ app.use('/api/se/attendance', seAttendanceRoutes);
 app.use('/api/se/route-plan', seRoutePlanRoutes);
 app.use('/api/se/dealer-insights', seDealerInsightsRoutes);
 app.use('/api/se/dealers', seDealerRoutes);
+app.use('/api/se/sales-orders', seSalesOrderRoutes);
+app.use('/api/se/collections', seCollectionRoutes);
+app.use('/api/se/targets', seTargetRoutes);
+app.use('/api/se/expenses', seExpenseRoutes);
 console.log('✅ Sales Executive App routes registered at /api/se/*');
 
 // Serve uploaded files statically - use absolute path

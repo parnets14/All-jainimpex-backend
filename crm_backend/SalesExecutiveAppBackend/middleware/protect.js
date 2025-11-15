@@ -32,15 +32,19 @@ const protect = async (req, res, next) => {
         });
       }
 
-      // Check if user is sales executive (case-insensitive check)
+      // Check if user is sales executive or admin (case-insensitive check)
       const userRole = req.user.role?.toLowerCase().replace(/\s+/g, '_');
-      if (userRole !== 'sales_executive') {
+      const allowedRoles = ['sales_executive', 'super_admin', 'admin'];
+      
+      if (!allowedRoles.includes(userRole)) {
         console.log(`⚠️ Access denied for role: ${req.user.role} (normalized: ${userRole})`);
         return res.status(403).json({
           success: false,
-          message: 'Access denied. Sales Executive role required.',
+          message: 'Access denied. Sales Executive or Admin role required.',
         });
       }
+      
+      console.log(`✅ Access granted for role: ${req.user.role}`);
 
       next();
     } catch (error) {
