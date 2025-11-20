@@ -57,6 +57,13 @@ const salesOrderSchema = new mongoose.Schema({
     ref: "Region"
   },
   pinCode: String,
+  // Delivery address fields (can be corrected/updated)
+  deliveryAddress: String,
+  deliveryCity: String,
+  deliveryArea: String,
+  deliveryPinCode: String,
+  deliveryLatitude: Number,
+  deliveryLongitude: Number,
   products: [productSchema],
   orderDate: {
     type: Date,
@@ -84,11 +91,11 @@ const salesOrderSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
-  status: {
-    type: String,
-    enum: ["Pending", "Confirmed", "Processing", "Delivered", "Cancelled", "Rejected"],
-    default: "Pending"
-  },
+        status: {
+          type: String,
+          enum: ["Pending", "Confirmed", "Processing", "In Transit", "Delivered", "Cancelled", "Rejected", "Rescheduled", "Missing"],
+          default: "Pending"
+        },
   type: {
     type: String,
     enum: ["Retail Sales Order", "Wholesale Sales Order", "Enterprise Sales Order", "Reseller Sales Order", "Independent Sales Order"],

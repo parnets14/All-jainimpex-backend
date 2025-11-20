@@ -29,7 +29,12 @@ export const verifyToken = (token) => {
       throw new Error('No token provided');
     }
 
+    console.log('🔐 Verifying token, JWT_SECRET:', process.env.JWT_SECRET ? 'from env' : 'fallback');
+    console.log('🔐 Token length:', token.length);
+    
     const decoded = jwt.verify(token, JWT_SECRET);
+    
+    console.log('🔐 Token decoded successfully, userId:', decoded.userId);
     
     // Additional validation
     if (!decoded.userId) {
@@ -38,7 +43,9 @@ export const verifyToken = (token) => {
 
     return decoded;
   } catch (error) {
-    console.error('Token verification failed:', error.message);
+    console.error('❌ Token verification failed:', error.message);
+    console.error('❌ Error name:', error.name);
+    console.error('❌ JWT_SECRET used:', process.env.JWT_SECRET ? 'from env' : 'fallback');
     
     if (error.name === 'TokenExpiredError') {
       throw new Error('Token has expired');

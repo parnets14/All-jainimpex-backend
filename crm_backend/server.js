@@ -92,6 +92,15 @@ import seCollectionRoutes from './SalesExecutiveAppBackend/routes/collectionRout
 import seTargetRoutes from './SalesExecutiveAppBackend/routes/targetRoutes.js';
 import seExpenseRoutes from './SalesExecutiveAppBackend/routes/expenseRoutes.js';
 
+// Delivery Executive App Routes
+import deAuthRoutes from './DeliveryExecutiveAppBackend/routes/authRoutes.js';
+import deAssignmentRoutes from './DeliveryExecutiveAppBackend/routes/assignmentRoutes.js';
+import dePaymentRoutes from './DeliveryExecutiveAppBackend/routes/paymentRoutes.js';
+import deRoutePlanRoutes from './DeliveryExecutiveAppBackend/routes/routePlanRoutes.js';
+import deDeliveryHistoryRoutes from './DeliveryExecutiveAppBackend/routes/deliveryHistoryRoutes.js';
+import deDeliveriesRoutes from './DeliveryExecutiveAppBackend/routes/deliveriesRoutes.js';
+import deNotificationRoutes from './DeliveryExecutiveAppBackend/routes/notificationRoutes.js';
+
 dotenv.config();
 
 const numCPUs = cpus().length;
@@ -335,6 +344,20 @@ app.use('/api/se/collections', seCollectionRoutes);
 app.use('/api/se/targets', seTargetRoutes);
 app.use('/api/se/expenses', seExpenseRoutes);
 console.log('✅ Sales Executive App routes registered at /api/se/*');
+
+// Delivery Executive App Routes (separate API prefix for DE app)
+console.log('🔧 Registering Delivery Executive App routes...');
+app.use('/api/de/auth', deAuthRoutes);
+app.use('/api/de/assignments', deAssignmentRoutes);
+app.use('/api/de/payments', dePaymentRoutes);
+app.use('/api/de/route-plan', deRoutePlanRoutes);
+app.use('/api/de/delivery-history', deDeliveryHistoryRoutes);
+app.use('/api/de/notifications', deNotificationRoutes);
+// Mobile app compatibility routes (using different paths)
+app.use('/api/de/route', deRoutePlanRoutes); // Mobile app uses /route instead of /route-plan
+app.use('/api/de/deliveries', deDeliveriesRoutes); // Mobile app uses /deliveries/today
+app.use('/api/de/deliveries', deDeliveryHistoryRoutes); // Mobile app uses /deliveries/history
+console.log('✅ Delivery Executive App routes registered at /api/de/*');
 
 // Serve uploaded files statically - use absolute path
 const __filename = fileURLToPath(import.meta.url);

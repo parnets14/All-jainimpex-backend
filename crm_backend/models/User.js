@@ -93,6 +93,7 @@ const userSchema = new mongoose.Schema({
       'finance_manager',
       'hr_manager',
       'sales_executive',
+      'delivery_executive',
       'warehouse_manager',
       'inventory_manager',
       'dealer'
@@ -103,6 +104,14 @@ const userSchema = new mongoose.Schema({
     type: String,
     enum: ['Active', 'Inactive'],
     default: 'Active'
+  },
+  // Location tracking for delivery executives
+  currentLocation: {
+    latitude: Number,
+    longitude: Number,
+    accuracy: Number,
+    speed: Number,
+    lastUpdated: Date
   },
   permissions: [{
     type: String
