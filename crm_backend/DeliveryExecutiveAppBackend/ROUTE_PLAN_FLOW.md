@@ -231,3 +231,5 @@ Route Plan helps delivery executives follow an optimized delivery sequence for t
 3. **One route plan per executive per day** - Prevents duplicate routes
 4. **Route status flow**: `draft` → `active` → `completed`
 
+
+

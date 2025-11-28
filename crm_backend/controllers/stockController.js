@@ -40,22 +40,34 @@ export const getStock = async (req, res) => {
       lowStockOnly = false
     } = req.query;
 
-    console.log(`🔍 [STOCK_DEBUG] Getting stock with filters:`, { search, warehouseId, lowStockOnly });
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const skip = (pageNum - 1) * limitNum;
 
-    // Get all products with their current stock
-    const products = await Product.find({
+    console.log(`🔍 [STOCK_DEBUG] Getting stock with filters:`, { search, warehouseId, lowStockOnly, page: pageNum, limit: limitNum });
+
+    // Build product query with search
+    const productQuery = search ? {
       $or: [
         { productCode: { $regex: search, $options: 'i' } },
         { itemName: { $regex: search, $options: 'i' } },
         { HSNCode: { $regex: search, $options: 'i' } }
       ]
-    });
+    } : {};
 
-    console.log(`🔍 [STOCK_DEBUG] Found ${products.length} products`);
+    // Get total count for pagination
+    const totalProducts = await Product.countDocuments(productQuery);
 
-    const stockData = [];
+    // Get paginated products
+    const products = await Product.find(productQuery)
+      .skip(skip)
+      .limit(limitNum)
+      .lean(); // Use lean() for better performance
+
+    console.log(`🔍 [STOCK_DEBUG] Found ${products.length} products (page ${pageNum} of ${Math.ceil(totalProducts / limitNum)})`);
     
-    for (const product of products) {
+    // Process products in parallel for better performance
+    const stockPromises = products.map(async (product) => {
       // Get all warehouses that have this product (from GRNs)
       const grnQuery = { 'items.productId': product._id };
       const grns = await GRN.find(grnQuery)
@@ -179,6 +191,7 @@ export const getStock = async (req, res) => {
       // Create separate stock entries for each warehouse
       console.log(`🔍 [STOCK_DEBUG] Creating ${Object.keys(warehouseStock).length} warehouse entries for product ${product.productCode}`);
       
+      const warehouseEntries = [];
       Object.values(warehouseStock).forEach(warehouse => {
         // Apply warehouse filter if specified
         if (warehouseId && warehouse.warehouseId !== warehouseId) {
@@ -228,30 +241,27 @@ export const getStock = async (req, res) => {
         };
         
         console.log(`🔍 [STOCK_DEBUG] Adding stock entry for ${product.productCode} in warehouse ${warehouse.warehouseName}:`, stockEntry);
-        stockData.push(stockEntry);
+        warehouseEntries.push(stockEntry);
       });
-    }
+      
+      return warehouseEntries;
+    });
 
-    // Manual pagination
-    const pageNum = parseInt(page);
-    const limitNum = parseInt(limit);
-    const startIndex = (pageNum - 1) * limitNum;
-    const endIndex = pageNum * limitNum;
+    // Wait for all products to be processed
+    const allStockEntries = await Promise.all(stockPromises);
+    const stockData = allStockEntries.flat().filter(entry => entry); // Flatten and remove nulls
 
-    const paginatedData = stockData.slice(startIndex, endIndex);
-
-    // console.log(`🔍 [STOCK_DEBUG] Final stock data: ${stockData.length} total entries`);
-    // console.log(`🔍 [STOCK_DEBUG] Sample entries:`, stockData.slice(0, 3));
+    console.log(`🔍 [STOCK_DEBUG] Final stock data: ${stockData.length} total entries for ${products.length} products`);
 
     res.json({
       success: true,
-      data: paginatedData,
+      data: stockData,
       pagination: {
         currentPage: pageNum,
-        totalPages: Math.ceil(stockData.length / limitNum),
-        totalRecords: stockData.length,
-        hasNextPage: endIndex < stockData.length,
-        hasPrevPage: startIndex > 0,
+        totalPages: Math.ceil(totalProducts / limitNum),
+        totalRecords: totalProducts,
+        hasNextPage: pageNum < Math.ceil(totalProducts / limitNum),
+        hasPrevPage: pageNum > 1,
         limit: limitNum
       }
     });
