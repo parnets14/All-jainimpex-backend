@@ -107,6 +107,9 @@ const deliveryPaymentSchema = new mongoose.Schema({
     enum: ['pending', 'verified', 'rejected'],
     default: 'pending'
   },
+  verifiedAt: {
+    type: Date
+  },
   verificationDate: {
     type: Date
   },

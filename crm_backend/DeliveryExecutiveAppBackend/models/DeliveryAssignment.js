@@ -79,6 +79,13 @@ const deliveryAssignmentSchema = new mongoose.Schema({
   assignedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
+  },
+  paymentCollected: {
+    type: Boolean,
+    default: false
+  },
+  paymentCollectedAt: {
+    type: Date
   }
 }, {
   timestamps: true

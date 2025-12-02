@@ -13,7 +13,7 @@ const __dirname = dirname(__filename);
 // Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '../../../uploads/payments');
+    const uploadDir = path.join(__dirname, '../../uploads/payments');
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
@@ -119,21 +119,6 @@ export const createPayment = async (req, res) => {
       });
     }
 
-    // Calculate total amount
-    const cashTotal = parseFloat(cashAmount || 0);
-    const chequeTotal = parsedChequeDetails.reduce((sum, cheque) => 
-      sum + parseFloat(cheque.amount || 0), 0);
-    const upiTotal = parsedUpiDetails ? parseFloat(parsedUpiDetails.amount || 0) : 0;
-    const accountTotal = parsedAccountDetails ? parseFloat(parsedAccountDetails.amount || 0) : 0;
-    const totalAmount = cashTotal + chequeTotal + upiTotal + accountTotal;
-
-    if (totalAmount <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Total payment amount must be greater than 0',
-      });
-    }
-
     // Parse UPI details if provided
     let parsedUpiDetails = null;
     if (req.body.upiDetails) {
@@ -172,6 +157,21 @@ export const createPayment = async (req, res) => {
           message: 'Invalid account details format',
         });
       }
+    }
+
+    // Calculate total amount
+    const cashTotal = parseFloat(cashAmount || 0);
+    const chequeTotal = parsedChequeDetails.reduce((sum, cheque) => 
+      sum + parseFloat(cheque.amount || 0), 0);
+    const upiTotal = parsedUpiDetails ? parseFloat(parsedUpiDetails.amount || 0) : 0;
+    const accountTotal = parsedAccountDetails ? parseFloat(parsedAccountDetails.amount || 0) : 0;
+    const totalAmount = cashTotal + chequeTotal + upiTotal + accountTotal;
+
+    if (totalAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Total payment amount must be greater than 0',
+      });
     }
 
     // Validate payment mode
@@ -236,6 +236,12 @@ export const createPayment = async (req, res) => {
     });
 
     await payment.save();
+
+    // Mark assignment as payment collected
+    await DeliveryAssignment.findByIdAndUpdate(deliveryAssignment, {
+      paymentCollected: true,
+      paymentCollectedAt: new Date()
+    });
 
     res.status(201).json({
       success: true,
@@ -389,6 +395,58 @@ export const getPaymentById = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch payment',
+      error: error.message,
+    });
+  }
+};
+
+// Verify payment (Admin - Web CRM)
+export const verifyPayment = async (req, res) => {
+  try {
+    const { paymentId } = req.params;
+    const { verificationStatus, verificationNotes } = req.body;
+    const verifierId = req.user?.userId || req.user?._id;
+
+    // Validate status
+    if (!['verified', 'rejected'].includes(verificationStatus)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid verification status. Must be "verified" or "rejected"',
+      });
+    }
+
+    const payment = await DeliveryPayment.findById(paymentId);
+
+    if (!payment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Payment not found',
+      });
+    }
+
+    // Update payment verification
+    payment.verificationStatus = verificationStatus;
+    payment.verifiedBy = verifierId;
+    payment.verifiedAt = new Date();
+    if (verificationNotes) {
+      payment.verificationNotes = verificationNotes;
+    }
+
+    await payment.save();
+
+    // Populate for response
+    await payment.populate('verifiedBy', 'name');
+
+    res.json({
+      success: true,
+      message: `Payment ${verificationStatus} successfully`,
+      data: payment,
+    });
+  } catch (error) {
+    console.error('Verify payment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to verify payment',
       error: error.message,
     });
   }
