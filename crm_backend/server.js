@@ -80,6 +80,7 @@ import appDashboardRoutes from './app/routes/dashboardRoutes.js';
 import appPointsRoutes from './app/routes/pointsRoutes.js';
 import appChatRoutes from './app/routes/chatRoutes.js';
 import appDealerRoutes from './app/routes/dealerRoutes.js';
+import appCreditNoteRoutes from './app/routes/creditNoteRoutes.js';
 
 // Sales Executive App Routes
 import seAuthRoutes from './SalesExecutiveAppBackend/routes/authRoutes.js';
@@ -100,6 +101,7 @@ import deRoutePlanRoutes from './DeliveryExecutiveAppBackend/routes/routePlanRou
 import deDeliveryHistoryRoutes from './DeliveryExecutiveAppBackend/routes/deliveryHistoryRoutes.js';
 import deDeliveriesRoutes from './DeliveryExecutiveAppBackend/routes/deliveriesRoutes.js';
 import deNotificationRoutes from './DeliveryExecutiveAppBackend/routes/notificationRoutes.js';
+import deAdminDeliveryRoutes from './DeliveryExecutiveAppBackend/routes/adminDeliveryRoutes.js';
 
 dotenv.config();
 
@@ -324,6 +326,7 @@ app.use('/api/app/dashboard', appDashboardRoutes);
 app.use('/api/app/points', appPointsRoutes);
 app.use('/api/app/support/chat', appChatRoutes);
 app.use('/api/app/dealer', appDealerRoutes);
+app.use('/api/app/credit-notes', appCreditNoteRoutes);
 
 // Sales Executive App Routes (separate API prefix for SE app)
 console.log('🔧 Registering Sales Executive App routes...');
@@ -357,7 +360,10 @@ app.use('/api/de/notifications', deNotificationRoutes);
 app.use('/api/de/route', deRoutePlanRoutes); // Mobile app uses /route instead of /route-plan
 app.use('/api/de/deliveries', deDeliveriesRoutes); // Mobile app uses /deliveries/today
 app.use('/api/de/deliveries', deDeliveryHistoryRoutes); // Mobile app uses /deliveries/history
+// Admin routes for delivery management (web app)
+app.use('/api/admin/deliveries', deAdminDeliveryRoutes);
 console.log('✅ Delivery Executive App routes registered at /api/de/*');
+console.log('✅ Admin delivery routes registered at /api/admin/deliveries/*');
 
 // Serve uploaded files statically - use absolute path
 const __filename = fileURLToPath(import.meta.url);

@@ -30,7 +30,7 @@ const deliveryAssignmentSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['assigned', 'in_transit', 'delivered', 'failed', 'rescheduled'],
+    enum: ['assigned', 'in_transit', 'delivered', 'failed', 'rescheduled', 'pending_reschedule'],
     default: 'assigned'
   },
   deliveryOTP: {
@@ -55,6 +55,28 @@ const deliveryAssignmentSchema = new mongoose.Schema({
   rescheduledDate: {
     type: Date
   },
+  rescheduleRequest: {
+    requestedDate: Date,
+    requestedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    requestedAt: Date,
+    reason: String,
+    status: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected'],
+      default: 'pending'
+    },
+    approvedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    approvedAt: Date,
+    approvedDate: Date, // Final approved date (may be different from requested)
+    rejectionReason: String,
+    rejectedAt: Date
+  },
   rescheduleHistory: [{
     originalDate: Date,
     rescheduledTo: Date,
@@ -66,8 +88,35 @@ const deliveryAssignmentSchema = new mongoose.Schema({
     rescheduledBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User'
+    },
+    approvedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    approvedAt: Date
+  }],
+  reassignmentHistory: [{
+    fromExecutive: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    toExecutive: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    reason: String,
+    reassignedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    reassignedAt: {
+      type: Date,
+      default: Date.now
     }
   }],
+  failedAt: {
+    type: Date
+  },
   deliveryLocation: {
     latitude: Number,
     longitude: Number,

@@ -173,7 +173,7 @@ export const completeDelivery = async (req, res) => {
   }
 };
 
-// Reschedule delivery
+// Request reschedule (requires admin approval)
 export const rescheduleDelivery = async (req, res) => {
   try {
     const { assignmentId } = req.params;
@@ -204,65 +204,50 @@ export const rescheduleDelivery = async (req, res) => {
       });
     }
 
-    // Parse and normalize the new date (ensure it's at start of day for consistent filtering)
-    const newScheduledDate = new Date(newDate);
-    newScheduledDate.setHours(0, 0, 0, 0);
+    // Validate that the new date is in the future
+    const requestedDate = new Date(newDate);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
     
-    // Store original scheduled date for reference
-    const originalScheduledDate = assignment.scheduledDate;
-    
-    // Add to reschedule history before updating
-    if (!assignment.rescheduleHistory) {
-      assignment.rescheduleHistory = [];
+    if (requestedDate < today) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot reschedule to a past date',
+      });
     }
-    assignment.rescheduleHistory.push({
-      originalDate: originalScheduledDate,
-      rescheduledTo: newScheduledDate,
+
+    // Create reschedule request (pending admin approval)
+    assignment.rescheduleRequest = {
+      requestedDate: requestedDate,
+      requestedBy: executiveId,
+      requestedAt: new Date(),
       reason: reason,
-      rescheduledAt: new Date(),
-      rescheduledBy: executiveId
-    });
+      status: 'pending'
+    };
     
-    // Update scheduledDate to the new date so it shows up on that day
-    assignment.scheduledDate = newScheduledDate;
-    assignment.rescheduledDate = newScheduledDate;
-    assignment.rescheduleReason = reason;
+    // Change status to pending_reschedule
+    assignment.status = 'pending_reschedule';
     
-    // Change status back to 'assigned' so it appears as a new delivery on the rescheduled date
-    assignment.status = 'assigned';
-    
-    // Reset delivery-related fields since it's being rescheduled
-    assignment.deliveryTime = null;
-    assignment.otpVerified = false;
-    assignment.deliveryOTP = null;
-    assignment.podImages = [];
-    
-    console.log('🔄 Rescheduling delivery:', {
+    console.log('🔄 Reschedule request created:', {
       assignmentId: assignment._id,
-      originalDate: originalScheduledDate,
-      newDate: newScheduledDate,
-      status: assignment.status,
-      historyCount: assignment.rescheduleHistory.length
+      currentDate: assignment.scheduledDate,
+      requestedDate: requestedDate,
+      reason: reason,
+      status: 'pending_reschedule'
     });
 
     await assignment.save();
 
-    // Update SalesOrder status and delivery date
-    await SalesOrder.findByIdAndUpdate(assignment.salesOrder, {
-      status: 'Rescheduled',
-      deliveryDate: new Date(newDate) // Update delivery date to match rescheduled date
-    });
-
     res.json({
       success: true,
-      message: `Delivery rescheduled successfully. It will now appear on ${new Date(newDate).toLocaleDateString()}`,
+      message: 'Reschedule request submitted successfully. Awaiting admin approval.',
       data: assignment,
     });
   } catch (error) {
     console.error('Reschedule delivery error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to reschedule delivery',
+      message: 'Failed to submit reschedule request',
       error: error.message,
     });
   }
@@ -301,6 +286,7 @@ export const failDelivery = async (req, res) => {
 
     assignment.status = 'failed';
     assignment.failureReason = reason;
+    assignment.failedAt = new Date();
     if (location) {
       assignment.deliveryLocation = {
         latitude: location.latitude,
