@@ -614,3 +614,176 @@ export const uploadDealerDocuments = async (req, res) => {
     });
   }
 };
+
+// Get complete dealer information for Sales Order Dashboard
+export const getDealerCompleteInfo = async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Import models
+    const DealerLedger = (await import("../models/DealerLedger.js")).default;
+    const SalesOrder = (await import("../models/SalesOrder.js")).default;
+    const DiscountMapping = (await import("../models/DiscountMapping.js")).default;
+    
+    // 1. Get dealer basic info
+    const dealer = await Dealer.findById(id);
+    if (!dealer) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Dealer not found' 
+      });
+    }
+    
+    // 2. Calculate credit status from ledger
+    const ledgerEntries = await DealerLedger.find({ dealer: id }).sort({ entryDate: 1 });
+    
+    const currentOutstanding = ledgerEntries.reduce((sum, entry) => {
+      return sum + (entry.debitAmount || 0) - (entry.creditAmount || 0);
+    }, 0);
+    
+    const availableCredit = Math.max(0, dealer.creditLimit - currentOutstanding);
+    const utilizationPercent = dealer.creditLimit > 0 
+      ? Math.round((currentOutstanding / dealer.creditLimit) * 100) 
+      : 0;
+    
+    let creditStatusType = 'good';
+    if (utilizationPercent > 90 || currentOutstanding > dealer.creditLimit) {
+      creditStatusType = 'exceeded';
+    } else if (utilizationPercent > 70) {
+      creditStatusType = 'warning';
+    }
+    
+    // 3. Get last purchase
+    const lastOrder = await SalesOrder.findOne({ dealer: id })
+      .sort({ orderDate: -1 })
+      .populate('products.product', 'itemName');
+    
+    // 4. Calculate payment status and overdue amounts
+    const today = new Date();
+    let overdueAmount = 0;
+    
+    // Find overdue entries (entries with dueDate passed and positive balance)
+    for (const entry of ledgerEntries) {
+      if (entry.dueDate && entry.runningBalance > 0) {
+        const dueDate = new Date(entry.dueDate);
+        if (today > dueDate) {
+          // This entry is overdue
+          overdueAmount += entry.runningBalance;
+        }
+      }
+    }
+    
+    // Get last payment
+    const lastPayment = await DealerLedger.findOne({ 
+      dealer: id, 
+      transactionType: 'Payment' 
+    }).sort({ entryDate: -1 });
+    
+    // Determine payment status
+    let paymentStatusType = 'good';
+    let canCreateOrder = true;
+    let blockReason = null;
+    
+    if (overdueAmount > 0 && currentOutstanding > dealer.creditLimit) {
+      paymentStatusType = 'overdue';
+      canCreateOrder = false;
+      blockReason = `Credit limit exceeded with ₹${overdueAmount.toLocaleString()} overdue. Please collect payment first.`;
+    } else if (overdueAmount > 0) {
+      paymentStatusType = 'warning';
+    } else if (currentOutstanding > dealer.creditLimit) {
+      paymentStatusType = 'warning';
+    }
+    
+    // 5. Get available discounts
+    const now = new Date();
+    const availableDiscounts = await DiscountMapping.find({
+      mappingType: 'sales',
+      status: 'Approved',
+      isActive: true,
+      validFrom: { $lte: now },
+      validTo: { $gte: now },
+      $or: [
+        { applicableDealerTypes: { $size: 0 } }, // No restrictions
+        { applicableDealerTypes: dealer.dealerType }
+      ]
+    })
+    .populate('product brand category subcategory', 'name itemName')
+    .limit(10);
+    
+    // 6. Calculate summary statistics
+    const allOrders = await SalesOrder.find({ dealer: id });
+    const totalOrders = allOrders.length;
+    const totalPurchaseValue = allOrders.reduce((sum, order) => sum + (order.totalAmount || 0), 0);
+    const averageOrderValue = totalOrders > 0 ? Math.round(totalPurchaseValue / totalOrders) : 0;
+    const lastOrderDaysAgo = lastOrder 
+      ? Math.floor((today - new Date(lastOrder.orderDate)) / (1000 * 60 * 60 * 24))
+      : null;
+    
+    // 7. Prepare response
+    const response = {
+      success: true,
+      dealer: {
+        _id: dealer._id,
+        code: dealer.code,
+        name: dealer.name,
+        creditLimit: dealer.creditLimit,
+        creditDays: dealer.creditDays,
+        dealerType: dealer.dealerType
+      },
+      creditStatus: {
+        creditLimit: dealer.creditLimit,
+        currentOutstanding: Math.round(currentOutstanding),
+        availableCredit: Math.round(availableCredit),
+        utilizationPercent,
+        status: creditStatusType
+      },
+      lastPurchase: lastOrder ? {
+        orderDate: lastOrder.orderDate,
+        orderNumber: lastOrder.orderNumber,
+        orderAmount: lastOrder.totalAmount,
+        productCount: lastOrder.products.length,
+        status: lastOrder.status,
+        products: lastOrder.products.slice(0, 5).map(p => ({
+          name: p.productName,
+          quantity: p.quantity
+        }))
+      } : null,
+      paymentStatus: {
+        totalOutstanding: Math.round(currentOutstanding),
+        overdueAmount: Math.round(overdueAmount),
+        lastPaymentDate: lastPayment?.entryDate,
+        lastPaymentAmount: lastPayment?.creditAmount,
+        status: paymentStatusType,
+        canCreateOrder,
+        blockReason
+      },
+      availableDiscounts: availableDiscounts.map(d => ({
+        _id: d._id,
+        discountName: d.discountName,
+        discountType: d.discountType,
+        targetType: d.targetType,
+        targetName: d.product?.itemName || d.brand?.name || d.category?.name || d.subcategory?.name || 'All Products',
+        directDiscountPercentage: d.directDiscountPercentage,
+        levels: d.levels,
+        validFrom: d.validFrom,
+        validTo: d.validTo,
+        status: d.status
+      })),
+      summary: {
+        totalOrders,
+        totalPurchaseValue: Math.round(totalPurchaseValue),
+        averageOrderValue,
+        lastOrderDaysAgo
+      }
+    };
+    
+    res.json(response);
+    
+  } catch (error) {
+    console.error('Error getting dealer complete info:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message 
+    });
+  }
+};

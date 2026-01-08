@@ -11,15 +11,42 @@ const brandSchema = new mongoose.Schema({
     trim: true,
     default: ''
   },
+  // PERMANENT STRUCTURE (Required)
+  category: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Category',
+    required: true
+  },
   subcategory: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Subcategory',
     required: true
   },
-  category: {
+  // OPTIONAL EXTENDED SUBCATEGORIES (5 levels)
+  subcategory1: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Category',
-    required: true
+    ref: 'ExtendedSubcategory',
+    required: false
+  },
+  subcategory2: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ExtendedSubcategory',
+    required: false
+  },
+  subcategory3: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ExtendedSubcategory',
+    required: false
+  },
+  subcategory4: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ExtendedSubcategory',
+    required: false
+  },
+  subcategory5: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ExtendedSubcategory',
+    required: false
   },
   status: {
     type: String,
@@ -40,5 +67,11 @@ brandSchema.index({ name: 1, subcategory: 1 }, { unique: true });
 
 // Add text search index
 brandSchema.index({ name: 'text', description: 'text' });
+
+// Method to get full hierarchy path as string
+brandSchema.methods.getFullHierarchyPath = function() {
+  // This will be populated with actual names when needed
+  return this.name;
+};
 
 export default mongoose.model('Brand', brandSchema);

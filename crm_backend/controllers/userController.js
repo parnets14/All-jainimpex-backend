@@ -158,11 +158,12 @@ export const updateUser = async (req, res) => {
       status,
       permissions,
       assignedRegions,
-      location
+      location,
+      password
     } = req.body;
 
     // Check if user exists
-    const user = await User.findById(req.params.id);
+    const user = await User.findById(req.params.id).select('+password');
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -185,22 +186,61 @@ export const updateUser = async (req, res) => {
       });
     }
 
-    // Update user
-    const updatedUser = await User.findByIdAndUpdate(
-      req.params.id,
-      {
-        name,
-        username,
-        email,
-        phone,
-        role,
-        status,
-        permissions,
-        assignedRegions,
-        location
-      },
-      { new: true, runValidators: true }
-    ).select('-password');
+    // Prepare update data
+    const updateData = {
+      name,
+      username,
+      email,
+      phone,
+      role,
+      status,
+      permissions,
+      assignedRegions,
+      location
+    };
+
+    // Handle password update if provided
+    if (password && password.trim()) {
+      // Validate password length
+      if (password.length < 6) {
+        return res.status(400).json({
+          success: false,
+          message: 'Password must be at least 6 characters long'
+        });
+      }
+      
+      // Update all fields including password using save() to trigger pre('save') middleware
+      user.name = name;
+      user.username = username;
+      user.email = email;
+      user.phone = phone;
+      user.role = role;
+      user.status = status;
+      user.permissions = permissions;
+      user.assignedRegions = assignedRegions;
+      user.location = location;
+      user.password = password; // This will trigger the pre('save') middleware to hash it
+      
+      await user.save();
+      
+      console.log(`Password updated for user: ${email}`);
+    } else {
+      // Update other fields without password change
+      user.name = name;
+      user.username = username;
+      user.email = email;
+      user.phone = phone;
+      user.role = role;
+      user.status = status;
+      user.permissions = permissions;
+      user.assignedRegions = assignedRegions;
+      user.location = location;
+      
+      await user.save();
+    }
+
+    // Get the updated user without password
+    const updatedUser = await User.findById(req.params.id).select('-password');
 
     res.json({
       success: true,

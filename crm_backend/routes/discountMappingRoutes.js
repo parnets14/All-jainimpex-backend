@@ -1,39 +1,43 @@
-import express from "express";
+import express from 'express';
 import {
   getDiscountMappings,
   getDiscountMapping,
   createDiscountMapping,
   updateDiscountMapping,
+  updateDiscountMappingStatus,
   deleteDiscountMapping,
-  approveDiscountMapping,
+  getApplicableDiscounts,
+  calculateDiscount,
   getDiscountStats
-} from "../controllers/discountMappingController.js";
-import { protect, requireRole } from "../middleware/authMiddleware.js";
+} from '../controllers/discountMappingController.js';
+import { protect } from '../middleware/authMiddleware.js';
+import { logActivity } from '../middleware/activityLogMiddleware.js';
 
 const router = express.Router();
 
-// All routes are protected
+// Apply authentication to all routes
 router.use(protect);
 
-router
-  .route("/")
+// Routes
+router.route('/')
   .get(getDiscountMappings)
-  .post(createDiscountMapping);
+  .post(logActivity('Created discount mapping'), createDiscountMapping);
 
-router
-  .route("/stats")
+router.route('/stats')
   .get(getDiscountStats);
 
-router
-  .route("/:id")
+router.route('/calculate')
+  .post(calculateDiscount);
+
+router.route('/product/:productId/applicable')
+  .get(getApplicableDiscounts);
+
+router.route('/:id')
   .get(getDiscountMapping)
-  .put(updateDiscountMapping)
-  .delete(requireRole(["super_admin", "admin"]), deleteDiscountMapping)
-    
+  .put(logActivity('Updated discount mapping'), updateDiscountMapping)
+  .delete(logActivity('Deleted discount mapping'), deleteDiscountMapping);
 
-router
-  .route("/:id/approve")
-  .patch(requireRole(["super_admin"]), approveDiscountMapping)
+router.route('/:id/status')
+  .patch(logActivity('Updated discount mapping status'), updateDiscountMappingStatus);
 
-  
 export default router;

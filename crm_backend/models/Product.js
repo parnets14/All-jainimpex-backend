@@ -24,6 +24,7 @@ const productSchema = new mongoose.Schema({
   },
   HSNCode: {
     type: String,
+    required: [true, 'HSN Code is required'],
     trim: true
   },
   itemName: {
@@ -50,11 +51,7 @@ const productSchema = new mongoose.Schema({
     min: 0,
     max: 100
   },
-  brand: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Brand',
-    required: true
-  },
+  // PERMANENT STRUCTURE (Required)
   category: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Category',
@@ -65,11 +62,47 @@ const productSchema = new mongoose.Schema({
     ref: 'Subcategory',
     required: true
   },
+  brand: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Brand',
+    required: true
+  },
+  // OPTIONAL EXTENDED SUBCATEGORIES (5 levels)
+  subcategory1: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ExtendedSubcategory',
+    required: false
+  },
+  subcategory2: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ExtendedSubcategory',
+    required: false
+  },
+  subcategory3: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ExtendedSubcategory',
+    required: false
+  },
+  subcategory4: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ExtendedSubcategory',
+    required: false
+  },
+  subcategory5: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ExtendedSubcategory',
+    required: false
+  },
   minStockLevel: {
     type: Number,
     required: true,
     min: 0,
     default: 0
+  },
+  unitPrice: {
+    type: Number,
+    required: true,
+    min: 0
   },
   rateSlabs: [rateSlabSchema],
   totalAmount: {
@@ -80,6 +113,18 @@ const productSchema = new mongoose.Schema({
     type: String,
     enum: ['active', 'inactive'],
     default: 'active'
+  },
+  salesType: {
+    type: String,
+    enum: ['CD Sales', 'Regular Sale'],
+    default: 'Regular Sale',
+    required: true
+  },
+  productType: {
+    type: String,
+    enum: ['Regular Product', 'AO Product'],
+    default: 'Regular Product',
+    required: true
   },
   images: {
     type: [String],
@@ -94,27 +139,35 @@ const productSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Calculate amount for each rate slab and total amount before saving
+// Calculate total amount with GST before saving
 productSchema.pre('save', function(next) {
+  // If unitPrice is provided but no rateSlabs exist, create a default rate slab
+  if (this.unitPrice && (!this.rateSlabs || this.rateSlabs.length === 0)) {
+    this.rateSlabs = [{
+      quantity: 1,
+      rate: this.unitPrice,
+      amount: this.unitPrice
+    }];
+  }
+  
   // Calculate amount for each rate slab
   this.rateSlabs.forEach(slab => {
     slab.amount = slab.quantity * slab.rate;
   });
 
-  // Calculate subtotal from rate slabs
-  const subtotal = this.rateSlabs.reduce((total, slab) => {
-    return total + (slab.quantity * slab.rate);
-  }, 0);
-
-  // Calculate total amount with GST
-  const gstAmount = subtotal * (this.gst / 100);
-  this.totalAmount = subtotal + gstAmount;
+  // Calculate total amount with GST using unitPrice (preferred) or first rate slab
+  const basePrice = this.unitPrice || (this.rateSlabs[0]?.rate) || 0;
+  if (basePrice && this.gst !== undefined) {
+    const gstAmount = basePrice * (this.gst / 100);
+    this.totalAmount = basePrice + gstAmount;
+  }
 
   next();
 });
 
 // Auto-generate product code before saving if not provided
 productSchema.pre('save', async function(next) {
+  // Generate product code
   if (!this.productCode || this.productCode.trim() === '') {
     try {
       const brandDoc = await mongoose.model('Brand').findById(this.brand);
@@ -122,11 +175,12 @@ productSchema.pre('save', async function(next) {
       const subcategoryDoc = await mongoose.model('Subcategory').findById(this.subcategory);
 
       if (brandDoc && categoryDoc && subcategoryDoc) {
+        // Use first letter of brand, category, and subcategory
         const brandInitial = brandDoc.name.substring(0, 1).toUpperCase();
         const categoryInitial = categoryDoc.name.substring(0, 1).toUpperCase();
         const subcategoryInitial = subcategoryDoc.name.substring(0, 1).toUpperCase();
         
-        // Count existing products with same brand, category, subcategory
+        // Count existing products with same brand, category, and subcategory
         const count = await mongoose.model('Product').countDocuments({
           brand: this.brand,
           category: this.category,
@@ -148,9 +202,23 @@ productSchema.pre('save', async function(next) {
 // Index for better performance
 productSchema.index({ productCode: 1 });
 productSchema.index({ itemName: 1 });
-productSchema.index({ brand: 1 });
 productSchema.index({ category: 1 });
 productSchema.index({ subcategory: 1 });
+productSchema.index({ brand: 1 });
+productSchema.index({ subcategory1: 1 });
+productSchema.index({ subcategory2: 1 });
+productSchema.index({ subcategory3: 1 });
+productSchema.index({ subcategory4: 1 });
+productSchema.index({ subcategory5: 1 });
 productSchema.index({ status: 1 });
+
+// Virtual field to get current price (unitPrice or first rate slab)
+productSchema.virtual('currentPrice').get(function() {
+  return this.unitPrice || (this.rateSlabs && this.rateSlabs[0]?.rate) || 0;
+});
+
+// Ensure virtual fields are serialized
+productSchema.set('toJSON', { virtuals: true });
+productSchema.set('toObject', { virtuals: true });
 
 export default mongoose.model('Product', productSchema);

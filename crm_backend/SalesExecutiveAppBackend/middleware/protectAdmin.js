@@ -43,8 +43,8 @@ const protectAdmin = async (req, res, next) => {
 
       console.log('✅ User found:', { id: req.user._id, role: req.user.role, email: req.user.email });
 
-      // Allow admin, super_admin, and hr_manager to view attendance
-      const allowedRoles = ['super_admin', 'admin', 'hr_manager', 'sales_executive'];
+      // Allow admin, super_admin, sub_admin, and hr_manager to view attendance
+      const allowedRoles = ['super_admin', 'admin', 'sub_admin', 'hr_manager', 'sales_executive'];
       if (!allowedRoles.includes(req.user.role)) {
         console.log('❌ Role not allowed:', req.user.role);
         return res.status(403).json({

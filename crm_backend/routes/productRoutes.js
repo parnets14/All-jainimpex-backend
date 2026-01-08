@@ -6,9 +6,11 @@ import {
   updateProduct,
   deleteProduct,
   getProductStats,
-  getProductsByCategory,
+  getProductsByCategoryHierarchy,
   getProductsByBrand,
-  uploadProductImage
+  uploadProductImage,
+  exportProductsToPDF,
+  exportProductsToExcel
 } from '../controllers/productController.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { generalLimiter } from '../middleware/rateLimit.js';
@@ -33,8 +35,15 @@ router.route('/')
 router.route('/stats')
   .get(logActivity("Product Management", "Viewed product statistics", "READ"), getProductStats);
 
-router.route('/category/:categoryId')
-  .get(logActivity("Product Management", "Viewed products by category", "READ"), getProductsByCategory);
+// Export routes
+router.route('/export/pdf')
+  .get(logActivity("Product Management", "Exported products to PDF", "READ"), exportProductsToPDF);
+
+router.route('/export/excel')
+  .get(logActivity("Product Management", "Exported products to Excel", "READ"), exportProductsToExcel);
+
+router.route('/category-hierarchy/:categoryHierarchyId')
+  .get(logActivity("Product Management", "Viewed products by category hierarchy", "READ"), getProductsByCategoryHierarchy);
 
 router.route('/brand/:brandId')
   .get(logActivity("Product Management", "Viewed products by brand", "READ"), getProductsByBrand);

@@ -7,6 +7,7 @@ import {
   deleteDealer,
   getDealerStats,
   uploadDealerDocuments,
+  getDealerCompleteInfo,
 } from "../controllers/dealerController.js";
 import { protect } from "../middleware/authMiddleware.js";
 import { requirePermission } from "../middleware/authMiddleware.js";
@@ -23,6 +24,9 @@ router.get("/stats", logActivity("Dealer Management", "Viewed dealer statistics"
 
 // Get all dealers with pagination
 router.get("/", logActivity("Dealer Management", "Viewed dealers list", "READ"), requirePermission("dealers.view"), getDealers);
+
+// Get complete dealer info for Sales Order Dashboard
+router.get("/:id/complete-info", logActivity("Dealer Management", "Viewed dealer complete info", "READ"), requirePermission("dealers.view"), getDealerCompleteInfo);
 
 // Get single dealer
 router.get("/:id", logActivity("Dealer Management", "Viewed dealer details", "READ"), requirePermission("dealers.view"), getDealer);

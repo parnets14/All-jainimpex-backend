@@ -1,6 +1,7 @@
 import express from 'express';
 import {
   getBrands,
+  createBrand,
   updateBrand,
   deleteBrand
 } from '../controllers/brandController.js';
@@ -14,6 +15,7 @@ router.use(protect);
 
 // Brand routes
 router.get('/', requirePermission('categories.view'), getBrands);
+router.post('/', requirePermission('categories.create'), createBrand);
 router.put('/:id', requirePermission('categories.update'), updateBrand);
 router.delete('/:id', requirePermission('categories.delete'), deleteBrand);
 

@@ -32,9 +32,9 @@ const protect = async (req, res, next) => {
         });
       }
 
-      // Check if user is sales executive or admin (case-insensitive check)
+      // Check if user is sales executive, admin, or sub_admin (case-insensitive check)
       const userRole = req.user.role?.toLowerCase().replace(/\s+/g, '_');
-      const allowedRoles = ['sales_executive', 'super_admin', 'admin'];
+      const allowedRoles = ['sales_executive', 'super_admin', 'admin', 'sub_admin'];
       
       if (!allowedRoles.includes(userRole)) {
         console.log(`⚠️ Access denied for role: ${req.user.role} (normalized: ${userRole})`);

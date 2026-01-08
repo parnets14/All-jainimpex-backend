@@ -33,6 +33,7 @@ import "./cron/attendanceCron.js";
 import categoryRoutes from "./routes/categoryRoutes.js"; // Add this
 import subcategoryRoutes from "./routes/subcategoryRoutes.js"; // Add this
 import brandRoutes from "./routes/brandRoutes.js"; // Add this
+import extendedSubcategoryRoutes from "./routes/extendedSubcategoryRoutes.js"; // Add extended subcategory routes
 import salaryRoutes from "./routes/salaryRoutes.js";
 import productRoutes from "./routes/productRoutes.js";
 import dealerPricingRoutes from "./routes/dealerPricingRoutes.js";
@@ -276,6 +277,7 @@ app.use("/api/claims", claimRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/subcategories", subcategoryRoutes);
 app.use("/api/brands", brandRoutes);
+app.use("/api/extended-subcategories", extendedSubcategoryRoutes); // Add extended subcategory routes
 app.use("/api/salary", salaryRoutes);
 app.use("/api/products", productRoutes);
 // Register dealer pricing routes

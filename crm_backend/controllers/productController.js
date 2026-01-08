@@ -1,6 +1,7 @@
 import Product from '../models/Product.js';
 import Category from '../models/Category.js';
 import Subcategory from '../models/Subcategory.js';
+import ExtendedSubcategory from '../models/ExtendedSubcategory.js';
 import Brand from '../models/Brand.js';
 import GRN from '../models/GRN.js';
 
@@ -15,6 +16,11 @@ export const getProducts = async (req, res) => {
       search,
       category,
       subcategory,
+      subcategory1,
+      subcategory2,
+      subcategory3,
+      subcategory4,
+      subcategory5,
       brand,
       status
     } = req.query;
@@ -40,6 +46,23 @@ export const getProducts = async (req, res) => {
       filter.subcategory = subcategory;
     }
 
+    // Extended subcategory filters
+    if (subcategory1) {
+      filter.subcategory1 = subcategory1;
+    }
+    if (subcategory2) {
+      filter.subcategory2 = subcategory2;
+    }
+    if (subcategory3) {
+      filter.subcategory3 = subcategory3;
+    }
+    if (subcategory4) {
+      filter.subcategory4 = subcategory4;
+    }
+    if (subcategory5) {
+      filter.subcategory5 = subcategory5;
+    }
+
     // Brand filter
     if (brand) {
       filter.brand = brand;
@@ -50,21 +73,14 @@ export const getProducts = async (req, res) => {
       filter.status = status;
     }
 
-    const options = {
-      page: parseInt(page),
-      limit: parseInt(limit),
-      sort: { createdAt: -1 },
-      populate: [
-        { path: 'category', select: 'name' },
-        { path: 'subcategory', select: 'name' },
-        { path: 'brand', select: 'name' },
-        { path: 'createdBy', select: 'name email' }
-      ]
-    };
-
     const products = await Product.find(filter)
       .populate('category', 'name')
       .populate('subcategory', 'name')
+      .populate('subcategory1', 'name')
+      .populate('subcategory2', 'name')
+      .populate('subcategory3', 'name')
+      .populate('subcategory4', 'name')
+      .populate('subcategory5', 'name')
       .populate('brand', 'name')
       .populate('createdBy', 'name email')
       .limit(limit * 1)
@@ -100,6 +116,11 @@ export const getProduct = async (req, res) => {
     const product = await Product.findById(req.params.id)
       .populate('category', 'name description')
       .populate('subcategory', 'name description')
+      .populate('subcategory1', 'name description')
+      .populate('subcategory2', 'name description')
+      .populate('subcategory3', 'name description')
+      .populate('subcategory4', 'name description')
+      .populate('subcategory5', 'name description')
       .populate('brand', 'name description')
       .populate('createdBy', 'name email');
 
@@ -141,10 +162,16 @@ export const createProduct = async (req, res) => {
       description,
       unit,
       alternateUnit,
+      unitPrice,
       gst,
       brand,
       category,
       subcategory,
+      subcategory1,
+      subcategory2,
+      subcategory3,
+      subcategory4,
+      subcategory5,
       rateSlabs,
       minStockLevel,
       images
@@ -164,7 +191,7 @@ export const createProduct = async (req, res) => {
       }
     }
 
-    // Validate category, subcategory, and brand relationships
+    // Validate required relationships
     const categoryExists = await Category.findById(category);
     if (!categoryExists) {
       return res.status(400).json({
@@ -205,6 +232,28 @@ export const createProduct = async (req, res) => {
       });
     }
 
+    // Validate extended subcategories if provided
+    const extendedSubcategories = [subcategory1, subcategory2, subcategory3, subcategory4, subcategory5];
+    for (let i = 0; i < extendedSubcategories.length; i++) {
+      if (extendedSubcategories[i]) {
+        const extSubcat = await ExtendedSubcategory.findById(extendedSubcategories[i]);
+        if (!extSubcat) {
+          return res.status(400).json({
+            success: false,
+            message: `Extended subcategory ${i + 1} not found`
+          });
+        }
+        
+        // Verify it belongs to the correct category and subcategory
+        if (extSubcat.category.toString() !== category || extSubcat.subcategory.toString() !== subcategory) {
+          return res.status(400).json({
+            success: false,
+            message: `Extended subcategory ${i + 1} does not belong to the selected category and subcategory`
+          });
+        }
+      }
+    }
+
     const product = new Product({
       productCode: finalProductCode,
       HSNCode,
@@ -212,10 +261,16 @@ export const createProduct = async (req, res) => {
       description,
       unit,
       alternateUnit,
+      unitPrice,
       gst,
       brand,
       category,
       subcategory,
+      subcategory1: subcategory1 || undefined,
+      subcategory2: subcategory2 || undefined,
+      subcategory3: subcategory3 || undefined,
+      subcategory4: subcategory4 || undefined,
+      subcategory5: subcategory5 || undefined,
       minStockLevel,
       rateSlabs,
       images: Array.isArray(images) ? images : [],
@@ -230,6 +285,11 @@ export const createProduct = async (req, res) => {
     await product.populate([
       { path: 'category', select: 'name' },
       { path: 'subcategory', select: 'name' },
+      { path: 'subcategory1', select: 'name' },
+      { path: 'subcategory2', select: 'name' },
+      { path: 'subcategory3', select: 'name' },
+      { path: 'subcategory4', select: 'name' },
+      { path: 'subcategory5', select: 'name' },
       { path: 'brand', select: 'name' },
       { path: 'createdBy', select: 'name email' }
     ]);
@@ -267,10 +327,16 @@ export const updateProduct = async (req, res) => {
       description,
       unit,
       alternateUnit,
+      unitPrice,
       gst,
       brand,
       category,
       subcategory,
+      subcategory1,
+      subcategory2,
+      subcategory3,
+      subcategory4,
+      subcategory5,
       rateSlabs,
       status,
       minStockLevel,
@@ -354,10 +420,16 @@ export const updateProduct = async (req, res) => {
     product.description = description;
     product.unit = unit;
     product.alternateUnit = alternateUnit;
+    product.unitPrice = unitPrice;
     product.gst = gst;
     product.brand = brand;
     product.category = category;
     product.subcategory = subcategory;
+    product.subcategory1 = subcategory1 || undefined;
+    product.subcategory2 = subcategory2 || undefined;
+    product.subcategory3 = subcategory3 || undefined;
+    product.subcategory4 = subcategory4 || undefined;
+    product.subcategory5 = subcategory5 || undefined;
     product.minStockLevel = minStockLevel;
     product.rateSlabs = rateSlabs;
     product.status = status;
@@ -382,6 +454,11 @@ export const updateProduct = async (req, res) => {
     await product.populate([
       { path: 'category', select: 'name' },
       { path: 'subcategory', select: 'name' },
+      { path: 'subcategory1', select: 'name' },
+      { path: 'subcategory2', select: 'name' },
+      { path: 'subcategory3', select: 'name' },
+      { path: 'subcategory4', select: 'name' },
+      { path: 'subcategory5', select: 'name' },
       { path: 'brand', select: 'name' },
       { path: 'createdBy', select: 'name email' }
     ]);
@@ -614,14 +691,235 @@ export const getProductStats = async (req, res) => {
   }
 };
 
-// @desc    Get products by category
-// @route   GET /api/products/category/:categoryId
+// @desc    Export products to PDF
+// @route   GET /api/products/export/pdf
 // @access  Private
-export const getProductsByCategory = async (req, res) => {
+export const exportProductsToPDF = async (req, res) => {
   try {
-    const products = await Product.find({ category: req.params.categoryId })
+    const { search, category, subcategory, brand, status } = req.query;
+
+    const filter = {};
+
+    // Apply same filters as getProducts
+    if (search) {
+      filter.$or = [
+        { productCode: { $regex: search, $options: 'i' } },
+        { itemName: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    if (category) filter.category = category;
+    if (subcategory) filter.subcategory = subcategory;
+    if (brand) filter.brand = brand;
+    if (status) filter.status = status;
+
+    const products = await Product.find(filter)
       .populate('category', 'name')
       .populate('subcategory', 'name')
+      .populate('brand', 'name')
+      .populate('createdBy', 'name')
+      .sort({ createdAt: -1 });
+
+    // Create PDF content
+    const PDFDocument = (await import('pdfkit')).default;
+    const doc = new PDFDocument({ margin: 50 });
+
+    // Set response headers
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=products-${new Date().toISOString().split('T')[0]}.pdf`);
+
+    // Pipe PDF to response
+    doc.pipe(res);
+
+    // Add title
+    doc.fontSize(20).text('Product Master Report', { align: 'center' });
+    doc.fontSize(12).text(`Generated on: ${new Date().toLocaleDateString()}`, { align: 'center' });
+    doc.moveDown();
+
+    // Add summary
+    doc.fontSize(14).text(`Total Products: ${products.length}`, { align: 'left' });
+    doc.moveDown();
+
+    // Add table headers
+    const tableTop = doc.y;
+    const itemCodeX = 50;
+    const itemNameX = 150;
+    const categoryX = 300;
+    const brandX = 400;
+    const unitX = 480;
+    const statusX = 520;
+
+    doc.fontSize(10)
+       .text('Code', itemCodeX, tableTop)
+       .text('Name', itemNameX, tableTop)
+       .text('Category', categoryX, tableTop)
+       .text('Brand', brandX, tableTop)
+       .text('Unit', unitX, tableTop)
+       .text('Status', statusX, tableTop);
+
+    // Draw header line
+    doc.moveTo(itemCodeX, tableTop + 15)
+       .lineTo(570, tableTop + 15)
+       .stroke();
+
+    let currentY = tableTop + 25;
+
+    // Add product rows
+    products.forEach((product, index) => {
+      if (currentY > 700) { // Start new page if needed
+        doc.addPage();
+        currentY = 50;
+      }
+
+      doc.fontSize(8)
+         .text(product.productCode || 'N/A', itemCodeX, currentY)
+         .text(product.itemName.substring(0, 20) + (product.itemName.length > 20 ? '...' : ''), itemNameX, currentY)
+         .text(product.category?.name || 'N/A', categoryX, currentY)
+         .text(product.brand?.name || 'N/A', brandX, currentY)
+         .text(product.unit || 'N/A', unitX, currentY)
+         .text(product.status || 'N/A', statusX, currentY);
+
+      currentY += 20;
+    });
+
+    // Finalize PDF
+    doc.end();
+
+  } catch (error) {
+    console.error('Export PDF error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while exporting PDF'
+    });
+  }
+};
+
+// @desc    Export products to Excel
+// @route   GET /api/products/export/excel
+// @access  Private
+export const exportProductsToExcel = async (req, res) => {
+  try {
+    const { search, category, subcategory, brand, status } = req.query;
+
+    const filter = {};
+
+    // Apply same filters as getProducts
+    if (search) {
+      filter.$or = [
+        { productCode: { $regex: search, $options: 'i' } },
+        { itemName: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    if (category) filter.category = category;
+    if (subcategory) filter.subcategory = subcategory;
+    if (brand) filter.brand = brand;
+    if (status) filter.status = status;
+
+    const products = await Product.find(filter)
+      .populate('category', 'name')
+      .populate('subcategory', 'name')
+      .populate('subcategory1', 'name')
+      .populate('subcategory2', 'name')
+      .populate('subcategory3', 'name')
+      .populate('subcategory4', 'name')
+      .populate('subcategory5', 'name')
+      .populate('brand', 'name')
+      .populate('createdBy', 'name')
+      .sort({ createdAt: -1 });
+
+    const ExcelJS = (await import('exceljs')).default;
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Products');
+
+    // Set column headers
+    worksheet.columns = [
+      { header: 'Product Code', key: 'productCode', width: 15 },
+      { header: 'HSN Code', key: 'hsnCode', width: 12 },
+      { header: 'Item Name', key: 'itemName', width: 30 },
+      { header: 'Description', key: 'description', width: 40 },
+      { header: 'Category', key: 'category', width: 20 },
+      { header: 'Subcategory', key: 'subcategory', width: 20 },
+      { header: 'Extended Level 1', key: 'subcategory1', width: 20 },
+      { header: 'Extended Level 2', key: 'subcategory2', width: 20 },
+      { header: 'Extended Level 3', key: 'subcategory3', width: 20 },
+      { header: 'Brand', key: 'brand', width: 20 },
+      { header: 'Unit', key: 'unit', width: 10 },
+      { header: 'Alternate Unit', key: 'alternateUnit', width: 15 },
+      { header: 'GST (%)', key: 'gst', width: 10 },
+      { header: 'Min Stock Level', key: 'minStockLevel', width: 15 },
+      { header: 'Total Amount', key: 'totalAmount', width: 15 },
+      { header: 'Status', key: 'status', width: 10 },
+      { header: 'Created Date', key: 'createdAt', width: 15 },
+      { header: 'Created By', key: 'createdBy', width: 20 }
+    ];
+
+    // Style header row
+    worksheet.getRow(1).font = { bold: true };
+    worksheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFE6F3FF' }
+    };
+
+    // Add data rows
+    products.forEach(product => {
+      worksheet.addRow({
+        productCode: product.productCode || '',
+        hsnCode: product.HSNCode || '',
+        itemName: product.itemName || '',
+        description: product.description || '',
+        category: product.category?.name || '',
+        subcategory: product.subcategory?.name || '',
+        subcategory1: product.subcategory1?.name || '',
+        subcategory2: product.subcategory2?.name || '',
+        subcategory3: product.subcategory3?.name || '',
+        brand: product.brand?.name || '',
+        unit: product.unit || '',
+        alternateUnit: product.alternateUnit || '',
+        gst: product.gst || 0,
+        minStockLevel: product.minStockLevel || 0,
+        totalAmount: product.totalAmount || 0,
+        status: product.status || '',
+        createdAt: product.createdAt ? new Date(product.createdAt).toLocaleDateString() : '',
+        createdBy: product.createdBy?.name || ''
+      });
+    });
+
+    // Add summary row
+    worksheet.addRow({});
+    worksheet.addRow({
+      productCode: 'SUMMARY',
+      itemName: `Total Products: ${products.length}`,
+      category: `Generated: ${new Date().toLocaleDateString()}`
+    });
+
+    // Set response headers
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=products-${new Date().toISOString().split('T')[0]}.xlsx`);
+
+    // Write to response
+    await workbook.xlsx.write(res);
+    res.end();
+
+  } catch (error) {
+    console.error('Export Excel error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while exporting Excel'
+    });
+  }
+};
+
+// @desc    Get products by category hierarchy
+// @route   GET /api/products/category-hierarchy/:categoryHierarchyId
+// @access  Private
+export const getProductsByCategoryHierarchy = async (req, res) => {
+  try {
+    const products = await Product.find({ categoryHierarchy: req.params.categoryHierarchyId })
+      .populate('categoryHierarchy', 'name level')
       .populate('brand', 'name')
       .sort({ itemName: 1 });
 
@@ -630,10 +928,10 @@ export const getProductsByCategory = async (req, res) => {
       products
     });
   } catch (error) {
-    console.error('Get products by category error:', error);
+    console.error('Get products by category hierarchy error:', error);
     res.status(500).json({
       success: false,
-      message: 'Server error while fetching products by category'
+      message: 'Server error while fetching products by category hierarchy'
     });
   }
 };
@@ -644,8 +942,7 @@ export const getProductsByCategory = async (req, res) => {
 export const getProductsByBrand = async (req, res) => {
   try {
     const products = await Product.find({ brand: req.params.brandId })
-      .populate('category', 'name')
-      .populate('subcategory', 'name')
+      .populate('categoryHierarchy', 'name level')
       .populate('brand', 'name')
       .sort({ itemName: 1 });
 

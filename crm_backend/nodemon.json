@@ -1,0 +1,34 @@
+{
+  "watch": [
+    "*.js",
+    "routes",
+    "controllers", 
+    "middleware",
+    "models",
+    "config",
+    "utils",
+    "services",
+    "validators",
+    "SalesExecutiveAppBackend",
+    "DeliveryExecutiveAppBackend"
+  ],
+  "ext": "js,json",
+  "ignore": [
+    "node_modules",
+    "uploads",
+    "public",
+    "*.log",
+    "*.md",
+    "test-*.js",
+    "debug-*.js",
+    "check-*.js",
+    "create-*.js",
+    "manage-*.js",
+    "analyze-*.js"
+  ],
+  "delay": "1000",
+  "verbose": true,
+  "env": {
+    "NODE_ENV": "development"
+  }
+}

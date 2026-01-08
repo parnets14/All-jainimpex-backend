@@ -15,6 +15,11 @@ export const AVAILABLE_PERMISSIONS = {
       id: "users.manage",
       name: "User Management", 
       description: "Manage users and permissions"
+    },
+    {
+      id: "user.management",
+      name: "User Management (Alt)",
+      description: "Alternative user management permission"
     }
   ],
   "Master Management": [
@@ -26,7 +31,22 @@ export const AVAILABLE_PERMISSIONS = {
     {
       id: "product.master",
       name: "Product Master",
-      description: "Manage product master data"
+      description: "View and Add products (Edit/Delete requires separate permissions)"
+    },
+    {
+      id: "products.update",
+      name: "Product Master - Edit Permission",
+      description: "Edit existing products (requires Product Master access)"
+    },
+    {
+      id: "products.delete",
+      name: "Product Master - Delete Permission",
+      description: "Delete products (requires Product Master access)"
+    },
+    {
+      id: "product.management",
+      name: "Product Management (Full Access)",
+      description: "Full product management access (view, create, edit, delete)"
     },
     {
       id: "dealer.master",
@@ -34,9 +54,39 @@ export const AVAILABLE_PERMISSIONS = {
       description: "Manage dealer master data"
     },
     {
+      id: "dealer.management",
+      name: "Dealer Management",
+      description: "Full dealer management access"
+    },
+    {
+      id: "dealers.view",
+      name: "View Dealers",
+      description: "View dealer information and statistics"
+    },
+    {
+      id: "dealers.create",
+      name: "Create Dealers",
+      description: "Create new dealers"
+    },
+    {
+      id: "dealers.update",
+      name: "Update Dealers",
+      description: "Update dealer information"
+    },
+    {
+      id: "dealers.delete",
+      name: "Delete Dealers",
+      description: "Delete dealers"
+    },
+    {
       id: "supplier.master", 
       name: "Supplier Master",
       description: "Manage supplier master data"
+    },
+    {
+      id: "supplier.management",
+      name: "Supplier Management",
+      description: "Full supplier management access"
     },
     {
       id: "dealer.type",
@@ -67,6 +117,26 @@ export const AVAILABLE_PERMISSIONS = {
       id: "categories.view",
       name: "Categories View",
       description: "View categories, subcategories, and brands"
+    },
+    {
+      id: "categories.create",
+      name: "Create Categories",
+      description: "Create categories, subcategories, and brands"
+    },
+    {
+      id: "categories.update",
+      name: "Update Categories",
+      description: "Update categories, subcategories, and brands"
+    },
+    {
+      id: "categories.delete",
+      name: "Delete Categories",
+      description: "Delete categories, subcategories, and brands"
+    },
+    {
+      id: "warehouseMaster",
+      name: "Warehouse Master",
+      description: "Manage warehouse master data"
     }
   ],
   "Sales & Purchase Management": [
@@ -83,7 +153,17 @@ export const AVAILABLE_PERMISSIONS = {
     {
       id: "dealer.specific.discounts",
       name: "Dealer-Specific Discounts",
-      description: "Manage dealer-specific discounts"
+      description: "View and Create discount mappings (Edit/Delete requires separate permissions)"
+    },
+    {
+      id: "discounts.update",
+      name: "Discount Management - Edit Permission",
+      description: "Edit existing discount mappings (requires Dealer-Specific Discounts access)"
+    },
+    {
+      id: "discounts.delete",
+      name: "Discount Management - Delete Permission",
+      description: "Delete discount mappings (requires Dealer-Specific Discounts access)"
     },
     {
       id: "purchasing.points",
@@ -114,6 +194,11 @@ export const AVAILABLE_PERMISSIONS = {
       id: "debit.note",
       name: "Debit Note",
       description: "Manage debit notes"
+    },
+    {
+      id: "payment",
+      name: "Payment Management",
+      description: "Manage payments (supplier and dealer)"
     }
   ],
   "Inventory & Warehouse Control": [
@@ -145,14 +230,14 @@ export const AVAILABLE_PERMISSIONS = {
       description: "Register employees"
     },
     {
-      id: "employees.create",
-      name: "Create Employees",
-      description: "Register new employees"
-    },
-    {
       id: "employees.view", 
       name: "View Employees",
       description: "View employee records"
+    },
+    {
+      id: "employees.create",
+      name: "Create Employees",
+      description: "Register new employees"
     },
     {
       id: "employees.update",
@@ -195,6 +280,26 @@ export const AVAILABLE_PERMISSIONS = {
       id: "supplier.ledger",
       name: "Supplier Ledger",
       description: "Manage supplier ledgers"
+    },
+    {
+      id: "supplier_ledger.create",
+      name: "Create Supplier Ledger",
+      description: "Create supplier ledger entries"
+    },
+    {
+      id: "supplier_ledger.read",
+      name: "View Supplier Ledger",
+      description: "View supplier ledger entries"
+    },
+    {
+      id: "supplier_ledger.update",
+      name: "Update Supplier Ledger",
+      description: "Update supplier ledger entries"
+    },
+    {
+      id: "supplier_ledger.delete",
+      name: "Delete Supplier Ledger",
+      description: "Delete supplier ledger entries"
     },
     {
       id: "cheque.management",
@@ -254,9 +359,19 @@ export const AVAILABLE_PERMISSIONS = {
       description: "Access to all reports modules"
     },
     {
+      id: "reports.read",
+      name: "View Reports",
+      description: "View all reports and analytics"
+    },
+    {
       id: "subadmin.activity.logs",
       name: "Subadmin Activity Logs",
       description: "View subadmin activity logs"
+    },
+    {
+      id: "activity.logs",
+      name: "Activity Logs",
+      description: "View activity logs"
     },
     {
       id: "bill.wise.profit",
@@ -279,9 +394,34 @@ export const AVAILABLE_PERMISSIONS = {
       description: "Download logs"
     },
     {
+      id: "download_logs",
+      name: "Download Logs Management",
+      description: "Manage download logs"
+    },
+    {
       id: "dealer.performance",
       name: "Dealer Performance",
       description: "View dealer performance reports"
+    },
+    {
+      id: "dealer_performance_read",
+      name: "Dealer Performance Read",
+      description: "Read dealer performance data"
+    },
+    {
+      id: "dealer_performance_create",
+      name: "Dealer Performance Create",
+      description: "Create dealer performance records"
+    },
+    {
+      id: "dealer_performance_update",
+      name: "Dealer Performance Update",
+      description: "Update dealer performance records"
+    },
+    {
+      id: "dealer_performance_delete",
+      name: "Dealer Performance Delete",
+      description: "Delete dealer performance records"
     },
     {
       id: "marginAnalysis.read",
@@ -314,6 +454,92 @@ export const AVAILABLE_PERMISSIONS = {
       id: "expense.head.master",
       name: "Expense Head Master",
       description: "Manage expense head master"
+    }
+  ],
+  "Support & Communication": [
+    {
+      id: "support.chat",
+      name: "Support Chat",
+      description: "Access to support chat system"
+    }
+  ],
+  "Sales Executive App": [
+    {
+      id: "sales.executive.app",
+      name: "Sales Executive App Access",
+      description: "Access to sales executive app features"
+    },
+    {
+      id: "se.attendance.view",
+      name: "Sales Executive Attendance View",
+      description: "View sales executive attendance"
+    },
+    {
+      id: "se.route.plan",
+      name: "Sales Executive Route Plan",
+      description: "Manage sales executive route plans"
+    },
+    {
+      id: "se.dealer.insights",
+      name: "Sales Executive Dealer Insights",
+      description: "View dealer insights for sales executives"
+    },
+    {
+      id: "se.product.recommendations",
+      name: "Sales Executive Product Recommendations",
+      description: "View product recommendations for sales executives"
+    },
+    {
+      id: "se.collections.view",
+      name: "Sales Executive Collections View",
+      description: "View collections for sales executives"
+    },
+    {
+      id: "se.targets.view",
+      name: "Sales Executive Targets View",
+      description: "View targets for sales executives"
+    }
+  ],
+  "Delivery Executive App": [
+    {
+      id: "delivery.executive.app",
+      name: "Delivery Executive App Access",
+      description: "Access to delivery executive app features"
+    },
+    {
+      id: "de.assignment.manage",
+      name: "Delivery Assignment Management",
+      description: "Manage delivery assignments"
+    },
+    {
+      id: "de.monitoring.view",
+      name: "Delivery Monitoring View",
+      description: "View delivery monitoring"
+    },
+    {
+      id: "de.deliveries.view",
+      name: "My Deliveries View",
+      description: "View my deliveries"
+    },
+    {
+      id: "de.tracking.view",
+      name: "Live Tracking View",
+      description: "View live tracking"
+    },
+    {
+      id: "de.route.view",
+      name: "Route Plan View",
+      description: "View route plans"
+    },
+    {
+      id: "de.collections.view",
+      name: "Delivery Collections View",
+      description: "View delivery collections"
+    },
+    {
+      id: "de.history.view",
+      name: "Delivery History View",
+      description: "View delivery history"
     }
   ]
 };

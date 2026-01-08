@@ -17,10 +17,10 @@ import { logActivity } from '../middleware/activityLogMiddleware.js';
 
 const router = express.Router();
 
-// Middleware to check if user is super admin
+// Middleware to check if user is super admin or sub admin
 const requireSuperAdmin = async (req, res, next) => {
   try {
-    if (req.user.role !== 'super_admin') {
+    if (req.user.role !== 'super_admin' && req.user.role !== 'sub_admin') {
       return res.status(403).json({
         success: false,
         message: 'Access denied. Super admin privileges required.'
