@@ -6,7 +6,9 @@ import {
   updateExtendedSubcategory,
   deleteExtendedSubcategory,
   getExtendedSubcategoryTree,
-  getExtendedSubcategoriesBySubcategory
+  getExtendedSubcategoriesBySubcategory,
+  getExtendedSubcategoriesByParent,
+  getExtendedSubcategoryWithParentChain
 } from '../controllers/extendedSubcategoryController.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { requirePermission } from '../middleware/authMiddleware.js';
@@ -21,6 +23,8 @@ router.get('/', requirePermission('categories.view'), getExtendedSubcategories);
 router.post('/', requirePermission('categories.create'), createExtendedSubcategory);
 router.get('/tree', requirePermission('categories.view'), getExtendedSubcategoryTree);
 router.get('/by-subcategory/:subcategoryId', requirePermission('categories.view'), getExtendedSubcategoriesBySubcategory);
+router.get('/by-parent/:parentId', requirePermission('categories.view'), getExtendedSubcategoriesByParent);
+router.get('/:id/parent-chain', requirePermission('categories.view'), getExtendedSubcategoryWithParentChain);
 router.get('/:id', requirePermission('categories.view'), getExtendedSubcategory);
 router.put('/:id', requirePermission('categories.update'), updateExtendedSubcategory);
 router.delete('/:id', requirePermission('categories.delete'), deleteExtendedSubcategory);

@@ -435,3 +435,112 @@ export const getExtendedSubcategoriesBySubcategory = async (req, res) => {
     });
   }
 };
+
+// @desc    Get extended subcategories by parent
+// @route   GET /api/extended-subcategories/by-parent/:parentId
+// @access  Private
+export const getExtendedSubcategoriesByParent = async (req, res) => {
+  try {
+    const { parentId } = req.params;
+    const { page = 1, limit = 100 } = req.query;
+
+    const items = await ExtendedSubcategory.find({
+      parentExtendedSubcategory: parentId,
+      status: 'active'
+    })
+    .populate('category', 'name')
+    .populate('subcategory', 'name')
+    .populate('parentExtendedSubcategory', 'name level')
+    .populate('createdBy', 'name email')
+    .sort({ name: 1 })
+    .limit(limit * 1)
+    .skip((page - 1) * limit);
+
+    const total = await ExtendedSubcategory.countDocuments({
+      parentExtendedSubcategory: parentId,
+      status: 'active'
+    });
+
+    // Add full parent chain for each item
+    const itemsWithParentChain = await Promise.all(
+      items.map(async (item) => {
+        const parentChain = await getParentChain(item._id);
+        return {
+          ...item.toObject(),
+          parentChain,
+          fullPath: await item.getFullPath()
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      items: itemsWithParentChain,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / limit),
+        totalItems: total,
+        itemsPerPage: parseInt(limit)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching extended subcategories by parent:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Helper function to get complete parent chain
+const getParentChain = async (extendedSubcategoryId) => {
+  const parentChain = [];
+  let current = await ExtendedSubcategory.findById(extendedSubcategoryId);
+  
+  while (current && current.parentExtendedSubcategory) {
+    current = await ExtendedSubcategory.findById(current.parentExtendedSubcategory);
+    if (current) {
+      parentChain.unshift(current._id.toString());
+    }
+  }
+  
+  return parentChain;
+};
+
+// @desc    Get extended subcategory with full parent chain
+// @route   GET /api/extended-subcategories/:id/parent-chain
+// @access  Private
+export const getExtendedSubcategoryWithParentChain = async (req, res) => {
+  try {
+    const item = await ExtendedSubcategory.findById(req.params.id)
+      .populate('category', 'name')
+      .populate('subcategory', 'name')
+      .populate('parentExtendedSubcategory', 'name level')
+      .populate('createdBy', 'name email');
+
+    if (!item) {
+      return res.status(404).json({
+        success: false,
+        message: 'Extended subcategory not found'
+      });
+    }
+
+    const parentChain = await getParentChain(item._id);
+    const fullPath = await item.getFullPath();
+
+    res.json({
+      success: true,
+      item: {
+        ...item.toObject(),
+        parentChain,
+        fullPath
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching extended subcategory with parent chain:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};

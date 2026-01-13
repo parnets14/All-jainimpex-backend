@@ -174,7 +174,9 @@ export const createProduct = async (req, res) => {
       subcategory5,
       rateSlabs,
       minStockLevel,
-      images
+      images,
+      salesType,      // FIX: Added missing salesType
+      productType     // FIX: Added missing productType
     } = req.body;
 
     // Convert empty productCode to undefined for auto-generation
@@ -274,6 +276,8 @@ export const createProduct = async (req, res) => {
       minStockLevel,
       rateSlabs,
       images: Array.isArray(images) ? images : [],
+      salesType: salesType || 'Regular Sale',      // FIX: Include salesType with default
+      productType: productType || 'Regular Product', // FIX: Include productType with default
       createdBy: req.user._id
     });
     
@@ -340,7 +344,9 @@ export const updateProduct = async (req, res) => {
       rateSlabs,
       status,
       minStockLevel,
-      images
+      images,
+      salesType,      // FIX: Added missing salesType
+      productType     // FIX: Added missing productType
     } = req.body;
 
     // Convert empty productCode to undefined for auto-generation
@@ -433,6 +439,14 @@ export const updateProduct = async (req, res) => {
     product.minStockLevel = minStockLevel;
     product.rateSlabs = rateSlabs;
     product.status = status;
+    
+    // FIX: Update salesType and productType
+    if (salesType !== undefined) {
+      product.salesType = salesType;
+    }
+    if (productType !== undefined) {
+      product.productType = productType;
+    }
     
     // Update images if provided
     if (images !== undefined) {

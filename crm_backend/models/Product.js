@@ -45,6 +45,11 @@ const productSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  // Simple unit relationship (e.g., 1 Box = 10 Pieces)
+  alternateUnitQuantity: {
+    type: Number,
+    min: 0
+  },
   gst: {
     type: Number,
     required: true,
