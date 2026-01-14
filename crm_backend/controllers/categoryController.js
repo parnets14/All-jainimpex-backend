@@ -219,7 +219,143 @@ export const updateCategory = async (req, res) => {
   }
 };
 
-// Delete category
+// Get child counts for an item (to show in delete confirmation)
+export const getCategoryChildCounts = async (req, res) => {
+  try {
+    const categoryId = req.params.id;
+    
+    const category = await Category.findById(categoryId);
+    if (!category) {
+      return res.status(404).json({
+        success: false,
+        message: 'Category not found'
+      });
+    }
+
+    // Count subcategories
+    const subcategoryCount = await Subcategory.countDocuments({ 
+      category: categoryId 
+    });
+    
+    // Count brands under this category
+    const brandCount = await Brand.countDocuments({ 
+      category: categoryId 
+    });
+    
+    // Count extended subcategories (import ExtendedSubcategory if needed)
+    let extendedCount = 0;
+    try {
+      const ExtendedSubcategory = (await import('../models/ExtendedSubcategory.js')).default;
+      extendedCount = await ExtendedSubcategory.countDocuments({ 
+        category: categoryId 
+      });
+    } catch (error) {
+      console.log('ExtendedSubcategory model not found or error:', error.message);
+    }
+
+    res.json({
+      success: true,
+      counts: {
+        subcategories: subcategoryCount,
+        extendedSubcategories: extendedCount,
+        brands: brandCount,
+        total: subcategoryCount + extendedCount + brandCount
+      }
+    });
+  } catch (error) {
+    console.error('Get category child counts error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Delete category with cascade option
+export const deleteCategoryWithCascade = async (req, res) => {
+  try {
+    const categoryId = req.params.id;
+    const { cascade } = req.query; // ?cascade=true for cascade deletion
+    
+    const category = await Category.findById(categoryId);
+    if (!category) {
+      return res.status(404).json({
+        success: false,
+        message: 'Category not found'
+      });
+    }
+
+    if (cascade === 'true') {
+      // Cascade deletion: delete category and all its children
+      console.log(`🗑️ Cascade deleting category: ${category.name}`);
+      
+      // Delete all brands under this category
+      const brandsDeleted = await Brand.deleteMany({ category: categoryId });
+      console.log(`   Deleted ${brandsDeleted.deletedCount} brands`);
+      
+      // Delete all extended subcategories under this category
+      let extendedDeleted = 0;
+      try {
+        const ExtendedSubcategory = (await import('../models/ExtendedSubcategory.js')).default;
+        const extendedResult = await ExtendedSubcategory.deleteMany({ category: categoryId });
+        extendedDeleted = extendedResult.deletedCount;
+        console.log(`   Deleted ${extendedDeleted} extended subcategories`);
+      } catch (error) {
+        console.log('ExtendedSubcategory model not found or error:', error.message);
+      }
+      
+      // Delete all subcategories under this category
+      const subcategoriesDeleted = await Subcategory.deleteMany({ category: categoryId });
+      console.log(`   Deleted ${subcategoriesDeleted.deletedCount} subcategories`);
+      
+      // Finally, delete the category itself
+      await Category.findByIdAndDelete(categoryId);
+      console.log(`   Deleted category: ${category.name}`);
+
+      res.json({
+        success: true,
+        message: 'Category and all its children deleted successfully',
+        deleted: {
+          category: 1,
+          subcategories: subcategoriesDeleted.deletedCount,
+          extendedSubcategories: extendedDeleted,
+          brands: brandsDeleted.deletedCount,
+          total: 1 + subcategoriesDeleted.deletedCount + extendedDeleted + brandsDeleted.deletedCount
+        }
+      });
+    } else {
+      // Non-cascade deletion: check if category has children
+      const subcategoryCount = await Subcategory.countDocuments({ 
+        category: categoryId 
+      });
+      
+      if (subcategoryCount > 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Cannot delete category with existing subcategories. Use cascade deletion to delete all children.',
+          hasChildren: true,
+          childCount: subcategoryCount
+        });
+      }
+
+      // No children, safe to delete
+      await Category.findByIdAndDelete(categoryId);
+
+      res.json({
+        success: true,
+        message: 'Category deleted successfully'
+      });
+    }
+  } catch (error) {
+    console.error('Delete category error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Delete category (keep old function for backward compatibility)
 export const deleteCategory = async (req, res) => {
   try {
     const category = await Category.findById(req.params.id);
@@ -238,7 +374,9 @@ export const deleteCategory = async (req, res) => {
     if (subcategoryCount > 0) {
       return res.status(400).json({
         success: false,
-        message: 'Cannot delete category with existing subcategories'
+        message: 'Cannot delete category with existing subcategories',
+        hasChildren: true,
+        childCount: subcategoryCount
       });
     }
 

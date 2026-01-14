@@ -5,7 +5,9 @@ import {
   createCategory,
   updateCategory,
   deleteCategory,
-  getCategoryStats
+  getCategoryStats,
+  getCategoryChildCounts,
+  deleteCategoryWithCascade
 } from '../controllers/categoryController.js';
 import {
   getSubcategoriesByCategory,
@@ -21,6 +23,8 @@ router.use(protect);
 
 // Category routes
 router.get('/stats', requirePermission('categories.view'), getCategoryStats);
+router.get('/:id/child-counts', requirePermission('categories.view'), getCategoryChildCounts);
+router.delete('/:id/cascade', requirePermission('categories.delete'), deleteCategoryWithCascade);
 router.get('/', requirePermission('categories.view'), getCategories);
 router.get('/:id', requirePermission('categories.view'), getCategory);
 router.post('/', requirePermission('categories.create'), createCategory);

@@ -398,22 +398,25 @@ export const getExtendedSubcategoryTree = async (req, res) => {
 export const getExtendedSubcategoriesBySubcategory = async (req, res) => {
   try {
     const { subcategoryId } = req.params;
-    const { page = 1, limit = 10 } = req.query;
+    const { page = 1, limit = 100 } = req.query;
 
+    // Only return Level 1 items (items with no parent) for this subcategory
     const items = await ExtendedSubcategory.find({
       subcategory: subcategoryId,
+      parentExtendedSubcategory: null,  // Only Level 1 items
       status: 'active'
     })
     .populate('category', 'name')
     .populate('subcategory', 'name')
     .populate('parentExtendedSubcategory', 'name level')
     .populate('createdBy', 'name email')
-    .sort({ level: 1, name: 1 })
+    .sort({ name: 1 })
     .limit(limit * 1)
     .skip((page - 1) * limit);
 
     const total = await ExtendedSubcategory.countDocuments({
       subcategory: subcategoryId,
+      parentExtendedSubcategory: null,  // Only Level 1 items
       status: 'active'
     });
 
