@@ -69,6 +69,7 @@ import testRoutes from './routes/testRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
 import collectionRoutes from './routes/collectionRoutes.js';
+import invoicePrintTemplateRoutes from './routes/invoicePrintTemplateRoutes.js';
 
 // Dealer App Routes
 import appAuthRoutes from './app/routes/authRoutes.js';
@@ -296,6 +297,7 @@ app.use('/api/stock', stockRoutes);
 app.use('/api/sales-orders', salesOrderRoutes);
 app.use('/api/cheques', chequeRoutes);
 app.use('/api/dealer-invoices', dealerInvoiceRoutes);
+app.use('/api/invoice-print-templates', invoicePrintTemplateRoutes);
 app.use('/api/supplier-invoices', supplierInvoiceRoutes);
 app.use('/api/supplier-payments', supplierPaymentRoutes);
 app.use('/api/dealer-payments', dealerPaymentRoutes);

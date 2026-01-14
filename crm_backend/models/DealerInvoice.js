@@ -8,7 +8,16 @@ const invoiceItemSchema = new mongoose.Schema({
   },
   productCode: String,
   productName: String,
+  description: String,
   HSNCode: String,
+  unit: String,
+  alternateUnit: String,
+  alternateUnitQuantity: Number,
+  category: String,
+  subcategory: String,
+  brand: String,
+  productType: String,
+  salesType: String,
   quantity: {
     type: Number,
     required: true,
@@ -168,7 +177,47 @@ const dealerInvoiceSchema = new mongoose.Schema({
     required: true
   },
   remarks: String,
-  internalNotes: String
+  internalNotes: String,
+  
+  // Print Settings
+  printSettings: {
+    type: Object,
+    default: {
+      // Product columns
+      showSerialNumber: true,
+      showProductCode: true,
+      showProductName: true,
+      showDescription: false,
+      showHSNCode: true,
+      showUnit: true,
+      showAlternateUnit: false,
+      showCategory: false,
+      showSubcategory: false,
+      showBrand: false,
+      showProductType: false,
+      showSalesType: false,
+      showQuantity: true,
+      showRate: true,
+      showAmount: true,
+      showDiscount: true,
+      showGST: true,
+      showTotal: true,
+      
+      // Invoice sections
+      showCompanyLogo: true,
+      showCompanyDetails: true,
+      showTermsAndConditions: true,
+      showBankDetails: true,
+      showSignature: true,
+      showPointsEarned: true,
+      showWarehouse: false,
+      
+      // Layout options
+      fontSize: 'medium', // small, medium, large
+      orientation: 'portrait', // portrait, landscape
+      showImages: false
+    }
+  }
 }, {
   timestamps: true
 });

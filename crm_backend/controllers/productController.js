@@ -22,17 +22,49 @@ export const getProducts = async (req, res) => {
       subcategory4,
       subcategory5,
       brand,
-      status
+      status,
+      salesType,
+      productType
     } = req.query;
 
     const filter = {};
 
-    // Search filter
+    // Enhanced search filter - searches across multiple fields
     if (search) {
+      // First, try to find matching categories, subcategories, and brands by name
+      const [matchingCategories, matchingSubcategories, matchingBrands, matchingExtended1, matchingExtended2, matchingExtended3, matchingExtended4, matchingExtended5] = await Promise.all([
+        Category.find({ name: { $regex: search, $options: 'i' } }).select('_id'),
+        Subcategory.find({ name: { $regex: search, $options: 'i' } }).select('_id'),
+        Brand.find({ name: { $regex: search, $options: 'i' } }).select('_id'),
+        ExtendedSubcategory.find({ name: { $regex: search, $options: 'i' }, level: 1 }).select('_id'),
+        ExtendedSubcategory.find({ name: { $regex: search, $options: 'i' }, level: 2 }).select('_id'),
+        ExtendedSubcategory.find({ name: { $regex: search, $options: 'i' }, level: 3 }).select('_id'),
+        ExtendedSubcategory.find({ name: { $regex: search, $options: 'i' }, level: 4 }).select('_id'),
+        ExtendedSubcategory.find({ name: { $regex: search, $options: 'i' }, level: 5 }).select('_id')
+      ]);
+
+      const categoryIds = matchingCategories.map(c => c._id);
+      const subcategoryIds = matchingSubcategories.map(s => s._id);
+      const brandIds = matchingBrands.map(b => b._id);
+      const extended1Ids = matchingExtended1.map(e => e._id);
+      const extended2Ids = matchingExtended2.map(e => e._id);
+      const extended3Ids = matchingExtended3.map(e => e._id);
+      const extended4Ids = matchingExtended4.map(e => e._id);
+      const extended5Ids = matchingExtended5.map(e => e._id);
+
       filter.$or = [
         { productCode: { $regex: search, $options: 'i' } },
         { itemName: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } }
+        { description: { $regex: search, $options: 'i' } },
+        { HSNCode: { $regex: search, $options: 'i' } },
+        ...(categoryIds.length > 0 ? [{ category: { $in: categoryIds } }] : []),
+        ...(subcategoryIds.length > 0 ? [{ subcategory: { $in: subcategoryIds } }] : []),
+        ...(brandIds.length > 0 ? [{ brand: { $in: brandIds } }] : []),
+        ...(extended1Ids.length > 0 ? [{ subcategory1: { $in: extended1Ids } }] : []),
+        ...(extended2Ids.length > 0 ? [{ subcategory2: { $in: extended2Ids } }] : []),
+        ...(extended3Ids.length > 0 ? [{ subcategory3: { $in: extended3Ids } }] : []),
+        ...(extended4Ids.length > 0 ? [{ subcategory4: { $in: extended4Ids } }] : []),
+        ...(extended5Ids.length > 0 ? [{ subcategory5: { $in: extended5Ids } }] : [])
       ];
     }
 
@@ -71,6 +103,16 @@ export const getProducts = async (req, res) => {
     // Status filter
     if (status) {
       filter.status = status;
+    }
+
+    // Sales Type filter
+    if (salesType) {
+      filter.salesType = salesType;
+    }
+
+    // Product Type filter
+    if (productType) {
+      filter.productType = productType;
     }
 
     const products = await Product.find(filter)

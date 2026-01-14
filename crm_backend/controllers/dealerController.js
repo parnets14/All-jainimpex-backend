@@ -684,14 +684,22 @@ export const getDealerCompleteInfo = async (req, res) => {
     let canCreateOrder = true;
     let blockReason = null;
     
-    if (overdueAmount > 0 && currentOutstanding > dealer.creditLimit) {
-      paymentStatusType = 'overdue';
-      canCreateOrder = false;
-      blockReason = `Credit limit exceeded with ₹${overdueAmount.toLocaleString()} overdue. Please collect payment first.`;
-    } else if (overdueAmount > 0) {
-      paymentStatusType = 'warning';
-    } else if (currentOutstanding > dealer.creditLimit) {
-      paymentStatusType = 'warning';
+    // ✅ FIXED: Changed AND to OR - block if EITHER condition is true
+    if (overdueAmount > 0 || currentOutstanding > dealer.creditLimit) {
+      // Determine specific reason for blocking
+      if (overdueAmount > 0 && currentOutstanding > dealer.creditLimit) {
+        paymentStatusType = 'overdue';
+        canCreateOrder = false;
+        blockReason = `Credit limit of ₹${dealer.creditLimit.toLocaleString()} exceeded with ₹${overdueAmount.toLocaleString()} overdue. Current outstanding: ₹${currentOutstanding.toLocaleString()}. Please collect payment first.`;
+      } else if (currentOutstanding > dealer.creditLimit) {
+        paymentStatusType = 'exceeded';
+        canCreateOrder = false;
+        blockReason = `Credit limit of ₹${dealer.creditLimit.toLocaleString()} exceeded. Current outstanding: ₹${currentOutstanding.toLocaleString()}. Available credit: ₹${availableCredit.toLocaleString()}. Please collect payment first.`;
+      } else if (overdueAmount > 0) {
+        paymentStatusType = 'overdue';
+        canCreateOrder = false;
+        blockReason = `Payment overdue: ₹${overdueAmount.toLocaleString()}. Please collect payment before creating new orders.`;
+      }
     }
     
     // 5. Get available discounts
