@@ -1,62 +1,71 @@
-import mongoose from 'mongoose';
-import Dealer from '../models/Dealer.js';
-import DealerInvoice from '../models/DealerInvoice.js';
-import CreditNote from '../models/CreditNote.js';
-import User from '../models/User.js';
+import mongoose from "mongoose";
+import dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
 
-// Connect to MongoDB
-mongoose.connect('mongodb://localhost:27017/jaininpexcrm', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
-}).then(async () => {
-  console.log('Connected to MongoDB');
-  
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Load environment variables
+dotenv.config({ path: path.join(__dirname, "../.env") });
+
+const MONGODB_URI =
+  process.env.MONGODB_URI || "mongodb://localhost:27017/jainimpexcrm";
+
+async function checkDatabase() {
   try {
-    // Check what data exists
-    const dealers = await Dealer.find({});
-    const invoices = await DealerInvoice.find({});
-    const creditNotes = await CreditNote.find({});
-    const users = await User.find({});
-    
-    console.log(`\nDatabase Summary:`);
-    console.log(`- Dealers: ${dealers.length}`);
-    console.log(`- Invoices: ${invoices.length}`);
-    console.log(`- Credit Notes: ${creditNotes.length}`);
-    console.log(`- Users: ${users.length}`);
-    
-    if (dealers.length > 0) {
-      console.log(`\nDealers:`);
-      dealers.forEach(dealer => {
-        console.log(`  - ${dealer.code}: ${dealer.name}`);
-      });
+    console.log("🔌 Connecting to MongoDB...");
+    console.log("📍 URI:", MONGODB_URI);
+    await mongoose.connect(MONGODB_URI);
+    console.log("✅ Connected to MongoDB\n");
+
+    // Get database name
+    const dbName = mongoose.connection.db.databaseName;
+    console.log("📊 Database:", dbName);
+    console.log("─".repeat(60));
+
+    // Get all collections
+    const collections = await mongoose.connection.db
+      .listCollections()
+      .toArray();
+
+    console.log(`\n📋 Found ${collections.length} collections:\n`);
+
+    let totalDocuments = 0;
+
+    // Count documents in each collection
+    for (const collection of collections) {
+      const count = await mongoose.connection.db
+        .collection(collection.name)
+        .countDocuments();
+      totalDocuments += count;
+
+      const icon = count > 0 ? "📦" : "📭";
+      console.log(
+        `${icon} ${collection.name.padEnd(30)} ${count
+          .toString()
+          .padStart(6)} documents`
+      );
     }
-    
-    if (invoices.length > 0) {
-      console.log(`\nInvoices:`);
-      invoices.forEach(invoice => {
-        console.log(`  - ${invoice.invoiceNumber}: ${invoice.dealerName} (₹${invoice.totalAmount})`);
-      });
+
+    console.log("─".repeat(60));
+    console.log(
+      `\n📊 Total documents across all collections: ${totalDocuments}`
+    );
+
+    if (totalDocuments === 0) {
+      console.log("\n⚠️  Database is empty! No data to delete.");
+    } else {
+      console.log("\n✅ Database has data that can be cleaned.");
     }
-    
-    if (creditNotes.length > 0) {
-      console.log(`\nCredit Notes:`);
-      creditNotes.forEach(cn => {
-        console.log(`  - ${cn.creditNoteNumber}: ${cn.dealerName} (₹${cn.creditAmount})`);
-      });
-    }
-    
-    if (users.length > 0) {
-      console.log(`\nUsers:`);
-      users.forEach(user => {
-        console.log(`  - ${user.email}: ${user.role}`);
-      });
-    }
-    
   } catch (error) {
-    console.error('Error checking database:', error);
+    console.error("❌ Error:", error.message);
   } finally {
-    mongoose.connection.close();
+    await mongoose.connection.close();
+    console.log("\n🔌 Disconnected from MongoDB");
+    process.exit(0);
   }
-}).catch(error => {
-  console.error('MongoDB connection error:', error);
-});
+}
+
+// Run the check
+checkDatabase();

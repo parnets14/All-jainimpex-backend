@@ -1,5 +1,5 @@
-import Subcategory from '../models/Subcategory.js';
-import Brand from '../models/Brand.js';
+import Subcategory from "../models/Subcategory.js";
+import ExtendedSubcategory from "../models/ExtendedSubcategory.js";
 
 // Helper function for pagination
 const getPaginationOptions = (query) => {
@@ -19,7 +19,7 @@ export const getSubcategoriesByCategory = async (req, res) => {
 
     // Build filter
     const filter = { category: categoryId };
-    if (status && status !== 'all') {
+    if (status && status !== "all") {
       filter.status = status;
     }
     if (search) {
@@ -28,8 +28,9 @@ export const getSubcategoriesByCategory = async (req, res) => {
 
     // Get subcategories with pagination
     const subcategories = await Subcategory.find(filter)
-      .populate('createdBy', 'name email')
-      .populate('category', 'name')
+      .populate("createdBy", "name email")
+      .populate("category", "name")
+      .populate("brand", "name")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
@@ -38,17 +39,17 @@ export const getSubcategoriesByCategory = async (req, res) => {
     // Get total count for pagination
     const total = await Subcategory.countDocuments(filter);
 
-    // Get brand counts for each subcategory
+    // Get extended subcategory counts for each subcategory
     const subcategoriesWithCounts = await Promise.all(
       subcategories.map(async (subcategory) => {
-        const brandCount = await Brand.countDocuments({ 
+        const extendedCount = await ExtendedSubcategory.countDocuments({
           subcategory: subcategory._id,
-          status: 'active'
+          status: "active",
         });
 
         return {
           ...subcategory,
-          brandCount
+          extendedCount,
         };
       })
     );
@@ -60,14 +61,78 @@ export const getSubcategoriesByCategory = async (req, res) => {
         currentPage: page,
         totalPages: Math.ceil(total / limit),
         totalItems: total,
-        itemsPerPage: limit
-      }
+        itemsPerPage: limit,
+      },
     });
   } catch (error) {
-    console.error('Get subcategories error:', error);
+    console.error("Get subcategories error:", error);
     res.status(500).json({
       success: false,
-      message: error.message
+      message: error.message,
+    });
+  }
+};
+
+// Get subcategories by brand and category (nested route)
+export const getSubcategoriesByBrandAndCategory = async (req, res) => {
+  try {
+    const { page, limit, skip } = getPaginationOptions(req.query);
+    const { search, status } = req.query;
+    const { brandId, categoryId } = req.params;
+
+    // Build filter
+    const filter = {
+      brand: brandId,
+      category: categoryId,
+    };
+    if (status && status !== "all") {
+      filter.status = status;
+    }
+    if (search) {
+      filter.$text = { $search: search };
+    }
+
+    const subcategories = await Subcategory.find(filter)
+      .populate("createdBy", "name email")
+      .populate("category", "name")
+      .populate("brand", "name")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    const total = await Subcategory.countDocuments(filter);
+
+    // Get extended subcategory counts for each subcategory
+    const subcategoriesWithCounts = await Promise.all(
+      subcategories.map(async (subcategory) => {
+        const extendedCount = await ExtendedSubcategory.countDocuments({
+          subcategory: subcategory._id,
+          status: "active",
+        });
+
+        return {
+          ...subcategory,
+          extendedCount,
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      subcategories: subcategoriesWithCounts,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(total / limit),
+        totalItems: total,
+        itemsPerPage: limit,
+      },
+    });
+  } catch (error) {
+    console.error("Get subcategories by brand and category error:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
     });
   }
 };
@@ -76,11 +141,14 @@ export const getSubcategoriesByCategory = async (req, res) => {
 export const getSubcategories = async (req, res) => {
   try {
     const { page, limit, skip } = getPaginationOptions(req.query);
-    const { search, status, category } = req.query;
+    const { search, status, brand, category } = req.query;
 
     // Build filter
     const filter = {};
-    if (status && status !== 'all') {
+    if (brand) {
+      filter.brand = brand;
+    }
+    if (status && status !== "all") {
       filter.status = status;
     }
     if (category) {
@@ -91,8 +159,9 @@ export const getSubcategories = async (req, res) => {
     }
 
     const subcategories = await Subcategory.find(filter)
-      .populate('createdBy', 'name email')
-      .populate('category', 'name')
+      .populate("createdBy", "name email")
+      .populate("category", "name")
+      .populate("brand", "name")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
@@ -106,14 +175,14 @@ export const getSubcategories = async (req, res) => {
         currentPage: page,
         totalPages: Math.ceil(total / limit),
         totalItems: total,
-        itemsPerPage: limit
-      }
+        itemsPerPage: limit,
+      },
     });
   } catch (error) {
-    console.error('Get all subcategories error:', error);
+    console.error("Get all subcategories error:", error);
     res.status(500).json({
       success: false,
-      message: error.message
+      message: error.message,
     });
   }
 };
@@ -121,56 +190,132 @@ export const getSubcategories = async (req, res) => {
 // Create new subcategory
 export const createSubcategory = async (req, res) => {
   try {
-    const { name, description, category } = req.body;
+    const { name, description, brand, category } = req.body;
+
+    if (!brand) {
+      return res.status(400).json({
+        success: false,
+        message: "Brand is required",
+      });
+    }
+
+    if (!category) {
+      return res.status(400).json({
+        success: false,
+        message: "Category is required",
+      });
+    }
 
     // Check if subcategory already exists in this category
-    const existingSubcategory = await Subcategory.findOne({ 
-      name, 
-      category 
+    const existingSubcategory = await Subcategory.findOne({
+      name,
+      category,
     });
     if (existingSubcategory) {
       return res.status(400).json({
         success: false,
-        message: 'Subcategory with this name already exists in this category'
+        message: "Subcategory with this name already exists in this category",
       });
     }
 
     const subcategory = await Subcategory.create({
       name,
       description,
+      brand,
       category,
-      createdBy: req.user._id
+      createdBy: req.user._id,
     });
 
-    await subcategory.populate('createdBy', 'name email');
-    await subcategory.populate('category', 'name');
+    await subcategory.populate("createdBy", "name email");
+    await subcategory.populate("category", "name");
+    await subcategory.populate("brand", "name");
 
     res.status(201).json({
       success: true,
-      message: 'Subcategory created successfully',
-      subcategory
+      message: "Subcategory created successfully",
+      subcategory,
     });
   } catch (error) {
-    console.error('Create subcategory error:', error);
-    
+    console.error("Create subcategory error:", error);
+
     if (error.code === 11000) {
       return res.status(400).json({
         success: false,
-        message: 'Subcategory name already exists in this category'
+        message: "Subcategory name already exists in this category",
       });
     }
-    
-    if (error.name === 'ValidationError') {
-      const messages = Object.values(error.errors).map(err => err.message);
+
+    if (error.name === "ValidationError") {
+      const messages = Object.values(error.errors).map((err) => err.message);
       return res.status(400).json({
         success: false,
-        message: messages.join(', ')
+        message: messages.join(", "),
       });
     }
-    
+
     res.status(500).json({
       success: false,
-      message: error.message
+      message: error.message,
+    });
+  }
+};
+
+// Create subcategory under brand's category (nested route)
+export const createSubcategoryUnderBrandCategory = async (req, res) => {
+  try {
+    const { name, description } = req.body;
+    const { brandId, categoryId } = req.params;
+
+    // Check if subcategory already exists in this category
+    const existingSubcategory = await Subcategory.findOne({
+      name,
+      category: categoryId,
+    });
+    if (existingSubcategory) {
+      return res.status(400).json({
+        success: false,
+        message: "Subcategory with this name already exists in this category",
+      });
+    }
+
+    const subcategory = await Subcategory.create({
+      name,
+      description,
+      brand: brandId,
+      category: categoryId,
+      createdBy: req.user._id,
+    });
+
+    await subcategory.populate("createdBy", "name email");
+    await subcategory.populate("category", "name");
+    await subcategory.populate("brand", "name");
+
+    res.status(201).json({
+      success: true,
+      message: "Subcategory created successfully",
+      subcategory,
+    });
+  } catch (error) {
+    console.error("Create subcategory under brand category error:", error);
+
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: "Subcategory name already exists in this category",
+      });
+    }
+
+    if (error.name === "ValidationError") {
+      const messages = Object.values(error.errors).map((err) => err.message);
+      return res.status(400).json({
+        success: false,
+        message: messages.join(", "),
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: error.message,
     });
   }
 };
@@ -184,20 +329,20 @@ export const updateSubcategory = async (req, res) => {
     if (!subcategory) {
       return res.status(404).json({
         success: false,
-        message: 'Subcategory not found'
+        message: "Subcategory not found",
       });
     }
 
     // Check if name is being changed and if it already exists in the same category
     if (name && name !== subcategory.name) {
-      const existingSubcategory = await Subcategory.findOne({ 
-        name, 
-        category: subcategory.category 
+      const existingSubcategory = await Subcategory.findOne({
+        name,
+        category: subcategory.category,
       });
       if (existingSubcategory) {
         return res.status(400).json({
           success: false,
-          message: 'Subcategory with this name already exists in this category'
+          message: "Subcategory with this name already exists in this category",
         });
       }
     }
@@ -212,35 +357,36 @@ export const updateSubcategory = async (req, res) => {
       updateData,
       { new: true, runValidators: true }
     )
-    .populate('createdBy', 'name email')
-    .populate('category', 'name');
+      .populate("createdBy", "name email")
+      .populate("category", "name")
+      .populate("brand", "name");
 
     res.json({
       success: true,
-      message: 'Subcategory updated successfully',
-      subcategory: updatedSubcategory
+      message: "Subcategory updated successfully",
+      subcategory: updatedSubcategory,
     });
   } catch (error) {
-    console.error('Update subcategory error:', error);
-    
+    console.error("Update subcategory error:", error);
+
     if (error.code === 11000) {
       return res.status(400).json({
         success: false,
-        message: 'Subcategory name already exists in this category'
+        message: "Subcategory name already exists in this category",
       });
     }
-    
-    if (error.name === 'ValidationError') {
-      const messages = Object.values(error.errors).map(err => err.message);
+
+    if (error.name === "ValidationError") {
+      const messages = Object.values(error.errors).map((err) => err.message);
       return res.status(400).json({
         success: false,
-        message: messages.join(', ')
+        message: messages.join(", "),
       });
     }
-    
+
     res.status(500).json({
       success: false,
-      message: error.message
+      message: error.message,
     });
   }
 };
@@ -252,19 +398,20 @@ export const deleteSubcategory = async (req, res) => {
     if (!subcategory) {
       return res.status(404).json({
         success: false,
-        message: 'Subcategory not found'
+        message: "Subcategory not found",
       });
     }
 
-    // Check if subcategory has brands
-    const brandCount = await Brand.countDocuments({ 
-      subcategory: req.params.id 
+    // Check if subcategory has extended subcategories
+    const extendedCount = await ExtendedSubcategory.countDocuments({
+      subcategory: req.params.id,
     });
-    
-    if (brandCount > 0) {
+
+    if (extendedCount > 0) {
       return res.status(400).json({
         success: false,
-        message: 'Cannot delete subcategory with existing brands'
+        message:
+          "Cannot delete subcategory with existing extended subcategories",
       });
     }
 
@@ -272,13 +419,13 @@ export const deleteSubcategory = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Subcategory deleted successfully'
+      message: "Subcategory deleted successfully",
     });
   } catch (error) {
-    console.error('Delete subcategory error:', error);
+    console.error("Delete subcategory error:", error);
     res.status(500).json({
       success: false,
-      message: error.message
+      message: error.message,
     });
   }
 };
