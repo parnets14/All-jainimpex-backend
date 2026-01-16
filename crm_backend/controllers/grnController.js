@@ -2,9 +2,59 @@ import GRN from '../models/GRN.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import StockMovementService from '../services/stockMovementService.js';
 import schemeService from '../services/schemeService.js';
+import Counter from '../models/Counter.js';
+import mongoose from 'mongoose';
+
+// Atomic GRN number generation using Counter model
+const generateGRNNumber = async () => {
+  try {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    const dateString = `${year}${month}${day}`;
+    
+    // Use atomic counter to prevent race conditions
+    const sequence = await Counter.getNextSequence(`grn-${dateString}`);
+    
+    return `GRN-${dateString}-${String(sequence).padStart(3, '0')}`;
+  } catch (error) {
+    console.error('Error generating GRN number:', error);
+    // Fallback: use timestamp
+    return `GRN-${Date.now()}`;
+  }
+};
+
+// Validate GRN quantities
+const validateGRNQuantities = (items) => {
+  for (const item of items) {
+    if (!item.receivedQuantity || item.receivedQuantity <= 0) {
+      throw new Error(`Received quantity must be greater than 0 for product ${item.productId}`);
+    }
+    
+    if (item.damageQuantity < 0) {
+      throw new Error(`Damage quantity cannot be negative for product ${item.productId}`);
+    }
+    
+    if (item.damageQuantity > item.receivedQuantity) {
+      throw new Error(`Damage quantity (${item.damageQuantity}) cannot exceed received quantity (${item.receivedQuantity}) for product ${item.productId}`);
+    }
+    
+    const acceptedQty = item.receivedQuantity - (item.damageQuantity || 0);
+    if (acceptedQty < 0) {
+      throw new Error(`Accepted quantity cannot be negative for product ${item.productId}`);
+    }
+  }
+};
 
 export const createGRN = async (req, res) => {
+  // Start MongoDB session for transaction
+  const session = await mongoose.startSession();
+  
   try {
+    // Start transaction
+    await session.startTransaction();
+    
     const {
       poId,
       warehouseId,
@@ -16,12 +66,17 @@ export const createGRN = async (req, res) => {
 
     console.log('Creating GRN with data:', { poId, warehouseId, items });
 
+    // Validate quantities first
+    validateGRNQuantities(items);
+
     // Validate PO exists and is approved
     const purchaseOrder = await PurchaseOrder.findById(poId)
       .populate('supplierId')
-      .populate('lines.productId');
+      .populate('lines.productId')
+      .session(session);
 
     if (!purchaseOrder) {
+      await session.abortTransaction();
       return res.status(404).json({
         success: false,
         message: 'Purchase Order not found'
@@ -29,13 +84,14 @@ export const createGRN = async (req, res) => {
     }
 
     if (purchaseOrder.status !== 'Approved') {
+      await session.abortTransaction();
       return res.status(400).json({
         success: false,
-        message: 'Only approved Purchase Orders can be used for GRN'
+        message: `Only approved Purchase Orders can be used for GRN. Current status: ${purchaseOrder.status}`
       });
     }
 
-    // Calculate totals and validate quantities
+    // Calculate totals and validate quantities with cumulative tracking
     let totalAmount = 0;
     const grnItems = [];
 
@@ -45,14 +101,15 @@ export const createGRN = async (req, res) => {
       );
 
       if (!poLine) {
+        await session.abortTransaction();
         return res.status(400).json({
           success: false,
           message: `Product not found in Purchase Order: ${item.productId}`
         });
       }
 
-      // Check if received quantity exceeds PO quantity
-      const existingGRNs = await GRN.find({ poId });
+      // Check cumulative received quantity across all GRNs
+      const existingGRNs = await GRN.find({ poId }).session(session);
       const totalReceived = existingGRNs.reduce((sum, grn) => {
         const grnItem = grn.items.find(gi => 
           gi.productId && gi.productId.toString() === item.productId
@@ -63,9 +120,10 @@ export const createGRN = async (req, res) => {
       const remainingQuantity = poLine.quantity - totalReceived;
       
       if (item.receivedQuantity > remainingQuantity) {
+        await session.abortTransaction();
         return res.status(400).json({
           success: false,
-          message: `Received quantity (${item.receivedQuantity}) for product ${poLine.productId.itemName} exceeds remaining PO quantity (${remainingQuantity})`
+          message: `Cannot receive ${item.receivedQuantity} units of ${poLine.productId.itemName}. Only ${remainingQuantity} units remaining (Ordered: ${poLine.quantity}, Already received: ${totalReceived})`
         });
       }
 
@@ -86,46 +144,9 @@ export const createGRN = async (req, res) => {
       totalAmount += itemTotal;
     }
 
-    // Generate GRN number in controller (alternative approach)
-    const generateGRNNumber = async () => {
-      try {
-        const today = new Date();
-        const year = today.getFullYear();
-        const month = String(today.getMonth() + 1).padStart(2, '0');
-        const day = String(today.getDate()).padStart(2, '0');
-        const dateString = `${year}${month}${day}`;
-        
-        const startOfDay = new Date(today);
-        startOfDay.setHours(0, 0, 0, 0);
-        
-        const endOfDay = new Date(today);
-        endOfDay.setHours(23, 59, 59, 999);
-        
-        const todayGRNs = await GRN.find({
-          createdAt: {
-            $gte: startOfDay,
-            $lte: endOfDay
-          }
-        }).sort({ grnNo: -1 }).limit(1);
-        
-        let sequence = 1;
-        if (todayGRNs.length > 0) {
-          const lastGRN = todayGRNs[0];
-          const lastSequence = parseInt(lastGRN.grnNo.split('-').pop());
-          if (!isNaN(lastSequence)) {
-            sequence = lastSequence + 1;
-          }
-        }
-        
-        return `GRN-${dateString}-${String(sequence).padStart(3, '0')}`;
-      } catch (error) {
-        console.error('Error generating GRN number in controller:', error);
-        return `GRN-ALT-${Date.now()}`;
-      }
-    };
-
+    // Generate GRN number using atomic counter
     const grnNo = await generateGRNNumber();
-    console.log('Generated GRN No in controller:', grnNo);
+    console.log('Generated GRN No:', grnNo);
 
     // Determine GRN status based on received quantities
     let grnStatus = 'Received'; // Default to fully received
@@ -139,7 +160,7 @@ export const createGRN = async (req, res) => {
     }
 
     const grnData = {
-      grnNo, // Explicitly set the GRN number
+      grnNo,
       poId,
       supplierId: purchaseOrder.supplierId._id,
       warehouseId,
@@ -155,15 +176,20 @@ export const createGRN = async (req, res) => {
     console.log('GRN data to save:', grnData);
 
     const grn = new GRN(grnData);
-    await grn.save();
+    await grn.save({ session });
     
-    // Create stock movements for this GRN
+    // Create stock movements for this GRN within transaction
+    // Create stock movements for this GRN within transaction
     try {
-      await StockMovementService.createStockMovementsFromGRN(grn);
+      await StockMovementService.createStockMovementsFromGRN(grn, false, session);
       console.log(`✅ Stock movements created for GRN: ${grn.grnNo}`);
     } catch (stockError) {
       console.error('Error creating stock movements:', stockError);
-      // Don't fail the GRN creation if stock movement creation fails
+      await session.abortTransaction();
+      return res.status(500).json({
+        success: false,
+        message: `GRN created but stock movement failed: ${stockError.message}`
+      });
     }
     
     // Auto-Apply Purchase Schemes for GRN
@@ -202,6 +228,9 @@ export const createGRN = async (req, res) => {
       // Don't fail the GRN creation if scheme application fails
     }
     
+    // Commit transaction
+    await session.commitTransaction();
+    
     // Populate the saved GRN for response
     const populatedGRN = await GRN.findById(grn._id)
       .populate('poId', 'poNumber')
@@ -216,11 +245,16 @@ export const createGRN = async (req, res) => {
       data: populatedGRN
     });
   } catch (error) {
+    // Rollback transaction on error
+    await session.abortTransaction();
     console.error('Create GRN error:', error);
     res.status(500).json({
       success: false,
       message: error.message
     });
+  } finally {
+    // End session
+    session.endSession();
   }
 };
 

@@ -5,8 +5,10 @@ class StockMovementService {
   /**
    * Create stock movement entries for a GRN
    * @param {Object} grn - The GRN document
+   * @param {Boolean} isMigration - Whether this is a migration operation
+   * @param {Object} session - MongoDB session for transactions
    */
-  static async createStockMovementsFromGRN(grn, isMigration = false) {
+  static async createStockMovementsFromGRN(grn, isMigration = false, session = null) {
     try {
       console.log(`🔍 [STOCK_MOVEMENT_SERVICE] Creating stock movements for GRN: ${grn.grnNo}`);
       
@@ -20,7 +22,7 @@ class StockMovementService {
             // During migration, use a simple balance calculation
             balance = item.acceptedQuantity; // Will be recalculated later
           } else {
-            balance = await this.calculateRunningBalance(item.productId, grn.warehouseId, item.acceptedQuantity);
+            balance = await this.calculateRunningBalance(item.productId, grn.warehouseId, item.acceptedQuantity, session);
           }
           
           const inMovement = new StockMovement({
@@ -47,7 +49,7 @@ class StockMovementService {
             // During migration, use a simple balance calculation
             balance = -item.damageQuantity; // Will be recalculated later
           } else {
-            balance = await this.calculateRunningBalance(item.productId, grn.warehouseId, -item.damageQuantity);
+            balance = await this.calculateRunningBalance(item.productId, grn.warehouseId, -item.damageQuantity, session);
           }
           
           const outMovement = new StockMovement({
@@ -68,9 +70,13 @@ class StockMovementService {
         }
       }
       
-      // Save all movements
+      // Save all movements with session support
       if (movements.length > 0) {
-        await StockMovement.insertMany(movements);
+        if (session) {
+          await StockMovement.insertMany(movements, { session });
+        } else {
+          await StockMovement.insertMany(movements);
+        }
         console.log(`🔍 [STOCK_MOVEMENT_SERVICE] Successfully created ${movements.length} stock movements for GRN: ${grn.grnNo}`);
       }
       
@@ -118,15 +124,16 @@ class StockMovementService {
    * @param {String} productId - Product ID
    * @param {String} warehouseId - Warehouse ID
    * @param {Number} additionalQuantity - Additional quantity to add/subtract
+   * @param {Object} session - MongoDB session for transactions
    * @returns {Number} - New running balance
    */
-  static async calculateRunningBalance(productId, warehouseId, additionalQuantity = 0) {
+  static async calculateRunningBalance(productId, warehouseId, additionalQuantity = 0, session = null) {
     try {
       // Get the latest balance for this product in this warehouse
-      const latestMovement = await StockMovement.findOne({
-        productId,
-        warehouseId
-      }).sort({ date: -1, createdAt: -1 });
+      const query = { productId, warehouseId };
+      const latestMovement = session 
+        ? await StockMovement.findOne(query).sort({ date: -1, createdAt: -1 }).session(session)
+        : await StockMovement.findOne(query).sort({ date: -1, createdAt: -1 });
       
       const currentBalance = latestMovement ? latestMovement.balance : 0;
       const newBalance = currentBalance + additionalQuantity;
@@ -283,6 +290,61 @@ class StockMovementService {
       console.log('🔍 [STOCK_MOVEMENT_SERVICE] Balance recalculation completed');
     } catch (error) {
       console.error('Error recalculating balances:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Validate if sufficient stock is available for an operation
+   * @param {String} productId - Product ID
+   * @param {String} warehouseId - Warehouse ID
+   * @param {Number} requiredQuantity - Required quantity
+   * @returns {Object} - Validation result with available stock
+   */
+  static async validateStockAvailability(productId, warehouseId, requiredQuantity) {
+    try {
+      const currentStock = await this.getCurrentStock(productId, warehouseId);
+      
+      // Calculate blocked stock
+      const blockedResult = await StockMovement.aggregate([
+        {
+          $match: {
+            productId: productId,
+            warehouseId: warehouseId,
+            referenceType: 'SALE'
+          }
+        },
+        {
+          $group: {
+            _id: '$type',
+            totalQuantity: { $sum: '$quantity' }
+          }
+        }
+      ]);
+      
+      let blockedQty = 0;
+      blockedResult.forEach(result => {
+        if (result._id === 'OUT') {
+          blockedQty += result.totalQuantity;
+        } else if (result._id === 'IN') {
+          blockedQty -= result.totalQuantity;
+        }
+      });
+      blockedQty = Math.max(0, blockedQty);
+      
+      const availableStock = currentStock - blockedQty;
+      const isAvailable = availableStock >= requiredQuantity;
+      
+      return {
+        isAvailable,
+        currentStock,
+        blockedQty,
+        availableStock,
+        requiredQuantity,
+        shortfall: isAvailable ? 0 : requiredQuantity - availableStock
+      };
+    } catch (error) {
+      console.error('Error validating stock availability:', error);
       throw error;
     }
   }

@@ -90,38 +90,7 @@ const grnSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Auto-generate GRN number - FIXED VERSION
-grnSchema.pre('save', async function(next) {
-  if (this.isNew) {
-    try {
-      const today = new Date();
-      const year = today.getFullYear();
-      const month = String(today.getMonth() + 1).padStart(2, '0');
-      const day = String(today.getDate()).padStart(2, '0');
-      
-      // Count GRNs created today
-      const startOfToday = new Date(today);
-      startOfToday.setHours(0, 0, 0, 0);
-      
-      const endOfToday = new Date(today);
-      endOfToday.setHours(23, 59, 59, 999);
-      
-      const count = await mongoose.model('GRN').countDocuments({
-        createdAt: {
-          $gte: startOfToday,
-          $lte: endOfToday
-        }
-      });
-      
-      this.grnNo = `GRN-${year}${month}${day}-${String(count + 1).padStart(3, '0')}`;
-      console.log('Generated GRN No:', this.grnNo);
-    } catch (error) {
-      console.error('Error generating GRN number:', error);
-      // Fallback: generate based on timestamp
-      this.grnNo = `GRN-${Date.now()}`;
-    }
-  }
-  next();
-});
+// Note: GRN number is generated in the controller, not here
+// This ensures better control and prevents race conditions
 
 export default mongoose.model('GRN', grnSchema);

@@ -149,29 +149,30 @@ export const getStock = async (req, res) => {
           const currentStock = await StockMovementService.getCurrentStock(product._id, warehouseId);
           console.log(`🔍 [STOCK_DEBUG] Current stock from movements for ${product.productCode} in warehouse ${warehouseId}: ${currentStock}`);
           
-          // Calculate blocked stock (OUT movements with referenceType 'SALE' that are not unblocked)
-          const blockedMovements = await StockMovement.find({
-            productId: product._id,
-            warehouseId: warehouseId,
-            type: 'OUT',
-            referenceType: 'SALE'
-          });
-          
-          const unblockedMovements = await StockMovement.find({
-            productId: product._id,
-            warehouseId: warehouseId,
-            type: 'IN',
-            referenceType: 'SALE',
-            remarks: { $regex: /Stock Unblocked/ }
-          });
+          // OPTIMIZED: Calculate blocked stock using aggregation
+          const blockedResult = await StockMovement.aggregate([
+            {
+              $match: {
+                productId: product._id,
+                warehouseId: warehouseId,
+                referenceType: 'SALE'
+              }
+            },
+            {
+              $group: {
+                _id: '$type',
+                totalQuantity: { $sum: '$quantity' }
+              }
+            }
+          ]);
           
           let blockedQty = 0;
-          blockedMovements.forEach(movement => {
-            blockedQty += movement.quantity;
-          });
-          
-          unblockedMovements.forEach(movement => {
-            blockedQty -= movement.quantity;
+          blockedResult.forEach(result => {
+            if (result._id === 'OUT') {
+              blockedQty += result.totalQuantity;
+            } else if (result._id === 'IN') {
+              blockedQty -= result.totalQuantity;
+            }
           });
           
           blockedQty = Math.max(0, blockedQty); // Ensure blocked quantity is not negative
@@ -202,14 +203,11 @@ export const getStock = async (req, res) => {
         const averageGST = warehouse.totalAcceptedQty > 0 ? warehouse.weightedGSTSum / warehouse.totalAcceptedQty : 0;
         const blockedQty = warehouse.blockedQty || 0; // Use calculated blocked quantity
         
-        // Use current stock from movements if available, otherwise fall back to GRN calculation
+        // FIXED: Use current stock from movements as the actual available quantity
         const currentStock = warehouse.currentStock !== undefined ? warehouse.currentStock : warehouse.totalQty;
-        // Total quantity should be the sum of all accepted quantities from GRNs (not the current balance)
-        const totalQty = warehouse.totalQty; // This is the sum of accepted quantities from GRNs
         const netStock = currentStock - warehouse.damagedQty - blockedQty;
 
         console.log(`🔍 [STOCK_DEBUG] Final stock calculation for ${product.productCode} in ${warehouse.warehouseName}:`, {
-          totalQty,
           currentStock,
           damagedQty: warehouse.damagedQty,
           blockedQty,
@@ -232,8 +230,8 @@ export const getStock = async (req, res) => {
           warehouseId: warehouse.warehouseId,
           basePrice: averageUnitPrice,
           gst: averageGST,
-          totalPrice: warehouse.totalValue,
-          totalQty: totalQty, // Use total accepted quantity from GRNs
+          totalPrice: currentStock * averageUnitPrice, // Calculate based on current stock
+          totalQty: currentStock, // FIXED: Show current stock, not cumulative GRN receipts
           damagedQty: warehouse.damagedQty,
           blockedQty: blockedQty,
           netStock,
@@ -306,7 +304,13 @@ export const getStockHistory = async (req, res) => {
 
 // Stock Transfer Functions
 export const createStockTransfer = async (req, res) => {
+  // Start a MongoDB session for transaction support
+  const session = await StockMovement.startSession();
+  
   try {
+    // Start transaction
+    await session.startTransaction();
+    
     const {
       fromWarehouse,
       toWarehouse,
@@ -318,20 +322,44 @@ export const createStockTransfer = async (req, res) => {
 
     console.log(`🔍 [STOCK_TRANSFER] Creating transfer from ${fromWarehouse} to ${toWarehouse}`);
 
+    // Validate stock availability before transfer
+    for (const item of items) {
+      const validation = await StockMovementService.validateStockAvailability(
+        item.productId, 
+        fromWarehouse, 
+        item.quantity
+      );
+      
+      if (!validation.isAvailable) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient stock for product ${item.productId}. Available: ${validation.availableStock}, Required: ${item.quantity}, Shortfall: ${validation.shortfall}`
+        });
+      }
+    }
+
     // Generate transfer ID
     const transferId = `TRF-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
-    // Create stock movements for each item
+    // Create stock movements for each item with proper balance calculation
     const movements = [];
     
     for (const item of items) {
+      // Calculate balance for OUT movement from source warehouse
+      const outBalance = await StockMovementService.calculateRunningBalance(
+        item.productId, 
+        fromWarehouse, 
+        -item.quantity
+      );
+      
       // OUT movement from source warehouse
       const outMovement = new StockMovement({
         productId: item.productId,
         warehouseId: fromWarehouse,
         type: 'OUT',
         quantity: item.quantity,
-        balance: 0, // Will be calculated
+        balance: outBalance,
         referenceNo: transferId,
         referenceType: 'TRANSFER',
         date: new Date(transferDate),
@@ -339,13 +367,20 @@ export const createStockTransfer = async (req, res) => {
         createdBy: req.user._id
       });
 
+      // Calculate balance for IN movement to destination warehouse
+      const inBalance = await StockMovementService.calculateRunningBalance(
+        item.productId, 
+        toWarehouse, 
+        item.quantity
+      );
+
       // IN movement to destination warehouse
       const inMovement = new StockMovement({
         productId: item.productId,
         warehouseId: toWarehouse,
         type: 'IN',
         quantity: item.quantity,
-        balance: 0, // Will be calculated
+        balance: inBalance,
         referenceNo: transferId,
         referenceType: 'TRANSFER',
         date: new Date(transferDate),
@@ -356,11 +391,11 @@ export const createStockTransfer = async (req, res) => {
       movements.push(outMovement, inMovement);
     }
 
-    // Save all movements
-    await StockMovement.insertMany(movements);
-
-    // Recalculate balances
-    await StockMovementService.recalculateBalances();
+    // Save all movements within transaction
+    await StockMovement.insertMany(movements, { session });
+    
+    // Commit transaction
+    await session.commitTransaction();
     
     res.json({
       success: true,
@@ -373,11 +408,16 @@ export const createStockTransfer = async (req, res) => {
     });
 
   } catch (error) {
+    // Rollback transaction on error
+    await session.abortTransaction();
     console.error('Create stock transfer error:', error);
     res.status(500).json({
       success: false,
       message: error.message
     });
+  } finally {
+    // End session
+    session.endSession();
   }
 };
 
