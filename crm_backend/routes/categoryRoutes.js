@@ -8,6 +8,8 @@ import {
   getCategoryStats,
   getCategoryChildCounts,
   deleteCategoryWithCascade,
+  changeCategoryParent,
+  getCategoryParentChangePreview,
 } from "../controllers/categoryController.js";
 import {
   getSubcategoriesByCategory,
@@ -32,6 +34,16 @@ router.delete(
   "/:id/cascade",
   requirePermission("categories.delete"),
   deleteCategoryWithCascade
+);
+router.get(
+  "/:id/change-parent-preview",
+  requirePermission("categories.view"),
+  getCategoryParentChangePreview
+);
+router.put(
+  "/:id/change-parent",
+  requirePermission("categories.update"),
+  changeCategoryParent
 );
 router.get("/", requirePermission("categories.view"), getCategories);
 router.get("/:id", requirePermission("categories.view"), getCategory);

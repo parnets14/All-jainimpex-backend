@@ -429,3 +429,337 @@ export const deleteSubcategory = async (req, res) => {
     });
   }
 };
+
+// @desc    Change subcategory's parent (category and brand)
+// @route   PUT /api/subcategories/:id/change-parent
+// @access  Private
+export const changeSubcategoryParent = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { newCategoryId, newBrandId } = req.body;
+
+    // Validate inputs
+    if (!newCategoryId || !newBrandId) {
+      return res.status(400).json({
+        success: false,
+        message: "New category ID and brand ID are required",
+      });
+    }
+
+    // Find the subcategory
+    const subcategory = await Subcategory.findById(id);
+    if (!subcategory) {
+      return res.status(404).json({
+        success: false,
+        message: "Subcategory not found",
+      });
+    }
+
+    // Check if already under this category
+    if (
+      subcategory.category.toString() === newCategoryId &&
+      subcategory.brand.toString() === newBrandId
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Subcategory is already under this category and brand",
+      });
+    }
+
+    // Verify new category and brand exist
+    const Category = (await import("../models/Category.js")).default;
+    const Brand = (await import("../models/Brand.js")).default;
+
+    const newCategory = await Category.findById(newCategoryId);
+    if (!newCategory) {
+      return res.status(404).json({
+        success: false,
+        message: "New category not found",
+      });
+    }
+
+    const newBrand = await Brand.findById(newBrandId);
+    if (!newBrand) {
+      return res.status(404).json({
+        success: false,
+        message: "New brand not found",
+      });
+    }
+
+    // Verify category belongs to brand (brand-first hierarchy)
+    if (newCategory.brand.toString() !== newBrandId) {
+      return res.status(400).json({
+        success: false,
+        message: "Selected category does not belong to the selected brand",
+      });
+    }
+
+    // Check for name conflict in new category
+    const existingSubcategory = await Subcategory.findOne({
+      name: subcategory.name,
+      category: newCategoryId,
+      _id: { $ne: id },
+    });
+    if (existingSubcategory) {
+      return res.status(400).json({
+        success: false,
+        message: `A subcategory with name "${subcategory.name}" already exists under category "${newCategory.name}"`,
+      });
+    }
+
+    // Count affected items
+    const extendedCount = await ExtendedSubcategory.countDocuments({
+      subcategory: id,
+    });
+
+    // Start transaction
+    const session = await Subcategory.startSession();
+    session.startTransaction();
+
+    try {
+      // Update the subcategory
+      await Subcategory.findByIdAndUpdate(
+        id,
+        {
+          category: newCategoryId,
+          brand: newBrandId,
+        },
+        { session, new: true }
+      );
+
+      // Recursively update all extended subcategories
+      await updateExtendedSubcategoriesRecursively(
+        id,
+        newCategoryId,
+        newBrandId,
+        session
+      );
+
+      // Update all products using this subcategory
+      const Product = (await import("../models/Product.js")).default;
+      await Product.updateMany(
+        { subcategory: id },
+        {
+          category: newCategoryId,
+          brand: newBrandId,
+        },
+        { session }
+      );
+
+      // Commit transaction
+      await session.commitTransaction();
+
+      // Fetch updated subcategory with populated fields
+      const updatedSubcategory = await Subcategory.findById(id)
+        .populate("brand", "name")
+        .populate("category", "name")
+        .populate("createdBy", "name email");
+
+      res.json({
+        success: true,
+        message: "Subcategory parent changed successfully",
+        subcategory: updatedSubcategory,
+        affectedItems: {
+          extendedSubcategories: extendedCount,
+          total: extendedCount,
+        },
+      });
+    } catch (error) {
+      // Rollback transaction on error
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      session.endSession();
+    }
+  } catch (error) {
+    console.error("Change subcategory parent error:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to change subcategory parent",
+    });
+  }
+};
+
+// Helper function to recursively update extended subcategories
+async function updateExtendedSubcategoriesRecursively(
+  subcategoryId,
+  newCategoryId,
+  newBrandId,
+  session
+) {
+  // Find all Level 1 extended subcategories (direct children of subcategory)
+  const level1Items = await ExtendedSubcategory.find({
+    subcategory: subcategoryId,
+    level: 1,
+  }).session(session);
+
+  for (const item of level1Items) {
+    // Update this Level 1 item
+    await ExtendedSubcategory.findByIdAndUpdate(
+      item._id,
+      {
+        category: newCategoryId,
+        brand: newBrandId,
+      },
+      { session }
+    );
+
+    // Recursively update its children (Level 2, 3, 4, 5)
+    await updateExtendedChildrenRecursively(
+      item._id,
+      newCategoryId,
+      newBrandId,
+      subcategoryId,
+      session
+    );
+  }
+}
+
+// Helper function to recursively update extended children
+async function updateExtendedChildrenRecursively(
+  parentId,
+  newCategoryId,
+  newBrandId,
+  subcategoryId,
+  session
+) {
+  // Find all children of this parent
+  const children = await ExtendedSubcategory.find({
+    parentExtendedSubcategory: parentId,
+  }).session(session);
+
+  for (const child of children) {
+    // Update this child
+    await ExtendedSubcategory.findByIdAndUpdate(
+      child._id,
+      {
+        category: newCategoryId,
+        brand: newBrandId,
+        subcategory: subcategoryId, // Keep same subcategory
+      },
+      { session }
+    );
+
+    // Recursively update its children
+    await updateExtendedChildrenRecursively(
+      child._id,
+      newCategoryId,
+      newBrandId,
+      subcategoryId,
+      session
+    );
+  }
+}
+
+// @desc    Get impact preview before changing parent
+// @route   GET /api/subcategories/:id/change-parent-preview
+// @access  Private
+export const getSubcategoryParentChangePreview = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { newCategoryId, newBrandId } = req.query;
+
+    if (!newCategoryId || !newBrandId) {
+      return res.status(400).json({
+        success: false,
+        message: "New category ID and brand ID are required",
+      });
+    }
+
+    // Find the subcategory
+    const subcategory = await Subcategory.findById(id)
+      .populate("brand", "name")
+      .populate("category", "name");
+    if (!subcategory) {
+      return res.status(404).json({
+        success: false,
+        message: "Subcategory not found",
+      });
+    }
+
+    // Verify new category and brand exist
+    const Category = (await import("../models/Category.js")).default;
+    const Brand = (await import("../models/Brand.js")).default;
+
+    const newCategory = await Category.findById(newCategoryId);
+    if (!newCategory) {
+      return res.status(404).json({
+        success: false,
+        message: "New category not found",
+      });
+    }
+
+    const newBrand = await Brand.findById(newBrandId);
+    if (!newBrand) {
+      return res.status(404).json({
+        success: false,
+        message: "New brand not found",
+      });
+    }
+
+    // Verify category belongs to brand
+    if (newCategory.brand.toString() !== newBrandId) {
+      return res.status(400).json({
+        success: false,
+        message: "Selected category does not belong to the selected brand",
+        hasConflict: true,
+      });
+    }
+
+    // Check for name conflict
+    const existingSubcategory = await Subcategory.findOne({
+      name: subcategory.name,
+      category: newCategoryId,
+      _id: { $ne: id },
+    });
+
+    // Count affected items
+    const extendedCount = await ExtendedSubcategory.countDocuments({
+      subcategory: id,
+    });
+
+    const Product = (await import("../models/Product.js")).default;
+    const productCount = await Product.countDocuments({ subcategory: id });
+
+    res.json({
+      success: true,
+      preview: {
+        currentParent: {
+          brand: {
+            id: subcategory.brand._id,
+            name: subcategory.brand.name,
+          },
+          category: {
+            id: subcategory.category._id,
+            name: subcategory.category.name,
+          },
+        },
+        newParent: {
+          brand: {
+            id: newBrand._id,
+            name: newBrand.name,
+          },
+          category: {
+            id: newCategory._id,
+            name: newCategory.name,
+          },
+        },
+        hasConflict: !!existingSubcategory,
+        conflictMessage: existingSubcategory
+          ? `A subcategory with name "${subcategory.name}" already exists under category "${newCategory.name}"`
+          : null,
+        affectedItems: {
+          extendedSubcategories: extendedCount,
+          products: productCount,
+          total: extendedCount + productCount,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Get subcategory parent change preview error:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to get preview",
+    });
+  }
+};

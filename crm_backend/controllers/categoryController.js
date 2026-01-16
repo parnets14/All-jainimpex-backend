@@ -610,3 +610,217 @@ export const getCategoryStats = async (req, res) => {
     });
   }
 };
+
+// @desc    Change category's brand (parent)
+// @route   PUT /api/categories/:id/change-parent
+// @access  Private
+export const changeCategoryParent = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { newBrandId } = req.body;
+
+    // Validate inputs
+    if (!newBrandId) {
+      return res.status(400).json({
+        success: false,
+        message: "New brand ID is required",
+      });
+    }
+
+    // Find the category
+    const category = await Category.findById(id);
+    if (!category) {
+      return res.status(404).json({
+        success: false,
+        message: "Category not found",
+      });
+    }
+
+    // Check if already under this brand
+    if (category.brand.toString() === newBrandId) {
+      return res.status(400).json({
+        success: false,
+        message: "Category is already under this brand",
+      });
+    }
+
+    // Verify new brand exists
+    const newBrand = await Brand.findById(newBrandId);
+    if (!newBrand) {
+      return res.status(404).json({
+        success: false,
+        message: "New brand not found",
+      });
+    }
+
+    // Check for name conflict in new brand
+    const existingCategory = await Category.findOne({
+      name: category.name,
+      brand: newBrandId,
+      _id: { $ne: id },
+    });
+    if (existingCategory) {
+      return res.status(400).json({
+        success: false,
+        message: `A category with name "${category.name}" already exists under brand "${newBrand.name}"`,
+      });
+    }
+
+    // Count affected items
+    const subcategoryCount = await Subcategory.countDocuments({
+      category: id,
+    });
+    const extendedCount = await ExtendedSubcategory.countDocuments({
+      category: id,
+    });
+
+    // Start transaction
+    const session = await Category.startSession();
+    session.startTransaction();
+
+    try {
+      // Update the category
+      await Category.findByIdAndUpdate(
+        id,
+        { brand: newBrandId },
+        { session, new: true }
+      );
+
+      // Update all subcategories under this category
+      await Subcategory.updateMany(
+        { category: id },
+        { brand: newBrandId },
+        { session }
+      );
+
+      // Update all extended subcategories under this category
+      await ExtendedSubcategory.updateMany(
+        { category: id },
+        { brand: newBrandId },
+        { session }
+      );
+
+      // Update all products using this category
+      const Product = (await import("../models/Product.js")).default;
+      await Product.updateMany(
+        { category: id },
+        { brand: newBrandId },
+        { session }
+      );
+
+      // Commit transaction
+      await session.commitTransaction();
+
+      // Fetch updated category with populated fields
+      const updatedCategory = await Category.findById(id)
+        .populate("brand", "name")
+        .populate("createdBy", "name email");
+
+      res.json({
+        success: true,
+        message: "Category parent changed successfully",
+        category: updatedCategory,
+        affectedItems: {
+          subcategories: subcategoryCount,
+          extendedSubcategories: extendedCount,
+          total: subcategoryCount + extendedCount,
+        },
+      });
+    } catch (error) {
+      // Rollback transaction on error
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      session.endSession();
+    }
+  } catch (error) {
+    console.error("Change category parent error:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to change category parent",
+    });
+  }
+};
+
+// @desc    Get impact preview before changing parent
+// @route   GET /api/categories/:id/change-parent-preview
+// @access  Private
+export const getCategoryParentChangePreview = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { newBrandId } = req.query;
+
+    if (!newBrandId) {
+      return res.status(400).json({
+        success: false,
+        message: "New brand ID is required",
+      });
+    }
+
+    // Find the category
+    const category = await Category.findById(id).populate("brand", "name");
+    if (!category) {
+      return res.status(404).json({
+        success: false,
+        message: "Category not found",
+      });
+    }
+
+    // Verify new brand exists
+    const newBrand = await Brand.findById(newBrandId);
+    if (!newBrand) {
+      return res.status(404).json({
+        success: false,
+        message: "New brand not found",
+      });
+    }
+
+    // Check for name conflict
+    const existingCategory = await Category.findOne({
+      name: category.name,
+      brand: newBrandId,
+      _id: { $ne: id },
+    });
+
+    // Count affected items
+    const subcategoryCount = await Subcategory.countDocuments({
+      category: id,
+    });
+    const extendedCount = await ExtendedSubcategory.countDocuments({
+      category: id,
+    });
+
+    const Product = (await import("../models/Product.js")).default;
+    const productCount = await Product.countDocuments({ category: id });
+
+    res.json({
+      success: true,
+      preview: {
+        currentParent: {
+          id: category.brand._id,
+          name: category.brand.name,
+        },
+        newParent: {
+          id: newBrand._id,
+          name: newBrand.name,
+        },
+        hasConflict: !!existingCategory,
+        conflictMessage: existingCategory
+          ? `A category with name "${category.name}" already exists under brand "${newBrand.name}"`
+          : null,
+        affectedItems: {
+          subcategories: subcategoryCount,
+          extendedSubcategories: extendedCount,
+          products: productCount,
+          total: subcategoryCount + extendedCount + productCount,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Get category parent change preview error:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to get preview",
+    });
+  }
+};

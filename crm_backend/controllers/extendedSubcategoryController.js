@@ -789,3 +789,538 @@ export const getExtendedSubcategoryWithParentChain = async (req, res) => {
     });
   }
 };
+
+// @desc    Change extended subcategory's parent
+// @route   PUT /api/extended-subcategories/:id/change-parent
+// @access  Private
+export const changeExtendedSubcategoryParent = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      newParentId, // Can be subcategoryId (for Level 1) or extendedSubcategoryId (for Level 2+)
+      newBrandId,
+      newCategoryId,
+      newSubcategoryId,
+      parentType, // 'subcategory' or 'extended'
+    } = req.body;
+
+    // Validate inputs
+    if (!newBrandId || !newCategoryId || !newSubcategoryId || !parentType) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "New brand, category, subcategory, and parent type are required",
+      });
+    }
+
+    // Find the extended subcategory
+    const extendedItem = await ExtendedSubcategory.findById(id);
+    if (!extendedItem) {
+      return res.status(404).json({
+        success: false,
+        message: "Extended subcategory not found",
+      });
+    }
+
+    // Verify new brand, category, and subcategory exist
+    const newBrand = await Brand.findById(newBrandId);
+    if (!newBrand) {
+      return res.status(404).json({
+        success: false,
+        message: "New brand not found",
+      });
+    }
+
+    const newCategory = await Category.findById(newCategoryId);
+    if (!newCategory) {
+      return res.status(404).json({
+        success: false,
+        message: "New category not found",
+      });
+    }
+
+    const newSubcategory = await Subcategory.findById(newSubcategoryId);
+    if (!newSubcategory) {
+      return res.status(404).json({
+        success: false,
+        message: "New subcategory not found",
+      });
+    }
+
+    // Verify hierarchy integrity (brand-first)
+    if (newCategory.brand.toString() !== newBrandId) {
+      return res.status(400).json({
+        success: false,
+        message: "Selected category does not belong to the selected brand",
+      });
+    }
+
+    if (
+      newSubcategory.brand.toString() !== newBrandId ||
+      newSubcategory.category.toString() !== newCategoryId
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Selected subcategory does not belong to the selected brand and category",
+      });
+    }
+
+    // Determine new parent and level
+    let newParentExtendedId = null;
+    let newLevel = 1;
+
+    if (parentType === "extended") {
+      // Moving under another extended subcategory
+      if (!newParentId) {
+        return res.status(400).json({
+          success: false,
+          message: "Parent extended subcategory ID is required",
+        });
+      }
+
+      const newParentExtended = await ExtendedSubcategory.findById(newParentId);
+      if (!
+
+newParentExtended) {
+        return res.status(404).json({
+          success: false,
+          message: "Parent extended subcategory not found",
+        });
+      }
+
+      // Prevent circular reference
+      if (newParentId === id) {
+        return res.status(400).json({
+          success: false,
+          message: "Cannot set item as its own parent",
+        });
+      }
+
+      // Check if new parent is a descendant of this item (would create circular reference)
+      const isDescendant = await checkIfDescendant(id, newParentId);
+      if (isDescendant) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Cannot move item under its own descendant (circular reference)",
+        });
+      }
+
+      // Verify parent belongs to same brand, category, subcategory
+      if (
+        newParentExtended.brand.toString() !== newBrandId ||
+        newParentExtended.category.toString() !== newCategoryId ||
+        newParentExtended.subcategory.toString() !== newSubcategoryId
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Parent extended subcategory must belong to the same brand, category, and subcategory",
+        });
+      }
+
+      // Check max depth (Level 5 is max)
+      if (newParentExtended.level >= 5) {
+        return res.status(400).json({
+          success: false,
+          message: "Cannot add children beyond Level 5 (maximum depth reached)",
+        });
+      }
+
+      newParentExtendedId = newParentId;
+      newLevel = newParentExtended.level + 1;
+    } else {
+      // Moving under subcategory (becomes Level 1)
+      newParentExtendedId = null;
+      newLevel = 1;
+    }
+
+    // Check for name conflict at new location
+    const conflictQuery = {
+      name: extendedItem.name,
+      brand: newBrandId,
+      category: newCategoryId,
+      subcategory: newSubcategoryId,
+      parentExtendedSubcategory: newParentExtendedId,
+      _id: { $ne: id },
+    };
+
+    const existingItem = await ExtendedSubcategory.findOne(conflictQuery);
+    if (existingItem) {
+      return res.status(400).json({
+        success: false,
+        message: `An extended subcategory with name "${extendedItem.name}" already exists at this location`,
+      });
+    }
+
+    // Count affected items (all descendants)
+    const descendantCount = await countAllDescendants(id);
+
+    // Start transaction
+    const session = await ExtendedSubcategory.startSession();
+    session.startTransaction();
+
+    try {
+      console.log(`🔄 Changing extended subcategory parent: ${extendedItem.name}`);
+      console.log(`   From: Level ${extendedItem.level} → To: Level ${newLevel}`);
+      console.log(`   Affected descendants: ${descendantCount}`);
+
+      // Update the extended subcategory
+      await ExtendedSubcategory.findByIdAndUpdate(
+        id,
+        {
+          brand: newBrandId,
+          category: newCategoryId,
+          subcategory: newSubcategoryId,
+          parentExtendedSubcategory: newParentExtendedId,
+          level: newLevel,
+        },
+        { session }
+      );
+
+      // Recursively update all descendants
+      await updateExtendedDescendantsRecursively(
+        id,
+        newBrandId,
+        newCategoryId,
+        newSubcategoryId,
+        newLevel,
+        session
+      );
+
+      // Update all products using this extended subcategory
+      const Product = (await import("../models/Product.js")).default;
+      
+      // Update products at each level
+      const levelFieldMap = {
+        1: "subcategory1",
+        2: "subcategory2",
+        3: "subcategory3",
+        4: "subcategory4",
+        5: "subcategory5",
+      };
+
+      const levelField = levelFieldMap[extendedItem.level];
+      if (levelField) {
+        await Product.updateMany(
+          { [levelField]: id },
+          {
+            brand: newBrandId,
+            category: newCategoryId,
+            subcategory: newSubcategoryId,
+          },
+          { session }
+        );
+      }
+
+      // Commit transaction
+      await session.commitTransaction();
+
+      console.log(`✅ Extended subcategory parent changed successfully`);
+
+      // Fetch updated item with populated fields
+      const updatedItem = await ExtendedSubcategory.findById(id)
+        .populate("brand", "name")
+        .populate("category", "name")
+        .populate("subcategory", "name")
+        .populate("parentExtendedSubcategory", "name level")
+        .populate("createdBy", "name email");
+
+      res.json({
+        success: true,
+        message: "Extended subcategory parent changed successfully",
+        item: updatedItem,
+        affectedItems: {
+          descendants: descendantCount,
+          total: descendantCount,
+        },
+      });
+    } catch (error) {
+      // Rollback transaction on error
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      session.endSession();
+    }
+  } catch (error) {
+    console.error("Change extended subcategory parent error:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to change extended subcategory parent",
+    });
+  }
+};
+
+// Helper function to check if targetId is a descendant of sourceId
+async function checkIfDescendant(sourceId, targetId) {
+  let current = await ExtendedSubcategory.findById(targetId);
+
+  while (current && current.parentExtendedSubcategory) {
+    if (current.parentExtendedSubcategory.toString() === sourceId) {
+      return true; // targetId is a descendant of sourceId
+    }
+    current = await ExtendedSubcategory.findById(
+      current.parentExtendedSubcategory
+    );
+  }
+
+  return false;
+}
+
+// Helper function to count all descendants
+async function countAllDescendants(parentId) {
+  const directChildren = await ExtendedSubcategory.find({
+    parentExtendedSubcategory: parentId,
+  });
+
+  let count = directChildren.length;
+
+  for (const child of directChildren) {
+    count += await countAllDescendants(child._id);
+  }
+
+  return count;
+}
+
+// Helper function to recursively update descendants
+async function updateExtendedDescendantsRecursively(
+  parentId,
+  newBrandId,
+  newCategoryId,
+  newSubcategoryId,
+  parentLevel,
+  session
+) {
+  // Find all direct children
+  const children = await ExtendedSubcategory.find({
+    parentExtendedSubcategory: parentId,
+  }).session(session);
+
+  for (const child of children) {
+    const newChildLevel = parentLevel + 1;
+
+    // Update this child
+    await ExtendedSubcategory.findByIdAndUpdate(
+      child._id,
+      {
+        brand: newBrandId,
+        category: newCategoryId,
+        subcategory: newSubcategoryId,
+        level: newChildLevel,
+      },
+      { session }
+    );
+
+    // Recursively update its children
+    await updateExtendedDescendantsRecursively(
+      child._id,
+      newBrandId,
+      newCategoryId,
+      newSubcategoryId,
+      newChildLevel,
+      session
+    );
+  }
+}
+
+// @desc    Get preview of parent change impact
+// @route   GET /api/extended-subcategories/:id/change-parent-preview
+// @access  Private
+export const getExtendedSubcategoryParentChangePreview = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      newParentId,
+      newBrandId,
+      newCategoryId,
+      newSubcategoryId,
+      parentType,
+    } = req.query;
+
+    if (!newBrandId || !newCategoryId || !newSubcategoryId || !parentType) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "New brand, category, subcategory, and parent type are required",
+      });
+    }
+
+    // Find the extended subcategory
+    const extendedItem = await ExtendedSubcategory.findById(id)
+      .populate("brand", "name")
+      .populate("category", "name")
+      .populate("subcategory", "name")
+      .populate("parentExtendedSubcategory", "name level");
+
+    if (!extendedItem) {
+      return res.status(404).json({
+        success: false,
+        message: "Extended subcategory not found",
+      });
+    }
+
+    // Verify new hierarchy exists
+    const newBrand = await Brand.findById(newBrandId);
+    const newCategory = await Category.findById(newCategoryId);
+    const newSubcategory = await Subcategory.findById(newSubcategoryId);
+
+    if (!newBrand || !newCategory || !newSubcategory) {
+      return res.status(404).json({
+        success: false,
+        message: "New brand, category, or subcategory not found",
+      });
+    }
+
+    // Check hierarchy integrity
+    let hasConflict = false;
+    let conflictMessage = null;
+
+    if (newCategory.brand.toString() !== newBrandId) {
+      hasConflict = true;
+      conflictMessage = "Selected category does not belong to the selected brand";
+    } else if (
+      newSubcategory.brand.toString() !== newBrandId ||
+      newSubcategory.category.toString() !== newCategoryId
+    ) {
+      hasConflict = true;
+      conflictMessage =
+        "Selected subcategory does not belong to the selected brand and category";
+    }
+
+    // Determine new parent and level
+    let newParentExtended = null;
+    let newLevel = 1;
+
+    if (parentType === "extended" && newParentId) {
+      newParentExtended = await ExtendedSubcategory.findById(newParentId)
+        .populate("brand", "name")
+        .populate("category", "name")
+        .populate("subcategory", "name");
+
+      if (!newParentExtended) {
+        hasConflict = true;
+        conflictMessage = "Parent extended subcategory not found";
+      } else {
+        newLevel = newParentExtended.level + 1;
+
+        // Check circular reference
+        if (newParentId === id) {
+          hasConflict = true;
+          conflictMessage = "Cannot set item as its own parent";
+        } else {
+          const isDescendant = await checkIfDescendant(id, newParentId);
+          if (isDescendant) {
+            hasConflict = true;
+            conflictMessage =
+              "Cannot move item under its own descendant (circular reference)";
+          }
+        }
+
+        // Check max depth
+        if (newParentExtended.level >= 5) {
+          hasConflict = true;
+          conflictMessage =
+            "Cannot add children beyond Level 5 (maximum depth reached)";
+        }
+      }
+    }
+
+    // Check name conflict
+    if (!hasConflict) {
+      const conflictQuery = {
+        name: extendedItem.name,
+        brand: newBrandId,
+        category: newCategoryId,
+        subcategory: newSubcategoryId,
+        parentExtendedSubcategory: newParentExtended ? newParentExtended._id : null,
+        _id: { $ne: id },
+      };
+
+      const existingItem = await ExtendedSubcategory.findOne(conflictQuery);
+      if (existingItem) {
+        hasConflict = true;
+        conflictMessage = `An extended subcategory with name "${extendedItem.name}" already exists at this location`;
+      }
+    }
+
+    // Count affected items
+    const descendantCount = await countAllDescendants(id);
+
+    const Product = (await import("../models/Product.js")).default;
+    const levelFieldMap = {
+      1: "subcategory1",
+      2: "subcategory2",
+      3: "subcategory3",
+      4: "subcategory4",
+      5: "subcategory5",
+    };
+    const levelField = levelFieldMap[extendedItem.level];
+    const productCount = levelField
+      ? await Product.countDocuments({ [levelField]: id })
+      : 0;
+
+    res.json({
+      success: true,
+      preview: {
+        currentParent: {
+          brand: {
+            id: extendedItem.brand._id,
+            name: extendedItem.brand.name,
+          },
+          category: {
+            id: extendedItem.category._id,
+            name: extendedItem.category.name,
+          },
+          subcategory: {
+            id: extendedItem.subcategory._id,
+            name: extendedItem.subcategory.name,
+          },
+          parentExtended: extendedItem.parentExtendedSubcategory
+            ? {
+                id: extendedItem.parentExtendedSubcategory._id,
+                name: extendedItem.parentExtendedSubcategory.name,
+                level: extendedItem.parentExtendedSubcategory.level,
+              }
+            : null,
+          level: extendedItem.level,
+        },
+        newParent: {
+          brand: {
+            id: newBrand._id,
+            name: newBrand.name,
+          },
+          category: {
+            id: newCategory._id,
+            name: newCategory.name,
+          },
+          subcategory: {
+            id: newSubcategory._id,
+            name: newSubcategory.name,
+          },
+          parentExtended: newParentExtended
+            ? {
+                id: newParentExtended._id,
+                name: newParentExtended.name,
+                level: newParentExtended.level,
+              }
+            : null,
+          level: newLevel,
+        },
+        hasConflict,
+        conflictMessage,
+        affectedItems: {
+          descendants: descendantCount,
+          products: productCount,
+          total: descendantCount + productCount,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Get extended subcategory parent change preview error:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to get preview",
+    });
+  }
+};
