@@ -8,6 +8,8 @@ import {
   getDealerStats,
   uploadDealerDocuments,
   getDealerCompleteInfo,
+  getDealerAccessibleProducts,
+  getDealerHierarchyOptions,
 } from "../controllers/dealerController.js";
 import { protect } from "../middleware/authMiddleware.js";
 import { requirePermission } from "../middleware/authMiddleware.js";
@@ -21,6 +23,13 @@ router.use(protect);
 
 // Get dealer statistics
 router.get("/stats", logActivity("Dealer Management", "Viewed dealer statistics", "READ"), requirePermission("dealers.view"), getDealerStats);
+
+// Product Access Control Routes
+// Get products accessible to a specific dealer based on hierarchy permissions
+router.get("/:id/accessible-products", logActivity("Sales Order", "Viewed dealer accessible products", "READ"), requirePermission("sales_orders.view"), getDealerAccessibleProducts);
+
+// Get dealer's allowed hierarchy options for filtering
+router.get("/:id/hierarchy-options", logActivity("Sales Order", "Viewed dealer hierarchy options", "READ"), requirePermission("sales_orders.view"), getDealerHierarchyOptions);
 
 // Get all dealers with pagination
 router.get("/", logActivity("Dealer Management", "Viewed dealers list", "READ"), requirePermission("dealers.view"), getDealers);

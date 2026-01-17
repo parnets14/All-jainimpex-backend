@@ -40,6 +40,32 @@ const dealerSchema = new mongoose.Schema(
       required: [true, "Address is required"],
       trim: true,
     },
+    // Google Places location data
+    location: {
+      formattedAddress: {
+        type: String,
+        trim: true,
+      },
+      coordinates: {
+        lat: {
+          type: Number,
+        },
+        lng: {
+          type: Number,
+        },
+      },
+      placeId: {
+        type: String,
+        trim: true,
+      },
+      addressComponents: {
+        street: String,
+        city: String,
+        state: String,
+        country: String,
+        postalCode: String,
+      },
+    },
     altAddress: {
       type: String,
       trim: true,
@@ -49,28 +75,52 @@ const dealerSchema = new mongoose.Schema(
     dealerType: {
       type: String,
       required: [true, "Dealer type is required"],
+      enum: ["Wholesale", "Retail", "Distributor"],
       trim: true,
     },
     dealerCategory: [
       {
-        type: String,
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "DealerCategory",
         required: true,
       },
     ],
+    
+    // Product Hierarchy Permissions - Brand-first approach
+    allowedBrands: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Brand",
+    }],
+    allowedCategories: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Category",
+    }],
+    allowedSubcategories: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Subcategory",
+    }],
+    allowedExtendedSubcategories: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ExtendedSubcategory",
+    }],
+    
+    // Legacy field - kept for backward compatibility
     categoryIds: [
       {
-        type: String,
-        required: true,
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Category",
       },
     ],
 
     // Regional Information
     regionId: {
-      type: String,
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Region",
       required: [true, "Region is required"],
     },
     salesExecutiveId: {
-      type: String,
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
       required: [true, "Sales executive is required"],
     },
 

@@ -67,6 +67,13 @@ export const getDealers = async (req, res) => {
       .sort(sort)
       .limit(limitNumber)
       .skip(skip)
+      .populate('regionId', 'name code')
+      .populate('salesExecutiveId', 'name empId email')
+      .populate('dealerCategory', 'name color description')
+      .populate('allowedBrands', 'name description')
+      .populate('allowedCategories', 'name description')
+      .populate('allowedSubcategories', 'name description')
+      .populate('allowedExtendedSubcategories', 'name level description')
       .select("-__v");
 
     // Calculate pagination metadata
@@ -100,7 +107,14 @@ export const getDealers = async (req, res) => {
 // Get single dealer
 export const getDealer = async (req, res) => {
   try {
-    const dealer = await Dealer.findById(req.params.id);
+    const dealer = await Dealer.findById(req.params.id)
+      .populate('regionId', 'name code')
+      .populate('salesExecutiveId', 'name empId email')
+      .populate('dealerCategory', 'name color description')
+      .populate('allowedBrands', 'name description')
+      .populate('allowedCategories', 'name description')
+      .populate('allowedSubcategories', 'name description')
+      .populate('allowedExtendedSubcategories', 'name level description');
 
     if (!dealer) {
       return res.status(404).json({
@@ -131,10 +145,10 @@ export const createDealer = async (req, res) => {
       phone,
       email,
       address,
+      location,
       altAddress,
       dealerType,
       dealerCategory,
-      categoryIds,
       regionId,
       salesExecutiveId,
       creditLimit,
@@ -143,6 +157,11 @@ export const createDealer = async (req, res) => {
       gst,
       pan,
       aadhar,
+      // Product Hierarchy Permissions
+      allowedBrands,
+      allowedCategories,
+      allowedSubcategories,
+      allowedExtendedSubcategories,
     } = req.body;
 
     // Validate required fields
@@ -153,7 +172,6 @@ export const createDealer = async (req, res) => {
       !address ||
       !dealerType ||
       !dealerCategory ||
-      !categoryIds ||
       !regionId ||
       !salesExecutiveId
     ) {
@@ -186,12 +204,12 @@ export const createDealer = async (req, res) => {
       phone: phone.trim(),
       email: email ? email.trim().toLowerCase() : "",
       address: address.trim(),
+      location: location || null,
       altAddress: altAddress ? altAddress.trim() : "",
       dealerType,
       dealerCategory: Array.isArray(dealerCategory)
         ? dealerCategory
         : [dealerCategory],
-      categoryIds: Array.isArray(categoryIds) ? categoryIds : [categoryIds],
       regionId,
       salesExecutiveId,
       creditLimit: parseFloat(creditLimit) || 0,
@@ -200,6 +218,11 @@ export const createDealer = async (req, res) => {
       gst: gst ? gst.trim().toUpperCase() : "",
       pan: pan ? pan.trim().toUpperCase() : "",
       aadhar: aadhar ? aadhar.trim() : "",
+      // Product Hierarchy Permissions
+      allowedBrands: allowedBrands || [],
+      allowedCategories: allowedCategories || [],
+      allowedSubcategories: allowedSubcategories || [],
+      allowedExtendedSubcategories: allowedExtendedSubcategories || [],
       // Documents will be handled separately via upload endpoint
       panDocument: [],
       aadharDocument: [],
@@ -264,10 +287,10 @@ export const updateDealer = async (req, res) => {
       phone,
       email,
       address,
+      location,
       altAddress,
       dealerType,
       dealerCategory,
-      categoryIds,
       regionId,
       salesExecutiveId,
       creditLimit,
@@ -277,6 +300,11 @@ export const updateDealer = async (req, res) => {
       pan,
       aadhar,
       isActive,
+      // Product Hierarchy Permissions
+      allowedBrands,
+      allowedCategories,
+      allowedSubcategories,
+      allowedExtendedSubcategories,
     } = req.body;
 
     // Check if dealer exists
@@ -313,6 +341,7 @@ export const updateDealer = async (req, res) => {
     if (email !== undefined)
       updateData.email = email ? email.trim().toLowerCase() : "";
     if (address !== undefined) updateData.address = address.trim();
+    if (location !== undefined) updateData.location = location;
     if (altAddress !== undefined)
       updateData.altAddress = altAddress ? altAddress.trim() : "";
     if (dealerType !== undefined) updateData.dealerType = dealerType;
@@ -320,10 +349,6 @@ export const updateDealer = async (req, res) => {
       updateData.dealerCategory = Array.isArray(dealerCategory)
         ? dealerCategory
         : [dealerCategory];
-    if (categoryIds !== undefined)
-      updateData.categoryIds = Array.isArray(categoryIds)
-        ? categoryIds
-        : [categoryIds];
     if (regionId !== undefined) updateData.regionId = regionId;
     if (salesExecutiveId !== undefined)
       updateData.salesExecutiveId = salesExecutiveId;
@@ -336,6 +361,13 @@ export const updateDealer = async (req, res) => {
     if (gst !== undefined) updateData.gst = gst ? gst.trim().toUpperCase() : "";
     if (pan !== undefined) updateData.pan = pan ? pan.trim().toUpperCase() : "";
     if (aadhar !== undefined) updateData.aadhar = aadhar ? aadhar.trim() : "";
+    
+    // Product Hierarchy Permissions
+    if (allowedBrands !== undefined) updateData.allowedBrands = allowedBrands;
+    if (allowedCategories !== undefined) updateData.allowedCategories = allowedCategories;
+    if (allowedSubcategories !== undefined) updateData.allowedSubcategories = allowedSubcategories;
+    if (allowedExtendedSubcategories !== undefined) updateData.allowedExtendedSubcategories = allowedExtendedSubcategories;
+    
     // Documents are handled separately via upload endpoint
     // Remove document fields from update data to avoid casting errors
     if (isActive !== undefined) updateData.isActive = isActive;
@@ -345,7 +377,14 @@ export const updateDealer = async (req, res) => {
     const dealer = await Dealer.findByIdAndUpdate(id, updateData, {
       new: true,
       runValidators: true,
-    });
+    })
+      .populate('regionId', 'name code')
+      .populate('salesExecutiveId', 'name empId email')
+      .populate('dealerCategory', 'name color description')
+      .populate('allowedBrands', 'name description')
+      .populate('allowedCategories', 'name description')
+      .populate('allowedSubcategories', 'name description')
+      .populate('allowedExtendedSubcategories', 'name level description');
 
     res.json({
       success: true,
@@ -792,6 +831,286 @@ export const getDealerCompleteInfo = async (req, res) => {
     res.status(500).json({ 
       success: false, 
       message: error.message 
+    });
+  }
+};
+
+
+// Get products accessible to a specific dealer based on their hierarchy permissions
+export const getDealerAccessibleProducts = async (req, res) => {
+  try {
+    const { dealerId } = req.params;
+    const {
+      page = 1,
+      limit = 50,
+      search = "",
+      brandId,
+      categoryId,
+      subcategoryId,
+      extendedSubcategoryId,
+      sortBy = "createdAt",
+      sortOrder = "desc",
+    } = req.query;
+
+    // Parse pagination parameters
+    const pageNumber = safeParseInt(page, 1);
+    const limitNumber = safeParseInt(limit, 50);
+    const skip = (pageNumber - 1) * limitNumber;
+
+    // Get dealer with hierarchy permissions
+    const dealer = await Dealer.findById(dealerId)
+      .populate('allowedBrands', '_id name')
+      .populate('allowedCategories', '_id name')
+      .populate('allowedSubcategories', '_id name')
+      .populate('allowedExtendedSubcategories', '_id name level');
+
+    if (!dealer) {
+      return res.status(404).json({
+        success: false,
+        message: "Dealer not found",
+      });
+    }
+
+    // Import Product model
+    const Product = (await import("../models/Product.js")).default;
+
+    // Build filter based on dealer's allowed hierarchy
+    const productFilter = {};
+
+    // Apply search filter
+    if (search) {
+      productFilter.$or = [
+        { itemName: { $regex: search, $options: "i" } },
+        { itemCode: { $regex: search, $options: "i" } },
+        { description: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    // Filter by dealer's allowed brands
+    if (dealer.allowedBrands && dealer.allowedBrands.length > 0) {
+      const allowedBrandIds = dealer.allowedBrands.map(brand => 
+        typeof brand === 'object' ? brand._id : brand
+      );
+      productFilter.brandId = { $in: allowedBrandIds };
+    } else {
+      // If no brands allowed, return empty result
+      return res.json({
+        success: true,
+        products: [],
+        pagination: {
+          currentPage: pageNumber,
+          totalPages: 0,
+          totalItems: 0,
+          itemsPerPage: limitNumber,
+          hasNextPage: false,
+          hasPrevPage: false,
+        },
+        dealerInfo: {
+          dealerId: dealer._id,
+          dealerName: dealer.name,
+          allowedBrands: dealer.allowedBrands.length,
+          allowedCategories: dealer.allowedCategories.length,
+          allowedSubcategories: dealer.allowedSubcategories.length,
+          allowedExtended: dealer.allowedExtendedSubcategories.length,
+        },
+      });
+    }
+
+    // Filter by dealer's allowed categories
+    if (dealer.allowedCategories && dealer.allowedCategories.length > 0) {
+      const allowedCategoryIds = dealer.allowedCategories.map(cat => 
+        typeof cat === 'object' ? cat._id : cat
+      );
+      productFilter.categoryId = { $in: allowedCategoryIds };
+    }
+
+    // Filter by dealer's allowed subcategories
+    if (dealer.allowedSubcategories && dealer.allowedSubcategories.length > 0) {
+      const allowedSubcategoryIds = dealer.allowedSubcategories.map(sub => 
+        typeof sub === 'object' ? sub._id : sub
+      );
+      productFilter.subcategoryId = { $in: allowedSubcategoryIds };
+    }
+
+    // Filter by dealer's allowed extended subcategories (Level 1)
+    if (dealer.allowedExtendedSubcategories && dealer.allowedExtendedSubcategories.length > 0) {
+      const allowedExtendedIds = dealer.allowedExtendedSubcategories.map(ext => 
+        typeof ext === 'object' ? ext._id : ext
+      );
+      productFilter.extendedSubcategoryId = { $in: allowedExtendedIds };
+    }
+
+    // Apply additional filters from query parameters
+    if (brandId && brandId !== "All") {
+      // Ensure the requested brand is in dealer's allowed brands
+      const allowedBrandIds = dealer.allowedBrands.map(brand => 
+        typeof brand === 'object' ? brand._id.toString() : brand.toString()
+      );
+      if (allowedBrandIds.includes(brandId)) {
+        productFilter.brandId = brandId;
+      } else {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied: Brand not allowed for this dealer",
+        });
+      }
+    }
+
+    if (categoryId && categoryId !== "All") {
+      const allowedCategoryIds = dealer.allowedCategories.map(cat => 
+        typeof cat === 'object' ? cat._id.toString() : cat.toString()
+      );
+      if (allowedCategoryIds.includes(categoryId)) {
+        productFilter.categoryId = categoryId;
+      } else {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied: Category not allowed for this dealer",
+        });
+      }
+    }
+
+    if (subcategoryId && subcategoryId !== "All") {
+      const allowedSubcategoryIds = dealer.allowedSubcategories.map(sub => 
+        typeof sub === 'object' ? sub._id.toString() : sub.toString()
+      );
+      if (allowedSubcategoryIds.includes(subcategoryId)) {
+        productFilter.subcategoryId = subcategoryId;
+      } else {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied: Subcategory not allowed for this dealer",
+        });
+      }
+    }
+
+    if (extendedSubcategoryId && extendedSubcategoryId !== "All") {
+      const allowedExtendedIds = dealer.allowedExtendedSubcategories.map(ext => 
+        typeof ext === 'object' ? ext._id.toString() : ext.toString()
+      );
+      if (allowedExtendedIds.includes(extendedSubcategoryId)) {
+        productFilter.extendedSubcategoryId = extendedSubcategoryId;
+      } else {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied: Extended subcategory not allowed for this dealer",
+        });
+      }
+    }
+
+    // Only show active products
+    productFilter.isActive = true;
+
+    // Sort configuration
+    const sort = {};
+    sort[sortBy] = sortOrder === "desc" ? -1 : 1;
+
+    // Get total count for pagination
+    const total = await Product.countDocuments(productFilter);
+
+    // Get products with pagination
+    const products = await Product.find(productFilter)
+      .sort(sort)
+      .limit(limitNumber)
+      .skip(skip)
+      .populate('brandId', 'name description')
+      .populate('categoryId', 'name description')
+      .populate('subcategoryId', 'name description')
+      .populate('extendedSubcategoryId', 'name level description')
+      .populate('unitId', 'name symbol')
+      .select("-__v");
+
+    // Calculate pagination metadata
+    const totalPages = Math.ceil(total / limitNumber);
+    const hasNextPage = pageNumber < totalPages;
+    const hasPrevPage = pageNumber > 1;
+
+    res.json({
+      success: true,
+      products,
+      pagination: {
+        currentPage: pageNumber,
+        totalPages,
+        totalItems: total,
+        itemsPerPage: limitNumber,
+        hasNextPage,
+        hasPrevPage,
+        nextPage: hasNextPage ? pageNumber + 1 : null,
+        prevPage: hasPrevPage ? pageNumber - 1 : null,
+      },
+      dealerInfo: {
+        dealerId: dealer._id,
+        dealerName: dealer.name,
+        dealerCode: dealer.code,
+        allowedBrands: dealer.allowedBrands.length,
+        allowedCategories: dealer.allowedCategories.length,
+        allowedSubcategories: dealer.allowedSubcategories.length,
+        allowedExtended: dealer.allowedExtendedSubcategories.length,
+      },
+      appliedFilters: {
+        search,
+        brandId: brandId || null,
+        categoryId: categoryId || null,
+        subcategoryId: subcategoryId || null,
+        extendedSubcategoryId: extendedSubcategoryId || null,
+      },
+    });
+  } catch (error) {
+    console.error("Get dealer accessible products error:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// Get dealer's allowed hierarchy options for filtering
+export const getDealerHierarchyOptions = async (req, res) => {
+  try {
+    const { dealerId } = req.params;
+
+    // Get dealer with hierarchy permissions
+    const dealer = await Dealer.findById(dealerId)
+      .populate('allowedBrands', '_id name description')
+      .populate('allowedCategories', '_id name description brandId')
+      .populate('allowedSubcategories', '_id name description brandId categoryId')
+      .populate('allowedExtendedSubcategories', '_id name level description brandId categoryId subcategoryId');
+
+    if (!dealer) {
+      return res.status(404).json({
+        success: false,
+        message: "Dealer not found",
+      });
+    }
+
+    // Organize hierarchy options
+    const hierarchyOptions = {
+      brands: dealer.allowedBrands || [],
+      categories: dealer.allowedCategories || [],
+      subcategories: dealer.allowedSubcategories || [],
+      extendedSubcategories: dealer.allowedExtendedSubcategories || [],
+    };
+
+    res.json({
+      success: true,
+      dealerInfo: {
+        dealerId: dealer._id,
+        dealerName: dealer.name,
+        dealerCode: dealer.code,
+      },
+      hierarchyOptions,
+      summary: {
+        totalBrands: hierarchyOptions.brands.length,
+        totalCategories: hierarchyOptions.categories.length,
+        totalSubcategories: hierarchyOptions.subcategories.length,
+        totalExtended: hierarchyOptions.extendedSubcategories.length,
+      },
+    });
+  } catch (error) {
+    console.error("Get dealer hierarchy options error:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
     });
   }
 };
