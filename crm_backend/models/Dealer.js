@@ -75,7 +75,6 @@ const dealerSchema = new mongoose.Schema(
     dealerType: {
       type: String,
       required: [true, "Dealer type is required"],
-      enum: ["Wholesale", "Retail", "Distributor"],
       trim: true,
     },
     dealerCategory: [
