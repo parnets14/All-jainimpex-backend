@@ -3,6 +3,7 @@ import Product from '../models/Product.js';
 import Category from '../models/Category.js';
 import Subcategory from '../models/Subcategory.js';
 import Brand from '../models/Brand.js';
+import ExtendedSubcategory from '../models/ExtendedSubcategory.js';
 
 // @desc    Get all discount mappings
 // @route   GET /api/discount-mappings
@@ -56,6 +57,8 @@ export const getDiscountMappings = async (req, res) => {
       .populate('brand', 'name')
       .populate('category', 'name')
       .populate('subcategory', 'name')
+      .populate('extendedSubcategory1', 'name')
+      .populate('extendedSubcategory2', 'name')
       .populate('createdBy', 'name email')
       .populate('approvedBy', 'name email')
       .sort({ createdAt: -1 })
@@ -95,6 +98,8 @@ export const getDiscountMapping = async (req, res) => {
       .populate('brand', 'name')
       .populate('category', 'name')
       .populate('subcategory', 'name')
+      .populate('extendedSubcategory1', 'name')
+      .populate('extendedSubcategory2', 'name')
       .populate('createdBy', 'name email')
       .populate('approvedBy', 'name email');
 
@@ -132,7 +137,10 @@ export const createDiscountMapping = async (req, res) => {
       brand,
       category,
       subcategory,
+      extendedSubcategory1,
+      extendedSubcategory2,
       directDiscountPercentage,
+      maxDiscountPercentage,
       levels,
       validFrom,
       validTo,
@@ -154,12 +162,22 @@ export const createDiscountMapping = async (req, res) => {
       });
     }
 
+    // Validate maxDiscountPercentage
+    if (!maxDiscountPercentage || maxDiscountPercentage < 1 || maxDiscountPercentage > 100) {
+      return res.status(400).json({
+        success: false,
+        message: 'Max discount percentage is required and must be between 1 and 100'
+      });
+    }
+
     // Validate target reference based on target type
     const targetValidation = {
       product: product,
       brand: brand,
       category: category,
-      subcategory: subcategory
+      subcategory: subcategory,
+      extendedSubcategory1: extendedSubcategory1,
+      extendedSubcategory2: extendedSubcategory2
     };
 
     if (!targetValidation[targetType]) {
@@ -218,6 +236,14 @@ export const createDiscountMapping = async (req, res) => {
         targetModel = Subcategory;
         targetDoc = await Subcategory.findById(subcategory);
         break;
+      case 'extendedSubcategory1':
+        targetModel = ExtendedSubcategory;
+        targetDoc = await ExtendedSubcategory.findById(extendedSubcategory1);
+        break;
+      case 'extendedSubcategory2':
+        targetModel = ExtendedSubcategory;
+        targetDoc = await ExtendedSubcategory.findById(extendedSubcategory2);
+        break;
     }
 
     if (!targetDoc) {
@@ -251,6 +277,7 @@ export const createDiscountMapping = async (req, res) => {
       discountType,
       mappingType,
       targetType,
+      maxDiscountPercentage,
       validFrom: new Date(validFrom),
       validTo: new Date(validTo),
       includeExtendedSubcategories: includeExtendedSubcategories !== false,
@@ -294,6 +321,8 @@ export const createDiscountMapping = async (req, res) => {
       .populate('brand', 'name')
       .populate('category', 'name')
       .populate('subcategory', 'name')
+      .populate('extendedSubcategory1', 'name')
+      .populate('extendedSubcategory2', 'name')
       .populate('createdBy', 'name email');
 
     res.status(201).json({
@@ -372,6 +401,8 @@ export const updateDiscountMapping = async (req, res) => {
       .populate('brand', 'name')
       .populate('category', 'name')
       .populate('subcategory', 'name')
+      .populate('extendedSubcategory1', 'name')
+      .populate('extendedSubcategory2', 'name')
       .populate('createdBy', 'name email')
       .populate('approvedBy', 'name email');
 
@@ -451,6 +482,8 @@ export const updateDiscountMappingStatus = async (req, res) => {
       .populate('brand', 'name')
       .populate('category', 'name')
       .populate('subcategory', 'name')
+      .populate('extendedSubcategory1', 'name')
+      .populate('extendedSubcategory2', 'name')
       .populate('createdBy', 'name email')
       .populate('approvedBy', 'name email');
 
@@ -740,6 +773,29 @@ export const getDiscountStats = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Server error while fetching discount statistics'
+    });
+  }
+};
+
+// @desc    Fix discounts with missing levels
+// @route   POST /api/discount-mappings/fix-missing-levels
+// @access  Private
+export const fixMissingLevels = async (req, res) => {
+  try {
+    console.log('🔧 Starting fix for discounts with missing levels...');
+    
+    const fixedCount = await DiscountMapping.fixDiscountsWithMissingLevels();
+    
+    res.json({
+      success: true,
+      message: `Successfully fixed ${fixedCount} discounts with missing levels`,
+      fixedCount
+    });
+  } catch (error) {
+    console.error('Fix missing levels error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while fixing discounts with missing levels'
     });
   }
 };

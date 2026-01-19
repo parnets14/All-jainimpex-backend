@@ -35,7 +35,39 @@ const productSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: "Warehouse"
   },
-  warehouseName: String
+  warehouseName: String,
+  // Discount fields
+  discountPercentage: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 100
+  },
+  discountAmount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  discountType: {
+    type: String,
+    enum: ['direct', 'level_based', 'both'],
+    default: null
+  },
+  selectedDiscountLevel: {
+    type: Number,
+    default: null
+  },
+  // Applied discount information
+  appliedDiscount: {
+    discountId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "DiscountMapping"
+    },
+    discountName: String,
+    discountType: String,
+    targetType: String,
+    selectedLevel: Number
+  }
 });
 
 const salesOrderSchema = new mongoose.Schema({

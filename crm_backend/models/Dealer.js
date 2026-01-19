@@ -102,6 +102,41 @@ const dealerSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "ExtendedSubcategory",
     }],
+
+    // Dealer-Specific Extra Discounts (on top of global discounts)
+    extraDiscounts: [{
+      targetType: {
+        type: String,
+        enum: ['brand', 'category', 'subcategory', 'extendedSubcategory', 'product'],
+        required: true
+      },
+      targetId: {
+        type: mongoose.Schema.Types.ObjectId,
+        required: true
+      },
+      targetName: {
+        type: String,
+        required: true // Store name for easy display
+      },
+      discountPercentage: {
+        type: Number,
+        required: true,
+        min: 0,
+        max: 100
+      },
+      description: {
+        type: String,
+        trim: true
+      },
+      isActive: {
+        type: Boolean,
+        default: true
+      },
+      createdAt: {
+        type: Date,
+        default: Date.now
+      }
+    }],
     
     // Legacy field - kept for backward compatibility
     categoryIds: [

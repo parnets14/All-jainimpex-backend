@@ -104,6 +104,7 @@ export const getSalesOrders = async (req, res) => {
       .populate("region", "name")
       .populate("products.product", "productCode itemName HSNCode gst rateSlabs")
       .populate("products.warehouse", "name")
+      .populate("products.appliedDiscount.discountId", "discountName discountType targetType")
       .populate("approvedBy", "name email")
       .populate("createdBy", "name email")
       .sort({ createdAt: -1 })
@@ -159,6 +160,7 @@ export const getSalesOrder = async (req, res) => {
       .populate("region", "name")
       .populate("products.product")
       .populate("products.warehouse", "name")
+      .populate("products.appliedDiscount.discountId", "discountName discountType targetType")
       .populate("approvedBy", "name email")
       .populate("createdBy", "name email");
 

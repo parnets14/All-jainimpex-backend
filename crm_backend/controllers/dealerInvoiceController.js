@@ -177,7 +177,7 @@ export const getDealerInvoice = async (req, res) => {
   }
 };
 
-// @desc    Get dealer's completed sales orders for invoice creation
+// @desc    Get dealer's confirmed and above sales orders for invoice creation
 // @route   GET /api/dealer-invoices/sales-orders/:dealerId
 // @access  Private
 export const getDealerSalesOrders = async (req, res) => {
@@ -185,10 +185,10 @@ export const getDealerSalesOrders = async (req, res) => {
     const { dealerId } = req.params;
     const { status = "Delivered" } = req.query;
 
-    // Get sales orders that are completed or delivered
+    // Get sales orders that are confirmed or above (Confirmed, Processing, Delivered, Completed)
     const salesOrders = await SalesOrder.find({
       dealer: dealerId,
-      status: { $in: ["Completed", "Delivered"] }
+      status: { $in: ["Confirmed", "Processing", "Delivered", "Completed"] }
     })
       .populate("products.product", "itemName productCode HSNCode description brand category subcategory")
       .populate("products.warehouse", "name")
@@ -359,6 +359,119 @@ export const createDealerInvoice = async (req, res) => {
         message: "Dealer not found"
       });
     }
+
+    // Backend validation for discount limits
+    console.log("🔍 Starting backend discount validation...");
+    
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      console.log(`📋 Validating item ${i + 1}: ${item.productName}`);
+      
+      // Skip validation if no discount applied
+      if (!item.discountPercentage || item.discountPercentage === 0) {
+        console.log(`  ✅ No discount applied, skipping validation`);
+        continue;
+      }
+      
+      // Get applicable discount mappings for this product
+      try {
+        const applicableDiscounts = await DiscountMapping.findApplicableDiscounts(
+          item.product,
+          'sales',
+          dealer.dealerType
+        );
+        
+        console.log(`  📊 Found ${applicableDiscounts.length} applicable discounts`);
+        
+        if (applicableDiscounts.length === 0) {
+          console.log(`  ⚠️ No applicable discounts found, but discount applied: ${item.discountPercentage}%`);
+          return res.status(400).json({
+            success: false,
+            message: `Invalid discount applied to ${item.productName}. No applicable discount mapping found.`
+          });
+        }
+        
+        // Use the first (highest priority) discount mapping
+        const discountMapping = applicableDiscounts[0];
+        const maxDiscountLimit = discountMapping.maxDiscountPercentage;
+        
+        console.log(`  🎯 Max discount limit: ${maxDiscountLimit}%`);
+        console.log(`  💰 Applied discount: ${item.discountPercentage}%`);
+        
+        // Validate that applied discount doesn't exceed maximum limit
+        if (item.discountPercentage > maxDiscountLimit) {
+          console.log(`  ❌ Discount validation failed: ${item.discountPercentage}% > ${maxDiscountLimit}%`);
+          return res.status(400).json({
+            success: false,
+            message: `Discount for ${item.productName} (${item.discountPercentage}%) exceeds maximum allowed limit of ${maxDiscountLimit}%. Please reduce the discount and try again.`,
+            validationError: {
+              type: 'DISCOUNT_LIMIT_EXCEEDED',
+              productName: item.productName,
+              appliedDiscount: item.discountPercentage,
+              maxLimit: maxDiscountLimit,
+              discountMappingName: discountMapping.discountName
+            }
+          });
+        }
+        
+        // Additional validation for level-based discounts
+        if (item.selectedDiscountLevels && item.selectedDiscountLevels.length > 0) {
+          console.log(`  🎚️ Validating selected levels: ${item.selectedDiscountLevels.join(', ')}`);
+          
+          // Calculate expected discount from selected levels
+          let expectedLevelDiscount = 0;
+          let directDiscount = 0;
+          
+          // Add direct discount if discount type is 'both'
+          if (discountMapping.discountType === 'both') {
+            directDiscount = discountMapping.directDiscountPercentage || 0;
+          }
+          
+          // Add level discounts
+          for (const levelName of item.selectedDiscountLevels) {
+            const level = discountMapping.levels?.find(l => l.levelName === levelName);
+            if (level) {
+              expectedLevelDiscount += level.discountPercentage;
+            } else {
+              console.log(`  ❌ Invalid level selected: ${levelName}`);
+              return res.status(400).json({
+                success: false,
+                message: `Invalid discount level "${levelName}" selected for ${item.productName}.`
+              });
+            }
+          }
+          
+          const expectedTotalDiscount = directDiscount + expectedLevelDiscount + (item.dealerExtraDiscount || 0);
+          
+          console.log(`  📊 Expected discount breakdown:`);
+          console.log(`    - Direct: ${directDiscount}%`);
+          console.log(`    - Levels: ${expectedLevelDiscount}%`);
+          console.log(`    - Dealer Extra: ${item.dealerExtraDiscount || 0}%`);
+          console.log(`    - Total Expected: ${expectedTotalDiscount}%`);
+          console.log(`    - Applied: ${item.discountPercentage}%`);
+          
+          // Allow small rounding differences (0.01%)
+          if (Math.abs(item.discountPercentage - expectedTotalDiscount) > 0.01) {
+            console.log(`  ❌ Discount calculation mismatch`);
+            return res.status(400).json({
+              success: false,
+              message: `Discount calculation error for ${item.productName}. Expected ${expectedTotalDiscount}% but got ${item.discountPercentage}%.`
+            });
+          }
+        }
+        
+        console.log(`  ✅ Discount validation passed for ${item.productName}`);
+        
+      } catch (discountError) {
+        console.error(`  ❌ Error validating discount for ${item.productName}:`, discountError);
+        return res.status(500).json({
+          success: false,
+          message: `Error validating discount for ${item.productName}. Please try again.`
+        });
+      }
+    }
+    
+    console.log("✅ All discount validations passed, proceeding with invoice creation...");
 
     // Get sales order if provided
     let salesOrder = null;

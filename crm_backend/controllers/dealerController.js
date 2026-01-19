@@ -166,6 +166,8 @@ export const createDealer = async (req, res) => {
       allowedCategories,
       allowedSubcategories,
       allowedExtendedSubcategories,
+      // Dealer-Specific Extra Discounts
+      extraDiscounts,
     } = req.body;
 
     // Validate required fields
@@ -227,6 +229,8 @@ export const createDealer = async (req, res) => {
       allowedCategories: allowedCategories || [],
       allowedSubcategories: allowedSubcategories || [],
       allowedExtendedSubcategories: allowedExtendedSubcategories || [],
+      // Dealer-Specific Extra Discounts
+      extraDiscounts: extraDiscounts || [],
       // Documents will be handled separately via upload endpoint
       panDocument: [],
       aadharDocument: [],
@@ -309,6 +313,8 @@ export const updateDealer = async (req, res) => {
       allowedCategories,
       allowedSubcategories,
       allowedExtendedSubcategories,
+      // Dealer-Specific Extra Discounts
+      extraDiscounts,
     } = req.body;
 
     // Check if dealer exists
@@ -371,6 +377,9 @@ export const updateDealer = async (req, res) => {
     if (allowedCategories !== undefined) updateData.allowedCategories = allowedCategories;
     if (allowedSubcategories !== undefined) updateData.allowedSubcategories = allowedSubcategories;
     if (allowedExtendedSubcategories !== undefined) updateData.allowedExtendedSubcategories = allowedExtendedSubcategories;
+    
+    // Dealer-Specific Extra Discounts
+    if (extraDiscounts !== undefined) updateData.extraDiscounts = extraDiscounts;
     
     // Documents are handled separately via upload endpoint
     // Remove document fields from update data to avoid casting errors
@@ -745,21 +754,8 @@ export const getDealerCompleteInfo = async (req, res) => {
       }
     }
     
-    // 5. Get available discounts
-    const now = new Date();
-    const availableDiscounts = await DiscountMapping.find({
-      mappingType: 'sales',
-      status: 'Approved',
-      isActive: true,
-      validFrom: { $lte: now },
-      validTo: { $gte: now },
-      $or: [
-        { applicableDealerTypes: { $size: 0 } }, // No restrictions
-        { applicableDealerTypes: dealer.dealerType }
-      ]
-    })
-    .populate('product brand category subcategory', 'name itemName')
-    .limit(10);
+    // 5. Get dealer's extra discounts (instead of global available discounts)
+    const extraDiscounts = dealer.extraDiscounts?.filter(discount => discount.isActive) || [];
     
     // 6. Calculate summary statistics
     const allOrders = await SalesOrder.find({ dealer: id });
@@ -808,17 +804,14 @@ export const getDealerCompleteInfo = async (req, res) => {
         canCreateOrder,
         blockReason
       },
-      availableDiscounts: availableDiscounts.map(d => ({
+      extraDiscounts: extraDiscounts.map(d => ({
         _id: d._id,
-        discountName: d.discountName,
-        discountType: d.discountType,
         targetType: d.targetType,
-        targetName: d.product?.itemName || d.brand?.name || d.category?.name || d.subcategory?.name || 'All Products',
-        directDiscountPercentage: d.directDiscountPercentage,
-        levels: d.levels,
-        validFrom: d.validFrom,
-        validTo: d.validTo,
-        status: d.status
+        targetName: d.targetName,
+        discountPercentage: d.discountPercentage,
+        description: d.description,
+        isActive: d.isActive,
+        createdAt: d.createdAt
       })),
       summary: {
         totalOrders,
