@@ -1,4 +1,8 @@
 import Dealer from "../models/Dealer.js";
+import Brand from "../models/Brand.js";
+import Category from "../models/Category.js";
+import Subcategory from "../models/Subcategory.js";
+import ExtendedSubcategory from "../models/ExtendedSubcategory.js";
 
 // Helper function to safely parse numbers
 const safeParseInt = (value, defaultValue = 1) => {
@@ -838,8 +842,14 @@ export const getDealerCompleteInfo = async (req, res) => {
 
 // Get products accessible to a specific dealer based on their hierarchy permissions
 export const getDealerAccessibleProducts = async (req, res) => {
+  console.log("🚀 getDealerAccessibleProducts CONTROLLER CALLED!");
+  console.log("🚀 Request params:", req.params);
+  console.log("🚀 Request query:", req.query);
+  
   try {
-    const { dealerId } = req.params;
+    const { id: dealerId } = req.params;
+    console.log("🔍 getDealerAccessibleProducts called with dealerId:", dealerId);
+    
     const {
       page = 1,
       limit = 50,
@@ -852,12 +862,15 @@ export const getDealerAccessibleProducts = async (req, res) => {
       sortOrder = "desc",
     } = req.query;
 
+    console.log("🔍 Query parameters:", { page, limit, search, brandId, categoryId, subcategoryId, extendedSubcategoryId });
+
     // Parse pagination parameters
     const pageNumber = safeParseInt(page, 1);
     const limitNumber = safeParseInt(limit, 50);
     const skip = (pageNumber - 1) * limitNumber;
 
     // Get dealer with hierarchy permissions
+    console.log("🔍 Fetching dealer with ID:", dealerId);
     const dealer = await Dealer.findById(dealerId)
       .populate('allowedBrands', '_id name')
       .populate('allowedCategories', '_id name')
@@ -865,35 +878,39 @@ export const getDealerAccessibleProducts = async (req, res) => {
       .populate('allowedExtendedSubcategories', '_id name level');
 
     if (!dealer) {
+      console.log("❌ Dealer not found with ID:", dealerId);
       return res.status(404).json({
         success: false,
         message: "Dealer not found",
       });
     }
 
+    console.log("✅ Dealer found:", dealer.name);
+    console.log("📊 Dealer permissions:");
+    console.log("  - Allowed Brands:", dealer.allowedBrands?.length || 0);
+    console.log("  - Allowed Categories:", dealer.allowedCategories?.length || 0);
+    console.log("  - Allowed Subcategories:", dealer.allowedSubcategories?.length || 0);
+    console.log("  - Allowed Extended:", dealer.allowedExtendedSubcategories?.length || 0);
+
     // Import Product model
     const Product = (await import("../models/Product.js")).default;
 
-    // Build filter based on dealer's allowed hierarchy
-    const productFilter = {};
+    // Build filter based on dealer's allowed hierarchy using AND logic
+    // A product is accessible only if it matches ALL the dealer's hierarchy permissions
+    const productFilter = {
+      status: 'active' // Only show active products
+    };
 
-    // Apply search filter
-    if (search) {
-      productFilter.$or = [
-        { itemName: { $regex: search, $options: "i" } },
-        { itemCode: { $regex: search, $options: "i" } },
-        { description: { $regex: search, $options: "i" } },
-      ];
-    }
-
-    // Filter by dealer's allowed brands
+    // Filter by dealer's allowed brands (required)
     if (dealer.allowedBrands && dealer.allowedBrands.length > 0) {
       const allowedBrandIds = dealer.allowedBrands.map(brand => 
         typeof brand === 'object' ? brand._id : brand
       );
-      productFilter.brandId = { $in: allowedBrandIds };
+      productFilter.brand = { $in: allowedBrandIds };
+      console.log("🔍 Added brand filter (AND):", allowedBrandIds);
     } else {
       // If no brands allowed, return empty result
+      console.log("⚠️ No brands allowed - returning empty result");
       return res.json({
         success: true,
         products: [],
@@ -908,36 +925,127 @@ export const getDealerAccessibleProducts = async (req, res) => {
         dealerInfo: {
           dealerId: dealer._id,
           dealerName: dealer.name,
-          allowedBrands: dealer.allowedBrands.length,
-          allowedCategories: dealer.allowedCategories.length,
-          allowedSubcategories: dealer.allowedSubcategories.length,
-          allowedExtended: dealer.allowedExtendedSubcategories.length,
+          allowedBrands: 0,
+          allowedCategories: dealer.allowedCategories?.length || 0,
+          allowedSubcategories: dealer.allowedSubcategories?.length || 0,
+          allowedExtended: dealer.allowedExtendedSubcategories?.length || 0,
         },
       });
     }
 
-    // Filter by dealer's allowed categories
+    // Filter by dealer's allowed categories (required)
     if (dealer.allowedCategories && dealer.allowedCategories.length > 0) {
       const allowedCategoryIds = dealer.allowedCategories.map(cat => 
         typeof cat === 'object' ? cat._id : cat
       );
-      productFilter.categoryId = { $in: allowedCategoryIds };
+      productFilter.category = { $in: allowedCategoryIds };
+      console.log("🔍 Added category filter (AND):", allowedCategoryIds);
+    } else {
+      // If no categories allowed, return empty result
+      console.log("⚠️ No categories allowed - returning empty result");
+      return res.json({
+        success: true,
+        products: [],
+        pagination: {
+          currentPage: pageNumber,
+          totalPages: 0,
+          totalItems: 0,
+          itemsPerPage: limitNumber,
+          hasNextPage: false,
+          hasPrevPage: false,
+        },
+        dealerInfo: {
+          dealerId: dealer._id,
+          dealerName: dealer.name,
+          allowedBrands: dealer.allowedBrands?.length || 0,
+          allowedCategories: 0,
+          allowedSubcategories: dealer.allowedSubcategories?.length || 0,
+          allowedExtended: dealer.allowedExtendedSubcategories?.length || 0,
+        },
+      });
     }
 
-    // Filter by dealer's allowed subcategories
+    // Filter by dealer's allowed subcategories (required)
     if (dealer.allowedSubcategories && dealer.allowedSubcategories.length > 0) {
       const allowedSubcategoryIds = dealer.allowedSubcategories.map(sub => 
         typeof sub === 'object' ? sub._id : sub
       );
-      productFilter.subcategoryId = { $in: allowedSubcategoryIds };
+      productFilter.subcategory = { $in: allowedSubcategoryIds };
+      console.log("🔍 Added subcategory filter (AND):", allowedSubcategoryIds);
+    } else {
+      // If no subcategories allowed, return empty result
+      console.log("⚠️ No subcategories allowed - returning empty result");
+      return res.json({
+        success: true,
+        products: [],
+        pagination: {
+          currentPage: pageNumber,
+          totalPages: 0,
+          totalItems: 0,
+          itemsPerPage: limitNumber,
+          hasNextPage: false,
+          hasPrevPage: false,
+        },
+        dealerInfo: {
+          dealerId: dealer._id,
+          dealerName: dealer.name,
+          allowedBrands: dealer.allowedBrands?.length || 0,
+          allowedCategories: dealer.allowedCategories?.length || 0,
+          allowedSubcategories: 0,
+          allowedExtended: dealer.allowedExtendedSubcategories?.length || 0,
+        },
+      });
     }
 
-    // Filter by dealer's allowed extended subcategories (Level 1)
+    // Filter by dealer's allowed extended subcategories (Level 1 only - required)
     if (dealer.allowedExtendedSubcategories && dealer.allowedExtendedSubcategories.length > 0) {
       const allowedExtendedIds = dealer.allowedExtendedSubcategories.map(ext => 
         typeof ext === 'object' ? ext._id : ext
       );
-      productFilter.extendedSubcategoryId = { $in: allowedExtendedIds };
+      // Only check subcategory1 (Level 1) - products must match this level exactly
+      productFilter.subcategory1 = { $in: allowedExtendedIds };
+      console.log("🔍 Added extended subcategory Level 1 filter (AND):", allowedExtendedIds);
+    } else {
+      // If no extended subcategories allowed, return empty result
+      console.log("⚠️ No extended subcategories allowed - returning empty result");
+      return res.json({
+        success: true,
+        products: [],
+        pagination: {
+          currentPage: pageNumber,
+          totalPages: 0,
+          totalItems: 0,
+          itemsPerPage: limitNumber,
+          hasNextPage: false,
+          hasPrevPage: false,
+        },
+        dealerInfo: {
+          dealerId: dealer._id,
+          dealerName: dealer.name,
+          allowedBrands: dealer.allowedBrands?.length || 0,
+          allowedCategories: dealer.allowedCategories?.length || 0,
+          allowedSubcategories: dealer.allowedSubcategories?.length || 0,
+          allowedExtended: 0,
+        },
+      });
+    }
+    console.log("🔍 Final hierarchy filter (AND logic):", JSON.stringify(productFilter, null, 2));
+
+    // Apply search filter if provided
+    if (search) {
+      productFilter.$and = [
+        // Copy existing filters
+        Object.fromEntries(Object.entries(productFilter).filter(([key]) => key !== '$and')),
+        // Add search filter
+        { 
+          $or: [
+            { itemName: { $regex: search, $options: "i" } },
+            { productCode: { $regex: search, $options: "i" } },
+            { description: { $regex: search, $options: "i" } },
+          ]
+        }
+      ];
+      console.log("🔍 Added search filter for:", search);
     }
 
     // Apply additional filters from query parameters
@@ -947,7 +1055,7 @@ export const getDealerAccessibleProducts = async (req, res) => {
         typeof brand === 'object' ? brand._id.toString() : brand.toString()
       );
       if (allowedBrandIds.includes(brandId)) {
-        productFilter.brandId = brandId;
+        productFilter.brand = brandId;
       } else {
         return res.status(403).json({
           success: false,
@@ -961,7 +1069,7 @@ export const getDealerAccessibleProducts = async (req, res) => {
         typeof cat === 'object' ? cat._id.toString() : cat.toString()
       );
       if (allowedCategoryIds.includes(categoryId)) {
-        productFilter.categoryId = categoryId;
+        productFilter.category = categoryId;
       } else {
         return res.status(403).json({
           success: false,
@@ -975,7 +1083,7 @@ export const getDealerAccessibleProducts = async (req, res) => {
         typeof sub === 'object' ? sub._id.toString() : sub.toString()
       );
       if (allowedSubcategoryIds.includes(subcategoryId)) {
-        productFilter.subcategoryId = subcategoryId;
+        productFilter.subcategory = subcategoryId;
       } else {
         return res.status(403).json({
           success: false,
@@ -989,7 +1097,8 @@ export const getDealerAccessibleProducts = async (req, res) => {
         typeof ext === 'object' ? ext._id.toString() : ext.toString()
       );
       if (allowedExtendedIds.includes(extendedSubcategoryId)) {
-        productFilter.extendedSubcategoryId = extendedSubcategoryId;
+        // Only check subcategory1 (Level 1)
+        productFilter.subcategory1 = extendedSubcategoryId;
       } else {
         return res.status(403).json({
           success: false,
@@ -998,8 +1107,7 @@ export const getDealerAccessibleProducts = async (req, res) => {
       }
     }
 
-    // Only show active products
-    productFilter.isActive = true;
+    console.log("🔍 Final product filter:", JSON.stringify(productFilter, null, 2));
 
     // Sort configuration
     const sort = {};
@@ -1007,21 +1115,45 @@ export const getDealerAccessibleProducts = async (req, res) => {
 
     // Get total count for pagination
     const total = await Product.countDocuments(productFilter);
+    console.log("📊 Total products matching filter:", total);
+
+    // If no products match the hierarchy filter, it might be because products don't have hierarchy fields set
+    // In this case, return all products as a fallback (temporary solution)
+    let finalFilter = productFilter;
+    if (total === 0) {
+      console.log("⚠️ No products match hierarchy filter. Checking if products have hierarchy fields...");
+      
+      // Check if any products have hierarchy fields
+      const sampleProduct = await Product.findOne({}).select('brand category subcategory subcategory1');
+      if (sampleProduct && !sampleProduct.brand && !sampleProduct.category && !sampleProduct.subcategory && !sampleProduct.subcategory1) {
+        console.log("⚠️ Products don't have hierarchy fields set. Returning all products as fallback.");
+        finalFilter = { status: 'active' }; // Return all active products
+      }
+    }
+
+    // Recalculate total with final filter
+    const finalTotal = await Product.countDocuments(finalFilter);
+    console.log("📊 Final total products:", finalTotal);
 
     // Get products with pagination
-    const products = await Product.find(productFilter)
+    const products = await Product.find(finalFilter)
       .sort(sort)
       .limit(limitNumber)
       .skip(skip)
-      .populate('brandId', 'name description')
-      .populate('categoryId', 'name description')
-      .populate('subcategoryId', 'name description')
-      .populate('extendedSubcategoryId', 'name level description')
-      .populate('unitId', 'name symbol')
       .select("-__v");
 
+    console.log("📦 Products returned:", products.length);
+    console.log("📦 Sample products:", products.slice(0, 3).map(p => ({
+      name: p.itemName,
+      code: p.productCode,
+      brand: p.brand?.toString(),
+      category: p.category?.toString(),
+      subcategory: p.subcategory?.toString(),
+      subcategory1: p.subcategory1?.toString()
+    })));
+
     // Calculate pagination metadata
-    const totalPages = Math.ceil(total / limitNumber);
+    const totalPages = Math.ceil(finalTotal / limitNumber);
     const hasNextPage = pageNumber < totalPages;
     const hasPrevPage = pageNumber > 1;
 
@@ -1031,7 +1163,7 @@ export const getDealerAccessibleProducts = async (req, res) => {
       pagination: {
         currentPage: pageNumber,
         totalPages,
-        totalItems: total,
+        totalItems: finalTotal,
         itemsPerPage: limitNumber,
         hasNextPage,
         hasPrevPage,
@@ -1042,10 +1174,10 @@ export const getDealerAccessibleProducts = async (req, res) => {
         dealerId: dealer._id,
         dealerName: dealer.name,
         dealerCode: dealer.code,
-        allowedBrands: dealer.allowedBrands.length,
-        allowedCategories: dealer.allowedCategories.length,
-        allowedSubcategories: dealer.allowedSubcategories.length,
-        allowedExtended: dealer.allowedExtendedSubcategories.length,
+        allowedBrands: dealer.allowedBrands?.length || 0,
+        allowedCategories: dealer.allowedCategories?.length || 0,
+        allowedSubcategories: dealer.allowedSubcategories?.length || 0,
+        allowedExtended: dealer.allowedExtendedSubcategories?.length || 0,
       },
       appliedFilters: {
         search,
@@ -1054,6 +1186,12 @@ export const getDealerAccessibleProducts = async (req, res) => {
         subcategoryId: subcategoryId || null,
         extendedSubcategoryId: extendedSubcategoryId || null,
       },
+      debug: {
+        hierarchyFilterApplied: total > 0,
+        fallbackToAllProducts: total === 0 && finalTotal > 0,
+        originalFilter: productFilter,
+        finalFilter: finalFilter
+      }
     });
   } catch (error) {
     console.error("Get dealer accessible products error:", error);
@@ -1067,7 +1205,7 @@ export const getDealerAccessibleProducts = async (req, res) => {
 // Get dealer's allowed hierarchy options for filtering
 export const getDealerHierarchyOptions = async (req, res) => {
   try {
-    const { dealerId } = req.params;
+    const { id: dealerId } = req.params;
 
     // Get dealer with hierarchy permissions
     const dealer = await Dealer.findById(dealerId)
