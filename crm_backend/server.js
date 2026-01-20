@@ -453,6 +453,14 @@ app.use("/public", express.static(join(__dirname, "public")));
   // Direct processing mode - no queue system needed
   console.log("📝 Using direct salary processing (no queue system)");
 
+  // Initialize discount expiration cron job
+  try {
+    const scheduleDiscountExpiration = (await import('./cron/discountExpiration.js')).default;
+    scheduleDiscountExpiration();
+  } catch (error) {
+    console.error('❌ Failed to initialize discount expiration cron job:', error);
+  }
+
   // Start server
   const PORT = process.env.PORT || 5000;
   app.listen(PORT, '0.0.0.0', () => {

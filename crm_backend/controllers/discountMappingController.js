@@ -217,32 +217,68 @@ export const createDiscountMapping = async (req, res) => {
       }
     }
 
-    // Validate target exists
-    let targetModel, targetDoc;
+    // Validate target exists and auto-populate hierarchy
+    let targetDoc;
+    let hierarchyData = {}; // Will store complete hierarchy for auto-population
+    
     switch (targetType) {
       case 'product':
-        targetModel = Product;
-        targetDoc = await Product.findById(product);
+        targetDoc = await Product.findById(product)
+          .populate('brand category subcategory');
+        if (targetDoc) {
+          // Auto-populate hierarchy from product
+          hierarchyData.brand = targetDoc.brand?._id;
+          hierarchyData.category = targetDoc.category?._id;
+          hierarchyData.subcategory = targetDoc.subcategory?._id;
+        }
         break;
       case 'brand':
-        targetModel = Brand;
         targetDoc = await Brand.findById(brand);
+        if (targetDoc) {
+          hierarchyData.brand = targetDoc._id;
+        }
         break;
       case 'category':
-        targetModel = Category;
-        targetDoc = await Category.findById(category);
+        targetDoc = await Category.findById(category)
+          .populate('brand');
+        if (targetDoc) {
+          // Auto-populate hierarchy from category
+          hierarchyData.brand = targetDoc.brand?._id;
+          hierarchyData.category = targetDoc._id;
+        }
         break;
       case 'subcategory':
-        targetModel = Subcategory;
-        targetDoc = await Subcategory.findById(subcategory);
+        targetDoc = await Subcategory.findById(subcategory)
+          .populate('brand category');
+        if (targetDoc) {
+          // Auto-populate hierarchy from subcategory
+          hierarchyData.brand = targetDoc.brand?._id;
+          hierarchyData.category = targetDoc.category?._id;
+          hierarchyData.subcategory = targetDoc._id;
+        }
         break;
       case 'extendedSubcategory1':
-        targetModel = ExtendedSubcategory;
-        targetDoc = await ExtendedSubcategory.findById(extendedSubcategory1);
+        targetDoc = await ExtendedSubcategory.findById(extendedSubcategory1)
+          .populate('brand category subcategory');
+        if (targetDoc) {
+          // Auto-populate hierarchy from extended subcategory 1
+          hierarchyData.brand = targetDoc.brand?._id;
+          hierarchyData.category = targetDoc.category?._id;
+          hierarchyData.subcategory = targetDoc.subcategory?._id;
+          hierarchyData.extendedSubcategory1 = targetDoc._id;
+        }
         break;
       case 'extendedSubcategory2':
-        targetModel = ExtendedSubcategory;
-        targetDoc = await ExtendedSubcategory.findById(extendedSubcategory2);
+        targetDoc = await ExtendedSubcategory.findById(extendedSubcategory2)
+          .populate('brand category subcategory parentExtendedSubcategory');
+        if (targetDoc) {
+          // Auto-populate hierarchy from extended subcategory 2
+          hierarchyData.brand = targetDoc.brand?._id;
+          hierarchyData.category = targetDoc.category?._id;
+          hierarchyData.subcategory = targetDoc.subcategory?._id;
+          hierarchyData.extendedSubcategory1 = targetDoc.parentExtendedSubcategory?._id;
+          hierarchyData.extendedSubcategory2 = targetDoc._id;
+        }
         break;
     }
 
@@ -271,7 +307,7 @@ export const createDiscountMapping = async (req, res) => {
       });
     }
 
-    // Create discount mapping
+    // Create discount mapping with auto-populated hierarchy
     const discountMappingData = {
       discountName,
       discountType,
@@ -288,10 +324,12 @@ export const createDiscountMapping = async (req, res) => {
       priority: priority || 0,
       remarks,
       internalNotes,
-      createdBy: req.user.id
+      createdBy: req.user.id,
+      // Auto-populate complete hierarchy
+      ...hierarchyData
     };
 
-    // Set target reference
+    // Set target reference (this will override the auto-populated value for the target field)
     discountMappingData[targetType] = targetValidation[targetType];
 
     // Set discount values based on type
@@ -374,12 +412,33 @@ export const updateDiscountMapping = async (req, res) => {
       });
     }
 
-    // If editing an Approved discount, reset to Pending Approval
-    if (existingMapping.status === 'Approved') {
+    // Check if user is super admin (handle both formats: 'super_admin' and 'Super Admin')
+    const userRole = req.user?.role?.toLowerCase().replace(/\s+/g, '_');
+    const isSuperAdmin = userRole === 'super_admin';
+
+    console.log('Update discount - User role:', req.user?.role, 'Normalized:', userRole, 'Is Super Admin:', isSuperAdmin);
+    console.log('Existing discount status:', existingMapping.status);
+
+    // Super Admin Permission Logic
+    if (existingMapping.status === 'Approved' && !isSuperAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only Super Admin can edit approved discount mappings. Regular users can only edit draft or pending approval discounts.'
+      });
+    }
+
+    // If editing an Approved discount and user is NOT super admin, reset to Pending Approval
+    if (existingMapping.status === 'Approved' && !isSuperAdmin) {
       updateData.status = 'Pending Approval';
       updateData.approvedBy = null;
       updateData.approvedAt = null;
-      console.log(`Discount ${id} was Approved, resetting to Pending Approval due to edit`);
+      console.log(`Discount ${id} was Approved, resetting to Pending Approval due to edit by non-super-admin`);
+    }
+
+    // If Super Admin is editing an approved discount, keep it approved unless they explicitly change status
+    if (existingMapping.status === 'Approved' && isSuperAdmin && !updateData.status) {
+      console.log(`Super Admin editing approved discount ${id} - keeping approved status`);
+      // Don't change status, keep existing approval info
     }
 
     // Validate dates if provided
@@ -406,15 +465,22 @@ export const updateDiscountMapping = async (req, res) => {
       .populate('createdBy', 'name email')
       .populate('approvedBy', 'name email');
 
-    const message = existingMapping.status === 'Approved' 
-      ? 'Discount mapping updated successfully. Status reset to Pending Approval - requires Super Admin approval.'
-      : 'Discount mapping updated successfully';
+    let message = 'Discount mapping updated successfully';
+    let requiresReapproval = false;
+
+    if (existingMapping.status === 'Approved' && !isSuperAdmin) {
+      message = 'Discount mapping updated successfully. Status reset to Pending Approval - requires Super Admin approval.';
+      requiresReapproval = true;
+    } else if (existingMapping.status === 'Approved' && isSuperAdmin) {
+      message = 'Discount mapping updated successfully by Super Admin. Approval status maintained.';
+    }
 
     res.json({
       success: true,
       message,
       discountMapping,
-      requiresReapproval: existingMapping.status === 'Approved'
+      requiresReapproval,
+      editedBy: isSuperAdmin ? 'Super Admin' : 'Regular User'
     });
   } catch (error) {
     console.error('Update discount mapping error:', error);
@@ -796,6 +862,29 @@ export const fixMissingLevels = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Server error while fixing discounts with missing levels'
+    });
+  }
+};
+
+// @desc    Expire discounts past their validTo date
+// @route   POST /api/discount-mappings/expire-discounts
+// @access  Private
+export const expireDiscounts = async (req, res) => {
+  try {
+    console.log('🕒 Starting automatic discount expiration...');
+    
+    const expiredCount = await DiscountMapping.expireDiscounts();
+    
+    res.json({
+      success: true,
+      message: `Successfully expired ${expiredCount} discounts`,
+      expiredCount
+    });
+  } catch (error) {
+    console.error('Expire discounts error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while expiring discounts'
     });
   }
 };

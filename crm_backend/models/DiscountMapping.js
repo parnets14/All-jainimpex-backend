@@ -105,7 +105,7 @@ const discountMappingSchema = new mongoose.Schema({
     min: 1,
     max: 100,
     required: true,
-    default: 100,
+    // No default - will be set by frontend
     validate: {
       validator: function(value) {
         // Ensure max discount is not less than direct discount
@@ -289,6 +289,8 @@ discountMappingSchema.pre('save', function(next) {
   // Auto-expire if past validTo date
   if (new Date() > this.validTo && this.status === 'Approved') {
     this.status = 'Expired';
+    this.isActive = false;
+    console.log(`🕒 Auto-expired discount "${this.discountName}" - validTo: ${this.validTo}`);
   }
   
   next();
@@ -484,6 +486,55 @@ discountMappingSchema.statics.fixDiscountsWithMissingLevels = async function() {
     return discountsToFix.length;
   } catch (error) {
     console.error('Error fixing discounts:', error);
+    return 0;
+  }
+};
+
+// Static method to automatically expire discounts past their validTo date
+discountMappingSchema.statics.expireDiscounts = async function() {
+  try {
+    console.log('🕒 Checking for expired discounts...');
+    
+    const now = new Date();
+    
+    // Find approved discounts that are past their validTo date
+    const expiredDiscounts = await this.find({
+      status: 'Approved',
+      validTo: { $lt: now },
+      isActive: true
+    });
+    
+    console.log(`Found ${expiredDiscounts.length} discounts to expire`);
+    
+    if (expiredDiscounts.length > 0) {
+      // Update all expired discounts
+      const result = await this.updateMany(
+        {
+          status: 'Approved',
+          validTo: { $lt: now },
+          isActive: true
+        },
+        {
+          $set: {
+            status: 'Expired',
+            isActive: false
+          }
+        }
+      );
+      
+      console.log(`✅ Expired ${result.modifiedCount} discounts`);
+      
+      // Log each expired discount for audit trail
+      for (const discount of expiredDiscounts) {
+        console.log(`   - Expired: "${discount.discountName}" (Valid until: ${discount.validTo.toISOString().split('T')[0]})`);
+      }
+      
+      return result.modifiedCount;
+    }
+    
+    return 0;
+  } catch (error) {
+    console.error('Error expiring discounts:', error);
     return 0;
   }
 };

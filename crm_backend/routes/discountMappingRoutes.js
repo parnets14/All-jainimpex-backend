@@ -9,7 +9,8 @@ import {
   getApplicableDiscounts,
   calculateDiscount,
   getDiscountStats,
-  fixMissingLevels
+  fixMissingLevels,
+  expireDiscounts
 } from '../controllers/discountMappingController.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { logActivity } from '../middleware/activityLogMiddleware.js';
@@ -29,6 +30,9 @@ router.route('/stats')
 
 router.route('/fix-missing-levels')
   .post(logActivity('Fixed discounts with missing levels'), fixMissingLevels);
+
+router.route('/expire-discounts')
+  .post(logActivity('Expired discounts manually'), expireDiscounts);
 
 router.route('/calculate')
   .post(calculateDiscount);
