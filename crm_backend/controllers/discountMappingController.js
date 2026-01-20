@@ -888,3 +888,119 @@ export const expireDiscounts = async (req, res) => {
     });
   }
 };
+
+// @desc    Expire a specific discount
+// @route   POST /api/discount-mappings/:id/expire
+// @access  Private
+export const expireIndividualDiscount = async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const discount = await DiscountMapping.findById(id);
+    if (!discount) {
+      return res.status(404).json({
+        success: false,
+        message: 'Discount mapping not found'
+      });
+    }
+    
+    // Check if user is super admin
+    const userRole = req.user?.role?.toLowerCase().replace(/\s+/g, '_');
+    const isSuperAdmin = userRole === 'super_admin';
+    
+    if (!isSuperAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only Super Admin can manually expire individual discounts'
+      });
+    }
+    
+    // Update the discount to expired status
+    await DiscountMapping.findByIdAndUpdate(id, {
+      status: 'Expired',
+      isActive: false
+    });
+    
+    console.log(`✅ Manually expired discount: "${discount.discountName}" by ${req.user.name}`);
+    
+    res.json({
+      success: true,
+      message: `Successfully expired discount "${discount.discountName}"`
+    });
+  } catch (error) {
+    console.error('Expire individual discount error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while expiring discount'
+    });
+  }
+};
+
+// @desc    Expire all approved discounts immediately
+// @route   POST /api/discount-mappings/expire-all-approved
+// @access  Private
+export const expireAllApprovedDiscounts = async (req, res) => {
+  try {
+    // Check if user is super admin
+    const userRole = req.user?.role?.toLowerCase().replace(/\s+/g, '_');
+    const isSuperAdmin = userRole === 'super_admin';
+    
+    if (!isSuperAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only Super Admin can expire all approved discounts'
+      });
+    }
+    
+    console.log('🚨 Starting bulk expiration of ALL approved discounts...');
+    
+    // Find all approved discounts
+    const approvedDiscounts = await DiscountMapping.find({
+      status: 'Approved',
+      isActive: true
+    });
+    
+    console.log(`Found ${approvedDiscounts.length} approved discounts to expire`);
+    
+    if (approvedDiscounts.length > 0) {
+      // Update all approved discounts to expired
+      const result = await DiscountMapping.updateMany(
+        {
+          status: 'Approved',
+          isActive: true
+        },
+        {
+          $set: {
+            status: 'Expired',
+            isActive: false
+          }
+        }
+      );
+      
+      console.log(`✅ Bulk expired ${result.modifiedCount} approved discounts by ${req.user.name}`);
+      
+      // Log each expired discount for audit trail
+      for (const discount of approvedDiscounts) {
+        console.log(`   - Expired: "${discount.discountName}"`);
+      }
+      
+      res.json({
+        success: true,
+        message: `Successfully expired ${result.modifiedCount} approved discounts`,
+        expiredCount: result.modifiedCount
+      });
+    } else {
+      res.json({
+        success: true,
+        message: 'No approved discounts found to expire',
+        expiredCount: 0
+      });
+    }
+  } catch (error) {
+    console.error('Expire all approved discounts error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while expiring all approved discounts'
+    });
+  }
+};

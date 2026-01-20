@@ -10,7 +10,9 @@ import {
   calculateDiscount,
   getDiscountStats,
   fixMissingLevels,
-  expireDiscounts
+  expireDiscounts,
+  expireIndividualDiscount,
+  expireAllApprovedDiscounts
 } from '../controllers/discountMappingController.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { logActivity } from '../middleware/activityLogMiddleware.js';
@@ -34,6 +36,9 @@ router.route('/fix-missing-levels')
 router.route('/expire-discounts')
   .post(logActivity('Expired discounts manually'), expireDiscounts);
 
+router.route('/expire-all-approved')
+  .post(logActivity('Expired all approved discounts'), expireAllApprovedDiscounts);
+
 router.route('/calculate')
   .post(calculateDiscount);
 
@@ -47,5 +52,8 @@ router.route('/:id')
 
 router.route('/:id/status')
   .patch(logActivity('Updated discount mapping status'), updateDiscountMappingStatus);
+
+router.route('/:id/expire')
+  .post(logActivity('Expired individual discount'), expireIndividualDiscount);
 
 export default router;
