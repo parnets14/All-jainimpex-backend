@@ -393,7 +393,7 @@ export const createDealerInvoice = async (req, res) => {
         
         // Use the first (highest priority) discount mapping
         const discountMapping = applicableDiscounts[0];
-        const maxDiscountLimit = discountMapping.maxDiscountPercentage;
+        const maxDiscountLimit = discountMapping.maxDiscountPercentage || 100; // Fallback to 100% if undefined
         
         console.log(`  🎯 Max discount limit: ${maxDiscountLimit}%`);
         console.log(`  💰 Applied discount: ${item.discountPercentage}%`);
@@ -427,11 +427,14 @@ export const createDealerInvoice = async (req, res) => {
             directDiscount = discountMapping.directDiscountPercentage || 0;
           }
           
-          // Add level discounts
+          // Add level discounts (using manual percentages if available)
           for (const levelName of item.selectedDiscountLevels) {
             const level = discountMapping.levels?.find(l => l.levelName === levelName);
             if (level) {
-              expectedLevelDiscount += level.discountPercentage;
+              // Use manual percentage if available, otherwise use default level percentage
+              const manualPercentage = item.manualDiscountLevels?.[levelName];
+              const percentage = manualPercentage !== undefined ? manualPercentage : level.discountPercentage;
+              expectedLevelDiscount += percentage;
             } else {
               console.log(`  ❌ Invalid level selected: ${levelName}`);
               return res.status(400).json({

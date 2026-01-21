@@ -3,6 +3,7 @@ import Brand from "../models/Brand.js";
 import Category from "../models/Category.js";
 import Subcategory from "../models/Subcategory.js";
 import ExtendedSubcategory from "../models/ExtendedSubcategory.js";
+import DealerLedger from "../models/DealerLedger.js";
 
 // Helper function to safely parse numbers
 const safeParseInt = (value, defaultValue = 1) => {
@@ -1239,6 +1240,118 @@ export const getDealerHierarchyOptions = async (req, res) => {
     });
   } catch (error) {
     console.error("Get dealer hierarchy options error:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// Get dealer outstanding balance
+export const getDealerOutstanding = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get dealer
+    const dealer = await Dealer.findById(id);
+    if (!dealer) {
+      return res.status(404).json({
+        success: false,
+        message: "Dealer not found",
+      });
+    }
+
+    // Get all ledger entries for this dealer
+    const ledgerEntries = await DealerLedger.find({ dealer: id }).sort({ entryDate: 1 });
+    
+    // Calculate current outstanding balance
+    const currentOutstanding = ledgerEntries.reduce((sum, entry) => {
+      return sum + (entry.debitAmount || 0) - (entry.creditAmount || 0);
+    }, 0);
+    
+    // Calculate available credit
+    const availableCredit = Math.max(0, dealer.creditLimit - currentOutstanding);
+    
+    // Calculate utilization percentage
+    const utilizationPercent = dealer.creditLimit > 0 
+      ? Math.round((currentOutstanding / dealer.creditLimit) * 100) 
+      : 0;
+    
+    // Determine credit status
+    let creditStatusType = 'good';
+    if (utilizationPercent > 90 || currentOutstanding > dealer.creditLimit) {
+      creditStatusType = 'exceeded';
+    } else if (utilizationPercent > 70) {
+      creditStatusType = 'warning';
+    }
+
+    // Calculate overdue amount (entries older than credit days)
+    const creditDays = dealer.creditDays || 30;
+    const overdueDate = new Date();
+    overdueDate.setDate(overdueDate.getDate() - creditDays);
+    
+    const overdueAmount = ledgerEntries
+      .filter(entry => entry.entryDate < overdueDate && entry.debitAmount > 0)
+      .reduce((sum, entry) => sum + (entry.debitAmount || 0), 0);
+
+    // Get last payment
+    const lastPayment = ledgerEntries
+      .filter(entry => entry.creditAmount > 0)
+      .sort((a, b) => new Date(b.entryDate) - new Date(a.entryDate))[0];
+
+    // Determine payment status
+    let paymentStatusType = 'current';
+    let canCreateOrder = true;
+    let blockReason = null;
+
+    if (overdueAmount > 0 || currentOutstanding > dealer.creditLimit) {
+      canCreateOrder = false;
+      if (overdueAmount > 0 && currentOutstanding > dealer.creditLimit) {
+        paymentStatusType = 'overdue';
+        blockReason = `Credit limit of ₹${dealer.creditLimit.toLocaleString()} exceeded with ₹${overdueAmount.toLocaleString()} overdue. Current outstanding: ₹${currentOutstanding.toLocaleString()}. Please collect payment first.`;
+      } else if (currentOutstanding > dealer.creditLimit) {
+        paymentStatusType = 'exceeded';
+        blockReason = `Credit limit of ₹${dealer.creditLimit.toLocaleString()} exceeded. Current outstanding: ₹${currentOutstanding.toLocaleString()}. Available credit: ₹${availableCredit.toLocaleString()}. Please collect payment first.`;
+      } else if (overdueAmount > 0) {
+        paymentStatusType = 'overdue';
+        blockReason = `₹${overdueAmount.toLocaleString()} payment is overdue (${creditDays} days). Please collect payment first.`;
+      }
+    }
+
+    res.json({
+      success: true,
+      dealerInfo: {
+        dealerId: dealer._id,
+        dealerName: dealer.name,
+        dealerCode: dealer.code,
+        creditLimit: dealer.creditLimit,
+        creditDays: dealer.creditDays,
+      },
+      creditStatus: {
+        creditLimit: dealer.creditLimit,
+        currentOutstanding: Math.round(currentOutstanding),
+        availableCredit: Math.round(availableCredit),
+        utilizationPercent,
+        status: creditStatusType,
+      },
+      paymentStatus: {
+        totalOutstanding: Math.round(currentOutstanding),
+        overdueAmount: Math.round(overdueAmount),
+        lastPaymentDate: lastPayment?.entryDate,
+        lastPaymentAmount: lastPayment?.creditAmount,
+        status: paymentStatusType,
+        canCreateOrder,
+        blockReason,
+      },
+      summary: {
+        totalLedgerEntries: ledgerEntries.length,
+        creditUtilization: `${utilizationPercent}%`,
+        paymentDue: overdueAmount > 0,
+        creditExceeded: currentOutstanding > dealer.creditLimit,
+      },
+    });
+  } catch (error) {
+    console.error("Get dealer outstanding error:", error);
     res.status(500).json({
       success: false,
       message: error.message,
