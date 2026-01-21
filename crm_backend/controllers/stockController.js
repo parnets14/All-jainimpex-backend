@@ -1,6 +1,8 @@
 import StockMovement from '../models/Stock.js';
 import Product from '../models/Product.js';
 import GRN from '../models/GRN.js';
+import Supplier from '../models/Supplier.js';
+import Warehouse from '../models/Warehouse.js';
 import StockMovementService from '../services/stockMovementService.js';
 
 // Utility function to recalculate all stock balances
@@ -68,16 +70,142 @@ export const getStock = async (req, res) => {
     
     // Process products in parallel for better performance
     const stockPromises = products.map(async (product) => {
-      // Get all warehouses that have this product (from GRNs)
+      // Get all warehouses that have this product (from GRNs OR stock movements)
       const grnQuery = { 'items.productId': product._id };
       const grns = await GRN.find(grnQuery)
         .populate('warehouseId', 'name address')
         .populate('supplierId', 'name');
 
-      console.log(`🔍 [STOCK_DEBUG] Product ${product.productCode}: Found ${grns.length} GRNs`);
+      // ALSO get warehouses that have stock movements for this product (including manual adjustments)
+      const stockMovements = await StockMovement.find({ productId: product._id })
+        .lean();
+
+      console.log(`🔍 [STOCK_DEBUG] Product ${product.productCode}: Found ${grns.length} GRNs and ${stockMovements.length} stock movements`);
 
       // Group by warehouse
       const warehouseStock = {};
+
+      // First, process GRNs (existing logic)
+      grns.forEach(grn => {
+        if (!grn.warehouseId) {
+          console.log(`⚠️ [STOCK_DEBUG] GRN ${grn.grnNo} has no warehouseId`);
+          return;
+        }
+        
+        const warehouseId = grn.warehouseId._id.toString();
+        const warehouseName = grn.warehouseId.name;
+        
+        console.log(`🔍 [STOCK_DEBUG] Processing GRN ${grn.grnNo} for warehouse: ${warehouseName} (${warehouseId})`);
+        
+        if (!warehouseStock[warehouseId]) {
+          warehouseStock[warehouseId] = {
+            warehouseId: warehouseId,
+            warehouseName: warehouseName,
+            totalQty: 0,
+            damagedQty: 0,
+            suppliers: new Set(),
+            weightedPriceSum: 0,
+            weightedGSTSum: 0,
+            totalAcceptedQty: 0,
+            totalValue: 0,
+            hasGRN: true,
+            hasMovements: false
+          };
+        }
+        
+        // Check if items exist and are valid
+        if (!grn.items || !Array.isArray(grn.items) || grn.items.length === 0) {
+          console.log(`⚠️ [STOCK_DEBUG] GRN ${grn.grnNo} has no valid items array`);
+          return;
+        }
+        
+        grn.items.forEach((item, index) => {
+          // Handle both populated and non-populated productId
+          const itemProductId = item.productId?._id ? item.productId._id.toString() : item.productId.toString();
+          const targetProductId = product._id.toString();
+          
+          if (itemProductId === targetProductId) {
+            console.log(`✅ [STOCK_DEBUG] Match found! Processing item for ${product.productCode}:`, {
+              acceptedQuantity: item.acceptedQuantity,
+              damageQuantity: item.damageQuantity,
+              unitPrice: item.unitPrice,
+              totalPrice: item.totalPrice
+            });
+            
+            warehouseStock[warehouseId].totalQty += item.acceptedQuantity || 0;
+            warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
+            warehouseStock[warehouseId].totalAcceptedQty += item.acceptedQuantity || 0;
+            
+            if (grn.supplierId) {
+              warehouseStock[warehouseId].suppliers.add(grn.supplierId.name);
+            }
+            
+            // Calculate weighted averages including GST
+            const itemValue = (item.acceptedQuantity || 0) * (item.unitPrice || 0);
+            warehouseStock[warehouseId].totalValue += itemValue;
+            warehouseStock[warehouseId].weightedPriceSum += itemValue;
+            
+            // Calculate weighted GST average
+            const itemGSTValue = (item.acceptedQuantity || 0) * (item.gst || 0);
+            warehouseStock[warehouseId].weightedGSTSum += itemGSTValue;
+          }
+        });
+      });
+
+      // Second, process stock movements to find warehouses with manual adjustments or other movements
+      const warehouseMovements = {};
+      stockMovements.forEach(movement => {
+        if (!movement.warehouseId) return;
+        
+        const warehouseId = movement.warehouseId.toString();
+        
+        if (!warehouseMovements[warehouseId]) {
+          warehouseMovements[warehouseId] = {
+            warehouseId: warehouseId,
+            warehouseName: 'Unknown Warehouse', // Will be updated later
+            movements: []
+          };
+        }
+        warehouseMovements[warehouseId].movements.push(movement);
+      });
+
+      // Get warehouse names for movement-only warehouses
+      const movementWarehouseIds = Object.keys(warehouseMovements);
+      if (movementWarehouseIds.length > 0) {
+        const warehouses = await Warehouse.find({ 
+          _id: { $in: movementWarehouseIds } 
+        }).select('_id name').lean();
+        
+        warehouses.forEach(warehouse => {
+          const warehouseId = warehouse._id.toString();
+          if (warehouseMovements[warehouseId]) {
+            warehouseMovements[warehouseId].warehouseName = warehouse.name;
+          }
+        });
+      }
+
+      // Add warehouses that have movements but no GRNs
+      Object.keys(warehouseMovements).forEach(warehouseId => {
+        if (!warehouseStock[warehouseId]) {
+          const warehouseMovement = warehouseMovements[warehouseId];
+          warehouseStock[warehouseId] = {
+            warehouseId: warehouseId,
+            warehouseName: warehouseMovement.warehouseName,
+            totalQty: 0,
+            damagedQty: 0,
+            suppliers: new Set(),
+            weightedPriceSum: 0,
+            weightedGSTSum: 0,
+            totalAcceptedQty: 0,
+            totalValue: 0,
+            hasGRN: false,
+            hasMovements: true
+          };
+          console.log(`🔍 [STOCK_DEBUG] Added warehouse ${warehouseMovement.warehouseName} for product ${product.productCode} (movements only)`);
+        } else {
+          warehouseStock[warehouseId].hasMovements = true;
+        }
+      });
 
       grns.forEach(grn => {
         if (!grn.warehouseId) {
