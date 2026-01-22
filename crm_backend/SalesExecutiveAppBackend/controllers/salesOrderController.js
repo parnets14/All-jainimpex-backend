@@ -88,14 +88,102 @@ export const getProducts = async (req, res) => {
 
     console.log('📦 Fetching products:', { dealerId, search, category, brand, warehouseId });
 
-    // Build query
+    // Build base query
     let query = { status: 'active' };
     
+    // CRITICAL FIX: Apply dealer product permissions
+    if (dealerId) {
+      console.log('🔍 Applying dealer product permissions for dealer:', dealerId);
+      
+      try {
+        const dealer = await Dealer.findById(dealerId)
+          .select('allowedBrands allowedCategories allowedSubcategories allowedExtendedSubcategories');
+        
+        if (dealer) {
+          console.log('📊 Dealer permissions:', {
+            brands: dealer.allowedBrands?.length || 0,
+            categories: dealer.allowedCategories?.length || 0,
+            subcategories: dealer.allowedSubcategories?.length || 0,
+            extendedSubcategories: dealer.allowedExtendedSubcategories?.length || 0
+          });
+          
+          // Apply brand filter
+          if (dealer.allowedBrands && dealer.allowedBrands.length > 0) {
+            query.brand = { $in: dealer.allowedBrands };
+          }
+          
+          // Apply category filter
+          if (dealer.allowedCategories && dealer.allowedCategories.length > 0) {
+            query.category = { $in: dealer.allowedCategories };
+          }
+          
+          // Apply subcategory filter
+          if (dealer.allowedSubcategories && dealer.allowedSubcategories.length > 0) {
+            query.subcategory = { $in: dealer.allowedSubcategories };
+          }
+          
+          // FIXED LOGIC: Handle extended subcategories properly
+          if (dealer.allowedExtendedSubcategories && dealer.allowedExtendedSubcategories.length > 0) {
+            // FIXED: Show BOTH products with allowed extended subcategories AND products with no extended subcategories
+            // This allows dealers to access both extended products and basic hierarchy products
+            query.$or = [
+              { subcategory1: { $in: dealer.allowedExtendedSubcategories } }, // Products with allowed extended subcategories
+              { subcategory1: { $exists: false } },                          // Products with no extended subcategory
+              { subcategory1: null }                                         // Products with null extended subcategory
+            ];
+            console.log('🔍 SE App: Applied extended subcategory filter (OR logic): allowed extended IDs + basic hierarchy products');
+          } else {
+            // If dealer has NO extended subcategory permissions, show products with NO extended subcategories
+            // This allows access to basic products that only have Brand → Category → Subcategory
+            query.$or = [
+              { subcategory1: { $exists: false } },
+              { subcategory1: null }
+            ];
+            console.log('🔍 SE App: No extended subcategories allowed - showing products with NO extended subcategories');
+          }
+          
+          console.log('🎯 Applied dealer filter:', JSON.stringify(query, null, 2));
+        } else {
+          console.log('❌ Dealer not found, showing no products');
+          // If dealer not found, return empty results
+          return res.json({
+            success: true,
+            products: [],
+            pagination: {
+              currentPage: parseInt(page),
+              totalPages: 0,
+              totalProducts: 0,
+              hasNext: false,
+              hasPrev: false
+            }
+          });
+        }
+      } catch (dealerError) {
+        console.error('❌ Error fetching dealer permissions:', dealerError);
+        // Continue without dealer filtering if there's an error
+      }
+    }
+    
+    // Apply additional filters
     if (search) {
-      query.$or = [
+      // Merge with existing $or if it exists (from dealer filtering)
+      const searchOr = [
         { itemName: { $regex: search, $options: 'i' } },
         { productCode: { $regex: search, $options: 'i' } }
       ];
+      
+      if (query.$or) {
+        // If $or already exists from dealer filtering, we need to combine them with $and
+        query = {
+          $and: [
+            { $or: query.$or }, // Dealer extended subcategory filter
+            { $or: searchOr },  // Search filter
+            ...Object.keys(query).filter(key => key !== '$or').map(key => ({ [key]: query[key] }))
+          ]
+        };
+      } else {
+        query.$or = searchOr;
+      }
     }
     
     if (category) {
@@ -105,6 +193,8 @@ export const getProducts = async (req, res) => {
     if (brand) {
       query.brand = brand;
     }
+
+    console.log('🔍 Final product query:', JSON.stringify(query, null, 2));
 
     // Fetch products with pagination
     const skip = (page - 1) * limit;
@@ -117,6 +207,8 @@ export const getProducts = async (req, res) => {
       .skip(skip)
       .limit(parseInt(limit))
       .lean();
+
+    console.log(`✅ Found ${products.length} products matching dealer permissions`);
 
     // Get pricing and stock for each product
     const productsWithDetails = await Promise.all(

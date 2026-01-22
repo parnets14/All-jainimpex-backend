@@ -463,6 +463,14 @@ app.use("/public", express.static(join(__dirname, "public")));
     console.error('❌ Failed to initialize discount expiration cron job:', error);
   }
 
+  // Initialize log cleanup cron job
+  try {
+    const scheduleLogCleanup = (await import('./cron/logCleanup.js')).default;
+    scheduleLogCleanup();
+  } catch (error) {
+    console.error('❌ Failed to initialize log cleanup cron job:', error);
+  }
+
   // Start server
   const PORT = process.env.PORT || 5000;
   app.listen(PORT, '0.0.0.0', () => {

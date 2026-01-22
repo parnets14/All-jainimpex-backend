@@ -991,54 +991,52 @@ export const getDealerAccessibleProducts = async (req, res) => {
       });
     }
 
-    // Filter by dealer's allowed extended subcategories (Level 1 only - required)
+    // Filter by dealer's allowed extended subcategories (Level 1 only)
     if (dealer.allowedExtendedSubcategories && dealer.allowedExtendedSubcategories.length > 0) {
       const allowedExtendedIds = dealer.allowedExtendedSubcategories.map(ext => 
         typeof ext === 'object' ? ext._id : ext
       );
-      // Only check subcategory1 (Level 1) - products must match this level exactly
-      productFilter.subcategory1 = { $in: allowedExtendedIds };
-      console.log("🔍 Added extended subcategory Level 1 filter (AND):", allowedExtendedIds);
+      // FIXED: Show BOTH products with allowed extended subcategories AND products with no extended subcategories
+      // This allows dealers to access both extended products and basic hierarchy products
+      productFilter.$or = [
+        { subcategory1: { $in: allowedExtendedIds } }, // Products with allowed extended subcategories
+        { subcategory1: { $exists: false } },          // Products with no extended subcategory
+        { subcategory1: null }                         // Products with null extended subcategory
+      ];
+      console.log("🔍 Added extended subcategory filter (OR logic): allowed extended IDs + basic hierarchy products");
+      console.log("🔍 Allowed extended IDs:", allowedExtendedIds);
     } else {
-      // If no extended subcategories allowed, return empty result
-      console.log("⚠️ No extended subcategories allowed - returning empty result");
-      return res.json({
-        success: true,
-        products: [],
-        pagination: {
-          currentPage: pageNumber,
-          totalPages: 0,
-          totalItems: 0,
-          itemsPerPage: limitNumber,
-          hasNextPage: false,
-          hasPrevPage: false,
-        },
-        dealerInfo: {
-          dealerId: dealer._id,
-          dealerName: dealer.name,
-          allowedBrands: dealer.allowedBrands?.length || 0,
-          allowedCategories: dealer.allowedCategories?.length || 0,
-          allowedSubcategories: dealer.allowedSubcategories?.length || 0,
-          allowedExtended: 0,
-        },
-      });
+      // If no extended subcategories allowed, show products with NO extended subcategories
+      // This allows access to basic products that only have Brand → Category → Subcategory
+      productFilter.$or = [
+        { subcategory1: { $exists: false } },
+        { subcategory1: null }
+      ];
+      console.log("🔍 No extended subcategories allowed - showing products with NO extended subcategories");
     }
     console.log("🔍 Final hierarchy filter (AND logic):", JSON.stringify(productFilter, null, 2));
 
     // Apply search filter if provided
     if (search) {
-      productFilter.$and = [
-        // Copy existing filters
-        Object.fromEntries(Object.entries(productFilter).filter(([key]) => key !== '$and')),
-        // Add search filter
-        { 
-          $or: [
-            { itemName: { $regex: search, $options: "i" } },
-            { productCode: { $regex: search, $options: "i" } },
-            { description: { $regex: search, $options: "i" } },
-          ]
-        }
+      // Handle potential $or conflict from extended subcategory filter
+      const searchOr = [
+        { itemName: { $regex: search, $options: "i" } },
+        { productCode: { $regex: search, $options: "i" } },
+        { description: { $regex: search, $options: "i" } },
       ];
+      
+      if (productFilter.$or) {
+        // If $or already exists from extended subcategory filtering, combine with $and
+        productFilter.$and = [
+          { $or: productFilter.$or }, // Extended subcategory filter
+          { $or: searchOr },          // Search filter
+          ...Object.keys(productFilter).filter(key => key !== '$or' && key !== '$and').map(key => ({ [key]: productFilter[key] }))
+        ];
+        delete productFilter.$or; // Remove the original $or since it's now in $and
+      } else {
+        // No existing $or, just add search $or
+        productFilter.$or = searchOr;
+      }
       console.log("🔍 Added search filter for:", search);
     }
 

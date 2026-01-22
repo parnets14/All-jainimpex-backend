@@ -398,16 +398,48 @@ export const createDealerInvoice = async (req, res) => {
         console.log(`  🎯 Max discount limit: ${maxDiscountLimit}%`);
         console.log(`  💰 Applied discount: ${item.discountPercentage}%`);
         
-        // Validate that applied discount doesn't exceed maximum limit
-        if (item.discountPercentage > maxDiscountLimit) {
-          console.log(`  ❌ Discount validation failed: ${item.discountPercentage}% > ${maxDiscountLimit}%`);
+        // NEW LOGIC: Validate discount limit excluding direct discount
+        // Calculate level-based discount and dealer extra discount for validation
+        let levelBasedDiscount = 0;
+        let directDiscount = 0;
+        let dealerExtraDiscount = item.dealerExtraDiscount || 0;
+        
+        // If discount type is 'both', separate direct discount from level-based
+        if (discountMapping.discountType === 'both') {
+          directDiscount = discountMapping.directDiscountPercentage || 0;
+          levelBasedDiscount = (item.discountPercentage || 0) - directDiscount;
+        } else if (discountMapping.discountType === 'direct') {
+          directDiscount = item.discountPercentage || 0;
+          levelBasedDiscount = 0;
+        } else {
+          // level_based only
+          levelBasedDiscount = item.discountPercentage || 0;
+          directDiscount = 0;
+        }
+        
+        // Only validate level-based + dealer extra against max limit (exclude direct discount)
+        const discountToValidate = levelBasedDiscount + dealerExtraDiscount;
+        
+        console.log(`  💡 NEW DISCOUNT VALIDATION LOGIC for ${item.productName}:`);
+        console.log(`    - Direct Discount: ${directDiscount}% (not limited)`);
+        console.log(`    - Level-based Discount: ${levelBasedDiscount}%`);
+        console.log(`    - Dealer Extra Discount: ${dealerExtraDiscount}%`);
+        console.log(`    - Discount to Validate: ${discountToValidate}% (≤ ${maxDiscountLimit}%)`);
+        console.log(`    - Total Applied: ${item.discountPercentage + dealerExtraDiscount}%`);
+        
+        if (discountToValidate > maxDiscountLimit) {
+          console.log(`  ❌ Discount validation failed: ${discountToValidate}% > ${maxDiscountLimit}%`);
           return res.status(400).json({
             success: false,
-            message: `Discount for ${item.productName} (${item.discountPercentage}%) exceeds maximum allowed limit of ${maxDiscountLimit}%. Please reduce the discount and try again.`,
+            message: `Level-based and dealer extra discount for ${item.productName} (${discountToValidate}%) exceeds maximum allowed limit of ${maxDiscountLimit}%. Direct discount (${directDiscount}%) is not limited. Please reduce the level-based or dealer extra discount and try again.`,
             validationError: {
               type: 'DISCOUNT_LIMIT_EXCEEDED',
               productName: item.productName,
-              appliedDiscount: item.discountPercentage,
+              levelBasedDiscount: levelBasedDiscount,
+              dealerExtraDiscount: dealerExtraDiscount,
+              directDiscount: directDiscount,
+              validatedDiscount: discountToValidate,
+              totalAppliedDiscount: item.discountPercentage + dealerExtraDiscount,
               maxLimit: maxDiscountLimit,
               discountMappingName: discountMapping.discountName
             }
@@ -444,14 +476,35 @@ export const createDealerInvoice = async (req, res) => {
             }
           }
           
-          const expectedTotalDiscount = directDiscount + expectedLevelDiscount + (item.dealerExtraDiscount || 0);
+          // NEW LOGIC: Calculate expected discount and validate excluding direct discount
+          const expectedTotalDiscount = directDiscount + expectedLevelDiscount;
+          const expectedValidatedDiscount = expectedLevelDiscount + (item.dealerExtraDiscount || 0);
           
           console.log(`  📊 Expected discount breakdown:`);
-          console.log(`    - Direct: ${directDiscount}%`);
+          console.log(`    - Direct: ${directDiscount}% (not limited)`);
           console.log(`    - Levels: ${expectedLevelDiscount}%`);
           console.log(`    - Dealer Extra: ${item.dealerExtraDiscount || 0}%`);
           console.log(`    - Total Expected: ${expectedTotalDiscount}%`);
+          console.log(`    - Validated Amount: ${expectedValidatedDiscount}% (≤ ${maxDiscountLimit}%)`);
           console.log(`    - Applied: ${item.discountPercentage}%`);
+          
+          // Validate that level + dealer extra doesn't exceed max limit
+          if (expectedValidatedDiscount > maxDiscountLimit) {
+            console.log(`  ❌ Level + dealer extra discount validation failed: ${expectedValidatedDiscount}% > ${maxDiscountLimit}%`);
+            return res.status(400).json({
+              success: false,
+              message: `Level-based and dealer extra discount for ${item.productName} (${expectedValidatedDiscount}%) exceeds maximum allowed limit of ${maxDiscountLimit}%. Direct discount (${directDiscount}%) is not limited.`,
+              validationError: {
+                type: 'LEVEL_DISCOUNT_LIMIT_EXCEEDED',
+                productName: item.productName,
+                levelBasedDiscount: expectedLevelDiscount,
+                dealerExtraDiscount: item.dealerExtraDiscount || 0,
+                directDiscount: directDiscount,
+                validatedDiscount: expectedValidatedDiscount,
+                maxLimit: maxDiscountLimit
+              }
+            });
+          }
           
           // Allow small rounding differences (0.01%)
           if (Math.abs(item.discountPercentage - expectedTotalDiscount) > 0.01) {

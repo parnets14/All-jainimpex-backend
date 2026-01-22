@@ -43,9 +43,17 @@ export const getDealerPerformance = async (req, res) => {
       filter.dealerType = dealerType;
     }
 
-    // Filter by period
+    // Filter by period (handle both old and new format)
     if (period) {
-      filter.period = period;
+      // Convert old format to new format for backward compatibility
+      let normalizedPeriod = period;
+      if (period === "Monthly Growth") normalizedPeriod = "Monthly";
+      if (period === "Daily Growth") normalizedPeriod = "Daily";
+      if (period === "Weekly Growth") normalizedPeriod = "Weekly";
+      if (period === "Quarterly Growth") normalizedPeriod = "Quarterly";
+      if (period === "Yearly Growth") normalizedPeriod = "Yearly";
+      
+      filter.period = normalizedPeriod;
     }
 
     // Date range filter
@@ -337,6 +345,7 @@ const getDateRanges = (period, currentDate = new Date()) => {
   };
 
   switch (period) {
+    case "Daily":
     case "Daily Growth":
       ranges.current.start = new Date(currentDate);
       ranges.current.start.setHours(0, 0, 0, 0);
@@ -351,6 +360,7 @@ const getDateRanges = (period, currentDate = new Date()) => {
       ranges.previous.end.setHours(23, 59, 59, 999);
       break;
 
+    case "Weekly":
     case "Weekly Growth":
       const startOfWeek = new Date(currentDate);
       startOfWeek.setDate(currentDate.getDate() - currentDate.getDay());
@@ -368,6 +378,7 @@ const getDateRanges = (period, currentDate = new Date()) => {
       ranges.previous.end.setHours(23, 59, 59, 999);
       break;
 
+    case "Monthly":
     case "Monthly Growth":
       ranges.current.start = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
       ranges.current.end = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0, 23, 59, 59, 999);
@@ -376,6 +387,7 @@ const getDateRanges = (period, currentDate = new Date()) => {
       ranges.previous.end = new Date(currentDate.getFullYear(), currentDate.getMonth(), 0, 23, 59, 59, 999);
       break;
 
+    case "Quarterly":
     case "Quarterly Growth":
       const currentQuarter = Math.floor(currentDate.getMonth() / 3);
       ranges.current.start = new Date(currentDate.getFullYear(), currentQuarter * 3, 1);
@@ -385,6 +397,7 @@ const getDateRanges = (period, currentDate = new Date()) => {
       ranges.previous.end = new Date(currentDate.getFullYear(), currentQuarter * 3, 0, 23, 59, 59, 999);
       break;
 
+    case "Yearly":
     case "Yearly Growth":
       ranges.current.start = new Date(currentDate.getFullYear(), 0, 1);
       ranges.current.end = new Date(currentDate.getFullYear(), 11, 31, 23, 59, 59, 999);
@@ -411,14 +424,22 @@ export const generateDealerPerformance = async (req, res) => {
     const {
       fromDate,
       toDate,
-      period = "Monthly Growth"
+      period = "Monthly"
     } = req.body;
 
+    // Normalize period for backward compatibility
+    let normalizedPeriod = period;
+    if (period === "Monthly Growth") normalizedPeriod = "Monthly";
+    if (period === "Daily Growth") normalizedPeriod = "Daily";
+    if (period === "Weekly Growth") normalizedPeriod = "Weekly";
+    if (period === "Quarterly Growth") normalizedPeriod = "Quarterly";
+    if (period === "Yearly Growth") normalizedPeriod = "Yearly";
+
     console.log("Starting dealer performance generation...");
-    console.log(`Period: ${period}`);
+    console.log(`Period: ${normalizedPeriod} (original: ${period})`);
 
     // Clear existing performance records for the period
-    await DealerPerformance.deleteMany({ period });
+    await DealerPerformance.deleteMany({ period: normalizedPeriod });
 
     // Build date filter
     const dateFilter = {};
@@ -435,7 +456,7 @@ export const generateDealerPerformance = async (req, res) => {
       console.log(`Processing dealer: ${dealer.name} (${dealer.code})`);
 
       // Get date ranges for current and previous periods
-      const dateRanges = getDateRanges(period, fromDate ? new Date(fromDate) : new Date());
+      const dateRanges = getDateRanges(normalizedPeriod, fromDate ? new Date(fromDate) : new Date());
 
       // Get invoices for current period
       const currentPeriodInvoices = await DealerInvoice.find({
@@ -585,7 +606,7 @@ export const generateDealerPerformance = async (req, res) => {
           performance,
           rank: 0, // Will be calculated after sorting
           performanceDate: toDate ? new Date(toDate) : new Date(),
-          period,
+          period: normalizedPeriod,
           products,
           totalProfit,
           averageProfitMargin,

@@ -1,32 +1,47 @@
 import ActivityLog from "../models/ActivityLog.js";
 
-// Middleware to log user activities
+// Enhanced middleware to log user activities with better context
 export const logActivity = (module, activity, action = "READ") => {
   return async (req, res, next) => {
     try {
       // Only log if user is authenticated
       if (req.user) {
-        const logData = {
-          user: req.user._id,
-          username: req.user.username || req.user.name || "Unknown",
-          module: module,
-          activity: activity,
-          action: action,
-          details: {
-            method: req.method,
-            url: req.originalUrl,
-            params: req.params,
-            query: req.query,
-          },
-          ipAddress: req.ip || req.connection.remoteAddress,
-          userAgent: req.get("User-Agent"),
-          status: "SUCCESS",
-        };
+        // Capture the original response send method
+        const originalSend = res.send;
+        
+        res.send = function (data) {
+          // Determine status based on response
+          const isSuccess = res.statusCode >= 200 && res.statusCode < 400;
+          
+          const logData = {
+            user: req.user._id,
+            username: req.user.username || req.user.name || "Unknown",
+            module: module,
+            activity: activity,
+            action: action,
+            details: {
+              method: req.method,
+              url: req.originalUrl,
+              params: req.params,
+              query: req.query,
+              statusCode: res.statusCode,
+              responseSize: data ? JSON.stringify(data).length : 0,
+              userRole: req.user.role,
+              timestamp: new Date().toISOString()
+            },
+            ipAddress: req.ip || req.connection.remoteAddress || req.headers['x-forwarded-for'],
+            userAgent: req.get("User-Agent"),
+            status: isSuccess ? "SUCCESS" : "FAILED",
+          };
 
-        // Don't await to avoid slowing down the response
-        ActivityLog.create(logData).catch((error) => {
-          console.error("Failed to log activity:", error);
-        });
+          // Don't await to avoid slowing down the response
+          ActivityLog.create(logData).catch((error) => {
+            console.error("Failed to log activity:", error);
+          });
+          
+          // Call original send method
+          originalSend.call(this, data);
+        };
       }
     } catch (error) {
       console.error("Activity logging middleware error:", error);
