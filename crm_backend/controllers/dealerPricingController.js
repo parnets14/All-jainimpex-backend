@@ -7,6 +7,7 @@ import Category from '../models/Category.js';
 import Subcategory from '../models/Subcategory.js';
 import DiscountMapping from '../models/DiscountMapping.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
+import SupplierInvoice from '../models/SupplierInvoice.js';
 import { v4 as uuidv4 } from 'uuid';
 
 // @desc    Get all dealer pricing records with enhanced filtering
@@ -300,6 +301,8 @@ export const createOrUpdateDealerPricing = async (req, res) => {
 
     if (pricing) {
       // Update existing record
+      const oldSellingPrice = pricing.sellingPrice;
+      
       pricing.sellingPrice = sellingPrice;
       if (finalPurchasePrice) pricing.purchasePrice = finalPurchasePrice;
       if (mrp !== undefined) pricing.mrp = mrp;
@@ -308,6 +311,25 @@ export const createOrUpdateDealerPricing = async (req, res) => {
       pricing.isActive = true;
       
       await pricing.save();
+
+      // Log price change if selling price was updated
+      if (sellingPrice !== oldSellingPrice) {
+        try {
+          await DealerPricingHistory.logPriceChange({
+            product: productId,
+            oldPrice: oldSellingPrice,
+            newPrice: sellingPrice,
+            changeType: 'manual',
+            changeMethod: 'direct_update',
+            reason: notes || 'Price update via API',
+            changedBy: req.user._id
+          });
+          console.log(`📊 Price history logged: ${productId} - ₹${oldSellingPrice} → ₹${sellingPrice}`);
+        } catch (historyError) {
+          console.error('Error logging price history:', historyError);
+          // Don't fail the main operation if history logging fails
+        }
+      }
     } else {
       // Create new record
       pricing = await DealerPricing.create({
@@ -318,6 +340,23 @@ export const createOrUpdateDealerPricing = async (req, res) => {
         notes,
         createdBy: req.user._id
       });
+
+      // Log initial price setting for new products
+      try {
+        await DealerPricingHistory.logPriceChange({
+          product: productId,
+          oldPrice: 0,
+          newPrice: sellingPrice,
+          changeType: 'manual',
+          changeMethod: 'direct_update',
+          reason: notes || 'Initial price setting',
+          changedBy: req.user._id
+        });
+        console.log(`📊 Initial price history logged: ${productId} - ₹0 → ₹${sellingPrice}`);
+      } catch (historyError) {
+        console.error('Error logging initial price history:', historyError);
+        // Don't fail the main operation if history logging fails
+      }
     }
 
     await pricing.populate('product', 'itemName productCode brand category subcategory');
@@ -360,6 +399,9 @@ export const updateDealerPricing = async (req, res) => {
       });
     }
 
+    // Store old price for history logging
+    const oldSellingPrice = pricing.sellingPrice;
+
     if (sellingPrice !== undefined) pricing.sellingPrice = sellingPrice;
     if (purchasePrice !== undefined) pricing.purchasePrice = purchasePrice;
     if (mrp !== undefined) pricing.mrp = mrp;
@@ -368,6 +410,26 @@ export const updateDealerPricing = async (req, res) => {
     pricing.updatedBy = req.user._id;
 
     await pricing.save();
+
+    // Log price change if selling price was updated
+    if (sellingPrice !== undefined && sellingPrice !== oldSellingPrice) {
+      try {
+        await DealerPricingHistory.logPriceChange({
+          product: pricing.product,
+          oldPrice: oldSellingPrice,
+          newPrice: sellingPrice,
+          changeType: 'manual',
+          changeMethod: 'direct_update',
+          reason: notes || 'Manual price update',
+          changedBy: req.user._id
+        });
+        console.log(`📊 Price history logged: ${pricing.product} - ₹${oldSellingPrice} → ₹${sellingPrice}`);
+      } catch (historyError) {
+        console.error('Error logging price history:', historyError);
+        // Don't fail the main operation if history logging fails
+      }
+    }
+
     await pricing.populate('product', 'itemName productCode brand category subcategory');
     await pricing.populate('lastPurchaseSupplier', 'name companyName');
 
@@ -415,11 +477,30 @@ export const bulkUpdateDealerPricing = async (req, res) => {
         let pricing = await DealerPricing.findOne({ product: productId });
 
         if (pricing) {
+          const oldSellingPrice = pricing.sellingPrice;
+          
           pricing.sellingPrice = sellingPrice;
           if (purchasePrice !== undefined) pricing.purchasePrice = purchasePrice;
           if (mrp !== undefined) pricing.mrp = mrp;
           pricing.updatedBy = req.user._id;
           await pricing.save();
+
+          // Log price change if selling price was updated
+          if (sellingPrice !== oldSellingPrice) {
+            try {
+              await DealerPricingHistory.logPriceChange({
+                product: productId,
+                oldPrice: oldSellingPrice,
+                newPrice: sellingPrice,
+                changeType: 'bulk_update',
+                changeMethod: 'direct_update',
+                reason: 'Bulk price update',
+                changedBy: req.user._id
+              });
+            } catch (historyError) {
+              console.error('Error logging bulk price history:', historyError);
+            }
+          }
         } else {
           pricing = await DealerPricing.create({
             product: productId,
@@ -428,6 +509,21 @@ export const bulkUpdateDealerPricing = async (req, res) => {
             mrp,
             createdBy: req.user._id
           });
+
+          // Log initial price setting for new products
+          try {
+            await DealerPricingHistory.logPriceChange({
+              product: productId,
+              oldPrice: 0,
+              newPrice: sellingPrice,
+              changeType: 'bulk_update',
+              changeMethod: 'direct_update',
+              reason: 'Initial price setting via bulk update',
+              changedBy: req.user._id
+            });
+          } catch (historyError) {
+            console.error('Error logging bulk initial price history:', historyError);
+          }
         }
 
         results.push({ productId, success: true, pricing: pricing._id });
@@ -1106,18 +1202,92 @@ export const getPriceHistory = async (req, res) => {
   }
 };
 
-// @desc    Update discount information for all products
+// @desc    Get all price history (for Price History tab)
+// @route   GET /api/dealer-pricing/all-price-history
+// @access  Private
+export const getAllPriceHistory = async (req, res) => {
+  try {
+    const { 
+      page = 1, 
+      limit = 50,
+      search,
+      changeType,
+      dateFrom,
+      dateTo
+    } = req.query;
+    
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    // Build filter
+    let filter = {};
+    
+    // Date range filter
+    if (dateFrom || dateTo) {
+      filter.changeDate = {};
+      if (dateFrom) filter.changeDate.$gte = new Date(dateFrom);
+      if (dateTo) filter.changeDate.$lte = new Date(dateTo);
+    }
+    
+    // Change type filter
+    if (changeType && changeType !== 'all') {
+      filter.changeType = changeType;
+    }
+    
+    // Get history with product details
+    const history = await DealerPricingHistory.find(filter)
+      .populate('product', 'itemName itemCode')
+      .populate('changedBy', 'name')
+      .sort({ changeDate: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    // Apply search filter after population (if needed)
+    let filteredHistory = history;
+    if (search) {
+      const searchLower = search.toLowerCase();
+      filteredHistory = history.filter(record => 
+        record.product?.itemName?.toLowerCase().includes(searchLower) ||
+        record.product?.itemCode?.toLowerCase().includes(searchLower) ||
+        record.reason?.toLowerCase().includes(searchLower)
+      );
+    }
+    
+    // Get total count for pagination
+    const totalCount = await DealerPricingHistory.countDocuments(filter);
+    
+    res.json({
+      success: true,
+      data: filteredHistory,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(totalCount / parseInt(limit)),
+        totalRecords: totalCount,
+        hasNext: skip + filteredHistory.length < totalCount,
+        hasPrev: parseInt(page) > 1
+      }
+    });
+  } catch (error) {
+    console.error('Get all price history error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching price history',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Update discount information for all products (enhanced with purchase discounts)
 // @route   POST /api/dealer-pricing/update-discount-info
 // @access  Private
 export const updateDiscountInfo = async (req, res) => {
   try {
-    console.log('🔄 Updating discount info for all products...');
+    console.log('🔄 Updating comprehensive discount info (sales + purchase) for all products...');
     
     const updatedCount = await DealerPricing.updateAllDiscountInfo();
     
     res.json({
       success: true,
-      message: `Updated discount information for ${updatedCount} products`,
+      message: `Updated comprehensive discount information for ${updatedCount} products`,
       updatedCount
     });
   } catch (error) {
@@ -1130,5 +1300,751 @@ export const updateDiscountInfo = async (req, res) => {
   }
 };
 
+// @desc    Sync purchase prices from supplier invoices
+// @route   POST /api/dealer-pricing/sync-purchase-prices-from-invoices
+// @access  Private
+export const syncPurchasePricesFromInvoices = async (req, res) => {
+  try {
+    console.log('🔄 Syncing purchase prices from supplier invoices...');
+    
+    const syncedCount = await DealerPricing.syncAllPurchasePricesFromInvoices();
+    
+    res.json({
+      success: true,
+      message: `Synced purchase prices for ${syncedCount} products from supplier invoices`,
+      syncedCount
+    });
+  } catch (error) {
+    console.error('Sync purchase prices from invoices error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error syncing purchase prices from invoices',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Get comprehensive pricing with both sales and purchase discounts
+// @route   GET /api/dealer-pricing/comprehensive
+// @access  Private
+export const getComprehensivePricing = async (req, res) => {
+  try {
+    const { 
+      page = 1, 
+      limit = 50, 
+      search, 
+      productId,
+      brandId,
+      categoryId,
+      subcategoryId,
+      hasScheduledChange,
+      hasDirectDiscount,
+      hasPurchaseDiscount,
+      sortBy = 'updatedAt',
+      sortOrder = 'desc'
+    } = req.query;
+    
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const filter = { isActive: true };
+    
+    // Product-specific filter
+    if (productId) {
+      filter.product = productId;
+    }
+
+    // Boolean filters
+    if (hasScheduledChange !== undefined) {
+      filter.hasScheduledChange = hasScheduledChange === 'true';
+    }
+    
+    if (hasDirectDiscount !== undefined) {
+      filter.hasDirectDiscount = hasDirectDiscount === 'true';
+    }
+    
+    if (hasPurchaseDiscount !== undefined) {
+      filter['purchaseDiscountInfo.hasDirectDiscount'] = hasPurchaseDiscount === 'true';
+    }
+
+    // Build product filter for hierarchy-based filtering
+    let productFilter = {};
+    
+    if (brandId) {
+      productFilter.brand = brandId;
+    }
+    
+    if (categoryId) {
+      productFilter.category = categoryId;
+    }
+    
+    if (subcategoryId) {
+      productFilter.subcategory = subcategoryId;
+    }
+
+    if (search) {
+      productFilter.$or = [
+        { itemName: { $regex: search, $options: 'i' } },
+        { productCode: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    // If we have product filters, get matching product IDs
+    if (Object.keys(productFilter).length > 0) {
+      const products = await Product.find(productFilter).select('_id');
+      const productIds = products.map(p => p._id);
+      
+      if (filter.product) {
+        // If productId was already specified, ensure it's in the filtered list
+        if (!productIds.some(id => id.toString() === filter.product.toString())) {
+          // No matching products, return empty result
+          return res.json({
+            success: true,
+            data: [],
+            pagination: {
+              currentPage: parseInt(page),
+              totalPages: 0,
+              totalRecords: 0,
+              hasNext: false,
+              hasPrev: false
+            }
+          });
+        }
+      } else {
+        filter.product = { $in: productIds };
+      }
+    }
+
+    // Build sort object
+    const sort = {};
+    sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
+
+    const pricingRecords = await DealerPricing.find(filter)
+      .populate({
+        path: 'product',
+        select: 'itemName productCode brand category subcategory',
+        populate: [
+          { path: 'brand', select: 'name' },
+          { path: 'category', select: 'name' },
+          { path: 'subcategory', select: 'name' }
+        ]
+      })
+      .populate('lastPurchaseSupplier', 'name companyName')
+      .populate('lastSupplierInvoice', 'invoiceNumber invoiceDate')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email')
+      .sort(sort)
+      .limit(parseInt(limit))
+      .skip(skip);
+
+    const total = await DealerPricing.countDocuments(filter);
+
+    // Filter out records with null products and enhance records with additional information
+    const validRecords = pricingRecords.filter(pricing => pricing.product != null);
+    
+    // Handle empty records gracefully
+    if (validRecords.length === 0) {
+      return res.json({
+        success: true,
+        data: [],
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: 0,
+          totalRecords: 0,
+          hasNext: false,
+          hasPrev: false
+        }
+      });
+    }
+    
+    const enhancedRecords = await Promise.all(
+      validRecords.map(async (pricing) => {
+        const pricingObj = pricing.toObject();
+        
+        // Get scheduled changes
+        try {
+          const scheduledChanges = await DealerPricingSchedule.find({
+            product: pricing.product._id,
+            status: 'Scheduled',
+            isActive: true
+          }).sort({ effectiveDate: 1 }).limit(1);
+
+          if (scheduledChanges.length > 0) {
+            pricingObj.nextScheduledChange = scheduledChanges[0];
+          }
+
+          // Get recent price history
+          const priceHistory = await DealerPricingHistory.find({
+            product: pricing.product._id
+          })
+          .populate('changedBy', 'name')
+          .sort({ changeDate: -1 })
+          .limit(3);
+
+          pricingObj.recentPriceHistory = priceHistory;
+          
+          // Add comprehensive discount summary
+          pricingObj.discountSummary = {
+            sales: {
+              hasDiscount: pricingObj.hasDirectDiscount,
+              directPercentage: pricingObj.directDiscountPercentage,
+              maxPercentage: pricingObj.maxDiscountPercentage,
+              source: pricingObj.salesDiscountSource,
+              sourceName: pricingObj.salesDiscountSourceName
+            },
+            purchase: {
+              hasDirectDiscount: pricingObj.purchaseDiscountInfo?.hasDirectDiscount || false,
+              directPercentage: pricingObj.purchaseDiscountInfo?.directDiscountPercentage || 0,
+              hasFloatingDiscount: pricingObj.purchaseDiscountInfo?.hasFloatingDiscount || false,
+              floatingMin: pricingObj.purchaseDiscountInfo?.floatingDiscountMin || 0,
+              floatingMax: pricingObj.purchaseDiscountInfo?.floatingDiscountMax || 0,
+              source: pricingObj.purchaseDiscountInfo?.discountSource,
+              sourceName: pricingObj.purchaseDiscountInfo?.discountSourceName
+            }
+          };
+          
+          // Add margin analysis
+          pricingObj.marginAnalysis = {
+            gross: pricingObj.grossMargin,
+            net: pricingObj.netMargin,
+            range: {
+              min: pricingObj.marginRange?.min || pricingObj.netMargin,
+              max: pricingObj.marginRange?.max || pricingObj.netMargin
+            },
+            effectivePrices: {
+              purchase: pricingObj.effectivePurchasePrice,
+              selling: pricingObj.effectiveSellingPrice
+            }
+          };
+          
+        } catch (error) {
+          console.error('Error fetching additional data for product:', pricing.product._id, error);
+          // Continue without additional data
+        }
+
+        return pricingObj;
+      })
+    );
+
+    res.json({
+      success: true,
+      data: enhancedRecords,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / parseInt(limit)),
+        totalRecords: total,
+        hasNext: skip + enhancedRecords.length < total,
+        hasPrev: parseInt(page) > 1
+      }
+    });
+  } catch (error) {
+    console.error('Get comprehensive pricing error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching comprehensive pricing',
+      error: error.message
+    });
+  }
+};
 
 
+
+
+// @desc    Comprehensive Price Validation and Auto-Sync System
+// @route   POST /api/dealer-pricing/validate-and-sync-all
+// @access  Private
+export const validateAndSyncAllPricing = async (req, res) => {
+  try {
+    console.log('🚨 COMPREHENSIVE PRICE VALIDATION AND AUTO-SYNC SYSTEM STARTING...\n');
+    
+    const results = {
+      totalProducts: 0,
+      validatedProducts: 0,
+      correctedProducts: 0,
+      newProductsCreated: 0,
+      syncedFromPurchases: 0,
+      syncedFromInvoices: 0,
+      warnings: [],
+      errors: [],
+      corrections: []
+    };
+
+    // 1. GET ALL PRODUCTS WITH RATE SLABS
+    console.log('📋 Step 1: Getting all products with rate slabs...');
+    const allProducts = await Product.find({
+      'rateSlabs.0.rate': { $gt: 0 }
+    }).populate('brand category subcategory', 'name');
+    
+    results.totalProducts = allProducts.length;
+    console.log(`Found ${allProducts.length} products with rate slabs\n`);
+
+    // 2. GET ALL EXISTING DEALER PRICING RECORDS
+    console.log('💰 Step 2: Getting existing dealer pricing records...');
+    const existingPricingRecords = await DealerPricing.find({ isActive: true });
+    const existingPricingMap = {};
+    existingPricingRecords.forEach(pricing => {
+      existingPricingMap[pricing.product.toString()] = pricing;
+    });
+    console.log(`Found ${existingPricingRecords.length} existing pricing records\n`);
+
+    // 3. PROCESS EACH PRODUCT
+    console.log('🔍 Step 3: Processing each product for validation and sync...\n');
+    
+    for (const product of allProducts) {
+      try {
+        const productId = product._id.toString();
+        const masterPrice = product.rateSlabs[0].rate;
+        let pricing = existingPricingMap[productId];
+        let isNewRecord = false;
+
+        // 3a. CREATE PRICING RECORD IF MISSING
+        if (!pricing) {
+          console.log(`➕ Creating new pricing record for: ${product.itemName} (${product.productCode})`);
+          
+          pricing = new DealerPricing({
+            product: product._id,
+            purchasePrice: 0,
+            sellingPrice: masterPrice,
+            purchasePriceSource: 'product_master',
+            isActive: true,
+            createdBy: null // System created
+          });
+          
+          isNewRecord = true;
+          results.newProductsCreated++;
+        }
+
+        // 3b. SYNC PURCHASE PRICE FROM RECENT PURCHASE ORDERS
+        console.log(`🔄 Syncing purchase price for: ${product.itemName}`);
+        
+        const recentPO = await PurchaseOrder.findOne({
+          'lines.productId': product._id,
+          status: { $in: ['Approved', 'Completed', 'Received'] }
+        }).sort({ orderDate: -1 });
+
+        let actualPurchasePrice = null;
+        if (recentPO) {
+          const productLine = recentPO.lines.find(line => 
+            line.productId && line.productId.toString() === productId
+          );
+          
+          if (productLine && productLine.unitPrice && productLine.unitPrice > 0) {
+            actualPurchasePrice = productLine.unitPrice;
+            pricing.purchasePrice = actualPurchasePrice;
+            pricing.purchasePriceSource = 'purchase_order';
+            pricing.lastPurchasePriceUpdate = new Date();
+            results.syncedFromPurchases++;
+            console.log(`  ✅ Synced from PO: ₹${actualPurchasePrice}`);
+          }
+        }
+
+        // 3c. SYNC FROM SUPPLIER INVOICES IF NO PO DATA
+        if (!actualPurchasePrice) {
+          const recentInvoice = await SupplierInvoice.findOne({
+            'items.productId': product._id,
+            status: { $in: ['Approved', 'Completed', 'Paid'] }
+          }).sort({ invoiceDate: -1, createdAt: -1 });
+
+          if (recentInvoice) {
+            const productItem = recentInvoice.items.find(item => 
+              item.productId && item.productId.toString() === productId
+            );
+
+            if (productItem && productItem.unitPrice > 0) {
+              let effectivePrice = productItem.unitPrice;
+              
+              // Apply discounts from invoice
+              if (productItem.directDiscount > 0) {
+                effectivePrice = effectivePrice - (effectivePrice * productItem.directDiscount / 100);
+              }
+              if (productItem.floatingDiscount > 0) {
+                effectivePrice = effectivePrice - (effectivePrice * productItem.floatingDiscount / 100);
+              }
+              
+              pricing.purchasePrice = Math.max(0, effectivePrice);
+              pricing.purchasePriceSource = 'supplier_invoice';
+              pricing.lastPurchasePriceUpdate = new Date();
+              pricing.lastSupplierInvoice = recentInvoice._id;
+              results.syncedFromInvoices++;
+              console.log(`  ✅ Synced from Invoice: ₹${productItem.unitPrice} → ₹${pricing.purchasePrice} (after discounts)`);
+            }
+          }
+        }
+
+        // 3d. PRICE VALIDATION AND CORRECTION
+        const currentPurchasePrice = pricing.purchasePrice;
+        const currentSellingPrice = pricing.sellingPrice;
+        let correctionMade = false;
+
+        // Validation 1: Selling price vs Master price
+        if (masterPrice > 0) {
+          const sellingVsMasterDiff = Math.abs(currentSellingPrice - masterPrice) / masterPrice * 100;
+          
+          if (sellingVsMasterDiff > 50) {
+            results.warnings.push({
+              productId,
+              productName: product.itemName,
+              productCode: product.productCode,
+              type: 'SELLING_PRICE_DISCREPANCY',
+              message: `Selling price (₹${currentSellingPrice}) differs by ${sellingVsMasterDiff.toFixed(1)}% from master price (₹${masterPrice})`,
+              masterPrice,
+              currentSellingPrice,
+              difference: sellingVsMasterDiff
+            });
+
+            // Auto-correct if selling price is suspiciously low (less than 50% of master)
+            if (currentSellingPrice < (masterPrice * 0.5)) {
+              const correctedSellingPrice = Math.round(masterPrice * 0.85); // 85% of master
+              
+              // Create history record before correction
+              await DealerPricingHistory.create({
+                product: product._id,
+                oldPurchasePrice: currentPurchasePrice,
+                newPurchasePrice: currentPurchasePrice,
+                oldSellingPrice: currentSellingPrice,
+                newSellingPrice: correctedSellingPrice,
+                changeType: 'auto_correction',
+                reason: `Auto-corrected selling price - was ${sellingVsMasterDiff.toFixed(1)}% different from master price`,
+                changeDate: new Date(),
+                changedBy: null // System correction
+              });
+
+              pricing.sellingPrice = correctedSellingPrice;
+              correctionMade = true;
+              
+              results.corrections.push({
+                productId,
+                productName: product.itemName,
+                type: 'SELLING_PRICE_CORRECTION',
+                oldPrice: currentSellingPrice,
+                newPrice: correctedSellingPrice,
+                reason: 'Auto-corrected based on master price analysis'
+              });
+              
+              console.log(`  🔧 Auto-corrected selling price: ₹${currentSellingPrice} → ₹${correctedSellingPrice}`);
+            }
+          }
+        }
+
+        // Validation 2: Purchase price vs Selling price
+        if (currentPurchasePrice > currentSellingPrice && currentSellingPrice > 0) {
+          results.warnings.push({
+            productId,
+            productName: product.itemName,
+            productCode: product.productCode,
+            type: 'NEGATIVE_MARGIN',
+            message: `Purchase price (₹${currentPurchasePrice}) is higher than selling price (₹${currentSellingPrice})`,
+            purchasePrice: currentPurchasePrice,
+            sellingPrice: currentSellingPrice
+          });
+        }
+
+        // Validation 3: Zero or very low purchase price
+        if (currentPurchasePrice <= 0 && masterPrice > 1000) {
+          results.warnings.push({
+            productId,
+            productName: product.itemName,
+            productCode: product.productCode,
+            type: 'MISSING_PURCHASE_PRICE',
+            message: `No purchase price set for high-value product (Master: ₹${masterPrice})`,
+            masterPrice
+          });
+        }
+
+        // 3e. UPDATE DISCOUNT INFORMATION
+        await pricing.updateAllDiscountInfo();
+
+        // 3f. ENABLE AUTO-SYNC FOR FUTURE UPDATES
+        if (pricing.purchasePriceSource === 'manual') {
+          pricing.purchasePriceSource = 'auto_sync_enabled';
+        }
+
+        // 3g. SAVE THE PRICING RECORD
+        await pricing.save();
+        
+        if (correctionMade) {
+          results.correctedProducts++;
+        }
+        
+        results.validatedProducts++;
+        
+        console.log(`  ✅ Processed: ${product.itemName} - P:₹${pricing.purchasePrice}, S:₹${pricing.sellingPrice}, Source:${pricing.purchasePriceSource}`);
+
+      } catch (error) {
+        console.error(`❌ Error processing product ${product.itemName}:`, error);
+        results.errors.push({
+          productId: product._id,
+          productName: product.itemName,
+          error: error.message
+        });
+      }
+    }
+
+    // 4. FINAL SUMMARY
+    console.log('\n' + '='.repeat(80));
+    console.log('📊 COMPREHENSIVE PRICE VALIDATION AND AUTO-SYNC COMPLETED');
+    console.log('='.repeat(80));
+    console.log(`Total Products Processed: ${results.totalProducts}`);
+    console.log(`Successfully Validated: ${results.validatedProducts}`);
+    console.log(`New Records Created: ${results.newProductsCreated}`);
+    console.log(`Auto-Corrected: ${results.correctedProducts}`);
+    console.log(`Synced from Purchase Orders: ${results.syncedFromPurchases}`);
+    console.log(`Synced from Supplier Invoices: ${results.syncedFromInvoices}`);
+    console.log(`Warnings Generated: ${results.warnings.length}`);
+    console.log(`Errors Encountered: ${results.errors.length}`);
+
+    res.json({
+      success: true,
+      message: 'Comprehensive price validation and auto-sync completed successfully',
+      data: results
+    });
+
+  } catch (error) {
+    console.error('❌ Comprehensive validation failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error in comprehensive price validation and sync',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Get Price Validation Warnings for all products
+// @route   GET /api/dealer-pricing/validation-warnings
+// @access  Private
+export const getPriceValidationWarnings = async (req, res) => {
+  try {
+    const warnings = [];
+    
+    // Get all products with pricing records
+    const pricingRecords = await DealerPricing.find({ isActive: true })
+      .populate('product', 'itemName productCode rateSlabs');
+    
+    for (const pricing of pricingRecords) {
+      if (!pricing.product) continue;
+      
+      const product = pricing.product;
+      const masterPrice = product.rateSlabs?.[0]?.rate || 0;
+      const purchasePrice = pricing.purchasePrice;
+      const sellingPrice = pricing.sellingPrice;
+      
+      // Check for various warning conditions
+      
+      // 1. Selling price vs Master price discrepancy
+      if (masterPrice > 0) {
+        const sellingVsMasterDiff = Math.abs(sellingPrice - masterPrice) / masterPrice * 100;
+        if (sellingVsMasterDiff > 30) {
+          warnings.push({
+            productId: product._id,
+            productName: product.itemName,
+            productCode: product.productCode,
+            type: 'PRICE_DISCREPANCY',
+            severity: sellingVsMasterDiff > 70 ? 'HIGH' : 'MEDIUM',
+            message: `Selling price differs by ${sellingVsMasterDiff.toFixed(1)}% from master price`,
+            details: {
+              masterPrice,
+              sellingPrice,
+              difference: sellingVsMasterDiff,
+              purchasePrice
+            }
+          });
+        }
+      }
+      
+      // 2. Negative margin
+      if (purchasePrice > sellingPrice && sellingPrice > 0) {
+        warnings.push({
+          productId: product._id,
+          productName: product.itemName,
+          productCode: product.productCode,
+          type: 'NEGATIVE_MARGIN',
+          severity: 'HIGH',
+          message: `Purchase price (₹${purchasePrice}) exceeds selling price (₹${sellingPrice})`,
+          details: {
+            purchasePrice,
+            sellingPrice,
+            loss: purchasePrice - sellingPrice
+          }
+        });
+      }
+      
+      // 3. Missing purchase price for high-value items
+      if (purchasePrice <= 0 && masterPrice > 1000) {
+        warnings.push({
+          productId: product._id,
+          productName: product.itemName,
+          productCode: product.productCode,
+          type: 'MISSING_PURCHASE_PRICE',
+          severity: 'MEDIUM',
+          message: `No purchase price set for high-value product`,
+          details: {
+            masterPrice,
+            purchasePrice: 0
+          }
+        });
+      }
+      
+      // 4. Very low margin (less than 5%)
+      if (purchasePrice > 0 && sellingPrice > 0) {
+        const margin = ((sellingPrice - purchasePrice) / purchasePrice) * 100;
+        if (margin < 5 && margin >= 0) {
+          warnings.push({
+            productId: product._id,
+            productName: product.itemName,
+            productCode: product.productCode,
+            type: 'LOW_MARGIN',
+            severity: 'MEDIUM',
+            message: `Very low profit margin: ${margin.toFixed(2)}%`,
+            details: {
+              purchasePrice,
+              sellingPrice,
+              margin
+            }
+          });
+        }
+      }
+      
+      // 5. Outdated purchase price source
+      if (pricing.purchasePriceSource === 'manual' && pricing.lastPurchasePriceUpdate) {
+        const daysSinceUpdate = (new Date() - new Date(pricing.lastPurchasePriceUpdate)) / (1000 * 60 * 60 * 24);
+        if (daysSinceUpdate > 90) {
+          warnings.push({
+            productId: product._id,
+            productName: product.itemName,
+            productCode: product.productCode,
+            type: 'OUTDATED_PRICE',
+            severity: 'LOW',
+            message: `Purchase price not updated for ${Math.floor(daysSinceUpdate)} days`,
+            details: {
+              lastUpdate: pricing.lastPurchasePriceUpdate,
+              daysSinceUpdate: Math.floor(daysSinceUpdate),
+              source: pricing.purchasePriceSource
+            }
+          });
+        }
+      }
+    }
+    
+    // Sort warnings by severity
+    const severityOrder = { 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1 };
+    warnings.sort((a, b) => severityOrder[b.severity] - severityOrder[a.severity]);
+    
+    res.json({
+      success: true,
+      data: {
+        warnings,
+        summary: {
+          total: warnings.length,
+          high: warnings.filter(w => w.severity === 'HIGH').length,
+          medium: warnings.filter(w => w.severity === 'MEDIUM').length,
+          low: warnings.filter(w => w.severity === 'LOW').length
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('Get price validation warnings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching price validation warnings',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Auto-sync system for new products (called when new product is created)
+// @route   POST /api/dealer-pricing/auto-sync-new-product
+// @access  Private
+export const autoSyncNewProduct = async (req, res) => {
+  try {
+    const { productId } = req.body;
+    
+    if (!productId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Product ID is required'
+      });
+    }
+    
+    console.log(`🆕 Auto-syncing new product: ${productId}`);
+    
+    // Get the product
+    const product = await Product.findById(productId);
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
+    
+    // Check if pricing record already exists
+    let pricing = await DealerPricing.findOne({ product: productId, isActive: true });
+    
+    if (pricing) {
+      return res.json({
+        success: true,
+        message: 'Pricing record already exists',
+        data: pricing
+      });
+    }
+    
+    // Get selling price from rate slabs
+    const sellingPrice = product.rateSlabs && product.rateSlabs.length > 0
+      ? product.rateSlabs[0].rate
+      : 0;
+    
+    if (sellingPrice <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Product has no valid rate slab price'
+      });
+    }
+    
+    // Create new pricing record
+    pricing = new DealerPricing({
+      product: productId,
+      purchasePrice: 0, // Will be updated when actual purchase happens
+      sellingPrice,
+      purchasePriceSource: 'product_master',
+      isActive: true,
+      createdBy: req.user?._id || null
+    });
+    
+    // Update discount information
+    await pricing.updateAllDiscountInfo();
+    
+    // Enable auto-sync
+    pricing.purchasePriceSource = 'auto_sync_enabled';
+    
+    // Save the record
+    await pricing.save();
+    
+    // Log initial price setting
+    await DealerPricingHistory.create({
+      product: productId,
+      oldPurchasePrice: 0,
+      newPurchasePrice: 0,
+      oldSellingPrice: 0,
+      newSellingPrice: sellingPrice,
+      changeType: 'auto_create',
+      reason: 'Auto-created pricing record for new product',
+      changeDate: new Date(),
+      changedBy: req.user?._id || null
+    });
+    
+    console.log(`✅ Auto-created pricing record for new product: ${product.itemName} - ₹${sellingPrice}`);
+    
+    res.json({
+      success: true,
+      message: 'Auto-sync completed for new product',
+      data: pricing
+    });
+    
+  } catch (error) {
+    console.error('Auto-sync new product error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error in auto-sync for new product',
+      error: error.message
+    });
+  }
+};

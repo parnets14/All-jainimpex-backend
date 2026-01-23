@@ -41,6 +41,7 @@ import regionRoutes from "./routes/regionRoutes.js";
 import supplierRoutes from "./routes/supplierRoutes.js";
 import referenceRoutes from "./routes/referenceRoutes.js";
 import discountMappingRoutes from "./routes/discountMappingRoutes.js";
+import purchaseDiscountRoutes from "./routes/purchaseDiscountRoutes.js";
 import pointsRoutes from "./routes/pointsRoutes.js";
 import warehouseRoutes from "./routes/warehouseRoutes.js";
 import purchaseOrderRoutes from "./routes/purchaseOrderRoutes.js";
@@ -290,6 +291,7 @@ app.use("/api/regions", regionRoutes);
 app.use("/api/suppliers", supplierRoutes);
 app.use("/api/reference", referenceRoutes);
 app.use("/api/discount-mappings", discountMappingRoutes);
+app.use("/api/purchase-discounts", purchaseDiscountRoutes);
 app.use("/api/points", pointsRoutes);
 app.use("/api/warehouses", warehouseRoutes);
 app.use("/api/purchase-orders", purchaseOrderRoutes);
@@ -469,6 +471,14 @@ app.use("/public", express.static(join(__dirname, "public")));
     scheduleLogCleanup();
   } catch (error) {
     console.error('❌ Failed to initialize log cleanup cron job:', error);
+  }
+
+  // Initialize scheduled pricing cron job
+  try {
+    const { startScheduledPricingJob } = await import('./cron/scheduledPricing.js');
+    startScheduledPricingJob();
+  } catch (error) {
+    console.error('❌ Failed to initialize scheduled pricing cron job:', error);
   }
 
   // Start server

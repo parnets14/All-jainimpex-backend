@@ -106,10 +106,32 @@ dealerPricingScheduleSchema.statics.applyScheduledChanges = async function() {
         });
 
         if (pricing) {
+          const oldPrice = pricing.sellingPrice;
+          
           // Update the selling price
           pricing.sellingPrice = schedule.newPrice;
           pricing.updatedBy = schedule.createdBy; // Use original creator as updater
           await pricing.save();
+
+          // Log price change history
+          try {
+            const DealerPricingHistory = mongoose.model('DealerPricingHistory');
+            await DealerPricingHistory.logPriceChange({
+              product: schedule.product._id,
+              oldPrice: oldPrice,
+              newPrice: schedule.newPrice,
+              changeType: 'scheduled',
+              changeMethod: schedule.changeType,
+              changeValue: schedule.changeValue,
+              reason: schedule.reason || 'Scheduled price change',
+              notes: schedule.notes,
+              scheduleId: schedule._id,
+              changedBy: schedule.createdBy
+            });
+          } catch (historyError) {
+            console.error('Error logging scheduled price history:', historyError);
+            // Don't fail the main operation if history logging fails
+          }
 
           // Mark schedule as applied
           schedule.status = 'Applied';

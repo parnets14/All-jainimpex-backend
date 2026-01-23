@@ -142,7 +142,16 @@ export const createSupplierInvoice = async (req, res) => {
       invoiceDate,
       creditDays,
       remarks,
-      status
+      status,
+      items, // Accept items with discount data from frontend
+      subtotal,
+      totalDirectDiscount,
+      totalFloatingDiscount,
+      totalDiscount,
+      totalGst,
+      totalAmount,
+      grandTotal,
+      purchaseDiscountSummary
     } = req.body;
 
     // Validate GRN exists
@@ -177,43 +186,80 @@ export const createSupplierInvoice = async (req, res) => {
       });
     }
 
-    // Process GRN items to create invoice items
-    const invoiceItems = [];
-    let subtotal = 0;
-    let totalGst = 0;
+    // Process invoice items - use data from frontend if provided, otherwise calculate from GRN
+    let invoiceItems = [];
+    let calculatedSubtotal = 0;
+    let calculatedTotalGst = 0;
 
-    for (const grnItem of grn.items) {
-      const product = await Product.findById(grnItem.productId);
-      if (!product) {
-        return res.status(404).json({
-          success: false,
-          message: `Product not found: ${grnItem.productId}`
+    if (items && items.length > 0) {
+      // Use items with discount data from frontend
+      console.log("Using items with discount data from frontend");
+      invoiceItems = items.map(item => ({
+        product: item.productId,
+        productCode: item.productCode,
+        productName: item.productName,
+        HSNCode: item.HSNCode,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        gst: item.gst,
+        gstAmount: item.gstAmount,
+        // Purchase discount information
+        purchaseDiscount: item.purchaseDiscount || {
+          directDiscountPercentage: 0,
+          directDiscountAmount: 0,
+          floatingDiscountPercentage: 0,
+          floatingDiscountAmount: 0,
+          totalDiscountPercentage: 0,
+          totalDiscountAmount: 0,
+          applicableDiscounts: []
+        },
+        // Legacy discount fields
+        discountPercentage: item.discountPercentage || 0,
+        discountAmount: item.discountAmount || 0,
+        subtotal: item.subtotal,
+        totalPrice: item.totalPrice,
+        warehouse: item.warehouseId,
+        warehouseName: item.warehouseName
+      }));
+      
+      calculatedSubtotal = subtotal || 0;
+      calculatedTotalGst = totalGst || 0;
+    } else {
+      // Fallback: calculate from GRN data (legacy behavior)
+      console.log("Calculating from GRN data (no discount data provided)");
+      for (const grnItem of grn.items) {
+        const product = await Product.findById(grnItem.productId);
+        if (!product) {
+          return res.status(404).json({
+            success: false,
+            message: `Product not found: ${grnItem.productId}`
+          });
+        }
+
+        const baseAmount = grnItem.acceptedQuantity * grnItem.unitPrice;
+        const gstAmount = (baseAmount * grnItem.gst) / 100;
+        const totalPrice = baseAmount + gstAmount;
+
+        invoiceItems.push({
+          product: grnItem.productId,
+          productCode: product.productCode,
+          productName: product.itemName,
+          HSNCode: product.HSNCode,
+          quantity: grnItem.acceptedQuantity,
+          unitPrice: grnItem.unitPrice,
+          gst: grnItem.gst,
+          gstAmount: gstAmount,
+          totalPrice: totalPrice,
+          warehouse: grn.warehouseId,
+          warehouseName: grn.warehouseId.name
         });
+
+        calculatedSubtotal += baseAmount;
+        calculatedTotalGst += gstAmount;
       }
-
-      const baseAmount = grnItem.acceptedQuantity * grnItem.unitPrice;
-      const gstAmount = (baseAmount * grnItem.gst) / 100;
-      const totalPrice = baseAmount + gstAmount;
-
-      invoiceItems.push({
-        product: grnItem.productId,
-        productCode: product.productCode,
-        productName: product.itemName,
-        HSNCode: product.HSNCode,
-        quantity: grnItem.acceptedQuantity,
-        unitPrice: grnItem.unitPrice,
-        gst: grnItem.gst,
-        gstAmount: gstAmount,
-        totalPrice: totalPrice,
-        warehouse: grn.warehouseId,
-        warehouseName: grn.warehouseId.name
-      });
-
-      subtotal += baseAmount;
-      totalGst += gstAmount;
     }
 
-    const totalAmount = subtotal + totalGst;
+    const calculatedTotalAmount = grandTotal || totalAmount || (calculatedSubtotal + calculatedTotalGst);
 
     // Generate unique invoice number
     const timestamp = Date.now().toString().slice(-6); // Last 6 digits of timestamp
@@ -221,6 +267,11 @@ export const createSupplierInvoice = async (req, res) => {
 
     // Create supplier invoice
     console.log("Creating supplier invoice with number:", invoiceNumber);
+    console.log("Discount data:", {
+      totalDirectDiscount: totalDirectDiscount || 0,
+      totalFloatingDiscount: totalFloatingDiscount || 0,
+      totalDiscount: totalDiscount || 0
+    });
     
     const supplierInvoice = new SupplierInvoice({
       invoiceNumber: invoiceNumber,
@@ -238,9 +289,21 @@ export const createSupplierInvoice = async (req, res) => {
       invoiceDate: invoiceDate || new Date(),
       creditDays: parseInt(creditDays) || 30,
       items: invoiceItems,
-      subtotal: subtotal,
-      totalGst: totalGst,
-      totalAmount: totalAmount,
+      subtotal: calculatedSubtotal,
+      // Purchase discount fields
+      totalDirectDiscount: totalDirectDiscount || 0,
+      totalFloatingDiscount: totalFloatingDiscount || 0,
+      totalDiscount: totalDiscount || 0,
+      totalGst: calculatedTotalGst,
+      totalAmount: calculatedTotalAmount,
+      grandTotal: calculatedTotalAmount,
+      // Purchase discount summary
+      purchaseDiscountSummary: purchaseDiscountSummary || {
+        directDiscountApplied: (totalDirectDiscount || 0) > 0,
+        floatingDiscountApplied: (totalFloatingDiscount || 0) > 0,
+        totalSavings: totalDiscount || 0,
+        savingsPercentage: calculatedSubtotal > 0 ? (((totalDiscount || 0) / calculatedSubtotal) * 100) : 0
+      },
       status: status || "Draft",
       remarks: remarks || "",
       createdBy: req.user._id

@@ -27,6 +27,69 @@ const supplierInvoiceItemSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  // Purchase discount information for this item
+  purchaseDiscount: {
+    directDiscountPercentage: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100
+    },
+    directDiscountAmount: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    floatingDiscountPercentage: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100
+    },
+    floatingDiscountAmount: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    totalDiscountPercentage: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100
+    },
+    totalDiscountAmount: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    applicableDiscounts: [{
+      id: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "PurchaseDiscountMapping"
+      },
+      name: String,
+      directDiscountPercentage: Number,
+      floatingDiscountEnabled: Boolean,
+      floatingDiscountMin: Number,
+      floatingDiscountMax: Number
+    }]
+  },
+  // Legacy discount fields for backward compatibility
+  discountPercentage: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 100
+  },
+  discountAmount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  subtotal: {
+    type: Number,
+    default: 0
+  },
   totalPrice: {
     type: Number,
     required: true
@@ -41,7 +104,6 @@ const supplierInvoiceItemSchema = new mongoose.Schema({
 const supplierInvoiceSchema = new mongoose.Schema({
   invoiceNumber: {
     type: String,
-    required: true,
     unique: true
   },
   supplier: {
@@ -92,6 +154,72 @@ const supplierInvoiceSchema = new mongoose.Schema({
     required: true,
     default: 0
   },
+  
+  // Purchase Discount Information (new structure)
+  totalDirectDiscount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  totalFloatingDiscount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  totalDiscount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  
+  // Purchase discount summary
+  purchaseDiscountSummary: {
+    directDiscountApplied: {
+      type: Boolean,
+      default: false
+    },
+    floatingDiscountApplied: {
+      type: Boolean,
+      default: false
+    },
+    totalSavings: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    savingsPercentage: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100
+    }
+  },
+  
+  // Legacy Discount Information (for backward compatibility)
+  directDiscountPercentage: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 100
+  },
+  floatingDiscountPercentage: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 100
+  },
+  totalDiscountPercentage: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 100
+  },
+  totalDiscountAmount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  
   totalGst: {
     type: Number,
     default: 0
@@ -160,8 +288,37 @@ supplierInvoiceSchema.pre("save", function(next) {
     }, 0);
   }
 
-  // Always calculate totalAmount from the current values
-  this.totalAmount = this.subtotal + this.totalGst;
+  // Calculate purchase discount amounts (new structure)
+  if (this.totalDirectDiscount === undefined) {
+    this.totalDirectDiscount = this.items.reduce((sum, item) => {
+      return sum + (item.purchaseDiscount?.directDiscountAmount || 0);
+    }, 0);
+  }
+
+  if (this.totalFloatingDiscount === undefined) {
+    this.totalFloatingDiscount = this.items.reduce((sum, item) => {
+      return sum + (item.purchaseDiscount?.floatingDiscountAmount || 0);
+    }, 0);
+  }
+
+  if (this.totalDiscount === undefined) {
+    this.totalDiscount = this.totalDirectDiscount + this.totalFloatingDiscount;
+  }
+
+  // Update purchase discount summary
+  if (this.purchaseDiscountSummary) {
+    this.purchaseDiscountSummary.directDiscountApplied = this.totalDirectDiscount > 0;
+    this.purchaseDiscountSummary.floatingDiscountApplied = this.totalFloatingDiscount > 0;
+    this.purchaseDiscountSummary.totalSavings = this.totalDiscount;
+    this.purchaseDiscountSummary.savingsPercentage = this.subtotal > 0 ? ((this.totalDiscount / this.subtotal) * 100) : 0;
+  }
+
+  // Legacy discount calculations (for backward compatibility)
+  this.totalDiscountPercentage = (this.directDiscountPercentage || 0) + (this.floatingDiscountPercentage || 0);
+  this.totalDiscountAmount = Math.max(this.totalDiscount, (this.subtotal * this.totalDiscountPercentage) / 100);
+
+  // Calculate totalAmount: subtotal - discount + GST
+  this.totalAmount = this.subtotal - this.totalDiscount + this.totalGst;
 
   next();
 });
@@ -170,8 +327,38 @@ supplierInvoiceSchema.pre("save", function(next) {
 supplierInvoiceSchema.pre("save", function(next) {
   this.items.forEach(item => {
     const baseAmount = item.quantity * item.unitPrice;
-    item.gstAmount = (baseAmount * item.gst) / 100;
-    item.totalPrice = baseAmount + item.gstAmount;
+    
+    // Set subtotal for the item
+    if (!item.subtotal) {
+      item.subtotal = baseAmount;
+    }
+    
+    // Calculate purchase discounts if present
+    if (item.purchaseDiscount) {
+      const directDiscount = (baseAmount * (item.purchaseDiscount.directDiscountPercentage || 0)) / 100;
+      const afterDirectDiscount = baseAmount - directDiscount;
+      const floatingDiscount = (afterDirectDiscount * (item.purchaseDiscount.floatingDiscountPercentage || 0)) / 100;
+      const totalDiscount = directDiscount + floatingDiscount;
+      const afterAllDiscounts = baseAmount - totalDiscount;
+      
+      // Update purchase discount amounts
+      item.purchaseDiscount.directDiscountAmount = directDiscount;
+      item.purchaseDiscount.floatingDiscountAmount = floatingDiscount;
+      item.purchaseDiscount.totalDiscountAmount = totalDiscount;
+      item.purchaseDiscount.totalDiscountPercentage = baseAmount > 0 ? ((totalDiscount / baseAmount) * 100) : 0;
+      
+      // Update legacy discount fields for backward compatibility
+      item.discountAmount = totalDiscount;
+      item.discountPercentage = item.purchaseDiscount.totalDiscountPercentage;
+      
+      // Calculate GST on discounted amount
+      item.gstAmount = (afterAllDiscounts * (item.gst || 0)) / 100;
+      item.totalPrice = afterAllDiscounts + item.gstAmount;
+    } else {
+      // No purchase discount - calculate normally
+      item.gstAmount = (baseAmount * (item.gst || 0)) / 100;
+      item.totalPrice = baseAmount + item.gstAmount;
+    }
   });
   next();
 });
