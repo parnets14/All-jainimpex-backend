@@ -19,7 +19,8 @@ import {
   getComprehensivePricing,
   validateAndSyncAllPricing,
   getPriceValidationWarnings,
-  autoSyncNewProduct
+  autoSyncNewProduct,
+  autoCreateMissingPricingRecords
 } from '../controllers/dealerPricingController.js';
 import { protect } from '../middleware/authMiddleware.js';
 
@@ -75,6 +76,9 @@ router.post('/validate-and-sync-all', validateAndSyncAllPricing);
 
 // Auto-sync system for new products
 router.post('/auto-sync-new-product', autoSyncNewProduct);
+
+// Auto-create missing pricing records for all products
+router.post('/auto-create-missing', autoCreateMissingPricingRecords);
 
 // Create or update dealer pricing
 router.post('/', createOrUpdateDealerPricing);

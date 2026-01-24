@@ -224,17 +224,21 @@ export const getDealerPricingByProduct = async (req, res) => {
         l.productId?.toString() === productId
       )?.price || 0;
 
-      // Get selling price from rateSlabs
+      // Get selling price from rateSlabs (Product Master price)
       const sellingPrice = product.rateSlabs && product.rateSlabs.length > 0
         ? product.rateSlabs[0].rate
         : 0;
 
+      // If no purchase exists, use Product Master price for both purchase and selling price
+      const initialPurchasePrice = purchasePrice > 0 ? purchasePrice : sellingPrice;
+
       pricing = await DealerPricing.create({
         product: productId,
-        purchasePrice,
+        purchasePrice: initialPurchasePrice,
         sellingPrice,
         lastPurchaseDate: lastPurchase?.orderDate,
         lastPurchaseSupplier: lastPurchase?.supplierId,
+        purchasePriceSource: purchasePrice > 0 ? 'purchase_order' : 'product_master',
         createdBy: req.user._id
       });
 
@@ -1602,7 +1606,7 @@ export const validateAndSyncAllPricing = async (req, res) => {
           
           pricing = new DealerPricing({
             product: product._id,
-            purchasePrice: 0,
+            purchasePrice: masterPrice, // Initially set to Product Master price
             sellingPrice: masterPrice,
             purchasePriceSource: 'product_master',
             isActive: true,
@@ -1951,6 +1955,113 @@ export const getPriceValidationWarnings = async (req, res) => {
   }
 };
 
+// @desc    Auto-create pricing records for all products without them
+// @route   POST /api/dealer-pricing/auto-create-missing
+// @access  Private
+export const autoCreateMissingPricingRecords = async (req, res) => {
+  try {
+    console.log('🔄 Auto-creating missing pricing records for all products...');
+    
+    // Get all products with rate slabs
+    const allProducts = await Product.find({
+      'rateSlabs.0.rate': { $gt: 0 }
+    });
+    
+    console.log(`📦 Found ${allProducts.length} products with rate slabs`);
+    
+    // Get existing pricing records
+    const existingPricingRecords = await DealerPricing.find({ isActive: true });
+    const existingPricingMap = {};
+    existingPricingRecords.forEach(pricing => {
+      existingPricingMap[pricing.product.toString()] = pricing;
+    });
+    
+    console.log(`💰 Found ${existingPricingRecords.length} existing pricing records`);
+    
+    let createdCount = 0;
+    const results = [];
+    
+    // Process each product
+    for (const product of allProducts) {
+      const productId = product._id.toString();
+      
+      // Skip if pricing record already exists
+      if (existingPricingMap[productId]) {
+        continue;
+      }
+      
+      const masterPrice = product.rateSlabs[0].rate;
+      
+      // Check for recent purchase orders
+      const recentPO = await PurchaseOrder.findOne({
+        'lines.productId': product._id,
+        status: { $in: ['Approved', 'Completed'] }
+      }).sort({ orderDate: -1 });
+      
+      let purchasePrice = masterPrice; // Default to Product Master price
+      let purchasePriceSource = 'product_master';
+      let lastPurchaseDate = null;
+      let lastPurchaseSupplier = null;
+      
+      // If there's a recent purchase, use that price for purchase price
+      if (recentPO) {
+        const productLine = recentPO.lines.find(line => 
+          line.productId && line.productId.toString() === productId
+        );
+        
+        if (productLine && productLine.price > 0) {
+          purchasePrice = productLine.price;
+          purchasePriceSource = 'purchase_order';
+          lastPurchaseDate = recentPO.orderDate;
+          lastPurchaseSupplier = recentPO.supplierId;
+        }
+      }
+      
+      // Create new pricing record
+      const newPricing = await DealerPricing.create({
+        product: product._id,
+        purchasePrice,
+        sellingPrice: masterPrice,
+        purchasePriceSource,
+        lastPurchaseDate,
+        lastPurchaseSupplier,
+        isActive: true,
+        createdBy: req.user?._id || null
+      });
+      
+      createdCount++;
+      results.push({
+        productId: product._id,
+        productName: product.itemName,
+        productCode: product.productCode,
+        masterPrice,
+        purchasePrice,
+        sellingPrice: masterPrice,
+        source: purchasePriceSource
+      });
+      
+      console.log(`✅ Created pricing for ${product.itemName}: Purchase ₹${purchasePrice}, Selling ₹${masterPrice} (${purchasePriceSource})`);
+    }
+    
+    console.log(`🎉 Auto-created ${createdCount} missing pricing records`);
+    
+    res.json({
+      success: true,
+      message: `Auto-created ${createdCount} missing pricing records`,
+      createdCount,
+      results
+    });
+    
+  } catch (error) {
+    console.error('Auto-create missing pricing records error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error auto-creating missing pricing records',
+      error: error.message
+    });
+  }
+};
+
 // @desc    Auto-sync system for new products (called when new product is created)
 // @route   POST /api/dealer-pricing/auto-sync-new-product
 // @access  Private
@@ -1999,10 +2110,10 @@ export const autoSyncNewProduct = async (req, res) => {
       });
     }
     
-    // Create new pricing record
+    // Create new pricing record with both purchase and selling price from Product Master
     pricing = new DealerPricing({
       product: productId,
-      purchasePrice: 0, // Will be updated when actual purchase happens
+      purchasePrice: sellingPrice, // Initially set to same as selling price from Product Master
       sellingPrice,
       purchasePriceSource: 'product_master',
       isActive: true,
@@ -2019,17 +2130,21 @@ export const autoSyncNewProduct = async (req, res) => {
     await pricing.save();
     
     // Log initial price setting
-    await DealerPricingHistory.create({
-      product: productId,
-      oldPurchasePrice: 0,
-      newPurchasePrice: 0,
-      oldSellingPrice: 0,
-      newSellingPrice: sellingPrice,
-      changeType: 'auto_create',
-      reason: 'Auto-created pricing record for new product',
-      changeDate: new Date(),
-      changedBy: req.user?._id || null
-    });
+    try {
+      await DealerPricingHistory.logPriceChange({
+        product: productId,
+        oldPrice: 0,
+        newPrice: sellingPrice,
+        changeType: 'manual',
+        changeMethod: 'direct_update',
+        reason: 'Auto-created pricing record for new product from Product Master',
+        changedBy: req.user?._id || null
+      });
+      console.log(`📊 Initial price history logged: ${productId} - ₹0 → ₹${sellingPrice}`);
+    } catch (historyError) {
+      console.error('Error logging initial price history:', historyError);
+      // Don't fail the main operation if history logging fails
+    }
     
     console.log(`✅ Auto-created pricing record for new product: ${product.itemName} - ₹${sellingPrice}`);
     

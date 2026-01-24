@@ -592,8 +592,109 @@ export const updatePurchaseOrderStatus = async (req, res) => {
       });
     }
 
+    const oldStatus = purchaseOrder.status;
     purchaseOrder.status = status;
     await purchaseOrder.save();
+
+    // Auto-sync dealer pricing when PO is approved
+    if (status === 'Approved' && oldStatus !== 'Approved') {
+      try {
+        console.log(`🔄 Auto-syncing dealer pricing for approved PO: ${purchaseOrder.poNumber}`);
+        
+        // Import DealerPricing model
+        const { default: DealerPricing } = await import('../models/DealerPricing.js');
+        const { default: DealerPricingHistory } = await import('../models/DealerPricingHistory.js');
+        
+        // Update pricing for each product in the PO
+        for (const line of purchaseOrder.lines) {
+          if (line.productId && line.price > 0) {
+            try {
+              let pricing = await DealerPricing.findOne({ 
+                product: line.productId, 
+                isActive: true 
+              });
+              
+              if (pricing) {
+                // Update existing pricing record
+                const oldPurchasePrice = pricing.purchasePrice;
+                pricing.purchasePrice = line.price;
+                pricing.lastPurchaseDate = purchaseOrder.orderDate;
+                pricing.lastPurchaseSupplier = purchaseOrder.supplierId;
+                pricing.purchasePriceSource = 'purchase_order';
+                await pricing.save();
+                
+                // Log price change
+                try {
+                  await DealerPricingHistory.logPriceChange({
+                    product: line.productId,
+                    oldPrice: pricing.sellingPrice,
+                    newPrice: pricing.sellingPrice,
+                    changeType: 'manual',
+                    changeMethod: 'direct_update',
+                    reason: `Purchase price auto-updated from approved PO: ${purchaseOrder.poNumber}`,
+                    changedBy: req.user?._id || null
+                  });
+                  console.log(`📊 Price history logged for purchase price update: ${line.productId}`);
+                } catch (historyError) {
+                  console.error('Error logging price history:', historyError);
+                  // Don't fail the main operation if history logging fails
+                }
+                
+                console.log(`✅ Updated pricing for product ${line.productId}: ₹${oldPurchasePrice} → ₹${line.price}`);
+              } else {
+                // Create new pricing record if it doesn't exist
+                const { default: Product } = await import('../models/Product.js');
+                const product = await Product.findById(line.productId);
+                
+                if (product) {
+                  const sellingPrice = product.rateSlabs && product.rateSlabs.length > 0
+                    ? product.rateSlabs[0].rate
+                    : line.price; // Use purchase price as fallback for selling price
+                  
+                  pricing = await DealerPricing.create({
+                    product: line.productId,
+                    purchasePrice: line.price,
+                    sellingPrice,
+                    lastPurchaseDate: purchaseOrder.orderDate,
+                    lastPurchaseSupplier: purchaseOrder.supplierId,
+                    purchasePriceSource: 'purchase_order',
+                    isActive: true,
+                    createdBy: req.user?._id || null
+                  });
+                  
+                  // Log initial price setting
+                  try {
+                    await DealerPricingHistory.logPriceChange({
+                      product: line.productId,
+                      oldPrice: 0,
+                      newPrice: sellingPrice,
+                      changeType: 'manual',
+                      changeMethod: 'direct_update',
+                      reason: `Auto-created from approved PO: ${purchaseOrder.poNumber}`,
+                      changedBy: req.user?._id || null
+                    });
+                    console.log(`📊 Initial price history logged for new product: ${line.productId}`);
+                  } catch (historyError) {
+                    console.error('Error logging initial price history:', historyError);
+                    // Don't fail the main operation if history logging fails
+                  }
+                  
+                  console.log(`✅ Created new pricing for product ${line.productId}: Purchase ₹${line.price}, Selling ₹${sellingPrice}`);
+                }
+              }
+            } catch (productError) {
+              console.error(`❌ Error updating pricing for product ${line.productId}:`, productError);
+              // Continue with other products even if one fails
+            }
+          }
+        }
+        
+        console.log(`✅ Completed auto-sync for PO: ${purchaseOrder.poNumber}`);
+      } catch (syncError) {
+        console.error('❌ Auto-sync failed (non-critical):', syncError);
+        // Don't fail the status update if auto-sync fails
+      }
+    }
 
     res.json({
       success: true,

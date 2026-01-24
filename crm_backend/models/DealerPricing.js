@@ -174,7 +174,7 @@ const dealerPricingSchema = new mongoose.Schema({
   // Price Source Tracking
   purchasePriceSource: {
     type: String,
-    enum: ['manual', 'supplier_invoice', 'product_master', 'bulk_update'],
+    enum: ['manual', 'supplier_invoice', 'product_master', 'bulk_update', 'purchase_order', 'auto_sync_enabled'],
     default: 'manual',
     comment: 'Source of the current purchase price'
   },

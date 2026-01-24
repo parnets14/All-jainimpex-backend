@@ -62,9 +62,15 @@ export const getPurchaseDiscounts = async (req, res) => {
 
     const total = await PurchaseDiscountMapping.countDocuments(query);
 
+    // Add mappingType field to each discount for frontend compatibility
+    const discountsWithMappingType = discounts.map(discount => ({
+      ...discount.toObject(),
+      mappingType: 'purchase'
+    }));
+
     res.json({
       success: true,
-      data: discounts,
+      data: discountsWithMappingType,
       pagination: {
         currentPage: parseInt(page),
         totalPages: Math.ceil(total / parseInt(limit)),
@@ -104,9 +110,15 @@ export const getPurchaseDiscount = async (req, res) => {
       });
     }
 
+    // Add mappingType field for frontend compatibility
+    const discountWithMappingType = {
+      ...discount.toObject(),
+      mappingType: 'purchase'
+    };
+
     res.json({
       success: true,
-      data: discount
+      data: discountWithMappingType
     });
   } catch (error) {
     console.error('Get purchase discount error:', error);
