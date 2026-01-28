@@ -88,6 +88,13 @@ const supplierSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    creditDays: {
+      type: Number,
+      default: 30,
+      min: 0,
+      max: 365,
+      required: true
+    },
     bankName: {
       type: String,
       trim: true,
@@ -104,6 +111,39 @@ const supplierSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    extraDiscounts: [{
+      targetType: {
+        type: String,
+        enum: ['brand', 'category', 'subcategory', 'extendedSubcategory', 'product'],
+        required: true
+      },
+      targetId: {
+        type: mongoose.Schema.Types.ObjectId,
+        required: true
+      },
+      targetName: {
+        type: String,
+        required: true
+      },
+      discountPercentage: {
+        type: Number,
+        required: true,
+        min: 0,
+        max: 100
+      },
+      description: {
+        type: String,
+        trim: true
+      },
+      isActive: {
+        type: Boolean,
+        default: true
+      },
+      createdAt: {
+        type: Date,
+        default: Date.now
+      }
+    }],
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -126,12 +166,34 @@ supplierSchema.index({
 
 // Virtual for lastUpdated (using updatedAt timestamp)
 supplierSchema.virtual("lastUpdated").get(function () {
-  return this.updatedAt ? this.updatedAt.toISOString().split("T")[0] : null;
+  if (!this.updatedAt) return null;
+  const date = new Date(this.updatedAt);
+  return date.toLocaleString('en-IN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+    timeZone: 'Asia/Kolkata'
+  });
 });
 
 // Virtual for createdDate (using createdAt timestamp)
 supplierSchema.virtual("createdDate").get(function () {
-  return this.createdAt ? this.createdAt.toISOString().split("T")[0] : null;
+  if (!this.createdAt) return null;
+  const date = new Date(this.createdAt);
+  return date.toLocaleString('en-IN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+    timeZone: 'Asia/Kolkata'
+  });
 });
 
 // Ensure virtual fields are serialized

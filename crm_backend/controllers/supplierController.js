@@ -149,7 +149,8 @@ export const createSupplier = async (req, res) => {
       bankName,
       accountNumber,
       ifscCode,
-      isActive = true
+      isActive = true,
+      extraDiscounts = []
     } = req.body;
 
     // Generate supplier code
@@ -183,6 +184,7 @@ export const createSupplier = async (req, res) => {
       accountNumber,
       ifscCode,
       isActive,
+      extraDiscounts,
       createdBy: req.user._id
     });
 
@@ -233,7 +235,8 @@ export const updateSupplier = async (req, res) => {
       bankName,
       accountNumber,
       ifscCode,
-      isActive
+      isActive,
+      extraDiscounts
     } = req.body;
 
     const supplier = await Supplier.findById(req.params.id);
@@ -272,7 +275,8 @@ export const updateSupplier = async (req, res) => {
       bankName,
       accountNumber,
       ifscCode,
-      isActive
+      isActive,
+      ...(extraDiscounts !== undefined && { extraDiscounts })
     });
 
     await supplier.save();
