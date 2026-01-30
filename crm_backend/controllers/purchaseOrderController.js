@@ -694,6 +694,50 @@ export const updatePurchaseOrderStatus = async (req, res) => {
         console.error('❌ Auto-sync failed (non-critical):', syncError);
         // Don't fail the status update if auto-sync fails
       }
+
+      // Auto-remove wishlists that were used to create this PO
+      try {
+        console.log(`🗑️ Auto-removing wishlists used for approved PO: ${purchaseOrder.poNumber}`);
+        
+        // Import PurchaseWishlist model
+        const { default: PurchaseWishlist } = await import('../models/PurchaseWishlist.js');
+        
+        // Find wishlists that contain the same products as this PO
+        const poProductIds = purchaseOrder.lines.map(line => line.productId.toString());
+        
+        if (poProductIds.length > 0) {
+          // Find wishlists created by the same user that contain these products
+          const matchingWishlists = await PurchaseWishlist.find({
+            createdBy: req.user?._id,
+            isActive: true,
+            'items.productId': { $in: poProductIds }
+          });
+          
+          // Check each wishlist to see if it's a close match to the PO
+          for (const wishlist of matchingWishlists) {
+            const wishlistProductIds = wishlist.items.map(item => item.productId.toString());
+            
+            // Calculate match percentage
+            const commonProducts = poProductIds.filter(id => wishlistProductIds.includes(id));
+            const matchPercentage = (commonProducts.length / Math.max(poProductIds.length, wishlistProductIds.length)) * 100;
+            
+            // If 70% or more products match, consider it the source wishlist and deactivate it
+            if (matchPercentage >= 70) {
+              wishlist.isActive = false;
+              wishlist.deactivatedReason = `Auto-removed: Used for approved PO ${purchaseOrder.poNumber}`;
+              wishlist.deactivatedAt = new Date();
+              await wishlist.save();
+              
+              console.log(`✅ Deactivated wishlist "${wishlist.name}" (${matchPercentage.toFixed(1)}% match with PO)`);
+            }
+          }
+        }
+        
+        console.log(`✅ Completed wishlist cleanup for PO: ${purchaseOrder.poNumber}`);
+      } catch (wishlistError) {
+        console.error('❌ Wishlist cleanup failed (non-critical):', wishlistError);
+        // Don't fail the status update if wishlist cleanup fails
+      }
     }
 
     res.json({

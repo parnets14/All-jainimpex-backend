@@ -8,9 +8,11 @@ const router = express.Router();
 // Get product sales analytics for multiple products (30-day sales)
 router.get('/products', protect, async (req, res) => {
   try {
-    const { productIds, period = '30days' } = req.query;
+    // Handle both productIds and productIds[] formats (axios sends arrays as productIds[])
+    let productIds = req.query.productIds || req.query['productIds[]'];
+    const period = req.query.period || '30days';
     
-    if (!productIds) {
+    if (!productIds || (Array.isArray(productIds) && productIds.length === 0)) {
       return res.status(400).json({
         success: false,
         message: 'Product IDs are required'

@@ -62,7 +62,7 @@ export const getBrands = async (req, res) => {
 
     res.json({
       success: true,
-      brands: brandsWithCounts,
+      data: brandsWithCounts,
       pagination: {
         currentPage: page,
         totalPages: Math.ceil(total / limit),

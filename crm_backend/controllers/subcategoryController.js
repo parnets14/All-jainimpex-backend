@@ -170,7 +170,7 @@ export const getSubcategories = async (req, res) => {
 
     res.json({
       success: true,
-      subcategories,
+      data: subcategories,
       pagination: {
         currentPage: page,
         totalPages: Math.ceil(total / limit),

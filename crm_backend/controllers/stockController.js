@@ -368,54 +368,114 @@ export const getStock = async (req, res) => {
       console.log(`🔍 [STOCK_DEBUG] Creating ${Object.keys(warehouseStock).length} warehouse entries for product ${product.productCode}`);
       
       const warehouseEntries = [];
-      Object.values(warehouseStock).forEach(warehouse => {
-        // Apply warehouse filter if specified
-        if (warehouseId && warehouse.warehouseId !== warehouseId) {
-          return;
-        }
+      
+      // If product has stock in warehouses, create entries for each
+      if (Object.keys(warehouseStock).length > 0) {
+        Object.values(warehouseStock).forEach(warehouse => {
+          // Apply warehouse filter if specified
+          if (warehouseId && warehouse.warehouseId !== warehouseId) {
+            return;
+          }
 
-        const averageUnitPrice = warehouse.totalAcceptedQty > 0 ? warehouse.weightedPriceSum / warehouse.totalAcceptedQty : 0;
-        const averageGST = warehouse.totalAcceptedQty > 0 ? warehouse.weightedGSTSum / warehouse.totalAcceptedQty : 0;
-        const blockedQty = warehouse.blockedQty || 0; // Use calculated blocked quantity
-        
-        // FIXED: Use current stock from movements as the actual available quantity
-        const currentStock = warehouse.currentStock !== undefined ? warehouse.currentStock : warehouse.totalQty;
-        const netStock = currentStock - warehouse.damagedQty - blockedQty;
+          const averageUnitPrice = warehouse.totalAcceptedQty > 0 ? warehouse.weightedPriceSum / warehouse.totalAcceptedQty : 0;
+          const averageGST = warehouse.totalAcceptedQty > 0 ? warehouse.weightedGSTSum / warehouse.totalAcceptedQty : 0;
+          const blockedQty = warehouse.blockedQty || 0; // Use calculated blocked quantity
+          
+          // FIXED: Use current stock from movements as the actual available quantity
+          const currentStock = warehouse.currentStock !== undefined ? warehouse.currentStock : warehouse.totalQty;
+          const netStock = currentStock - warehouse.damagedQty - blockedQty;
 
-        console.log(`🔍 [STOCK_DEBUG] Final stock calculation for ${product.productCode} in ${warehouse.warehouseName}:`, {
-          currentStock,
-          damagedQty: warehouse.damagedQty,
-          blockedQty,
-          netStock
+          console.log(`🔍 [STOCK_DEBUG] Final stock calculation for ${product.productCode} in ${warehouse.warehouseName}:`, {
+            currentStock,
+            damagedQty: warehouse.damagedQty,
+            blockedQty,
+            netStock
+          });
+
+          // Skip if lowStockOnly is true and stock is not low
+          if (lowStockOnly && (!product.minStockLevel || netStock > product.minStockLevel)) {
+            return;
+          }
+
+          const stockEntry = {
+            productId: product._id,
+            productCode: product.productCode,
+            hsnCode: product.HSNCode,
+            itemName: product.itemName,
+            description: product.description,
+            supplier: Array.from(warehouse.suppliers).join(', '),
+            supplierId: product.supplier, // Add supplier ID from product
+            warehouse: warehouse.warehouseName,
+            warehouseId: warehouse.warehouseId,
+            basePrice: averageUnitPrice,
+            gst: averageGST,
+            totalPrice: currentStock * averageUnitPrice, // Calculate based on current stock
+            totalQty: currentStock, // FIXED: Show current stock, not cumulative GRN receipts
+            damagedQty: warehouse.damagedQty,
+            blockedQty: blockedQty,
+            netStock,
+            minStockLevel: product.minStockLevel
+          };
+          
+          console.log(`🔍 [STOCK_DEBUG] Adding stock entry for ${product.productCode} in warehouse ${warehouse.warehouseName}:`, stockEntry);
+          warehouseEntries.push(stockEntry);
         });
-
-        // Skip if lowStockOnly is true and stock is not low
-        if (lowStockOnly && (!product.minStockLevel || netStock > product.minStockLevel)) {
-          return;
-        }
-
-        const stockEntry = {
-          productId: product._id,
-          productCode: product.productCode,
-          hsnCode: product.HSNCode,
-          itemName: product.itemName,
-          description: product.description,
-          supplier: Array.from(warehouse.suppliers).join(', '),
-          warehouse: warehouse.warehouseName,
-          warehouseId: warehouse.warehouseId,
-          basePrice: averageUnitPrice,
-          gst: averageGST,
-          totalPrice: currentStock * averageUnitPrice, // Calculate based on current stock
-          totalQty: currentStock, // FIXED: Show current stock, not cumulative GRN receipts
-          damagedQty: warehouse.damagedQty,
-          blockedQty: blockedQty,
-          netStock,
-          minStockLevel: product.minStockLevel
-        };
+      } else {
+        // NEW: If product has NO stock in any warehouse, still show it with zero stock
+        // This ensures ALL products from Product Master are visible
+        console.log(`🔍 [STOCK_DEBUG] Product ${product.productCode} has no stock - creating zero stock entry`);
         
-        console.log(`🔍 [STOCK_DEBUG] Adding stock entry for ${product.productCode} in warehouse ${warehouse.warehouseName}:`, stockEntry);
-        warehouseEntries.push(stockEntry);
-      });
+        // If warehouse filter is specified, create entry for that warehouse only
+        // Otherwise, create a single entry showing the product exists but has no stock
+        if (warehouseId) {
+          // Get the specific warehouse details
+          const warehouse = await Warehouse.findById(warehouseId).lean();
+          if (warehouse) {
+            const stockEntry = {
+              productId: product._id,
+              productCode: product.productCode,
+              hsnCode: product.HSNCode,
+              itemName: product.itemName,
+              description: product.description,
+              supplier: '', // No supplier yet
+              supplierId: product.supplier, // Add supplier ID from product
+              warehouse: warehouse.name,
+              warehouseId: warehouse._id.toString(),
+              basePrice: product.basePrice || 0,
+              gst: product.gst || 0,
+              totalPrice: 0,
+              totalQty: 0,
+              damagedQty: 0,
+              blockedQty: 0,
+              netStock: 0,
+              minStockLevel: product.minStockLevel
+            };
+            warehouseEntries.push(stockEntry);
+          }
+        } else {
+          // No warehouse filter - show product with "No Stock" indicator
+          const stockEntry = {
+            productId: product._id,
+            productCode: product.productCode,
+            hsnCode: product.HSNCode,
+            itemName: product.itemName,
+            description: product.description,
+            supplier: '', // No supplier yet
+            supplierId: product.supplier, // Add supplier ID from product
+            warehouse: 'No Stock',
+            warehouseId: null,
+            basePrice: product.basePrice || 0,
+            gst: product.gst || 0,
+            totalPrice: 0,
+            totalQty: 0,
+            damagedQty: 0,
+            blockedQty: 0,
+            netStock: 0,
+            minStockLevel: product.minStockLevel
+          };
+          warehouseEntries.push(stockEntry);
+        }
+      }
       
       return warehouseEntries;
     });
