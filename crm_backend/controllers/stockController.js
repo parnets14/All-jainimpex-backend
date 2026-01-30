@@ -39,23 +39,70 @@ export const getStock = async (req, res) => {
       limit = 10,
       search = '',
       warehouseId,
-      lowStockOnly = false
+      lowStockOnly = false,
+      brandId,
+      categoryId,
+      subcategoryId,
+      extendedSubcategoryId,
+      level2Id
     } = req.query;
 
     const pageNum = parseInt(page);
     const limitNum = parseInt(limit);
     const skip = (pageNum - 1) * limitNum;
 
-    console.log(`🔍 [STOCK_DEBUG] Getting stock with filters:`, { search, warehouseId, lowStockOnly, page: pageNum, limit: limitNum });
+    console.log(`🔍 [STOCK_DEBUG] Getting stock with filters:`, { 
+      search, 
+      warehouseId, 
+      lowStockOnly, 
+      brandId, 
+      categoryId, 
+      subcategoryId, 
+      extendedSubcategoryId, 
+      level2Id, 
+      page: pageNum, 
+      limit: limitNum 
+    });
 
-    // Build product query with search
-    const productQuery = search ? {
-      $or: [
+    // Build product query with search and hierarchical filters
+    const productQuery = {};
+    
+    // Add search filter
+    if (search) {
+      productQuery.$or = [
         { productCode: { $regex: search, $options: 'i' } },
         { itemName: { $regex: search, $options: 'i' } },
         { HSNCode: { $regex: search, $options: 'i' } }
-      ]
-    } : {};
+      ];
+    }
+    
+    // Add hierarchical filters
+    if (brandId) {
+      productQuery.brand = brandId;
+      console.log(`🔍 [STOCK_DEBUG] Filtering by brandId: ${brandId}`);
+    }
+    
+    if (categoryId) {
+      productQuery.category = categoryId;
+      console.log(`🔍 [STOCK_DEBUG] Filtering by categoryId: ${categoryId}`);
+    }
+    
+    if (subcategoryId) {
+      productQuery.subcategory = subcategoryId;
+      console.log(`🔍 [STOCK_DEBUG] Filtering by subcategoryId: ${subcategoryId}`);
+    }
+    
+    if (extendedSubcategoryId) {
+      // Level 1 extended subcategories are stored in subcategory1 field
+      productQuery.subcategory1 = extendedSubcategoryId;
+      console.log(`🔍 [STOCK_DEBUG] Filtering by extendedSubcategoryId (subcategory1): ${extendedSubcategoryId}`);
+    }
+    
+    if (level2Id) {
+      // Level 2 extended subcategories are stored in subcategory2 field
+      productQuery.subcategory2 = level2Id;
+      console.log(`🔍 [STOCK_DEBUG] Filtering by level2Id (subcategory2): ${level2Id}`);
+    }
 
     // Get total count for pagination
     const totalProducts = await Product.countDocuments(productQuery);

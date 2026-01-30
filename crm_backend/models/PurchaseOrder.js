@@ -35,6 +35,68 @@ const purchaseOrderLineSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  // Purchase discount information (for reference only - not applied to PO pricing)
+  purchaseDiscount: {
+    hasDiscount: {
+      type: Boolean,
+      default: false
+    },
+    directDiscountPercentage: {
+      type: Number,
+      default: 0
+    },
+    floatingDiscountRange: {
+      enabled: {
+        type: Boolean,
+        default: false
+      },
+      min: {
+        type: Number,
+        default: 0
+      },
+      max: {
+        type: Number,
+        default: 0
+      }
+    },
+    // User-entered floating discount for reference (not applied to PO)
+    referenceFloatingDiscount: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100
+    },
+    potentialDiscountedPrice: {
+      type: Number,
+      default: 0
+    },
+    originalPrice: {
+      type: Number,
+      default: 0
+    },
+    applicableDiscounts: [{
+      id: String,
+      name: String,
+      directDiscountPercentage: Number,
+      floatingDiscountEnabled: Boolean,
+      floatingDiscountMin: Number,
+      floatingDiscountMax: Number
+    }]
+  },
+  // Supplier extra discount information (for reference only)
+  supplierExtraDiscount: {
+    hasDiscount: {
+      type: Boolean,
+      default: false
+    },
+    discountPercentage: {
+      type: Number,
+      default: 0
+    },
+    targetType: String,
+    targetName: String,
+    description: String
+  },
   total: {
     type: Number,
     required: true

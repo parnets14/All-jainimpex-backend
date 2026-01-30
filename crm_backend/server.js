@@ -72,6 +72,7 @@ import notificationRoutes from './routes/notificationRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
 import collectionRoutes from './routes/collectionRoutes.js';
 import invoicePrintTemplateRoutes from './routes/invoicePrintTemplateRoutes.js';
+import salesAnalyticsRoutes from './routes/salesAnalyticsRoutes.js';
 
 // Dealer App Routes
 import appAuthRoutes from './app/routes/authRoutes.js';
@@ -299,6 +300,7 @@ app.use('/api/grn', grnRoutes);
 app.use('/api/stock', stockRoutes);
 app.use('/api/stock-adjustments', stockAdjustmentRoutes);
 app.use('/api/sales-orders', salesOrderRoutes);
+app.use('/api/sales-analytics', salesAnalyticsRoutes);
 app.use('/api/cheques', chequeRoutes);
 app.use('/api/dealer-invoices', dealerInvoiceRoutes);
 app.use('/api/invoice-print-templates', invoicePrintTemplateRoutes);
