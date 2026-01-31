@@ -9,7 +9,8 @@ import {
   getProductStock,
   getSalesOrderStats,
   getSalesOrdersByDealer,
-  getOverdueSalesOrders
+  getOverdueSalesOrders,
+  getPendingQuantities
 } from "../controllers/salesOrderController.js";
 import { protect } from "../middleware/authMiddleware.js";
 import { logActivity } from "../middleware/activityLogMiddleware.js";
@@ -27,6 +28,9 @@ router.route("/")
 
 router.route("/overdue")
   .get(logActivity("Sales Order Dashboard", "Viewed overdue sales orders", "READ"), getOverdueSalesOrders);
+
+router.route("/pending-quantities")
+  .get(logActivity("Stock Management", "Viewed pending quantities from out-of-stock orders", "READ"), getPendingQuantities);
 
 router.route("/stats/summary")
   .get(logActivity("Sales Order Dashboard", "Viewed sales order statistics", "READ"), getSalesOrderStats);

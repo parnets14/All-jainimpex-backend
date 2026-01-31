@@ -202,7 +202,9 @@ export const createSalesOrder = async (req, res) => {
       creditDays,
       type,
       remarks,
-      status
+      status,
+      isOutOfStock,
+      stockValidation
     } = req.body;
 
     // Generate unique order number
@@ -236,8 +238,8 @@ export const createSalesOrder = async (req, res) => {
         });
       }
 
-      // Validate warehouse exists
-      if (item.warehouse) {
+      // Validate warehouse exists (skip if warehouse is "No Stock" for out-of-stock orders)
+      if (item.warehouse && item.warehouse !== "No Stock") {
         const Warehouse = (await import("../models/Warehouse.js")).default;
         const warehouse = await Warehouse.findById(item.warehouse);
         
@@ -248,9 +250,25 @@ export const createSalesOrder = async (req, res) => {
           });
         }
 
-        // For now, we'll skip stock validation since stock is calculated from GRNs
-        // In a production system, you would check available stock here
+        // For out-of-stock orders, skip stock validation
+        if (!isOutOfStock) {
+          // For regular orders, validate stock availability
+          const stock = await Stock.findOne({
+            productId: item.product,
+            warehouseId: item.warehouse
+          });
+
+          if (stock && stock.netStock < item.quantity) {
+            return res.status(400).json({
+              success: false,
+              message: `Insufficient stock for ${product.itemName} in ${warehouse.name}. Available: ${stock.netStock}, Required: ${item.quantity}`
+            });
+          }
+        }
+
         console.log(`Product ${product.itemName} validated for warehouse ${warehouse.name}`);
+      } else if (item.warehouse === "No Stock") {
+        console.log(`Product ${product.itemName} has no warehouse assigned (out-of-stock order)`);
       }
 
       // Calculate product details
@@ -271,8 +289,8 @@ export const createSalesOrder = async (req, res) => {
         gst: gst,
         gstAmount: gstAmount,
         totalPrice: totalPrice,
-        warehouse: item.warehouse,
-        warehouseName: item.warehouseName
+        warehouse: item.warehouse === "No Stock" ? null : item.warehouse, // Set to null if "No Stock"
+        warehouseName: item.warehouse === "No Stock" ? "No Stock" : item.warehouseName
       });
     }
 
@@ -288,9 +306,37 @@ export const createSalesOrder = async (req, res) => {
       dueDate.setDate(dueDate.getDate() + finalCreditDays);
     }
 
+    // Determine initial status based on stock availability
+    let initialStatus = status || "Pending";
+    
+    // For out-of-stock orders, force status to Pending and prevent status changes
+    if (isOutOfStock) {
+      initialStatus = "Pending";
+      console.log("🚨 Creating out-of-stock sales order - status locked to Pending");
+    }
+
     // Create sales order
     console.log("Creating sales order with orderNumber:", orderNumber);
-    console.log("All values:", { orderNumber, dealer, dealerName: dealerData.name, dealerCode: dealerData.code, dealerType: dealerData.dealerType, region, pinCode, products: validatedProducts.length, orderDate, deliveryDate, creditDays: finalCreditDays, grossAmount, totalGst, totalAmount, type, remarks });
+    console.log("All values:", { 
+      orderNumber, 
+      dealer, 
+      dealerName: dealerData.name, 
+      dealerCode: dealerData.code, 
+      dealerType: dealerData.dealerType, 
+      region, 
+      pinCode, 
+      products: validatedProducts.length, 
+      orderDate, 
+      deliveryDate, 
+      creditDays: finalCreditDays, 
+      grossAmount, 
+      totalGst, 
+      totalAmount, 
+      type, 
+      remarks,
+      isOutOfStock: isOutOfStock || false,
+      stockValidation: stockValidation || []
+    });
     
     const salesOrder = new SalesOrder({
       orderNumber,
@@ -310,75 +356,82 @@ export const createSalesOrder = async (req, res) => {
       totalAmount,
       type,
       remarks,
-      status: status || "Pending",
-      createdBy: req.user._id
+      status: initialStatus,
+      createdBy: req.user._id,
+      // Out-of-stock fields
+      isOutOfStock: isOutOfStock || false,
+      stockValidation: stockValidation || []
     });
 
     // Save sales order
     await salesOrder.save();
 
-    // Handle stock updates based on initial status
-    if (salesOrder.status === "Confirmed") {
-      console.log("Order created with Confirmed status - blocking stock");
-      for (const product of salesOrder.products) {
-        if (product.warehouse) {
-          // Get current balance before creating the movement
-          const StockMovement = (await import("../models/Stock.js")).default;
-          const latestMovement = await StockMovement.findOne({
-            productId: product.product,
-            warehouseId: product.warehouse
-          }).sort({ date: -1, createdAt: -1 });
-          
-          const currentBalance = latestMovement ? latestMovement.balance : 0;
-          const newBalance = currentBalance - product.quantity;
-          
-          const blockMovement = new StockMovement({
-            productId: product.product,
-            warehouseId: product.warehouse,
-            type: 'OUT',
-            quantity: product.quantity,
-            balance: newBalance,
-            referenceNo: salesOrder.orderNumber,
-            referenceType: 'SALE',
-            date: new Date(),
-            remarks: `Order ${salesOrder.orderNumber} - Stock Blocked`,
-            createdBy: req.user._id
-          });
-          await blockMovement.save();
-          console.log(`Blocked ${product.quantity} units of product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
+    // Handle stock updates based on initial status (only for in-stock orders)
+    if (!isOutOfStock) {
+      if (salesOrder.status === "Confirmed") {
+        console.log("Order created with Confirmed status - blocking stock");
+        for (const product of salesOrder.products) {
+          if (product.warehouse) { // Only process if warehouse is not null
+            // Get current balance before creating the movement
+            const StockMovement = (await import("../models/Stock.js")).default;
+            const latestMovement = await StockMovement.findOne({
+              productId: product.product,
+              warehouseId: product.warehouse
+            }).sort({ date: -1, createdAt: -1 });
+            
+            const currentBalance = latestMovement ? latestMovement.balance : 0;
+            const newBalance = currentBalance - product.quantity;
+            
+            const blockMovement = new StockMovement({
+              productId: product.product,
+              warehouseId: product.warehouse,
+              type: 'OUT',
+              quantity: product.quantity,
+              balance: newBalance,
+              referenceNo: salesOrder.orderNumber,
+              referenceType: 'SALE',
+              date: new Date(),
+              remarks: `Order ${salesOrder.orderNumber} - Stock Blocked`,
+              createdBy: req.user._id
+            });
+            await blockMovement.save();
+            console.log(`Blocked ${product.quantity} units of product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
+          }
+        }
+      } else if (salesOrder.status === "Delivered") {
+        console.log("Order created with Delivered status - permanently reducing stock");
+        for (const product of salesOrder.products) {
+          if (product.warehouse) { // Only process if warehouse is not null
+            // Get current balance before creating the movement
+            const StockMovement = (await import("../models/Stock.js")).default;
+            const latestMovement = await StockMovement.findOne({
+              productId: product.product,
+              warehouseId: product.warehouse
+            }).sort({ date: -1, createdAt: -1 });
+            
+            const currentBalance = latestMovement ? latestMovement.balance : 0;
+            const newBalance = currentBalance - product.quantity;
+            
+            // Create stock movement for delivered order (permanent reduction)
+            const deliveryMovement = new StockMovement({
+              productId: product.product,
+              warehouseId: product.warehouse,
+              type: 'OUT',
+              quantity: product.quantity,
+              balance: newBalance,
+              referenceNo: salesOrder.orderNumber,
+              referenceType: 'SALE',
+              date: new Date(),
+              remarks: `Order ${salesOrder.orderNumber} - Delivered (Stock Permanently Reduced)`,
+              createdBy: req.user._id
+            });
+            await deliveryMovement.save();
+            console.log(`Order ${salesOrder.orderNumber} delivered - stock permanently reduced for product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
+          }
         }
       }
-    } else if (salesOrder.status === "Delivered") {
-      console.log("Order created with Delivered status - permanently reducing stock");
-      for (const product of salesOrder.products) {
-        if (product.warehouse) {
-          // Get current balance before creating the movement
-          const StockMovement = (await import("../models/Stock.js")).default;
-          const latestMovement = await StockMovement.findOne({
-            productId: product.product,
-            warehouseId: product.warehouse
-          }).sort({ date: -1, createdAt: -1 });
-          
-          const currentBalance = latestMovement ? latestMovement.balance : 0;
-          const newBalance = currentBalance - product.quantity;
-          
-          // Create stock movement for delivered order (permanent reduction)
-          const deliveryMovement = new StockMovement({
-            productId: product.product,
-            warehouseId: product.warehouse,
-            type: 'OUT',
-            quantity: product.quantity,
-            balance: newBalance,
-            referenceNo: salesOrder.orderNumber,
-            referenceType: 'SALE',
-            date: new Date(),
-            remarks: `Order ${salesOrder.orderNumber} - Delivered (Stock Permanently Reduced)`,
-            createdBy: req.user._id
-          });
-          await deliveryMovement.save();
-          console.log(`Order ${salesOrder.orderNumber} delivered - stock permanently reduced for product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
-        }
-      }
+    } else {
+      console.log("🚨 Out-of-stock order created - no stock movements will be made until stock is available");
     }
 
     // Populate the created order for response
@@ -391,7 +444,9 @@ export const createSalesOrder = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: "Sales order created successfully",
+      message: isOutOfStock ? 
+        "Out-of-stock sales order created successfully. Status is locked to Pending until stock is available." :
+        "Sales order created successfully",
       salesOrder: populatedOrder
     });
   } catch (error) {
@@ -452,6 +507,14 @@ export const updateSalesOrderStatus = async (req, res) => {
     // Store original status for rollback if needed
     const originalStatus = salesOrder.status;
 
+    // CRITICAL: Prevent status changes for out-of-stock orders
+    if (salesOrder.isOutOfStock && status !== "Cancelled" && status !== "Rejected") {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot change status of out-of-stock orders. Status is locked to Pending until stock is available. You can only Cancel or Reject out-of-stock orders."
+      });
+    }
+
     // Update product warehouses if provided in request (when status is updated from web)
     if (products && Array.isArray(products) && products.length > 0) {
       for (let i = 0; i < salesOrder.products.length && i < products.length; i++) {
@@ -462,8 +525,8 @@ export const updateSalesOrderStatus = async (req, res) => {
       }
     }
 
-    // Special handling for Confirmed status (stock allocation)
-    if (status === "Confirmed") {
+    // Special handling for Confirmed status (stock allocation) - only for in-stock orders
+    if (status === "Confirmed" && !salesOrder.isOutOfStock) {
       // Verify stock availability for all products
       for (const product of salesOrder.products) {
         if (product.warehouse) {
@@ -517,8 +580,8 @@ export const updateSalesOrderStatus = async (req, res) => {
       salesOrder.approvedAt = new Date();
     }
 
-    // Handle stock restoration for rejected or cancelled orders
-    if ((status === "Rejected" || status === "Cancelled") && originalStatus === "Confirmed") {
+    // Handle stock restoration for rejected or cancelled orders (only for previously confirmed orders)
+    if ((status === "Rejected" || status === "Cancelled") && originalStatus === "Confirmed" && !salesOrder.isOutOfStock) {
       // Restore stock for all products
       for (const product of salesOrder.products) {
         if (product.warehouse) {
@@ -544,72 +607,24 @@ export const updateSalesOrderStatus = async (req, res) => {
       }
     }
 
-    // Handle stock management based on status changes
-    if (status === "Confirmed" && originalStatus !== "Confirmed") {
-      // Block stock for confirmed orders
-      console.log("Blocking stock for confirmed order");
-      for (const product of salesOrder.products) {
-        if (product.warehouse) {
-          // Get current balance before creating the movement
-          const StockMovement = (await import("../models/Stock.js")).default;
-          const latestMovement = await StockMovement.findOne({
-            productId: product.product,
-            warehouseId: product.warehouse
-          }).sort({ date: -1, createdAt: -1 });
-          
-          const currentBalance = latestMovement ? latestMovement.balance : 0;
-          const newBalance = currentBalance - product.quantity;
-          
-          const blockMovement = new StockMovement({
-            productId: product.product,
-            warehouseId: product.warehouse,
-            type: 'OUT',
-            quantity: product.quantity,
-            balance: newBalance,
-            referenceNo: salesOrder.orderNumber,
-            referenceType: 'SALE',
-            date: new Date(),
-            remarks: `Order ${salesOrder.orderNumber} - Stock Blocked`,
-            createdBy: req.user._id
-          });
-          await blockMovement.save();
-          console.log(`Blocked ${product.quantity} units of product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
-        }
-      }
-    } else if (status === "Delivered") {
-      // Handle delivered orders - either from Confirmed or directly from Pending
-      console.log(`Order delivered - ${originalStatus === "Confirmed" ? "permanently reducing already blocked stock" : "permanently reducing stock"}`);
-      for (const product of salesOrder.products) {
-        if (product.warehouse) {
-          // Get current balance before creating the movement
-          const StockMovement = (await import("../models/Stock.js")).default;
-          const latestMovement = await StockMovement.findOne({
-            productId: product.product,
-            warehouseId: product.warehouse
-          }).sort({ date: -1, createdAt: -1 });
-          
-          const currentBalance = latestMovement ? latestMovement.balance : 0;
-          
-          if (originalStatus === "Confirmed") {
-            // Stock is already blocked, just create tracking record
-            const deliveryMovement = new StockMovement({
+    // Handle stock management based on status changes (only for in-stock orders)
+    if (!salesOrder.isOutOfStock) {
+      if (status === "Confirmed" && originalStatus !== "Confirmed") {
+        // Block stock for confirmed orders
+        console.log("Blocking stock for confirmed order");
+        for (const product of salesOrder.products) {
+          if (product.warehouse) {
+            // Get current balance before creating the movement
+            const StockMovement = (await import("../models/Stock.js")).default;
+            const latestMovement = await StockMovement.findOne({
               productId: product.product,
-              warehouseId: product.warehouse,
-              type: 'OUT',
-              quantity: 0, // No quantity change, just tracking
-              balance: currentBalance, // Keep same balance
-              referenceNo: salesOrder.orderNumber,
-              referenceType: 'SALE',
-              date: new Date(),
-              remarks: `Order ${salesOrder.orderNumber} - Delivered (Stock Permanently Reduced)`,
-              createdBy: req.user._id
-            });
-            await deliveryMovement.save();
-            console.log(`Order ${salesOrder.orderNumber} delivered - stock permanently reduced for product ${product.product} in warehouse ${product.warehouse}`);
-          } else {
-            // Direct delivery from Pending - reduce stock permanently
+              warehouseId: product.warehouse
+            }).sort({ date: -1, createdAt: -1 });
+            
+            const currentBalance = latestMovement ? latestMovement.balance : 0;
             const newBalance = currentBalance - product.quantity;
-            const deliveryMovement = new StockMovement({
+            
+            const blockMovement = new StockMovement({
               productId: product.product,
               warehouseId: product.warehouse,
               type: 'OUT',
@@ -618,45 +633,97 @@ export const updateSalesOrderStatus = async (req, res) => {
               referenceNo: salesOrder.orderNumber,
               referenceType: 'SALE',
               date: new Date(),
-              remarks: `Order ${salesOrder.orderNumber} - Delivered (Stock Permanently Reduced)`,
+              remarks: `Order ${salesOrder.orderNumber} - Stock Blocked`,
               createdBy: req.user._id
             });
-            await deliveryMovement.save();
-            console.log(`Order ${salesOrder.orderNumber} delivered - stock permanently reduced for product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
+            await blockMovement.save();
+            console.log(`Blocked ${product.quantity} units of product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
+          }
+        }
+      } else if (status === "Delivered") {
+        // Handle delivered orders - either from Confirmed or directly from Pending
+        console.log(`Order delivered - ${originalStatus === "Confirmed" ? "permanently reducing already blocked stock" : "permanently reducing stock"}`);
+        for (const product of salesOrder.products) {
+          if (product.warehouse) {
+            // Get current balance before creating the movement
+            const StockMovement = (await import("../models/Stock.js")).default;
+            const latestMovement = await StockMovement.findOne({
+              productId: product.product,
+              warehouseId: product.warehouse
+            }).sort({ date: -1, createdAt: -1 });
+            
+            const currentBalance = latestMovement ? latestMovement.balance : 0;
+            
+            if (originalStatus === "Confirmed") {
+              // Stock is already blocked, just create tracking record
+              const deliveryMovement = new StockMovement({
+                productId: product.product,
+                warehouseId: product.warehouse,
+                type: 'OUT',
+                quantity: 0, // No quantity change, just tracking
+                balance: currentBalance, // Keep same balance
+                referenceNo: salesOrder.orderNumber,
+                referenceType: 'SALE',
+                date: new Date(),
+                remarks: `Order ${salesOrder.orderNumber} - Delivered (Stock Permanently Reduced)`,
+                createdBy: req.user._id
+              });
+              await deliveryMovement.save();
+              console.log(`Order ${salesOrder.orderNumber} delivered - stock permanently reduced for product ${product.product} in warehouse ${product.warehouse}`);
+            } else {
+              // Direct delivery from Pending - reduce stock permanently
+              const newBalance = currentBalance - product.quantity;
+              const deliveryMovement = new StockMovement({
+                productId: product.product,
+                warehouseId: product.warehouse,
+                type: 'OUT',
+                quantity: product.quantity,
+                balance: newBalance,
+                referenceNo: salesOrder.orderNumber,
+                referenceType: 'SALE',
+                date: new Date(),
+                remarks: `Order ${salesOrder.orderNumber} - Delivered (Stock Permanently Reduced)`,
+                createdBy: req.user._id
+              });
+              await deliveryMovement.save();
+              console.log(`Order ${salesOrder.orderNumber} delivered - stock permanently reduced for product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
+            }
+          }
+        }
+      } else if ((status === "Cancelled" || status === "Rejected") && originalStatus === "Confirmed") {
+        // Unblock stock for cancelled/rejected orders
+        console.log("Unblocking stock for cancelled/rejected order");
+        for (const product of salesOrder.products) {
+          if (product.warehouse) {
+            // Get current balance before creating the movement
+            const StockMovement = (await import("../models/Stock.js")).default;
+            const latestMovement = await StockMovement.findOne({
+              productId: product.product,
+              warehouseId: product.warehouse
+            }).sort({ date: -1, createdAt: -1 });
+            
+            const currentBalance = latestMovement ? latestMovement.balance : 0;
+            const newBalance = currentBalance + product.quantity;
+            
+            const unblockMovement = new StockMovement({
+              productId: product.product,
+              warehouseId: product.warehouse,
+              type: 'IN',
+              quantity: product.quantity,
+              balance: newBalance,
+              referenceNo: salesOrder.orderNumber,
+              referenceType: 'SALE',
+              date: new Date(),
+              remarks: `Order ${salesOrder.orderNumber} - Stock Unblocked (${status})`,
+              createdBy: req.user._id
+            });
+            await unblockMovement.save();
+            console.log(`Unblocked ${product.quantity} units of product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
           }
         }
       }
-    } else if ((status === "Cancelled" || status === "Rejected") && originalStatus === "Confirmed") {
-      // Unblock stock for cancelled/rejected orders
-      console.log("Unblocking stock for cancelled/rejected order");
-      for (const product of salesOrder.products) {
-        if (product.warehouse) {
-          // Get current balance before creating the movement
-          const StockMovement = (await import("../models/Stock.js")).default;
-          const latestMovement = await StockMovement.findOne({
-            productId: product.product,
-            warehouseId: product.warehouse
-          }).sort({ date: -1, createdAt: -1 });
-          
-          const currentBalance = latestMovement ? latestMovement.balance : 0;
-          const newBalance = currentBalance + product.quantity;
-          
-          const unblockMovement = new StockMovement({
-            productId: product.product,
-            warehouseId: product.warehouse,
-            type: 'IN',
-            quantity: product.quantity,
-            balance: newBalance,
-            referenceNo: salesOrder.orderNumber,
-            referenceType: 'SALE',
-            date: new Date(),
-            remarks: `Order ${salesOrder.orderNumber} - Stock Unblocked (${status})`,
-            createdBy: req.user._id
-          });
-          await unblockMovement.save();
-          console.log(`Unblocked ${product.quantity} units of product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
-        }
-      }
+    } else {
+      console.log("🚨 Out-of-stock order - no stock movements will be made");
     }
 
     // Update order status and remarks
@@ -1434,6 +1501,91 @@ export const getOverdueSalesOrders = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error fetching overdue sales orders",
+      error: error.message
+    });
+  }
+};
+
+// @desc    Get pending quantities from out-of-stock orders
+// @route   GET /api/sales-orders/pending-quantities
+// @access  Private
+export const getPendingQuantities = async (req, res) => {
+  try {
+    const { productId, warehouseId } = req.query;
+
+    // Build query for out-of-stock orders that are still pending
+    const query = {
+      isOutOfStock: true,
+      status: "Pending"
+    };
+
+    // If specific product or warehouse requested, filter further
+    if (productId || warehouseId) {
+      query.$and = [];
+      
+      if (productId) {
+        query.$and.push({ "products.product": productId });
+      }
+      
+      if (warehouseId) {
+        query.$and.push({ "products.warehouse": warehouseId });
+      }
+    }
+
+    // Get all out-of-stock pending orders
+    const outOfStockOrders = await SalesOrder.find(query)
+      .populate("dealer", "name")
+      .populate("products.product", "itemName productCode")
+      .populate("products.warehouse", "name")
+      .lean();
+
+    // Aggregate pending quantities by product and warehouse
+    const pendingQuantities = {};
+
+    outOfStockOrders.forEach(order => {
+      order.products.forEach(product => {
+        const productKey = `${product.product._id}-${product.warehouse}`;
+        
+        if (!pendingQuantities[productKey]) {
+          pendingQuantities[productKey] = {
+            productId: product.product._id,
+            productName: product.product.itemName,
+            productCode: product.product.productCode,
+            warehouseId: product.warehouse,
+            warehouseName: product.warehouseName,
+            totalPendingQuantity: 0,
+            orders: []
+          };
+        }
+        
+        pendingQuantities[productKey].totalPendingQuantity += product.quantity;
+        pendingQuantities[productKey].orders.push({
+          orderNumber: order.orderNumber,
+          dealerName: order.dealer?.name || order.dealerName,
+          quantity: product.quantity,
+          orderDate: order.orderDate,
+          dueDate: order.dueDate
+        });
+      });
+    });
+
+    // Convert to array format
+    const pendingQuantitiesArray = Object.values(pendingQuantities);
+
+    res.json({
+      success: true,
+      pendingQuantities: pendingQuantitiesArray,
+      totalOutOfStockOrders: outOfStockOrders.length,
+      summary: {
+        totalProducts: pendingQuantitiesArray.length,
+        totalPendingQuantity: pendingQuantitiesArray.reduce((sum, item) => sum + item.totalPendingQuantity, 0)
+      }
+    });
+  } catch (error) {
+    console.error("Get Pending Quantities Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching pending quantities",
       error: error.message
     });
   }

@@ -64,7 +64,8 @@ export const getCategories = async (req, res) => {
 
     res.json({
       success: true,
-      data: categoriesWithCounts,
+      categories: categoriesWithCounts,
+      data: categoriesWithCounts, // Keep both for compatibility
       pagination: {
         currentPage: page,
         totalPages: Math.ceil(total / limit),

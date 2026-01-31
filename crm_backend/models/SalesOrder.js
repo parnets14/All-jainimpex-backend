@@ -144,7 +144,40 @@ const salesOrderSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: "User",
     required: true
-  }
+  },
+  // Out-of-stock order fields
+  isOutOfStock: {
+    type: Boolean,
+    default: false
+  },
+  stockValidation: [{
+    productId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Product"
+    },
+    productName: String,
+    availableStock: {
+      type: Number,
+      default: 0
+    },
+    requestedQuantity: {
+      type: Number,
+      required: true
+    },
+    hasStock: {
+      type: Boolean,
+      default: true
+    },
+    shortfall: {
+      type: Number,
+      default: 0
+    },
+    warehouseId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Warehouse"
+    },
+    warehouseName: String
+  }]
 }, {
   timestamps: true
 });

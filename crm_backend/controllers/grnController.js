@@ -47,6 +47,109 @@ const validateGRNQuantities = (items) => {
   }
 };
 
+// Function to check and fulfill pending out-of-stock orders when stock becomes available
+const fulfillPendingOutOfStockOrders = async (grn, session) => {
+  try {
+    console.log(`🔍 Checking for pending out-of-stock orders to fulfill for GRN: ${grn.grnNo}`);
+    
+    // Import SalesOrder model
+    const SalesOrder = (await import('../models/SalesOrder.js')).default;
+    
+    // Get all pending out-of-stock orders
+    const pendingOrders = await SalesOrder.find({
+      isOutOfStock: true,
+      status: "Pending"
+    }).session(session);
+    
+    console.log(`📊 Found ${pendingOrders.length} pending out-of-stock orders`);
+    
+    if (pendingOrders.length === 0) {
+      return;
+    }
+    
+    // Check each GRN item against pending orders
+    for (const grnItem of grn.items) {
+      const productId = grnItem.productId.toString();
+      const warehouseId = grn.warehouseId.toString();
+      const availableQuantity = grnItem.acceptedQuantity;
+      
+      console.log(`🔍 Checking product ${productId} in warehouse ${warehouseId}: ${availableQuantity} units available`);
+      
+      // Find pending orders for this product
+      const relevantOrders = pendingOrders.filter(order => 
+        order.products.some(product => 
+          product.product.toString() === productId && 
+          (product.warehouse === null || product.warehouse.toString() === warehouseId)
+        )
+      );
+      
+      if (relevantOrders.length === 0) {
+        console.log(`   ℹ️ No pending orders found for this product`);
+        continue;
+      }
+      
+      console.log(`   📋 Found ${relevantOrders.length} pending orders for this product`);
+      
+      let remainingStock = availableQuantity;
+      const fulfilledOrders = [];
+      
+      // Try to fulfill orders (FIFO - first in, first out)
+      for (const order of relevantOrders.sort((a, b) => new Date(a.orderDate) - new Date(b.orderDate))) {
+        const orderProduct = order.products.find(product => 
+          product.product.toString() === productId
+        );
+        
+        if (!orderProduct) continue;
+        
+        const requiredQuantity = orderProduct.quantity;
+        
+        if (remainingStock >= requiredQuantity) {
+          // Can fulfill this order completely
+          console.log(`   ✅ Can fulfill order ${order.orderNumber}: ${requiredQuantity} units`);
+          
+          // Update the order to assign warehouse and mark as ready
+          orderProduct.warehouse = grn.warehouseId;
+          orderProduct.warehouseName = grn.warehouseId.name || 'Assigned Warehouse';
+          
+          // Mark order as no longer out-of-stock
+          order.isOutOfStock = false;
+          order.stockValidation = []; // Clear stock validation
+          
+          // Save the order
+          await order.save({ session });
+          
+          fulfilledOrders.push({
+            orderNumber: order.orderNumber,
+            quantity: requiredQuantity
+          });
+          
+          remainingStock -= requiredQuantity;
+        } else if (remainingStock > 0) {
+          // Can partially fulfill this order
+          console.log(`   ⚠️ Can only partially fulfill order ${order.orderNumber}: ${remainingStock}/${requiredQuantity} units`);
+          // For now, we don't handle partial fulfillment - could be added later
+        } else {
+          // No more stock available
+          console.log(`   ❌ No more stock available for order ${order.orderNumber}`);
+          break;
+        }
+      }
+      
+      if (fulfilledOrders.length > 0) {
+        console.log(`   🎉 Fulfilled ${fulfilledOrders.length} orders for product ${productId}:`);
+        fulfilledOrders.forEach(order => {
+          console.log(`     - ${order.orderNumber}: ${order.quantity} units`);
+        });
+      }
+    }
+    
+    console.log(`✅ Completed pending order fulfillment check for GRN: ${grn.grnNo}`);
+  } catch (error) {
+    console.error('Error in fulfillPendingOutOfStockOrders:', error);
+    throw error;
+  }
+};
+
 export const createGRN = async (req, res) => {
   // Start MongoDB session for transaction
   const session = await mongoose.startSession();
@@ -190,6 +293,15 @@ export const createGRN = async (req, res) => {
         success: false,
         message: `GRN created but stock movement failed: ${stockError.message}`
       });
+    }
+    
+    // Check and fulfill pending out-of-stock orders
+    try {
+      await fulfillPendingOutOfStockOrders(grn, session);
+      console.log(`✅ Checked and fulfilled pending out-of-stock orders for GRN: ${grn.grnNo}`);
+    } catch (fulfillError) {
+      console.error('Error fulfilling pending orders:', fulfillError);
+      // Don't fail the GRN creation if pending order fulfillment fails
     }
     
     // Auto-Apply Purchase Schemes for GRN

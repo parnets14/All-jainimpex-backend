@@ -1,4 +1,5 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import SalesOrder from '../models/SalesOrder.js';
 import DealerInvoice from '../models/DealerInvoice.js';
 import { protect } from '../middleware/authMiddleware.js';
@@ -33,69 +34,48 @@ router.get('/products', protect, async (req, res) => {
         startDate.setDate(endDate.getDate() - 7);
         break;
       case '30days':
+        startDate.setDate(endDate.getDate() - 30);
+        break;
+      case '3months':
+        startDate.setDate(endDate.getDate() - 90);
+        break;
+      case '6months':
+        startDate.setDate(endDate.getDate() - 180);
+        break;
+      case '1year':
+        startDate.setFullYear(endDate.getFullYear() - 1);
+        break;
       default:
         startDate.setDate(endDate.getDate() - 30);
         break;
     }
 
-    // Aggregate sales data from both SalesOrder and DealerInvoice collections
+    // Aggregate sales data from SalesOrder collection only (as requested)
     const salesOrderData = await SalesOrder.aggregate([
       {
         $match: {
-          createdAt: { $gte: startDate, $lte: endDate },
-          status: { $in: ['confirmed', 'delivered', 'completed'] }
+          createdAt: { $gte: startDate, $lte: endDate }
+          // Removed status filter to show ALL orders
         }
       },
       { $unwind: '$products' },
       {
         $match: {
-          'products.productId': { $in: productIdArray.map(id => id.toString()) }
+          'products.product': { $in: productIdArray.map(id => new mongoose.Types.ObjectId(id.toString())) }
         }
       },
       {
         $group: {
-          _id: '$products.productId',
+          _id: '$products.product',
           totalQuantity: { $sum: '$products.quantity' }
         }
       }
     ]);
 
-    const dealerInvoiceData = await DealerInvoice.aggregate([
-      {
-        $match: {
-          createdAt: { $gte: startDate, $lte: endDate },
-          status: { $in: ['confirmed', 'delivered', 'completed'] }
-        }
-      },
-      { $unwind: '$products' },
-      {
-        $match: {
-          'products.productId': { $in: productIdArray.map(id => id.toString()) }
-        }
-      },
-      {
-        $group: {
-          _id: '$products.productId',
-          totalQuantity: { $sum: '$products.quantity' }
-        }
-      }
-    ]);
-
-    // Combine data from both sources
-    const combinedData = {};
-    
-    salesOrderData.forEach(item => {
-      combinedData[item._id] = (combinedData[item._id] || 0) + item.totalQuantity;
-    });
-    
-    dealerInvoiceData.forEach(item => {
-      combinedData[item._id] = (combinedData[item._id] || 0) + item.totalQuantity;
-    });
-
-    // Format response
+    // Format response (only sales orders, no dealer invoices)
     const result = productIdArray.map(productId => ({
       productId: productId.toString(),
-      totalQuantity: combinedData[productId.toString()] || 0
+      totalQuantity: salesOrderData.find(item => item._id.toString() === productId.toString())?.totalQuantity || 0
     }));
 
     res.json({
@@ -116,7 +96,15 @@ router.get('/products', protect, async (req, res) => {
 // Get detailed sales analytics for a single product
 router.get('/product-details', protect, async (req, res) => {
   try {
-    const { productId, warehouseId } = req.query;
+    const { productId, warehouseId, period, startDate, endDate } = req.query;
+    
+    console.log('🔍 [DEBUG] Detailed Analytics API called with:', {
+      productId,
+      warehouseId,
+      period,
+      startDate,
+      endDate
+    });
     
     if (!productId) {
       return res.status(400).json({
@@ -126,55 +114,95 @@ router.get('/product-details', protect, async (req, res) => {
     }
 
     const now = new Date();
+    console.log('🔍 [DEBUG] Current time:', now.toISOString());
     
-    // Calculate different time periods
+    // Calculate different time periods based on period parameter
     const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
     const oneMonthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const threeMonthsAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+    const sixMonthsAgo = new Date(now.getTime() - 180 * 24 * 60 * 60 * 1000);
+    const oneYearAgo = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
 
-    // Base match criteria
-    const baseMatch = {
-      'products.productId': productId.toString(),
-      status: { $in: ['confirmed', 'delivered', 'completed'] }
-    };
+    console.log('🔍 [DEBUG] Date ranges:', {
+      oneDayAgo: oneDayAgo.toISOString(),
+      sevenDaysAgo: sevenDaysAgo.toISOString(),
+      oneMonthAgo: oneMonthAgo.toISOString()
+    });
 
-    if (warehouseId) {
-      baseMatch.warehouseId = warehouseId;
+    // Handle custom date range
+    let customStartDate = null;
+    let customEndDate = null;
+    if (period === 'custom' && startDate && endDate) {
+      customStartDate = new Date(startDate);
+      customEndDate = new Date(endDate);
+      // Ensure end date includes the full day
+      customEndDate.setHours(23, 59, 59, 999);
     }
 
-    // Helper function to get sales data for a period
+    // Base match criteria (removed status filter to show all orders)
+    const baseMatch = {
+      'products.product': new mongoose.Types.ObjectId(productId.toString())
+      // Removed status filter to show ALL orders
+    };
+
+    // Note: warehouseId filtering is handled in the aggregation pipeline
+    // because warehouse info is at products.warehouse level, not top-level warehouseId
+
+    console.log('🔍 [DEBUG] Base match criteria:', JSON.stringify(baseMatch, null, 2));
+
+    // Helper function to get sales data for a period (Sales Orders only)
     const getSalesForPeriod = async (startDate, endDate = now) => {
       const matchCriteria = {
         ...baseMatch,
         createdAt: { $gte: startDate, $lte: endDate }
       };
 
-      const salesOrderResult = await SalesOrder.aggregate([
-        { $match: matchCriteria },
-        { $unwind: '$products' },
-        { $match: { 'products.productId': productId.toString() } },
-        { $group: { _id: null, totalQuantity: { $sum: '$products.quantity' } } }
-      ]);
+      console.log(`🔍 [DEBUG] Query for ${startDate.toISOString()} to ${endDate.toISOString()}:`, JSON.stringify(matchCriteria, null, 2));
 
-      const dealerInvoiceResult = await DealerInvoice.aggregate([
+      const aggregationPipeline = [
         { $match: matchCriteria },
         { $unwind: '$products' },
-        { $match: { 'products.productId': productId.toString() } },
-        { $group: { _id: null, totalQuantity: { $sum: '$products.quantity' } } }
-      ]);
+        { 
+          $match: { 
+            'products.product': new mongoose.Types.ObjectId(productId.toString())
+          }
+        }
+      ];
+
+      // Add warehouse filter at product level if warehouseId is provided
+      if (warehouseId) {
+        aggregationPipeline.push({
+          $match: {
+            'products.warehouse': new mongoose.Types.ObjectId(warehouseId.toString())
+          }
+        });
+        console.log(`🔍 [DEBUG] Added warehouse filter: products.warehouse = ${warehouseId}`);
+      }
+
+      // Add final grouping
+      aggregationPipeline.push({
+        $group: { _id: null, totalQuantity: { $sum: '$products.quantity' } }
+      });
+
+      const salesOrderResult = await SalesOrder.aggregate(aggregationPipeline);
 
       const salesOrderQty = salesOrderResult[0]?.totalQuantity || 0;
-      const dealerInvoiceQty = dealerInvoiceResult[0]?.totalQuantity || 0;
+      console.log(`🔍 [DEBUG] Result: ${salesOrderQty} units`);
       
-      return salesOrderQty + dealerInvoiceQty;
+      return salesOrderQty; // Only return sales order quantity
     };
 
     // Get sales for different periods
-    const [oneDaySales, sevenDaysSales, oneMonthSales, totalSales] = await Promise.all([
+    const [oneDaySales, sevenDaysSales, oneMonthSales, threeMonthsSales, sixMonthsSales, oneYearSales, totalSales, customPeriodSales] = await Promise.all([
       getSalesForPeriod(oneDayAgo),
       getSalesForPeriod(sevenDaysAgo),
       getSalesForPeriod(oneMonthAgo),
-      getSalesForPeriod(new Date('2020-01-01')) // Total sales from a far back date
+      getSalesForPeriod(threeMonthsAgo),
+      getSalesForPeriod(sixMonthsAgo),
+      getSalesForPeriod(oneYearAgo),
+      getSalesForPeriod(new Date('2020-01-01')), // Total sales from a far back date
+      customStartDate && customEndDate ? getSalesForPeriod(customStartDate, customEndDate) : 0
     ]);
 
     // Get monthly breakdown for the last 12 months
@@ -206,16 +234,57 @@ router.get('/product-details', protect, async (req, res) => {
       });
     }
 
+    // Determine which data to return based on period
+    let responseData = {
+      oneDaySales,
+      sevenDaysSales,
+      oneMonthSales,
+      threeMonthsSales,
+      sixMonthsSales,
+      oneYearSales,
+      totalSales,
+      monthlyBreakdown: monthlyBreakdown.filter(m => m.quantity > 0),
+      yearlyBreakdown: yearlyBreakdown.filter(y => y.quantity > 0)
+    };
+
+    // Add custom period data if requested
+    if (period === 'custom' && customStartDate && customEndDate) {
+      responseData.customPeriodSales = customPeriodSales;
+      responseData.customPeriod = {
+        startDate: customStartDate.toISOString().split('T')[0],
+        endDate: customEndDate.toISOString().split('T')[0],
+        sales: customPeriodSales
+      };
+    }
+
+    // Add period-specific insights
+    switch (period) {
+      case '3months':
+        responseData.periodSales = threeMonthsSales;
+        responseData.periodLabel = '3 Months';
+        break;
+      case '6months':
+        responseData.periodSales = sixMonthsSales;
+        responseData.periodLabel = '6 Months';
+        break;
+      case '1year':
+        responseData.periodSales = oneYearSales;
+        responseData.periodLabel = '1 Year';
+        break;
+      case 'custom':
+        responseData.periodSales = customPeriodSales;
+        responseData.periodLabel = 'Custom Period';
+        break;
+      default:
+        responseData.periodSales = oneMonthSales;
+        responseData.periodLabel = '30 Days';
+    }
+
+    console.log('🔍 [DEBUG] Final response data:', JSON.stringify(responseData, null, 2));
+
     res.json({
       success: true,
-      data: {
-        oneDaySales,
-        sevenDaysSales,
-        oneMonthSales,
-        totalSales,
-        monthlyBreakdown: monthlyBreakdown.filter(m => m.quantity > 0),
-        yearlyBreakdown: yearlyBreakdown.filter(y => y.quantity > 0)
-      }
+      data: responseData
     });
 
   } catch (error) {
