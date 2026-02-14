@@ -886,163 +886,43 @@ export const getDealerAccessibleProducts = async (req, res) => {
     console.log("  - Allowed Subcategories:", dealer.allowedSubcategories?.length || 0);
     console.log("  - Allowed Extended:", dealer.allowedExtendedSubcategories?.length || 0);
 
-    // Import Product model
+    // Import Product model and permission utility
     const Product = (await import("../models/Product.js")).default;
+    const { calculateProductFilter } = await import("../utils/dealerProductPermissions.js");
 
-    // Build filter based on dealer's allowed hierarchy using AND logic
-    // A product is accessible only if it matches ALL the dealer's hierarchy permissions
-    const productFilter = {
-      status: 'active' // Only show active products
-    };
-
-    // Filter by dealer's allowed brands (required)
-    if (dealer.allowedBrands && dealer.allowedBrands.length > 0) {
-      const allowedBrandIds = dealer.allowedBrands.map(brand => 
-        typeof brand === 'object' ? brand._id : brand
-      );
-      productFilter.brand = { $in: allowedBrandIds };
-      console.log("🔍 Added brand filter (AND):", allowedBrandIds);
-    } else {
-      // If no brands allowed, return empty result
-      console.log("⚠️ No brands allowed - returning empty result");
-      return res.json({
-        success: true,
-        products: [],
-        pagination: {
-          currentPage: pageNumber,
-          totalPages: 0,
-          totalItems: 0,
-          itemsPerPage: limitNumber,
-          hasNextPage: false,
-          hasPrevPage: false,
-        },
-        dealerInfo: {
-          dealerId: dealer._id,
-          dealerName: dealer.name,
-          allowedBrands: 0,
-          allowedCategories: dealer.allowedCategories?.length || 0,
-          allowedSubcategories: dealer.allowedSubcategories?.length || 0,
-          allowedExtended: dealer.allowedExtendedSubcategories?.length || 0,
-        },
-      });
-    }
-
-    // Filter by dealer's allowed categories (required)
-    if (dealer.allowedCategories && dealer.allowedCategories.length > 0) {
-      const allowedCategoryIds = dealer.allowedCategories.map(cat => 
-        typeof cat === 'object' ? cat._id : cat
-      );
-      productFilter.category = { $in: allowedCategoryIds };
-      console.log("🔍 Added category filter (AND):", allowedCategoryIds);
-    } else {
-      // If no categories allowed, return empty result
-      console.log("⚠️ No categories allowed - returning empty result");
-      return res.json({
-        success: true,
-        products: [],
-        pagination: {
-          currentPage: pageNumber,
-          totalPages: 0,
-          totalItems: 0,
-          itemsPerPage: limitNumber,
-          hasNextPage: false,
-          hasPrevPage: false,
-        },
-        dealerInfo: {
-          dealerId: dealer._id,
-          dealerName: dealer.name,
-          allowedBrands: dealer.allowedBrands?.length || 0,
-          allowedCategories: 0,
-          allowedSubcategories: dealer.allowedSubcategories?.length || 0,
-          allowedExtended: dealer.allowedExtendedSubcategories?.length || 0,
-        },
-      });
-    }
-
-    // Filter by dealer's allowed subcategories (required)
-    if (dealer.allowedSubcategories && dealer.allowedSubcategories.length > 0) {
-      const allowedSubcategoryIds = dealer.allowedSubcategories.map(sub => 
-        typeof sub === 'object' ? sub._id : sub
-      );
-      productFilter.subcategory = { $in: allowedSubcategoryIds };
-      console.log("🔍 Added subcategory filter (AND):", allowedSubcategoryIds);
-    } else {
-      // If no subcategories allowed, return empty result
-      console.log("⚠️ No subcategories allowed - returning empty result");
-      return res.json({
-        success: true,
-        products: [],
-        pagination: {
-          currentPage: pageNumber,
-          totalPages: 0,
-          totalItems: 0,
-          itemsPerPage: limitNumber,
-          hasNextPage: false,
-          hasPrevPage: false,
-        },
-        dealerInfo: {
-          dealerId: dealer._id,
-          dealerName: dealer.name,
-          allowedBrands: dealer.allowedBrands?.length || 0,
-          allowedCategories: dealer.allowedCategories?.length || 0,
-          allowedSubcategories: 0,
-          allowedExtended: dealer.allowedExtendedSubcategories?.length || 0,
-        },
-      });
-    }
-
-    // Filter by dealer's allowed extended subcategories (Level 1 only)
-    if (dealer.allowedExtendedSubcategories && dealer.allowedExtendedSubcategories.length > 0) {
-      const allowedExtendedIds = dealer.allowedExtendedSubcategories.map(ext => 
-        typeof ext === 'object' ? ext._id : ext
-      );
-      // FIXED: Show BOTH products with allowed extended subcategories AND products with no extended subcategories
-      // This allows dealers to access both extended products and basic hierarchy products
-      productFilter.$or = [
-        { subcategory1: { $in: allowedExtendedIds } }, // Products with allowed extended subcategories
-        { subcategory1: { $exists: false } },          // Products with no extended subcategory
-        { subcategory1: null }                         // Products with null extended subcategory
-      ];
-      console.log("🔍 Added extended subcategory filter (OR logic): allowed extended IDs + basic hierarchy products");
-      console.log("🔍 Allowed extended IDs:", allowedExtendedIds);
-    } else {
-      // If no extended subcategories allowed, show products with NO extended subcategories
-      // This allows access to basic products that only have Brand → Category → Subcategory
-      productFilter.$or = [
-        { subcategory1: { $exists: false } },
-        { subcategory1: null }
-      ];
-      console.log("🔍 No extended subcategories allowed - showing products with NO extended subcategories");
-    }
-    console.log("🔍 Final hierarchy filter (AND logic):", JSON.stringify(productFilter, null, 2));
+    // Use smart hierarchical filtering
+    console.log("🎯 Calculating smart hierarchical product filter...");
+    const productFilter = await calculateProductFilter(dealer);
+    console.log("🔍 Smart filter result:", JSON.stringify(productFilter, null, 2));
 
     // Apply search filter if provided
     if (search) {
-      // Handle potential $or conflict from extended subcategory filter
-      const searchOr = [
+      const searchConditions = [
         { itemName: { $regex: search, $options: "i" } },
         { productCode: { $regex: search, $options: "i" } },
         { description: { $regex: search, $options: "i" } },
       ];
       
+      // Combine with existing filter
       if (productFilter.$or) {
-        // If $or already exists from extended subcategory filtering, combine with $and
+        // If filter already has $or, wrap both in $and
         productFilter.$and = [
-          { $or: productFilter.$or }, // Extended subcategory filter
-          { $or: searchOr },          // Search filter
-          ...Object.keys(productFilter).filter(key => key !== '$or' && key !== '$and').map(key => ({ [key]: productFilter[key] }))
+          { $or: productFilter.$or },
+          { $or: searchConditions }
         ];
-        delete productFilter.$or; // Remove the original $or since it's now in $and
+        delete productFilter.$or;
       } else {
-        // No existing $or, just add search $or
-        productFilter.$or = searchOr;
+        // Add search as additional $and condition
+        if (!productFilter.$and) {
+          productFilter.$and = [];
+        }
+        productFilter.$and.push({ $or: searchConditions });
       }
       console.log("🔍 Added search filter for:", search);
     }
 
     // Apply additional filters from query parameters
     if (brandId && brandId !== "All") {
-      // Ensure the requested brand is in dealer's allowed brands
       const allowedBrandIds = dealer.allowedBrands.map(brand => 
         typeof brand === 'object' ? brand._id.toString() : brand.toString()
       );
@@ -1132,6 +1012,11 @@ export const getDealerAccessibleProducts = async (req, res) => {
       .sort(sort)
       .limit(limitNumber)
       .skip(skip)
+      .populate('brand', '_id name')
+      .populate('category', '_id name')
+      .populate('subcategory', '_id name')
+      .populate('subcategory1', '_id name level')
+      .populate('subcategory2', '_id name level')
       .select("-__v");
 
     console.log("📦 Products returned:", products.length);
