@@ -100,26 +100,13 @@ const discountMappingSchema = new mongoose.Schema({
   },
   
   // Maximum Discount Limit (1-100%)
+  // Note: This is independent from direct + level discounts
+  // Only rule: Total (direct + all levels) should not exceed 100%
   maxDiscountPercentage: {
     type: Number,
     min: 1,
     max: 100,
-    required: true,
-    // No default - will be set by frontend
-    validate: {
-      validator: function(value) {
-        // Ensure max discount is not less than direct discount
-        if (this.directDiscountPercentage && value < this.directDiscountPercentage) {
-          return false;
-        }
-        // Ensure max discount is not less than any level discount
-        if (this.levels && this.levels.length > 0) {
-          return this.levels.every(level => value >= level.discountPercentage);
-        }
-        return true;
-      },
-      message: 'Max discount percentage must be greater than or equal to all configured discount percentages'
-    }
+    required: function() { return this.mappingType === 'sales'; }
   },
   
   levels: {
@@ -273,17 +260,29 @@ discountMappingSchema.pre('save', function(next) {
     return next(new Error('Valid To date must be after Valid From date'));
   }
   
-  // Validate that all discount percentages don't exceed maxDiscountPercentage
-  if (this.directDiscountPercentage && this.directDiscountPercentage > this.maxDiscountPercentage) {
-    return next(new Error(`Direct discount percentage (${this.directDiscountPercentage}%) cannot exceed max discount limit (${this.maxDiscountPercentage}%)`));
-  }
-  
-  if (this.levels && this.levels.length > 0) {
-    for (const level of this.levels) {
-      if (level.discountPercentage > this.maxDiscountPercentage) {
-        return next(new Error(`Level "${level.levelName}" discount percentage (${level.discountPercentage}%) cannot exceed max discount limit (${this.maxDiscountPercentage}%)`));
+  // For sales discounts: Validate that total (direct + all levels) doesn't exceed 100%
+  if (this.mappingType === 'sales') {
+    let totalDiscount = 0;
+    
+    // Add direct discount if present
+    if (this.directDiscountPercentage) {
+      totalDiscount += this.directDiscountPercentage;
+    }
+    
+    // Add all level discounts if present
+    if (this.levels && this.levels.length > 0) {
+      for (const level of this.levels) {
+        totalDiscount += level.discountPercentage;
       }
     }
+    
+    // Check if total exceeds 100%
+    if (totalDiscount > 100) {
+      return next(new Error(`Total discount (direct + all levels) cannot exceed 100%. Current total: ${totalDiscount.toFixed(2)}%`));
+    }
+    
+    // Note: maxDiscountPercentage is independent and doesn't limit direct + level discounts
+    // It's used for other purposes in the system
   }
   
   // Auto-expire if past validTo date
