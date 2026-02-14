@@ -10,7 +10,8 @@ import {
   getSalesOrderStats,
   getSalesOrdersByDealer,
   getOverdueSalesOrders,
-  getPendingQuantities
+  getPendingQuantities,
+  createSalesOrderWithAutoSplit
 } from "../controllers/salesOrderController.js";
 import { protect } from "../middleware/authMiddleware.js";
 import { logActivity } from "../middleware/activityLogMiddleware.js";
@@ -25,6 +26,10 @@ router.use(protect);
 router.route("/")
   .get(logActivity("Sales Order Dashboard", "Viewed sales orders list", "READ"), getSalesOrders)
   .post(logActivity("Sales Order Dashboard", "Created new sales order", "CREATE"), createSalesOrder);
+
+// NEW: Auto-split route for dual credit days system
+router.route("/auto-split")
+  .post(logActivity("Sales Order Dashboard", "Created sales order with auto-split", "CREATE"), createSalesOrderWithAutoSplit);
 
 router.route("/overdue")
   .get(logActivity("Sales Order Dashboard", "Viewed overdue sales orders", "READ"), getOverdueSalesOrders);

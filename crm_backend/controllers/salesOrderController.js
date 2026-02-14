@@ -1590,3 +1590,381 @@ export const getPendingQuantities = async (req, res) => {
     });
   }
 };
+
+
+// ============================================================================
+// DUAL CREDIT DAYS & AUTO-SPLIT ORDERS IMPLEMENTATION
+// ============================================================================
+
+/**
+ * Helper function to create a single sales order
+ * Extracted from createSalesOrder for reusability in auto-split logic
+ */
+async function createSingleSalesOrder(orderData, userId) {
+  const {
+    dealer,
+    region,
+    pinCode,
+    deliveryAddress,
+    deliveryCity,
+    deliveryArea,
+    deliveryPinCode,
+    deliveryLatitude,
+    deliveryLongitude,
+    products,
+    orderDate,
+    deliveryDate,
+    creditDays,
+    type,
+    remarks,
+    status,
+    isOutOfStock,
+    stockValidation,
+    salesType, // NEW: 'Regular Sale' or 'CD Sales'
+    creditDaysApplied // NEW: Actual credit days applied
+  } = orderData;
+
+  // Generate unique order number
+  const orderNumber = await generateOrderNumber();
+  console.log("Generated order number:", orderNumber);
+
+  // Validate dealer exists
+  const dealerData = await Dealer.findById(dealer);
+  if (!dealerData) {
+    throw new Error("Dealer not found");
+  }
+
+  // Validate and process each product
+  const validatedProducts = [];
+
+  for (const item of products) {
+    // Validate product exists
+    const product = await Product.findById(item.product);
+    if (!product) {
+      throw new Error(`Product not found: ${item.productName || item.product}`);
+    }
+
+    // Validate warehouse exists (skip if warehouse is "No Stock" for out-of-stock orders)
+    if (item.warehouse && item.warehouse !== "No Stock") {
+      const Warehouse = (await import("../models/Warehouse.js")).default;
+      const warehouse = await Warehouse.findById(item.warehouse);
+      
+      if (!warehouse) {
+        throw new Error(`Warehouse not found: ${item.warehouse}`);
+      }
+
+      // For out-of-stock orders, skip stock validation
+      if (!isOutOfStock) {
+        // For regular orders, validate stock availability
+        const stock = await Stock.findOne({
+          productId: item.product,
+          warehouseId: item.warehouse
+        });
+
+        if (stock && stock.netStock < item.quantity) {
+          throw new Error(`Insufficient stock for ${product.itemName} in ${warehouse.name}. Available: ${stock.netStock}, Required: ${item.quantity}`);
+        }
+      }
+
+      console.log(`Product ${product.itemName} validated for warehouse ${warehouse.name}`);
+    } else if (item.warehouse === "No Stock") {
+      console.log(`Product ${product.itemName} has no warehouse assigned (out-of-stock order)`);
+    }
+
+    // Calculate product details
+    const unitPrice = item.unitPrice || product.rateSlabs[0]?.rate || 0;
+    const gst = item.gst || product.gst || 0;
+    const baseAmount = item.quantity * unitPrice;
+    const gstAmount = (baseAmount * gst) / 100;
+    const totalPrice = baseAmount + gstAmount;
+
+    // Build product object
+    validatedProducts.push({
+      product: item.product,
+      productCode: product.productCode,
+      productName: product.itemName,
+      HSNCode: product.HSNCode,
+      quantity: item.quantity,
+      unitPrice: unitPrice,
+      gst: gst,
+      gstAmount: gstAmount,
+      totalPrice: totalPrice,
+      warehouse: item.warehouse === "No Stock" ? null : item.warehouse,
+      warehouseName: item.warehouse === "No Stock" ? "No Stock" : item.warehouseName,
+      // Copy discount fields if present
+      discountPercentage: item.discountPercentage || 0,
+      discountAmount: item.discountAmount || 0,
+      discountType: item.discountType || null,
+      selectedDiscountLevel: item.selectedDiscountLevel || null,
+      appliedDiscount: item.appliedDiscount || null
+    });
+  }
+
+  // Calculate order totals
+  const grossAmount = validatedProducts.reduce((sum, product) => sum + (product.quantity * product.unitPrice), 0);
+  const totalGst = validatedProducts.reduce((sum, product) => sum + product.gstAmount, 0);
+  const discountAmount = validatedProducts.reduce((sum, product) => sum + (product.discountAmount || 0), 0);
+  const totalAmount = grossAmount + totalGst - discountAmount;
+
+  // Calculate due date
+  let dueDate = null;
+  if (orderDate && creditDays) {
+    dueDate = new Date(orderDate);
+    dueDate.setDate(dueDate.getDate() + creditDays);
+  }
+
+  // Determine initial status
+  let initialStatus = status || "Pending";
+  
+  // For out-of-stock orders, force status to Pending
+  if (isOutOfStock) {
+    initialStatus = "Pending";
+    console.log("🚨 Creating out-of-stock sales order - status locked to Pending");
+  }
+
+  // Create sales order
+  const salesOrder = new SalesOrder({
+    orderNumber,
+    dealer,
+    dealerName: dealerData.name,
+    dealerCode: dealerData.code,
+    dealerType: dealerData.dealerType,
+    region,
+    pinCode,
+    deliveryAddress,
+    deliveryCity,
+    deliveryArea,
+    deliveryPinCode,
+    deliveryLatitude,
+    deliveryLongitude,
+    products: validatedProducts,
+    orderDate,
+    deliveryDate,
+    creditDays,
+    salesType, // NEW: Set the sales type
+    creditDaysApplied, // NEW: Set the applied credit days
+    dueDate,
+    grossAmount,
+    totalGst,
+    discountAmount,
+    totalAmount,
+    type,
+    remarks,
+    status: initialStatus,
+    createdBy: userId,
+    isOutOfStock: isOutOfStock || false,
+    stockValidation: stockValidation || []
+  });
+
+  // Save sales order
+  await salesOrder.save();
+
+  // Handle stock updates based on initial status (only for in-stock orders)
+  if (!isOutOfStock) {
+    if (salesOrder.status === "Confirmed") {
+      console.log("Order created with Confirmed status - blocking stock");
+      for (const product of salesOrder.products) {
+        if (product.warehouse) {
+          const StockMovement = (await import("../models/Stock.js")).default;
+          const latestMovement = await StockMovement.findOne({
+            productId: product.product,
+            warehouseId: product.warehouse
+          }).sort({ date: -1, createdAt: -1 });
+          
+          const currentBalance = latestMovement ? latestMovement.balance : 0;
+          const newBalance = currentBalance - product.quantity;
+          
+          const blockMovement = new StockMovement({
+            productId: product.product,
+            warehouseId: product.warehouse,
+            type: 'OUT',
+            quantity: product.quantity,
+            balance: newBalance,
+            referenceNo: salesOrder.orderNumber,
+            referenceType: 'SALE',
+            date: new Date(),
+            remarks: `Order ${salesOrder.orderNumber} - Stock Blocked`,
+            createdBy: userId
+          });
+          await blockMovement.save();
+        }
+      }
+    } else if (salesOrder.status === "Delivered") {
+      console.log("Order created with Delivered status - permanently reducing stock");
+      for (const product of salesOrder.products) {
+        if (product.warehouse) {
+          const StockMovement = (await import("../models/Stock.js")).default;
+          const latestMovement = await StockMovement.findOne({
+            productId: product.product,
+            warehouseId: product.warehouse
+          }).sort({ date: -1, createdAt: -1 });
+          
+          const currentBalance = latestMovement ? latestMovement.balance : 0;
+          const newBalance = currentBalance - product.quantity;
+          
+          const deliveryMovement = new StockMovement({
+            productId: product.product,
+            warehouseId: product.warehouse,
+            type: 'OUT',
+            quantity: product.quantity,
+            balance: newBalance,
+            referenceNo: salesOrder.orderNumber,
+            referenceType: 'SALE',
+            date: new Date(),
+            remarks: `Order ${salesOrder.orderNumber} - Delivered (Stock Permanently Reduced)`,
+            createdBy: userId
+          });
+          await deliveryMovement.save();
+        }
+      }
+    }
+  }
+
+  // Populate the created order for response
+  const populatedOrder = await SalesOrder.findById(salesOrder._id)
+    .populate("dealer", "name code contactPerson phone email address dealerType creditDaysRegular creditDaysCD")
+    .populate("region", "name")
+    .populate("products.product")
+    .populate("products.warehouse", "name")
+    .populate("createdBy", "name email");
+
+  return populatedOrder;
+}
+
+/**
+ * @desc    Create sales order with auto-split for CD Sales and Regular Sales
+ * @route   POST /api/sales-orders/auto-split
+ * @access  Private
+ */
+export const createSalesOrderWithAutoSplit = async (req, res) => {
+  try {
+    console.log("🚀 createSalesOrderWithAutoSplit called");
+    console.log("Request body:", JSON.stringify(req.body, null, 2));
+    
+    const { dealer, products, ...orderData } = req.body;
+    
+    // Validate dealer exists
+    const dealerData = await Dealer.findById(dealer);
+    if (!dealerData) {
+      return res.status(404).json({
+        success: false,
+        message: "Dealer not found"
+      });
+    }
+    
+    console.log("✅ Dealer found:", dealerData.name);
+    console.log("📊 Dealer credit days - Regular:", dealerData.creditDaysRegular, "CD:", dealerData.creditDaysCD);
+    
+    // Get full product details to check salesType
+    const productDetails = await Promise.all(
+      products.map(async (item) => {
+        const product = await Product.findById(item.product);
+        if (!product) {
+          throw new Error(`Product not found: ${item.product}`);
+        }
+        return {
+          ...item,
+          salesType: product.salesType
+        };
+      })
+    );
+    
+    console.log("📦 Product details loaded:", productDetails.length, "products");
+    
+    // Separate products by salesType
+    const regularProducts = productDetails.filter(p => p.salesType === 'Regular Sale');
+    const cdProducts = productDetails.filter(p => p.salesType === 'CD Sales');
+    
+    console.log("🔵 Regular Sale products:", regularProducts.length);
+    console.log("🟢 CD Sales products:", cdProducts.length);
+    
+    const createdOrders = [];
+    
+    // Create Regular Sales Order if there are regular products
+    if (regularProducts.length > 0) {
+      console.log("\n📝 Creating Regular Sales Order...");
+      const regularOrderData = {
+        ...orderData,
+        dealer,
+        products: regularProducts,
+        salesType: 'Regular Sale',
+        creditDays: dealerData.creditDaysRegular || dealerData.creditDays || 30,
+        creditDaysApplied: dealerData.creditDaysRegular || dealerData.creditDays || 30
+      };
+      
+      const regularOrder = await createSingleSalesOrder(regularOrderData, req.user._id);
+      createdOrders.push(regularOrder);
+      console.log("✅ Regular Sales Order created:", regularOrder.orderNumber);
+    }
+    
+    // Create CD Sales Order if there are CD products
+    if (cdProducts.length > 0) {
+      console.log("\n📝 Creating CD Sales Order...");
+      const cdOrderData = {
+        ...orderData,
+        dealer,
+        products: cdProducts,
+        salesType: 'CD Sales',
+        creditDays: dealerData.creditDaysCD || dealerData.creditDays || 30,
+        creditDaysApplied: dealerData.creditDaysCD || dealerData.creditDays || 30
+      };
+      
+      const cdOrder = await createSingleSalesOrder(cdOrderData, req.user._id);
+      createdOrders.push(cdOrder);
+      console.log("✅ CD Sales Order created:", cdOrder.orderNumber);
+    }
+    
+    // Return response
+    if (createdOrders.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No products to create order"
+      });
+    } else if (createdOrders.length === 1) {
+      console.log("\n✅ Single order created successfully");
+      res.status(201).json({
+        success: true,
+        message: "Sales order created successfully",
+        salesOrder: createdOrders[0],
+        isSplit: false
+      });
+    } else {
+      console.log("\n✅ Orders split successfully - 2 orders created");
+      res.status(201).json({
+        success: true,
+        message: "Orders created successfully! Your order was split into Regular and CD Sales orders.",
+        salesOrders: createdOrders,
+        isSplit: true,
+        regularOrder: createdOrders.find(o => o.salesType === 'Regular Sale'),
+        cdOrder: createdOrders.find(o => o.salesType === 'CD Sales')
+      });
+    }
+    
+  } catch (error) {
+    console.error("❌ Create Sales Order with Auto-Split Error:", error);
+    
+    // Handle duplicate order number error
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: "Order number already exists"
+      });
+    }
+
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({
+        success: false,
+        message: "Validation error",
+        errors: messages
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: "Error creating sales order",
+      error: error.message
+    });
+  }
+};

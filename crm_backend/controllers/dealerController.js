@@ -158,6 +158,8 @@ export const createDealer = async (req, res) => {
       salesExecutiveId,
       creditLimit,
       creditDays,
+      creditDaysRegular,
+      creditDaysCD,
       salesTarget,
       gst,
       pan,
@@ -221,6 +223,8 @@ export const createDealer = async (req, res) => {
       salesExecutiveId,
       creditLimit: parseFloat(creditLimit) || 0,
       creditDays: parseInt(creditDays) || 0,
+      creditDaysRegular: parseInt(creditDaysRegular) || 0,
+      creditDaysCD: parseInt(creditDaysCD) || 0,
       salesTarget: parseFloat(salesTarget) || 0,
       gst: gst ? gst.trim().toUpperCase() : "",
       pan: pan ? pan.trim().toUpperCase() : "",
@@ -304,6 +308,8 @@ export const updateDealer = async (req, res) => {
       salesExecutiveId,
       creditLimit,
       creditDays,
+      creditDaysRegular,
+      creditDaysCD,
       salesTarget,
       gst,
       pan,
@@ -367,6 +373,10 @@ export const updateDealer = async (req, res) => {
       updateData.creditLimit = parseFloat(creditLimit) || 0;
     if (creditDays !== undefined)
       updateData.creditDays = parseInt(creditDays) || 0;
+    if (creditDaysRegular !== undefined)
+      updateData.creditDaysRegular = parseInt(creditDaysRegular) || 0;
+    if (creditDaysCD !== undefined)
+      updateData.creditDaysCD = parseInt(creditDaysCD) || 0;
     if (salesTarget !== undefined)
       updateData.salesTarget = parseFloat(salesTarget) || 0;
     if (gst !== undefined) updateData.gst = gst ? gst.trim().toUpperCase() : "";

@@ -169,6 +169,17 @@ const dealerSchema = new mongoose.Schema(
       default: 0,
       min: [0, "Credit days cannot be negative"],
     },
+    // Dual Credit Days System
+    creditDaysRegular: {
+      type: Number,
+      default: 0,
+      min: [0, "Credit days for Regular Sales cannot be negative"],
+    },
+    creditDaysCD: {
+      type: Number,
+      default: 0,
+      min: [0, "Credit days for CD Sales cannot be negative"],
+    },
     salesTarget: {
       type: Number,
       default: 0,

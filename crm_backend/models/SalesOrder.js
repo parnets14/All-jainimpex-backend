@@ -106,6 +106,15 @@ const salesOrderSchema = new mongoose.Schema({
     type: Number,
     default: 30
   },
+  salesType: {
+    type: String,
+    enum: ['Regular Sale', 'CD Sales'],
+    required: true
+  },
+  creditDaysApplied: {
+    type: Number,
+    default: 0
+  },
   dueDate: Date,
   grossAmount: {
     type: Number,
