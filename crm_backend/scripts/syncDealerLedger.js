@@ -6,6 +6,7 @@ import DealerLedger from '../models/DealerLedger.js';
 import Dealer from '../models/Dealer.js';
 import DealerInvoice from '../models/DealerInvoice.js';
 import CreditNote from '../models/CreditNote.js';
+import SalesOrder from '../models/SalesOrder.js';
 import User from '../models/User.js';
 
 // Fix for __dirname in ES modules
@@ -64,6 +65,18 @@ mongoose.connect(process.env.MONGO_URL).then(async () => {
             previousBalance = lastEntry.runningBalance;
           }
           
+          // Try to find the related sales order to get salesType and creditDaysApplied
+          let salesType = null;
+          let creditDaysApplied = invoice.creditDays || 0;
+          
+          if (invoice.salesOrder) {
+            const salesOrder = await SalesOrder.findById(invoice.salesOrder);
+            if (salesOrder) {
+              salesType = salesOrder.salesType;
+              creditDaysApplied = salesOrder.creditDaysApplied || salesOrder.creditDays || 0;
+            }
+          }
+          
           const ledgerEntry = new DealerLedger({
             dealer: dealer._id,
             dealerName: invoice.dealerName || invoice.customerName,
@@ -73,11 +86,13 @@ mongoose.connect(process.env.MONGO_URL).then(async () => {
             invoice: invoice._id,
             invoiceNumber: invoice.invoiceNumber,
             invoiceValue: invoice.totalAmount,
+            salesType: salesType,
+            creditDaysApplied: creditDaysApplied,
             debitAmount: invoice.totalAmount,
             creditAmount: 0,
             runningBalance: previousBalance + invoice.totalAmount,
-            description: `Invoice ${invoice.invoiceNumber}`,
-            creditDays: invoice.creditDays || 0,
+            description: `Invoice ${invoice.invoiceNumber}${salesType ? ` (${salesType})` : ''}`,
+            creditDays: creditDaysApplied,
             dueDate: invoice.dueDate,
             pointsEarned: invoice.totalPoints || 0,
             schemeAmount: invoice.totalDiscount || 0,
@@ -85,7 +100,7 @@ mongoose.connect(process.env.MONGO_URL).then(async () => {
           });
           await ledgerEntry.save();
           dealerCreated++;
-          console.log(`    Created ledger entry for invoice: ${invoice.invoiceNumber} (₹${invoice.totalAmount})`);
+          console.log(`    Created ledger entry for invoice: ${invoice.invoiceNumber} (₹${invoice.totalAmount})${salesType ? ` - ${salesType}` : ''}`);
         }
       }
       

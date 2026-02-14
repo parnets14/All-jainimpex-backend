@@ -35,6 +35,17 @@ const dealerLedgerSchema = new mongoose.Schema({
     default: 0
   },
   
+  // Sales Type (CD Sales vs Regular Sales)
+  salesType: {
+    type: String,
+    enum: ['Regular Sale', 'CD Sales', null],
+    default: null
+  },
+  creditDaysApplied: {
+    type: Number,
+    default: 0
+  },
+  
   // Credit Note Information (if applicable)
   creditNote: {
     type: mongoose.Schema.Types.ObjectId,
