@@ -4,11 +4,23 @@ import Category from "../models/Category.js";
 import Subcategory from "../models/Subcategory.js";
 import ExtendedSubcategory from "../models/ExtendedSubcategory.js";
 import DealerLedger from "../models/DealerLedger.js";
+import Route from "../models/Route.js";
 
 // Helper function to safely parse numbers
 const safeParseInt = (value, defaultValue = 1) => {
   const num = parseInt(value);
   return isNaN(num) || num < 1 ? defaultValue : num;
+};
+
+// Helper function to update route dealer count
+const updateRouteDealerCount = async (routeId) => {
+  if (!routeId) return;
+  try {
+    const dealerCount = await Dealer.countDocuments({ routeId });
+    await Route.findByIdAndUpdate(routeId, { totalDealers: dealerCount });
+  } catch (error) {
+    console.error("Error updating route dealer count:", error);
+  }
 };
 
 // Get all dealers with pagination and search
@@ -155,6 +167,7 @@ export const createDealer = async (req, res) => {
       dealerType,
       dealerCategory,
       regionId,
+      routeId,
       salesExecutiveId,
       creditLimit,
       creditDays,
@@ -220,6 +233,7 @@ export const createDealer = async (req, res) => {
         ? dealerCategory
         : [dealerCategory],
       regionId,
+      routeId: routeId || null,
       salesExecutiveId,
       creditLimit: parseFloat(creditLimit) || 0,
       creditDays: parseInt(creditDays) || 0,
@@ -257,6 +271,11 @@ export const createDealer = async (req, res) => {
       code: dealer.code,
       name: dealer.name,
     });
+
+    // Update route dealer count if route is assigned
+    if (routeId) {
+      await updateRouteDealerCount(routeId);
+    }
 
     res.status(201).json({
       success: true,
@@ -305,6 +324,7 @@ export const updateDealer = async (req, res) => {
       dealerType,
       dealerCategory,
       regionId,
+      routeId,
       salesExecutiveId,
       creditLimit,
       creditDays,
@@ -367,6 +387,7 @@ export const updateDealer = async (req, res) => {
         ? dealerCategory
         : [dealerCategory];
     if (regionId !== undefined) updateData.regionId = regionId;
+    if (routeId !== undefined) updateData.routeId = routeId || null;
     if (salesExecutiveId !== undefined)
       updateData.salesExecutiveId = salesExecutiveId;
     if (creditLimit !== undefined)
@@ -398,6 +419,10 @@ export const updateDealer = async (req, res) => {
 
     console.log("Updating dealer with data:", updateData);
 
+    // Track old route ID for count update
+    const oldRouteId = existingDealer.routeId;
+    const newRouteId = routeId !== undefined ? (routeId || null) : oldRouteId;
+
     const dealer = await Dealer.findByIdAndUpdate(id, updateData, {
       new: true,
       runValidators: true,
@@ -409,6 +434,12 @@ export const updateDealer = async (req, res) => {
       .populate('allowedCategories', 'name description')
       .populate('allowedSubcategories', 'name description')
       .populate('allowedExtendedSubcategories', 'name level description');
+
+    // Update route dealer counts if route changed
+    if (String(oldRouteId) !== String(newRouteId)) {
+      if (oldRouteId) await updateRouteDealerCount(oldRouteId);
+      if (newRouteId) await updateRouteDealerCount(newRouteId);
+    }
 
     res.json({
       success: true,
@@ -445,7 +476,15 @@ export const deleteDealer = async (req, res) => {
       });
     }
 
+    // Store route ID before deletion
+    const routeId = dealer.routeId;
+
     await Dealer.findByIdAndDelete(req.params.id);
+
+    // Update route dealer count if dealer was assigned to a route
+    if (routeId) {
+      await updateRouteDealerCount(routeId);
+    }
 
     res.json({
       success: true,

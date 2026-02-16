@@ -5,6 +5,33 @@ import Supplier from '../models/Supplier.js';
 import Warehouse from '../models/Warehouse.js';
 import StockMovementService from '../services/stockMovementService.js';
 
+// Helper function to calculate damaged quantity from GRN data
+// Damaged quantity is part of received quantity but never enters usable stock
+// It's stored in GRN for record-keeping and display purposes only
+const calculateDamagedQuantity = async (productId, warehouseId) => {
+  try {
+    // Get damaged quantity from GRN records
+    const grns = await GRN.find({
+      'items.productId': productId,
+      warehouseId: warehouseId
+    }).lean();
+
+    let damagedQty = 0;
+    grns.forEach(grn => {
+      grn.items.forEach(item => {
+        if (item.productId.toString() === productId.toString()) {
+          damagedQty += item.damageQuantity || 0;
+        }
+      });
+    });
+
+    return damagedQty;
+  } catch (error) {
+    console.error(`Error calculating damaged quantity for product ${productId} in warehouse ${warehouseId}:`, error);
+    return 0;
+  }
+};
+
 // Utility function to recalculate all stock balances
 export const recalculateStockBalances = async (req, res) => {
   try {
@@ -180,7 +207,8 @@ export const getStock = async (req, res) => {
             });
             
             warehouseStock[warehouseId].totalQty += item.acceptedQuantity || 0;
-            warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
+            // REMOVED: warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
+            // Damaged quantity will be calculated from stock movements (source of truth)
             warehouseStock[warehouseId].totalAcceptedQty += item.acceptedQuantity || 0;
             
             if (grn.supplierId) {
@@ -299,7 +327,8 @@ export const getStock = async (req, res) => {
             });
             
             warehouseStock[warehouseId].totalQty += item.acceptedQuantity || 0;
-            warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
+            // REMOVED: warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
+            // Damaged quantity will be calculated from stock movements (source of truth)
             warehouseStock[warehouseId].totalAcceptedQty += item.acceptedQuantity || 0;
             
             if (grn.supplierId) {
@@ -354,9 +383,14 @@ export const getStock = async (req, res) => {
           
           console.log(`🔍 [STOCK_DEBUG] Blocked quantity for ${product.productCode} in warehouse ${warehouseId}: ${blockedQty}`);
           
+          // FIXED: Calculate damaged quantity from stock movements (source of truth)
+          const damagedQty = await calculateDamagedQuantity(product._id, warehouseId);
+          console.log(`🔍 [STOCK_DEBUG] Damaged quantity for ${product.productCode} in warehouse ${warehouseId}: ${damagedQty}`);
+          
           // Update the warehouse stock with current stock from movements
           warehouseStock[warehouseId].currentStock = currentStock;
           warehouseStock[warehouseId].blockedQty = blockedQty;
+          warehouseStock[warehouseId].damagedQty = damagedQty; // Override with correct value from movements
         } catch (error) {
           console.error(`Error getting current stock for product ${product.productCode} in warehouse ${warehouseId}:`, error);
           warehouseStock[warehouseId].currentStock = warehouseStock[warehouseId].totalQty;
@@ -382,8 +416,10 @@ export const getStock = async (req, res) => {
           const blockedQty = warehouse.blockedQty || 0; // Use calculated blocked quantity
           
           // FIXED: Use current stock from movements as the actual available quantity
+          // Current stock already accounts for damaged items (they are OUT movements)
+          // So we should NOT subtract damaged quantity again
           const currentStock = warehouse.currentStock !== undefined ? warehouse.currentStock : warehouse.totalQty;
-          const netStock = currentStock - warehouse.damagedQty - blockedQty;
+          const netStock = currentStock - blockedQty; // Don't subtract damagedQty - it's already in movements
 
           console.log(`🔍 [STOCK_DEBUG] Final stock calculation for ${product.productCode} in ${warehouse.warehouseName}:`, {
             currentStock,
@@ -1063,7 +1099,8 @@ export const debugStockCalculation = async (req, res) => {
           });
           
           warehouseStock[warehouseId].totalQty += item.acceptedQuantity || 0;
-          warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
+          // REMOVED: warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
+          // Damaged quantity will be calculated from stock movements (source of truth)
           warehouseStock[warehouseId].totalAcceptedQty += item.acceptedQuantity || 0;
           
           if (grn.supplierId) {
@@ -1085,6 +1122,12 @@ export const debugStockCalculation = async (req, res) => {
         }
       });
     });
+
+    // Calculate damaged quantity from stock movements for each warehouse
+    for (const warehouseId of Object.keys(warehouseStock)) {
+      const damagedQty = await calculateDamagedQuantity(product._id, warehouseId);
+      warehouseStock[warehouseId].damagedQty = damagedQty;
+    }
 
     // Calculate final values
     const finalWarehouses = Object.values(warehouseStock).map(warehouse => {
@@ -1324,13 +1367,21 @@ export const getStockAlerts = async (req, res) => {
         grn.items.forEach(item => {
           if (item.productId.toString() === product._id.toString()) {
             warehouseStock[warehouseId].totalQty += item.acceptedQuantity || 0;
-            warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
+            // REMOVED: warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
+            // Damaged quantity will be calculated from stock movements (source of truth)
           }
         });
       });
 
+      // Calculate damaged quantity from stock movements for each warehouse
+      for (const warehouseId of Object.keys(warehouseStock)) {
+        const damagedQty = await calculateDamagedQuantity(product._id, warehouseId);
+        warehouseStock[warehouseId].damagedQty = damagedQty;
+      }
+
       Object.values(warehouseStock).forEach(warehouse => {
-        const netStock = warehouse.totalQty - warehouse.damagedQty;
+        // Don't subtract damaged quantity - it's already accounted for in stock movements
+        const netStock = warehouse.totalQty;
         
         if (netStock <= product.minStockLevel) {
         lowStockItems.push({

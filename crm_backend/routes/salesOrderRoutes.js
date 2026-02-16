@@ -6,6 +6,7 @@ import {
   updateSalesOrder,
   deleteSalesOrder,
   updateSalesOrderStatus,
+  assignWarehouseToOutOfStockOrder,
   getProductStock,
   getSalesOrderStats,
   getSalesOrdersByDealer,
@@ -53,5 +54,9 @@ router.route("/:id")
 
 router.route("/:id/status")
   .patch(logActivity("Sales Order Dashboard", "Updated sales order status", "UPDATE"), updateSalesOrderStatus);
+
+// NEW: Assign warehouse to out-of-stock order
+router.route("/:id/assign-warehouse")
+  .patch(logActivity("Sales Order Dashboard", "Assigned warehouse to out-of-stock order", "UPDATE"), assignWarehouseToOutOfStockOrder);
 
 export default router;

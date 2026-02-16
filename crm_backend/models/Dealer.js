@@ -152,6 +152,10 @@ const dealerSchema = new mongoose.Schema(
       ref: "Region",
       required: [true, "Region is required"],
     },
+    routeId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Route",
+    },
     salesExecutiveId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

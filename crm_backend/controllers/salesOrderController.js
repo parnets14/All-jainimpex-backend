@@ -507,22 +507,38 @@ export const updateSalesOrderStatus = async (req, res) => {
     // Store original status for rollback if needed
     const originalStatus = salesOrder.status;
 
-    // CRITICAL: Prevent status changes for out-of-stock orders
-    if (salesOrder.isOutOfStock && status !== "Cancelled" && status !== "Rejected") {
-      return res.status(400).json({
-        success: false,
-        message: "Cannot change status of out-of-stock orders. Status is locked to Pending until stock is available. You can only Cancel or Reject out-of-stock orders."
-      });
-    }
-
     // Update product warehouses if provided in request (when status is updated from web)
+    let warehouseAssigned = false;
     if (products && Array.isArray(products) && products.length > 0) {
       for (let i = 0; i < salesOrder.products.length && i < products.length; i++) {
         if (products[i].warehouse) {
-          salesOrder.products[i].warehouse = products[i].warehouse;
+          // Check if warehouse changed from null/"No Stock" to actual warehouse
+          const oldWarehouse = salesOrder.products[i].warehouse;
+          const newWarehouse = products[i].warehouse;
+          
+          if (!oldWarehouse && newWarehouse) {
+            warehouseAssigned = true;
+          }
+          
+          salesOrder.products[i].warehouse = newWarehouse;
           salesOrder.products[i].warehouseName = products[i].warehouseName || null;
         }
       }
+    }
+
+    // AUTOMATIC: If warehouse is assigned to out-of-stock order, clear the flag
+    if (salesOrder.isOutOfStock && warehouseAssigned) {
+      console.log("🎯 Warehouse assigned to out-of-stock order - clearing isOutOfStock flag");
+      salesOrder.isOutOfStock = false;
+      salesOrder.stockValidation = [];
+    }
+
+    // CRITICAL: Prevent status changes for out-of-stock orders (unless warehouse just assigned)
+    if (salesOrder.isOutOfStock && status !== "Cancelled" && status !== "Rejected") {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot change status of out-of-stock orders. Please assign a warehouse first, then you can change the status."
+      });
     }
 
     // Special handling for Confirmed status (stock allocation) - only for in-stock orders
@@ -803,6 +819,103 @@ export const updateSalesOrderStatus = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error updating sales order status",
+      error: error.message
+    });
+  }
+};
+
+// @desc    Assign warehouse to out-of-stock order and clear out-of-stock flag
+// @route   PATCH /api/sales-orders/:id/assign-warehouse
+// @access  Private
+export const assignWarehouseToOutOfStockOrder = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { products } = req.body; // Array of { productIndex, warehouse, warehouseName }
+
+    // Find the sales order
+    const salesOrder = await SalesOrder.findById(id);
+    if (!salesOrder) {
+      return res.status(404).json({
+        success: false,
+        message: "Sales order not found"
+      });
+    }
+
+    // Verify this is an out-of-stock order
+    if (!salesOrder.isOutOfStock) {
+      return res.status(400).json({
+        success: false,
+        message: "This order is not marked as out-of-stock"
+      });
+    }
+
+    // Verify stock availability for all products with assigned warehouses
+    for (const productUpdate of products) {
+      const product = salesOrder.products[productUpdate.productIndex];
+      
+      if (!product) {
+        return res.status(400).json({
+          success: false,
+          message: `Product at index ${productUpdate.productIndex} not found`
+        });
+      }
+
+      if (productUpdate.warehouse) {
+        // Check stock availability
+        const stock = await Stock.findOne({
+          productId: product.product,
+          warehouseId: productUpdate.warehouse
+        });
+
+        if (!stock) {
+          return res.status(400).json({
+            success: false,
+            message: `Product ${product.productName} not available in selected warehouse`
+          });
+        }
+
+        if (stock.netStock < product.quantity) {
+          return res.status(400).json({
+            success: false,
+            message: `Insufficient stock for ${product.productName}. Available: ${stock.netStock}, Required: ${product.quantity}`
+          });
+        }
+      }
+    }
+
+    // Update warehouses for products
+    for (const productUpdate of products) {
+      if (productUpdate.warehouse) {
+        salesOrder.products[productUpdate.productIndex].warehouse = productUpdate.warehouse;
+        salesOrder.products[productUpdate.productIndex].warehouseName = productUpdate.warehouseName;
+      }
+    }
+
+    // Clear out-of-stock flag and allow status changes
+    salesOrder.isOutOfStock = false;
+    salesOrder.stockValidation = []; // Clear validation results
+
+    await salesOrder.save();
+
+    // Populate updated order for response
+    const updatedOrder = await SalesOrder.findById(id)
+      .populate("dealer", "name code contactPerson phone email address dealerType")
+      .populate("region", "name")
+      .populate("products.product")
+      .populate("products.warehouse", "name")
+      .populate("approvedBy", "name email")
+      .populate("createdBy", "name email");
+
+    res.json({
+      success: true,
+      message: "Warehouse assigned successfully. Order is now ready to be confirmed.",
+      salesOrder: updatedOrder
+    });
+  } catch (error) {
+    console.error("Assign Warehouse Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error assigning warehouse",
       error: error.message
     });
   }

@@ -42,32 +42,9 @@ class StockMovementService {
           console.log(`🔍 [STOCK_MOVEMENT_SERVICE] Created IN movement: ${item.acceptedQuantity} units for product ${item.productId}`);
         }
         
-        // Create OUT movement for damaged quantity
-        if (item.damageQuantity > 0) {
-          let balance;
-          if (isMigration) {
-            // During migration, use a simple balance calculation
-            balance = -item.damageQuantity; // Will be recalculated later
-          } else {
-            balance = await this.calculateRunningBalance(item.productId, grn.warehouseId, -item.damageQuantity, session);
-          }
-          
-          const outMovement = new StockMovement({
-            productId: item.productId,
-            warehouseId: grn.warehouseId,
-            type: 'OUT',
-            quantity: item.damageQuantity,
-            balance: balance,
-            referenceNo: grn.grnNo,
-            referenceType: 'GRN',
-            date: grn.grnDate,
-            remarks: `GRN: ${grn.grnNo} - Damaged Quantity`,
-            createdBy: grn.createdBy
-          });
-          
-          movements.push(outMovement);
-          console.log(`🔍 [STOCK_MOVEMENT_SERVICE] Created OUT movement: ${item.damageQuantity} units for product ${item.productId}`);
-        }
+        // Damaged quantity is NOT added to stock movements
+        // It's tracked in GRN for record-keeping and displayed separately
+        // Only accepted quantity affects usable stock balance
       }
       
       // Save all movements with session support
