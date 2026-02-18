@@ -7,6 +7,7 @@ import {
   createDealerInvoice,
   updateDealerInvoice,
   updateInvoiceStatus,
+  approveInvoice,
   deleteDealerInvoice,
   getInvoiceStats
 } from "../controllers/dealerInvoiceController.js";
@@ -56,6 +57,11 @@ router.put("/:id", updateDealerInvoice);
 // @desc    Update invoice status
 // @access  Private
 router.patch("/:id/status", updateInvoiceStatus);
+
+// @route   PATCH /api/dealer-invoices/:id/approve
+// @desc    Approve dealer invoice
+// @access  Private
+router.patch("/:id/approve", approveInvoice);
 
 // @route   DELETE /api/dealer-invoices/:id
 // @desc    Delete dealer invoice

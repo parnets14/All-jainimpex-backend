@@ -44,6 +44,16 @@ const invoiceItemSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  // Detailed discount information
+  selectedDiscountLevels: [String], // Array of selected level names
+  manualDiscountLevels: {
+    type: Map,
+    of: Number // Map of levelName -> manual percentage
+  },
+  dealerExtraDiscount: {
+    type: Number,
+    default: 0
+  },
   appliedDiscounts: [{
     discountId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -51,7 +61,14 @@ const invoiceItemSchema = new mongoose.Schema({
     },
     discountName: String,
     discountValue: Number,
-    discountType: String // "percentage" or "fixed"
+    discountType: String, // "percentage" or "fixed"
+    directDiscountPercentage: Number,
+    levels: [{
+      levelName: String,
+      discountPercentage: Number
+    }],
+    targetType: String,
+    maxDiscountPercentage: Number
   }],
   pointsEarned: {
     type: Number,
@@ -266,10 +283,19 @@ dealerInvoiceSchema.pre("save", function(next) {
 dealerInvoiceSchema.pre("save", function(next) {
   this.items.forEach(item => {
     const baseAmount = item.quantity * item.unitPrice;
-    const discountAmount = (baseAmount * item.discountPercentage) / 100;
+    
+    // IMPORTANT: Include dealer extra discount in total discount calculation
+    const totalDiscountPercentage = (item.discountPercentage || 0) + (item.dealerExtraDiscount || 0);
+    const discountAmount = (baseAmount * totalDiscountPercentage) / 100;
+    
+    // Calculate GST on amount AFTER discount (not on original subtotal)
     const amountAfterDiscount = baseAmount - discountAmount;
     item.gstAmount = (amountAfterDiscount * item.gst) / 100;
+    
+    // Final total = amount after discount + GST
     item.totalPrice = amountAfterDiscount + item.gstAmount;
+    
+    // Store the discount amount (including dealer extra)
     item.discountAmount = discountAmount;
   });
   next();

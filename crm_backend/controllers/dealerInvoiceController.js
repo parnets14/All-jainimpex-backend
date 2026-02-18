@@ -819,6 +819,59 @@ export const updateInvoiceStatus = async (req, res) => {
   }
 };
 
+// @desc    Approve dealer invoice
+// @route   PATCH /api/dealer-invoices/:id/approve
+// @access  Private
+export const approveInvoice = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const invoice = await DealerInvoice.findById(id);
+
+    if (!invoice) {
+      return res.status(404).json({
+        success: false,
+        message: "Dealer invoice not found"
+      });
+    }
+
+    // Check if already approved
+    if (invoice.status === "Approved") {
+      return res.status(400).json({
+        success: false,
+        message: "Invoice is already approved"
+      });
+    }
+
+    // Update invoice to approved status
+    invoice.status = "Approved";
+    invoice.approvedBy = req.user.id;
+    invoice.approvedAt = new Date();
+    await invoice.save();
+
+    // Populate the invoice for response
+    const populatedInvoice = await DealerInvoice.findById(id)
+      .populate("dealer", "name code dealerType")
+      .populate("region", "name")
+      .populate("salesOrder", "orderNumber")
+      .populate("items.product", "itemName productCode HSNCode")
+      .populate("items.warehouse", "name")
+      .populate("approvedBy", "name email");
+
+    res.json({
+      success: true,
+      message: "Invoice approved successfully",
+      invoice: populatedInvoice
+    });
+  } catch (error) {
+    console.error("Approve invoice error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error while approving invoice"
+    });
+  }
+};
+
 // @desc    Delete dealer invoice
 // @route   DELETE /api/dealer-invoices/:id
 // @access  Private
@@ -830,6 +883,14 @@ export const deleteDealerInvoice = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "Dealer invoice not found"
+      });
+    }
+
+    // Prevent deletion of approved invoices
+    if (invoice.status === "Approved") {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot delete approved invoices"
       });
     }
 

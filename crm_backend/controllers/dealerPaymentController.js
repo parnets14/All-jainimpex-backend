@@ -15,6 +15,7 @@ export const getDealerPayments = async (req, res) => {
       search,
       status,
       dealer,
+      dealerInvoice, // Add this parameter
       startDate,
       endDate,
       paymentMethod,
@@ -64,6 +65,11 @@ export const getDealerPayments = async (req, res) => {
     // Filter by dealer
     if (dealer) {
       finalQuery.dealer = dealer;
+    }
+
+    // Filter by dealer invoice - THIS IS THE FIX
+    if (dealerInvoice) {
+      finalQuery.dealerInvoice = dealerInvoice;
     }
 
     // Filter by payment method
