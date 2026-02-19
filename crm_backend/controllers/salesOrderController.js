@@ -289,6 +289,7 @@ export const createSalesOrder = async (req, res) => {
         gst: gst,
         gstAmount: gstAmount,
         totalPrice: totalPrice,
+        salesType: product.salesType || 'Regular Sale', // Add salesType from product
         warehouse: item.warehouse === "No Stock" ? null : item.warehouse, // Set to null if "No Stock"
         warehouseName: item.warehouse === "No Stock" ? "No Stock" : item.warehouseName
       });
@@ -1802,6 +1803,7 @@ async function createSingleSalesOrder(orderData, userId) {
       gst: gst,
       gstAmount: gstAmount,
       totalPrice: totalPrice,
+      salesType: item.salesType || product.salesType || 'Regular Sale', // Add salesType from item or product
       warehouse: item.warehouse === "No Stock" ? null : item.warehouse,
       warehouseName: item.warehouse === "No Stock" ? "No Stock" : item.warehouseName,
       // Copy discount fields if present
