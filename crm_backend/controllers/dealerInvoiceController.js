@@ -333,7 +333,7 @@ export const createDealerInvoice = async (req, res) => {
       salesOrderId,
       customerInfo,
       items,
-      creditDays = 30,
+      creditDays = 30, // This will be overridden based on sales type
       remarks,
       internalNotes,
       subtotal,
@@ -359,6 +359,51 @@ export const createDealerInvoice = async (req, res) => {
         message: "Dealer not found"
       });
     }
+
+    // Determine sales type from items and calculate appropriate credit days
+    let determinedSalesType = 'Regular Sale'; // Default
+    let appropriateCreditDays = creditDays; // Start with provided value
+    
+    console.log('🔍 Analyzing items for sales type:', items.map(item => ({
+      productName: item.productName,
+      salesType: item.salesType
+    })));
+    
+    // Check if any item has CD Sales type
+    const hasCDSales = items.some(item => item.salesType === 'CD Sales');
+    const hasRegularSales = items.some(item => item.salesType === 'Regular Sale' || !item.salesType);
+    
+    console.log('📊 Sales type analysis:', { hasCDSales, hasRegularSales });
+    
+    if (hasCDSales && !hasRegularSales) {
+      // All items are CD Sales
+      determinedSalesType = 'CD Sales';
+      appropriateCreditDays = dealer.creditDaysCD || dealer.creditDays || creditDays;
+      console.log('✅ All CD Sales - Using CD credit days:', appropriateCreditDays);
+    } else if (hasRegularSales && !hasCDSales) {
+      // All items are Regular Sales
+      determinedSalesType = 'Regular Sale';
+      appropriateCreditDays = dealer.creditDaysRegular || dealer.creditDays || creditDays;
+      console.log('✅ All Regular Sales - Using Regular credit days:', appropriateCreditDays);
+    } else if (hasCDSales && hasRegularSales) {
+      // Mixed sales - use the longer credit period (typically CD Sales has longer credit)
+      const cdDays = dealer.creditDaysCD || dealer.creditDays || 0;
+      const regularDays = dealer.creditDaysRegular || dealer.creditDays || 0;
+      appropriateCreditDays = Math.max(cdDays, regularDays, creditDays);
+      determinedSalesType = 'Mixed'; // Indicate mixed sales
+      console.log('✅ Mixed Sales - Using longer credit period:', appropriateCreditDays);
+    }
+    
+    console.log(`📋 Sales Type Determination:`, {
+      hasCDSales,
+      hasRegularSales,
+      determinedSalesType,
+      providedCreditDays: creditDays,
+      appropriateCreditDays,
+      dealerCreditDaysCD: dealer.creditDaysCD,
+      dealerCreditDaysRegular: dealer.creditDaysRegular,
+      dealerCreditDays: dealer.creditDays
+    });
 
     // Backend validation for discount limits
     console.log("🔍 Starting backend discount validation...");
@@ -555,7 +600,7 @@ export const createDealerInvoice = async (req, res) => {
       pinCode: dealer.address?.split(',').pop()?.trim() || "",
       salesOrder: salesOrderId,
       salesOrderNumber: salesOrder?.orderNumber || "",
-      creditDays,
+      creditDays: appropriateCreditDays, // Use the determined credit days based on sales type
       items,
       remarks,
       internalNotes,
@@ -603,11 +648,15 @@ export const createDealerInvoice = async (req, res) => {
         invoice: invoice._id,
         invoiceNumber: invoice.invoiceNumber,
         invoiceValue: invoice.totalAmount,
+        // Use the determined sales type from invoice creation
+        salesType: determinedSalesType,
+        // Use the appropriate credit days that were calculated
+        creditDaysApplied: appropriateCreditDays,
         debitAmount: invoice.totalAmount,
         creditAmount: 0,
         runningBalance: previousBalance + invoice.totalAmount,
-        description: `Invoice ${invoice.invoiceNumber}`,
-        creditDays: invoice.creditDays || 0,
+        description: `Invoice ${invoice.invoiceNumber} (${determinedSalesType})`,
+        creditDays: appropriateCreditDays,
         dueDate: invoice.dueDate,
         pointsEarned: invoice.totalPoints || 0,
         schemeAmount: invoice.totalDiscount || 0,

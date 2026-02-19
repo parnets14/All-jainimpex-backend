@@ -65,16 +65,27 @@ mongoose.connect(process.env.MONGO_URL).then(async () => {
             previousBalance = lastEntry.runningBalance;
           }
           
-          // Try to find the related sales order to get salesType and creditDaysApplied
+          // Try to get salesType from invoice items or related sales order
           let salesType = null;
           let creditDaysApplied = invoice.creditDays || 0;
           
-          if (invoice.salesOrder) {
+          // First, check if invoice items have salesType
+          if (invoice.items && invoice.items.length > 0 && invoice.items[0].salesType) {
+            salesType = invoice.items[0].salesType;
+          }
+          
+          // If not found in items, try to get from sales order
+          if (!salesType && invoice.salesOrder) {
             const salesOrder = await SalesOrder.findById(invoice.salesOrder);
             if (salesOrder) {
               salesType = salesOrder.salesType;
-              creditDaysApplied = salesOrder.creditDaysApplied || salesOrder.creditDays || 0;
+              creditDaysApplied = salesOrder.creditDaysApplied || salesOrder.creditDays || invoice.creditDays || 0;
             }
+          }
+          
+          // Default to 'Regular Sale' if still not found
+          if (!salesType) {
+            salesType = 'Regular Sale';
           }
           
           const ledgerEntry = new DealerLedger({
