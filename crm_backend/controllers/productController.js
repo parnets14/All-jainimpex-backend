@@ -244,6 +244,7 @@ export const createProduct = async (req, res) => {
       description,
       unit,
       alternateUnit,
+      alternateUnitQuantity,
       unitPrice,
       gst,
       brand,
@@ -370,6 +371,7 @@ export const createProduct = async (req, res) => {
       description,
       unit,
       alternateUnit,
+      alternateUnitQuantity,
       unitPrice,
       gst,
       brand,
@@ -438,6 +440,7 @@ export const updateProduct = async (req, res) => {
       description,
       unit,
       alternateUnit,
+      alternateUnitQuantity,
       unitPrice,
       gst,
       brand,
@@ -550,6 +553,7 @@ export const updateProduct = async (req, res) => {
     product.description = description;
     product.unit = unit;
     product.alternateUnit = alternateUnit;
+    product.alternateUnitQuantity = alternateUnitQuantity;
     product.unitPrice = unitPrice;
     product.gst = gst;
     product.brand = brand;
