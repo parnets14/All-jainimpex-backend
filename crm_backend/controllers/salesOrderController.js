@@ -201,6 +201,7 @@ export const createSalesOrder = async (req, res) => {
       deliveryDate,
       creditDays,
       type,
+      salesType,
       remarks,
       status,
       isOutOfStock,
@@ -356,6 +357,7 @@ export const createSalesOrder = async (req, res) => {
       totalGst,
       totalAmount,
       type,
+      salesType: salesType || 'Regular Sale',
       remarks,
       status: initialStatus,
       createdBy: req.user._id,
@@ -452,6 +454,11 @@ export const createSalesOrder = async (req, res) => {
     });
   } catch (error) {
     console.error("Create Sales Order Error:", error);
+    console.error("Error name:", error.name);
+    console.error("Error message:", error.message);
+    if (error.errors) {
+      console.error("Validation errors:", JSON.stringify(error.errors, null, 2));
+    }
     
     // Handle duplicate order number error
     if (error.code === 11000) {
@@ -464,10 +471,18 @@ export const createSalesOrder = async (req, res) => {
     // Handle validation errors
     if (error.name === 'ValidationError') {
       const messages = Object.values(error.errors).map(err => err.message);
+      const details = Object.keys(error.errors).map(key => ({
+        field: key,
+        message: error.errors[key].message,
+        value: error.errors[key].value,
+        kind: error.errors[key].kind
+      }));
+      console.error('❌ Validation Error Details:', details);
       return res.status(400).json({
         success: false,
         message: "Validation error",
-        errors: messages
+        errors: messages,
+        details: details
       });
     }
 
@@ -2079,6 +2094,320 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error creating sales order",
+      error: error.message
+    });
+  }
+};
+
+
+// @desc    Set expiry date for pending order
+// @route   PATCH /api/sales-orders/:id/set-expiry
+// @access  Private
+export const setOrderExpiry = async (req, res) => {
+  try {
+    const { expiryDate, reason } = req.body;
+    const { id } = req.params;
+
+    if (!expiryDate) {
+      return res.status(400).json({
+        success: false,
+        message: "Expiry date is required"
+      });
+    }
+
+    const salesOrder = await SalesOrder.findById(id);
+    if (!salesOrder) {
+      return res.status(404).json({
+        success: false,
+        message: "Sales order not found"
+      });
+    }
+
+    // Only allow setting expiry for pending orders
+    if (salesOrder.status !== "Pending") {
+      return res.status(400).json({
+        success: false,
+        message: "Can only set expiry for pending orders"
+      });
+    }
+
+    const newExpiryDate = new Date(expiryDate);
+    const now = new Date();
+
+    if (newExpiryDate <= now) {
+      return res.status(400).json({
+        success: false,
+        message: "Expiry date must be in the future"
+      });
+    }
+
+    // Add to expiry history
+    salesOrder.expiryHistory.push({
+      action: 'set',
+      previousDate: salesOrder.expiryDate,
+      newDate: newExpiryDate,
+      reason: reason || 'Initial expiry date set',
+      performedBy: req.user._id,
+      performedAt: new Date()
+    });
+
+    salesOrder.expiryDate = newExpiryDate;
+    salesOrder.expiryReason = reason || 'Pending order expiry';
+    salesOrder.isExpired = false;
+
+    await salesOrder.save();
+
+    res.json({
+      success: true,
+      message: "Expiry date set successfully",
+      salesOrder
+    });
+  } catch (error) {
+    console.error("Set Order Expiry Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error setting expiry date",
+      error: error.message
+    });
+  }
+};
+
+// @desc    Extend expiry date for pending order
+// @route   PATCH /api/sales-orders/:id/extend-expiry
+// @access  Private
+export const extendOrderExpiry = async (req, res) => {
+  try {
+    const { newExpiryDate, reason } = req.body;
+    const { id } = req.params;
+
+    if (!newExpiryDate) {
+      return res.status(400).json({
+        success: false,
+        message: "New expiry date is required"
+      });
+    }
+
+    const salesOrder = await SalesOrder.findById(id);
+    if (!salesOrder) {
+      return res.status(404).json({
+        success: false,
+        message: "Sales order not found"
+      });
+    }
+
+    if (!salesOrder.expiryDate) {
+      return res.status(400).json({
+        success: false,
+        message: "Order does not have an expiry date set"
+      });
+    }
+
+    const extendedDate = new Date(newExpiryDate);
+    const now = new Date();
+
+    if (extendedDate <= now) {
+      return res.status(400).json({
+        success: false,
+        message: "New expiry date must be in the future"
+      });
+    }
+
+    if (extendedDate <= salesOrder.expiryDate) {
+      return res.status(400).json({
+        success: false,
+        message: "New expiry date must be later than current expiry date"
+      });
+    }
+
+    // Add to expiry history
+    salesOrder.expiryHistory.push({
+      action: 'extended',
+      previousDate: salesOrder.expiryDate,
+      newDate: extendedDate,
+      reason: reason || 'Expiry date extended',
+      performedBy: req.user._id,
+      performedAt: new Date()
+    });
+
+    salesOrder.expiryDate = extendedDate;
+    salesOrder.expiryExtendedCount += 1;
+    salesOrder.isExpired = false; // Reset if was expired
+
+    await salesOrder.save();
+
+    res.json({
+      success: true,
+      message: "Expiry date extended successfully",
+      salesOrder
+    });
+  } catch (error) {
+    console.error("Extend Order Expiry Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error extending expiry date",
+      error: error.message
+    });
+  }
+};
+
+// @desc    Expire order immediately
+// @route   PATCH /api/sales-orders/:id/expire-now
+// @access  Private
+export const expireOrderNow = async (req, res) => {
+  try {
+    const { reason } = req.body;
+    const { id } = req.params;
+
+    const salesOrder = await SalesOrder.findById(id);
+    if (!salesOrder) {
+      return res.status(404).json({
+        success: false,
+        message: "Sales order not found"
+      });
+    }
+
+    if (salesOrder.isExpired) {
+      return res.status(400).json({
+        success: false,
+        message: "Order is already expired"
+      });
+    }
+
+    // Add to expiry history
+    salesOrder.expiryHistory.push({
+      action: 'expired',
+      previousDate: salesOrder.expiryDate,
+      newDate: new Date(),
+      reason: reason || 'Manually expired',
+      performedBy: req.user._id,
+      performedAt: new Date()
+    });
+
+    salesOrder.isExpired = true;
+    salesOrder.expiredAt = new Date();
+    salesOrder.status = "Cancelled"; // Auto-cancel expired orders
+    salesOrder.remarks = (salesOrder.remarks || '') + ` [EXPIRED: ${reason || 'Manually expired'}]`;
+
+    await salesOrder.save();
+
+    res.json({
+      success: true,
+      message: "Order expired successfully",
+      salesOrder
+    });
+  } catch (error) {
+    console.error("Expire Order Now Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error expiring order",
+      error: error.message
+    });
+  }
+};
+
+// @desc    Get orders expiring soon (within specified days)
+// @route   GET /api/sales-orders/expiring-soon
+// @access  Private
+export const getOrdersExpiringSoon = async (req, res) => {
+  try {
+    const { days = 1 } = req.query; // Default to 1 day
+
+    const now = new Date();
+    const futureDate = new Date();
+    futureDate.setDate(futureDate.getDate() + parseInt(days));
+
+    const expiringOrders = await SalesOrder.find({
+      expiryDate: {
+        $gte: now,
+        $lte: futureDate
+      },
+      isExpired: false,
+      status: "Pending"
+    })
+      .populate("dealer", "name code contactPerson phone email")
+      .populate("region", "name")
+      .populate("products.product", "productCode itemName")
+      .sort({ expiryDate: 1 })
+      .lean();
+
+    // Calculate hours until expiry for each order
+    const ordersWithTimeLeft = expiringOrders.map(order => {
+      const timeLeft = order.expiryDate - now;
+      const hoursLeft = Math.floor(timeLeft / (1000 * 60 * 60));
+      const daysLeft = Math.floor(hoursLeft / 24);
+      
+      return {
+        ...order,
+        hoursUntilExpiry: hoursLeft,
+        daysUntilExpiry: daysLeft,
+        isUrgent: hoursLeft <= 24
+      };
+    });
+
+    res.json({
+      success: true,
+      count: ordersWithTimeLeft.length,
+      orders: ordersWithTimeLeft
+    });
+  } catch (error) {
+    console.error("Get Expiring Orders Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching expiring orders",
+      error: error.message
+    });
+  }
+};
+
+// @desc    Cancel expiry (remove expiry date)
+// @route   PATCH /api/sales-orders/:id/cancel-expiry
+// @access  Private
+export const cancelOrderExpiry = async (req, res) => {
+  try {
+    const { reason } = req.body;
+    const { id } = req.params;
+
+    const salesOrder = await SalesOrder.findById(id);
+    if (!salesOrder) {
+      return res.status(404).json({
+        success: false,
+        message: "Sales order not found"
+      });
+    }
+
+    if (!salesOrder.expiryDate) {
+      return res.status(400).json({
+        success: false,
+        message: "Order does not have an expiry date set"
+      });
+    }
+
+    // Add to expiry history
+    salesOrder.expiryHistory.push({
+      action: 'cancelled',
+      previousDate: salesOrder.expiryDate,
+      newDate: null,
+      reason: reason || 'Expiry cancelled',
+      performedBy: req.user._id,
+      performedAt: new Date()
+    });
+
+    salesOrder.expiryDate = null;
+    salesOrder.expiryReason = null;
+    salesOrder.isExpired = false;
+
+    await salesOrder.save();
+
+    res.json({
+      success: true,
+      message: "Expiry cancelled successfully",
+      salesOrder
+    });
+  } catch (error) {
+    console.error("Cancel Order Expiry Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error cancelling expiry",
       error: error.message
     });
   }

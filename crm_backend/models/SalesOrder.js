@@ -186,6 +186,45 @@ const salesOrderSchema = new mongoose.Schema({
       ref: "Warehouse"
     },
     warehouseName: String
+  }],
+  // Expiry/Deadline fields for pending orders
+  expiryDate: {
+    type: Date,
+    default: null
+  },
+  expiryReason: {
+    type: String,
+    default: null
+  },
+  isExpired: {
+    type: Boolean,
+    default: false
+  },
+  expiredAt: {
+    type: Date,
+    default: null
+  },
+  expiryExtendedCount: {
+    type: Number,
+    default: 0
+  },
+  expiryHistory: [{
+    action: {
+      type: String,
+      enum: ['set', 'extended', 'expired', 'cancelled'],
+      required: true
+    },
+    previousDate: Date,
+    newDate: Date,
+    reason: String,
+    performedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User"
+    },
+    performedAt: {
+      type: Date,
+      default: Date.now
+    }
   }]
 }, {
   timestamps: true

@@ -12,7 +12,12 @@ import {
   getSalesOrdersByDealer,
   getOverdueSalesOrders,
   getPendingQuantities,
-  createSalesOrderWithAutoSplit
+  createSalesOrderWithAutoSplit,
+  setOrderExpiry,
+  extendOrderExpiry,
+  expireOrderNow,
+  getOrdersExpiringSoon,
+  cancelOrderExpiry
 } from "../controllers/salesOrderController.js";
 import { protect } from "../middleware/authMiddleware.js";
 import { logActivity } from "../middleware/activityLogMiddleware.js";
@@ -34,6 +39,10 @@ router.route("/auto-split")
 
 router.route("/overdue")
   .get(logActivity("Sales Order Dashboard", "Viewed overdue sales orders", "READ"), getOverdueSalesOrders);
+
+// NEW: Expiry management routes - MUST be before /:id routes
+router.route("/expiring-soon")
+  .get(logActivity("Sales Order Dashboard", "Viewed orders expiring soon", "READ"), getOrdersExpiringSoon);
 
 router.route("/pending-quantities")
   .get(logActivity("Stock Management", "Viewed pending quantities from out-of-stock orders", "READ"), getPendingQuantities);
@@ -58,5 +67,17 @@ router.route("/:id/status")
 // NEW: Assign warehouse to out-of-stock order
 router.route("/:id/assign-warehouse")
   .patch(logActivity("Sales Order Dashboard", "Assigned warehouse to out-of-stock order", "UPDATE"), assignWarehouseToOutOfStockOrder);
+
+router.route("/:id/set-expiry")
+  .patch(logActivity("Sales Order Dashboard", "Set expiry date for order", "UPDATE"), setOrderExpiry);
+
+router.route("/:id/extend-expiry")
+  .patch(logActivity("Sales Order Dashboard", "Extended expiry date for order", "UPDATE"), extendOrderExpiry);
+
+router.route("/:id/expire-now")
+  .patch(logActivity("Sales Order Dashboard", "Expired order immediately", "UPDATE"), expireOrderNow);
+
+router.route("/:id/cancel-expiry")
+  .patch(logActivity("Sales Order Dashboard", "Cancelled expiry for order", "UPDATE"), cancelOrderExpiry);
 
 export default router;

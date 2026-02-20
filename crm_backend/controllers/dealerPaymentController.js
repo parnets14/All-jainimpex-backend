@@ -346,8 +346,14 @@ async function updateInvoiceAndLedger(payment, invoice, userId) {
     invoice.paidAmount = paidAmount;
     
     // Update payment status based on remaining amount
-    if (paidAmount >= invoice.totalAmount) {
+    // Use a small tolerance (0.01 rupee = 1 paisa) to handle floating-point precision issues
+    const remainingAmount = invoice.totalAmount - paidAmount;
+    const TOLERANCE = 0.01; // 1 paisa tolerance
+    
+    if (remainingAmount <= TOLERANCE) {
       invoice.paymentStatus = "Paid";
+      // Set paidAmount to exactly totalAmount to avoid tiny differences
+      invoice.paidAmount = invoice.totalAmount;
     } else {
       invoice.paymentStatus = "Partial";
     }
