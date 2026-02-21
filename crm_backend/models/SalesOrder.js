@@ -134,7 +134,7 @@ const salesOrderSchema = new mongoose.Schema({
   },
         status: {
           type: String,
-          enum: ["Pending", "Confirmed", "Processing", "In Transit", "Delivered", "Cancelled", "Rejected", "Rescheduled", "Missing"],
+          enum: ["Pending", "Confirmed", "Processing", "In Transit", "Delivered", "Cancelled", "Rejected", "Rescheduled", "Missing", "Expired"],
           default: "Pending"
         },
   type: {
@@ -158,6 +158,14 @@ const salesOrderSchema = new mongoose.Schema({
   isOutOfStock: {
     type: Boolean,
     default: false
+  },
+  stockAvailable: {
+    type: Boolean,
+    default: false
+  },
+  stockAvailableNotifiedAt: {
+    type: Date,
+    default: null
   },
   stockValidation: [{
     productId: {
@@ -225,7 +233,29 @@ const salesOrderSchema = new mongoose.Schema({
       type: Date,
       default: Date.now
     }
-  }]
+  }],
+  // Credit Overlimit tracking
+  creditOverlimit: {
+    isOverlimit: {
+      type: Boolean,
+      default: false
+    },
+    creditLimit: Number,
+    currentOutstanding: Number,
+    orderAmount: Number,
+    newOutstanding: Number,
+    overlimitAmount: Number,
+    requiresApproval: {
+      type: Boolean,
+      default: false
+    },
+    approvedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User"
+    },
+    approvedAt: Date,
+    approvalNotes: String
+  }
 }, {
   timestamps: true
 });

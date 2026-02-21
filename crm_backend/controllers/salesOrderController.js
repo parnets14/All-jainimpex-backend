@@ -1,3 +1,4 @@
+// Sales Order Controller - Fixed duplicate function declarations
 import SalesOrder from "../models/SalesOrder.js";
 import Product from "../models/Product.js";
 import Dealer from "../models/Dealer.js";
@@ -56,7 +57,8 @@ export const getSalesOrders = async (req, res) => {
       region,
       startDate,
       endDate,
-      type
+      type,
+      stockArrived
     } = req.query;
 
     // Build query object
@@ -74,6 +76,12 @@ export const getSalesOrders = async (req, res) => {
     // Filter by status
     if (status && status !== "all") {
       query.status = status;
+    }
+
+    // Filter by stock arrived
+    if (stockArrived === 'true' || stockArrived === true) {
+      query.isOutOfStock = true;
+      query.stockAvailable = true;
     }
 
     // Filter by dealer
@@ -226,6 +234,88 @@ export const createSalesOrder = async (req, res) => {
       ? parseInt(creditDays) 
       : (dealerData.creditDays || 30);
 
+    // Validate credit days don't exceed dealer's limits
+    if (creditDays !== undefined && creditDays !== null) {
+      const requestedCreditDays = parseInt(creditDays);
+      
+      // Determine which limit to check based on salesType
+      let maxCreditDays = 0;
+      if (salesType === 'Regular Sale') {
+        maxCreditDays = dealerData.creditDaysRegular || dealerData.creditDays || 0;
+      } else if (salesType === 'CD Sales') {
+        maxCreditDays = dealerData.creditDaysCD || dealerData.creditDays || 0;
+      } else {
+        // Default to regular if not specified
+        maxCreditDays = dealerData.creditDaysRegular || dealerData.creditDays || 0;
+      }
+      
+      if (requestedCreditDays > maxCreditDays && maxCreditDays > 0) {
+        return res.status(400).json({
+          success: false,
+          message: `Credit days (${requestedCreditDays}) cannot exceed dealer's limit of ${maxCreditDays} days for ${salesType || 'Regular Sale'}.`
+        });
+      }
+    }
+
+    // Calculate order totals first (needed for credit limit check)
+    const tempValidatedProducts = [];
+    for (const item of products) {
+      const product = await Product.findById(item.product);
+      if (!product) continue;
+      
+      const unitPrice = item.unitPrice || product.rateSlabs[0]?.rate || 0;
+      const gst = item.gst || product.gst || 0;
+      const baseAmount = item.quantity * unitPrice;
+      const gstAmount = (baseAmount * gst) / 100;
+      
+      tempValidatedProducts.push({
+        quantity: item.quantity,
+        unitPrice: unitPrice,
+        gstAmount: gstAmount
+      });
+    }
+    
+    const orderGrossAmount = tempValidatedProducts.reduce((sum, p) => sum + (p.quantity * p.unitPrice), 0);
+    const orderTotalGst = tempValidatedProducts.reduce((sum, p) => sum + p.gstAmount, 0);
+    const orderTotalAmount = orderGrossAmount + orderTotalGst;
+
+    // Check credit limit if dealer has one set
+    if (dealerData.creditLimit && dealerData.creditLimit > 0) {
+      // Get dealer's current outstanding balance from ledger
+      const DealerLedger = (await import("../models/DealerLedger.js")).default;
+      const lastLedgerEntry = await DealerLedger.findOne({ dealer: dealer })
+        .sort({ createdAt: -1 });
+      
+      const currentOutstanding = lastLedgerEntry ? lastLedgerEntry.runningBalance : 0;
+      const newOutstanding = currentOutstanding + orderTotalAmount;
+      
+      console.log(`💳 Credit Limit Check:`, {
+        creditLimit: dealerData.creditLimit,
+        currentOutstanding,
+        orderAmount: orderTotalAmount,
+        newOutstanding,
+        overlimit: newOutstanding - dealerData.creditLimit
+      });
+      
+      // If credit limit exceeded, force status to Pending and add credit overlimit info
+      if (newOutstanding > dealerData.creditLimit) {
+        const overlimitAmount = newOutstanding - dealerData.creditLimit;
+        console.log(`⚠️ Credit limit exceeded by ₹${overlimitAmount.toFixed(2)}`);
+        
+        // Force status to Pending for approval
+        req.body.status = "Pending";
+        req.body.creditOverlimit = {
+          isOverlimit: true,
+          creditLimit: dealerData.creditLimit,
+          currentOutstanding,
+          orderAmount: orderTotalAmount,
+          newOutstanding,
+          overlimitAmount,
+          requiresApproval: true
+        };
+      }
+    }
+
     // Validate and process each product
     const validatedProducts = [];
 
@@ -363,8 +453,29 @@ export const createSalesOrder = async (req, res) => {
       createdBy: req.user._id,
       // Out-of-stock fields
       isOutOfStock: isOutOfStock || false,
-      stockValidation: stockValidation || []
+      stockValidation: stockValidation || [],
+      // Credit overlimit fields
+      creditOverlimit: req.body.creditOverlimit || undefined
     });
+
+    // Automatically set 15-day expiry for Pending orders
+    if (salesOrder.status === "Pending") {
+      const expiryDate = new Date();
+      expiryDate.setDate(expiryDate.getDate() + 15); // 15 days from now
+      
+      salesOrder.expiryDate = expiryDate;
+      salesOrder.expiryReason = 'Automatic 15-day expiry for pending order';
+      salesOrder.expiryHistory.push({
+        action: 'set',
+        previousDate: null,
+        newDate: expiryDate,
+        reason: 'Automatic 15-day expiry set on order creation',
+        performedBy: req.user._id,
+        performedAt: new Date()
+      });
+      
+      console.log(`📅 Automatic expiry set for pending order ${orderNumber}: ${expiryDate.toISOString()}`);
+    }
 
     // Save sales order
     await salesOrder.save();
@@ -554,6 +665,18 @@ export const updateSalesOrderStatus = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Cannot change status of out-of-stock orders. Please assign a warehouse first, then you can change the status."
+      });
+    }
+
+    // CRITICAL: Prevent status changes for orders with unapproved credit overlimit
+    if (salesOrder.creditOverlimit && 
+        salesOrder.creditOverlimit.isOverlimit && 
+        !salesOrder.creditOverlimit.approvedBy &&
+        status !== "Cancelled" && 
+        status !== "Rejected") {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot change status - Credit limit exceeded by ₹${(salesOrder.creditOverlimit.overlimitAmount || 0).toLocaleString()}. Super Admin approval required before this order can proceed.`
       });
     }
 
@@ -1763,6 +1886,26 @@ async function createSingleSalesOrder(orderData, userId) {
     throw new Error("Dealer not found");
   }
 
+  // Validate credit days don't exceed dealer's limits
+  if (creditDays !== undefined && creditDays !== null) {
+    const requestedCreditDays = parseInt(creditDays);
+    
+    // Determine which limit to check based on salesType
+    let maxCreditDays = 0;
+    if (salesType === 'Regular Sale') {
+      maxCreditDays = dealerData.creditDaysRegular || dealerData.creditDays || 0;
+    } else if (salesType === 'CD Sales') {
+      maxCreditDays = dealerData.creditDaysCD || dealerData.creditDays || 0;
+    } else {
+      // Default to regular if not specified
+      maxCreditDays = dealerData.creditDaysRegular || dealerData.creditDays || 0;
+    }
+    
+    if (requestedCreditDays > maxCreditDays && maxCreditDays > 0) {
+      throw new Error(`Credit days (${requestedCreditDays}) cannot exceed dealer's limit of ${maxCreditDays} days for ${salesType || 'Regular Sale'}.`);
+    }
+  }
+
   // Validate and process each product
   const validatedProducts = [];
 
@@ -1836,20 +1979,58 @@ async function createSingleSalesOrder(orderData, userId) {
   const discountAmount = validatedProducts.reduce((sum, product) => sum + (product.discountAmount || 0), 0);
   const totalAmount = grossAmount + totalGst - discountAmount;
 
-  // Calculate due date
-  let dueDate = null;
-  if (orderDate && creditDays) {
-    dueDate = new Date(orderDate);
-    dueDate.setDate(dueDate.getDate() + creditDays);
-  }
-
-  // Determine initial status
+  // Determine initial status (declare before credit limit check)
   let initialStatus = status || "Pending";
   
   // For out-of-stock orders, force status to Pending
   if (isOutOfStock) {
     initialStatus = "Pending";
     console.log("🚨 Creating out-of-stock sales order - status locked to Pending");
+  }
+
+  // Check credit limit if dealer has one set
+  let creditOverlimitData = undefined;
+  if (dealerData.creditLimit && dealerData.creditLimit > 0) {
+    // Get dealer's current outstanding balance from ledger
+    const DealerLedger = (await import("../models/DealerLedger.js")).default;
+    const lastLedgerEntry = await DealerLedger.findOne({ dealer: dealer })
+      .sort({ createdAt: -1 });
+    
+    const currentOutstanding = lastLedgerEntry ? lastLedgerEntry.runningBalance : 0;
+    const newOutstanding = currentOutstanding + totalAmount;
+    
+    console.log(`💳 Credit Limit Check (Single Order):`, {
+      creditLimit: dealerData.creditLimit,
+      currentOutstanding,
+      orderAmount: totalAmount,
+      newOutstanding,
+      overlimit: newOutstanding - dealerData.creditLimit
+    });
+    
+    // If credit limit exceeded, force status to Pending and add credit overlimit info
+    if (newOutstanding > dealerData.creditLimit) {
+      const overlimitAmount = newOutstanding - dealerData.creditLimit;
+      console.log(`⚠️ Credit limit exceeded by ₹${overlimitAmount.toFixed(2)}`);
+      
+      // Force status to Pending for approval
+      initialStatus = "Pending";
+      creditOverlimitData = {
+        isOverlimit: true,
+        creditLimit: dealerData.creditLimit,
+        currentOutstanding,
+        orderAmount: totalAmount,
+        newOutstanding,
+        overlimitAmount,
+        requiresApproval: true
+      };
+    }
+  }
+
+  // Calculate due date
+  let dueDate = null;
+  if (orderDate && creditDays) {
+    dueDate = new Date(orderDate);
+    dueDate.setDate(dueDate.getDate() + creditDays);
   }
 
   // Create sales order
@@ -1883,8 +2064,28 @@ async function createSingleSalesOrder(orderData, userId) {
     status: initialStatus,
     createdBy: userId,
     isOutOfStock: isOutOfStock || false,
-    stockValidation: stockValidation || []
+    stockValidation: stockValidation || [],
+    creditOverlimit: creditOverlimitData // Add credit overlimit data
   });
+
+  // Automatically set 15-day expiry for Pending orders
+  if (salesOrder.status === "Pending") {
+    const expiryDate = new Date();
+    expiryDate.setDate(expiryDate.getDate() + 15); // 15 days from now
+    
+    salesOrder.expiryDate = expiryDate;
+    salesOrder.expiryReason = 'Automatic 15-day expiry for pending order';
+    salesOrder.expiryHistory.push({
+      action: 'set',
+      previousDate: null,
+      newDate: expiryDate,
+      reason: 'Automatic 15-day expiry set on order creation',
+      performedBy: userId,
+      performedAt: new Date()
+    });
+    
+    console.log(`📅 Automatic expiry set for pending order ${orderNumber}: ${expiryDate.toISOString()}`);
+  }
 
   // Save sales order
   await salesOrder.save();
@@ -2212,12 +2413,8 @@ export const extendOrderExpiry = async (req, res) => {
       });
     }
 
-    if (extendedDate <= salesOrder.expiryDate) {
-      return res.status(400).json({
-        success: false,
-        message: "New expiry date must be later than current expiry date"
-      });
-    }
+    // Allow extending even if order is expired - just check that new date is in future
+    // Remove the check: if (extendedDate <= salesOrder.expiryDate)
 
     // Add to expiry history
     salesOrder.expiryHistory.push({
@@ -2232,6 +2429,11 @@ export const extendOrderExpiry = async (req, res) => {
     salesOrder.expiryDate = extendedDate;
     salesOrder.expiryExtendedCount += 1;
     salesOrder.isExpired = false; // Reset if was expired
+    
+    // If order was expired, change status back to Pending
+    if (salesOrder.status === "Expired") {
+      salesOrder.status = "Pending";
+    }
 
     await salesOrder.save();
 
@@ -2408,6 +2610,204 @@ export const cancelOrderExpiry = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error cancelling expiry",
+      error: error.message
+    });
+  }
+};
+
+// @desc    Approve credit overlimit order
+// @route   PATCH /api/sales-orders/:id/approve-credit-overlimit
+// @access  Private (Super Admin only)
+export const approveCreditOverlimit = async (req, res) => {
+  try {
+    const { approvalNotes } = req.body;
+    const { id } = req.params;
+
+    const salesOrder = await SalesOrder.findById(id);
+    if (!salesOrder) {
+      return res.status(404).json({
+        success: false,
+        message: "Sales order not found"
+      });
+    }
+
+    if (!salesOrder.creditOverlimit || !salesOrder.creditOverlimit.isOverlimit) {
+      return res.status(400).json({
+        success: false,
+        message: "Order does not have credit overlimit"
+      });
+    }
+
+    if (salesOrder.creditOverlimit.approvedBy) {
+      return res.status(400).json({
+        success: false,
+        message: "Order already approved"
+      });
+    }
+
+    // Update credit overlimit approval
+    salesOrder.creditOverlimit.approvedBy = req.user._id;
+    salesOrder.creditOverlimit.approvedAt = new Date();
+    salesOrder.creditOverlimit.approvalNotes = approvalNotes || 'Credit overlimit approved';
+    salesOrder.creditOverlimit.requiresApproval = false;
+
+    // Change status from Pending to Confirmed (order can now proceed)
+    if (salesOrder.status === "Pending") {
+      salesOrder.status = "Confirmed";
+      salesOrder.approvedBy = req.user._id;
+      salesOrder.approvedAt = new Date();
+    }
+
+    await salesOrder.save();
+
+    res.json({
+      success: true,
+      message: "Credit overlimit approved successfully. Order status changed to Confirmed.",
+      salesOrder
+    });
+  } catch (error) {
+    console.error("Approve Credit Overlimit Error:", error);
+    res.status(500).json({
+      success: false,
+// Check stock availability for out-of-stock orders (called after purchase order received)
+
+    });
+  }
+};
+
+// Check stock availability for out-of-stock orders (called after purchase order received)
+export const checkStockAvailabilityForOutOfStockOrders = async (req, res) => {
+  try {
+    const { productIds, warehouseId } = req.body;
+
+    console.log('🔍 Checking stock availability for products:', productIds);
+    console.log('📦 Warehouse:', warehouseId);
+
+    // Find all out-of-stock orders that contain these products
+    const outOfStockOrders = await SalesOrder.find({
+      isOutOfStock: true,
+      stockAvailable: false,
+      status: 'Pending',
+      'products.product': { $in: productIds }
+    }).populate('dealer', 'name code');
+
+    console.log(`📋 Found ${outOfStockOrders.length} out-of-stock orders to check`);
+
+    let notifiedCount = 0;
+    const notifiedOrders = [];
+
+    for (const order of outOfStockOrders) {
+      let allProductsAvailable = true;
+      const stockStatus = [];
+
+      // Check each product in the order
+      for (const orderProduct of order.products) {
+        const stock = await Stock.findOne({
+          productId: orderProduct.product,
+          warehouseId: warehouseId
+        });
+
+        const availableStock = stock ? stock.netStock : 0;
+        const hasEnoughStock = availableStock >= orderProduct.quantity;
+
+        stockStatus.push({
+          productName: orderProduct.productName,
+          required: orderProduct.quantity,
+          available: availableStock,
+          sufficient: hasEnoughStock
+        });
+
+        if (!hasEnoughStock) {
+          allProductsAvailable = false;
+        }
+      }
+
+      // If all products are now available, mark order
+      if (allProductsAvailable && stockStatus.length > 0) {
+        order.stockAvailable = true;
+        order.stockAvailableNotifiedAt = new Date();
+        await order.save();
+
+        console.log(`✅ Stock available for order ${order.orderNumber}`);
+
+        notifiedOrders.push({
+          orderNumber: order.orderNumber,
+          dealerName: order.dealerName,
+          stockStatus
+        });
+
+        notifiedCount++;
+      } else {
+        console.log(`⏳ Stock not yet sufficient for order ${order.orderNumber}`);
+      }
+    }
+
+    console.log(`📢 Notified ${notifiedCount} orders about stock arrival`);
+
+    res.json({
+      success: true,
+      notifiedCount,
+      notifiedOrders,
+      message: `Checked ${outOfStockOrders.length} orders, notified ${notifiedCount} about stock arrival`
+    });
+
+  } catch (error) {
+    console.error('❌ Error checking stock availability:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+
+
+
+
+// Auto-expire orders that have passed their expiry date
+export const autoExpireOrders = async (req, res) => {
+  try {
+    const now = new Date();
+    
+    // Find all orders with expiry date in the past that are not yet expired
+    const ordersToExpire = await SalesOrder.find({
+      expiryDate: { $lt: now },
+      isExpired: false,
+      status: { $in: ["Pending"] } // Only expire pending orders
+    });
+
+    let expiredCount = 0;
+
+    for (const order of ordersToExpire) {
+      order.isExpired = true;
+      order.expiredAt = now;
+      order.status = "Expired"; // Change status to Expired
+      
+      order.expiryHistory.push({
+        action: 'expired',
+        previousDate: order.expiryDate,
+        newDate: null,
+        reason: 'Order automatically expired after deadline passed',
+        performedBy: null, // System action
+        performedAt: now
+      });
+
+      await order.save();
+      expiredCount++;
+    }
+
+    console.log(`✅ Auto-expired ${expiredCount} orders`);
+
+    res.json({
+      success: true,
+      expiredCount,
+      message: `${expiredCount} orders automatically expired`
+    });
+  } catch (error) {
+    console.error("Auto Expire Orders Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error auto-expiring orders",
       error: error.message
     });
   }

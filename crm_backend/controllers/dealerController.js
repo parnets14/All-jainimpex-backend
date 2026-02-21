@@ -824,7 +824,9 @@ export const getDealerCompleteInfo = async (req, res) => {
         code: dealer.code,
         name: dealer.name,
         creditLimit: dealer.creditLimit,
-        creditDays: dealer.creditDays,
+        creditDays: dealer.creditDays, // Legacy field
+        creditDaysRegular: dealer.creditDaysRegular || dealer.creditDays || 0,
+        creditDaysCD: dealer.creditDaysCD || dealer.creditDays || 0,
         dealerType: dealer.dealerType
       },
       creditStatus: {

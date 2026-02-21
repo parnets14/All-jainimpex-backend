@@ -17,7 +17,10 @@ import {
   extendOrderExpiry,
   expireOrderNow,
   getOrdersExpiringSoon,
-  cancelOrderExpiry
+  cancelOrderExpiry,
+  approveCreditOverlimit,
+  checkStockAvailabilityForOutOfStockOrders,
+  autoExpireOrders
 } from "../controllers/salesOrderController.js";
 import { protect } from "../middleware/authMiddleware.js";
 import { logActivity } from "../middleware/activityLogMiddleware.js";
@@ -79,5 +82,16 @@ router.route("/:id/expire-now")
 
 router.route("/:id/cancel-expiry")
   .patch(logActivity("Sales Order Dashboard", "Cancelled expiry for order", "UPDATE"), cancelOrderExpiry);
+
+router.route("/:id/approve-credit-overlimit")
+  .patch(logActivity("Sales Order Dashboard", "Approved credit overlimit order", "UPDATE"), approveCreditOverlimit);
+
+// Check stock availability for out-of-stock orders
+router.route("/check-stock-availability")
+  .post(logActivity("Sales Order Dashboard", "Checked stock availability for out-of-stock orders", "UPDATE"), checkStockAvailabilityForOutOfStockOrders);
+
+// Auto-expire orders
+router.route("/auto-expire")
+  .post(logActivity("Sales Order Dashboard", "Auto-expired orders past deadline", "UPDATE"), autoExpireOrders);
 
 export default router;
