@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import StockMovement from '../models/Stock.js';
 import Product from '../models/Product.js';
 import GRN from '../models/GRN.js';
@@ -13,7 +14,7 @@ const calculateDamagedQuantity = async (productId, warehouseId) => {
     // Get damaged quantity from GRN records
     const grns = await GRN.find({
       'items.productId': productId,
-      warehouseId: warehouseId
+      warehouseId: new mongoose.Types.ObjectId(warehouseId) // Convert string to ObjectId
     }).lean();
 
     let damagedQty = 0;
@@ -354,11 +355,14 @@ export const getStock = async (req, res) => {
           console.log(`🔍 [STOCK_DEBUG] Current stock from movements for ${product.productCode} in warehouse ${warehouseId}: ${currentStock}`);
           
           // OPTIMIZED: Calculate blocked stock using aggregation
+          console.log(`🔍 [STOCK_DEBUG] Calculating blocked qty for product ${product._id} in warehouse ${warehouseId}`);
+          console.log(`🔍 [STOCK_DEBUG] Warehouse ID type: ${typeof warehouseId}, value: ${warehouseId}`);
+          
           const blockedResult = await StockMovement.aggregate([
             {
               $match: {
                 productId: product._id,
-                warehouseId: warehouseId,
+                warehouseId: new mongoose.Types.ObjectId(warehouseId), // Convert string to ObjectId
                 referenceType: 'SALE'
               }
             },
@@ -369,6 +373,8 @@ export const getStock = async (req, res) => {
               }
             }
           ]);
+          
+          console.log(`🔍 [STOCK_DEBUG] Blocked aggregation result:`, JSON.stringify(blockedResult));
           
           let blockedQty = 0;
           blockedResult.forEach(result => {
@@ -416,10 +422,12 @@ export const getStock = async (req, res) => {
           const blockedQty = warehouse.blockedQty || 0; // Use calculated blocked quantity
           
           // FIXED: Use current stock from movements as the actual available quantity
-          // Current stock already accounts for damaged items (they are OUT movements)
-          // So we should NOT subtract damaged quantity again
+          // Current stock already accounts for:
+          // 1. Damaged items (they are OUT movements in GRN processing)
+          // 2. Blocked stock (already deducted when order confirmed)
+          // Therefore, currentStock IS the net available stock - no further deductions needed
           const currentStock = warehouse.currentStock !== undefined ? warehouse.currentStock : warehouse.totalQty;
-          const netStock = currentStock - blockedQty; // Don't subtract damagedQty - it's already in movements
+          const netStock = currentStock; // Net stock = current stock (blocking already applied)
 
           console.log(`🔍 [STOCK_DEBUG] Final stock calculation for ${product.productCode} in ${warehouse.warehouseName}:`, {
             currentStock,

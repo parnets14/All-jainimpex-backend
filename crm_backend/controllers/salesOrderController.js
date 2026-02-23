@@ -685,48 +685,8 @@ export const updateSalesOrderStatus = async (req, res) => {
       // Verify stock availability for all products
       for (const product of salesOrder.products) {
         if (product.warehouse) {
-          const stock = await Stock.findOne({
-            productId: product.product,
-            warehouseId: product.warehouse
-          });
-
-          if (!stock) {
-            return res.status(400).json({
-              success: false,
-              message: `Cannot confirm order. Product ${product.productName} not available in selected warehouse`
-            });
-          }
-
-          if (stock.netStock < product.quantity) {
-            return res.status(400).json({
-              success: false,
-              message: `Cannot confirm order. Insufficient stock for ${product.productName} in ${stock.warehouse}. Available: ${stock.netStock}, Required: ${product.quantity}`
-            });
-          }
-        }
-      }
-
-      // Allocate stock for all products
-      for (const product of salesOrder.products) {
-        if (product.warehouse) {
-          await Stock.findOneAndUpdate(
-            { 
-              productId: product.product,
-              warehouseId: product.warehouse
-            },
-            { 
-              $inc: { 
-                blockedQty: product.quantity,
-                netStock: -product.quantity
-              }
-            }
-          );
-
-          // Update main product stock
-          await Product.findByIdAndUpdate(
-            product.product,
-            { $inc: { stock: -product.quantity } }
-          );
+          // Note: Stock verification is done via StockMovement calculations in stockController
+          // We don't need to check here as the StockMovement system handles it
         }
       }
 
@@ -736,32 +696,8 @@ export const updateSalesOrderStatus = async (req, res) => {
     }
 
     // Handle stock restoration for rejected or cancelled orders (only for previously confirmed orders)
-    if ((status === "Rejected" || status === "Cancelled") && originalStatus === "Confirmed" && !salesOrder.isOutOfStock) {
-      // Restore stock for all products
-      for (const product of salesOrder.products) {
-        if (product.warehouse) {
-          await Stock.findOneAndUpdate(
-            { 
-              productId: product.product,
-              warehouseId: product.warehouse
-            },
-            { 
-              $inc: { 
-                blockedQty: -product.quantity,
-                netStock: product.quantity
-              }
-            }
-          );
-
-          // Restore main product stock
-          await Product.findByIdAndUpdate(
-            product.product,
-            { $inc: { stock: product.quantity } }
-          );
-        }
-      }
-    }
-
+    // Note: Stock restoration is handled via StockMovement IN records below
+    
     // Handle stock management based on status changes (only for in-stock orders)
     if (!salesOrder.isOutOfStock) {
       if (status === "Confirmed" && originalStatus !== "Confirmed") {
@@ -885,6 +821,24 @@ export const updateSalesOrderStatus = async (req, res) => {
     salesOrder.status = status;
     if (remarks) {
       salesOrder.remarks = remarks;
+    }
+
+    // IMPORTANT: Cancel expiry when status changes from Pending to any other status
+    if (originalStatus === "Pending" && status !== "Pending" && salesOrder.expiryDate) {
+      console.log(`📅 Cancelling expiry for order ${salesOrder.orderNumber} - status changed from Pending to ${status}`);
+      
+      salesOrder.expiryHistory.push({
+        action: 'cancelled',
+        previousDate: salesOrder.expiryDate,
+        newDate: null,
+        reason: `Expiry automatically cancelled - order status changed from Pending to ${status}`,
+        performedBy: req.user._id,
+        performedAt: new Date()
+      });
+      
+      salesOrder.expiryDate = null;
+      salesOrder.expiryReason = null;
+      salesOrder.isExpired = false;
     }
 
     await salesOrder.save();
