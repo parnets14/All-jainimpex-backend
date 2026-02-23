@@ -175,6 +175,20 @@ const dealerInvoiceSchema = new mongoose.Schema({
   },
   paymentDate: Date,
   
+  // Soft Delete Fields
+  isDeleted: {
+    type: Boolean,
+    default: false,
+    index: true
+  },
+  deletedAt: Date,
+  deletedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User"
+  },
+  deletionReason: String,
+  cancellationReason: String,
+  
   // Dispatch Information
   dispatchDate: Date,
   trackingNumber: String,

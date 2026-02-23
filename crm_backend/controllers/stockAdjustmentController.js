@@ -131,6 +131,27 @@ export const createStockAdjustment = async (req, res) => {
 
     // Commit transaction
     await session.commitTransaction();
+    
+    // IMPORTANT: Check waiting orders for stock arrival (after transaction commits)
+    // This runs outside the transaction to avoid blocking stock adjustment creation
+    try {
+      const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
+      
+      for (const item of adjustmentItems) {
+        // Only check for ADD adjustments (stock arriving)
+        if (adjustmentType === 'ADD') {
+          await StockArrivalService.checkWaitingOrdersForStock(
+            item.productId,
+            warehouseId,
+            item.quantity
+          );
+        }
+      }
+      console.log(`✅ Checked waiting orders for stock arrival after adjustment: ${stockAdjustment.adjustmentNo}`);
+    } catch (arrivalError) {
+      console.error('⚠️  Error checking waiting orders (non-critical):', arrivalError);
+      // Don't fail adjustment creation if stock arrival check fails
+    }
 
     // Populate the response
     const populatedAdjustment = await StockAdjustment.findById(stockAdjustment._id)

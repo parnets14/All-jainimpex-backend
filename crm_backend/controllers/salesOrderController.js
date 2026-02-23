@@ -430,6 +430,15 @@ export const createSalesOrder = async (req, res) => {
       stockValidation: stockValidation || []
     });
     
+    // Initialize stock tracking fields for out-of-stock orders
+    if (isOutOfStock) {
+      validatedProducts.forEach(product => {
+        product.stockStatus = 'waiting';
+        product.availableQuantity = 0;
+        product.stockCheckedAt = new Date();
+      });
+    }
+    
     const salesOrder = new SalesOrder({
       orderNumber,
       dealer,
@@ -455,7 +464,16 @@ export const createSalesOrder = async (req, res) => {
       isOutOfStock: isOutOfStock || false,
       stockValidation: stockValidation || [],
       // Credit overlimit fields
-      creditOverlimit: req.body.creditOverlimit || undefined
+      creditOverlimit: req.body.creditOverlimit || undefined,
+      // Initialize order-level stock status for out-of-stock orders
+      orderStockStatus: isOutOfStock ? {
+        totalProducts: validatedProducts.length,
+        availableProducts: 0,
+        partialProducts: 0,
+        waitingProducts: validatedProducts.length,
+        overallStatus: 'waiting',
+        lastChecked: new Date()
+      } : undefined
     });
 
     // Automatically set 15-day expiry for Pending orders
@@ -653,18 +671,23 @@ export const updateSalesOrderStatus = async (req, res) => {
       }
     }
 
-    // AUTOMATIC: If warehouse is assigned to out-of-stock order, clear the flag
+    // AUTOMATIC: If warehouse is assigned to out-of-stock order, keep tracking stock arrival
+    // DO NOT clear isOutOfStock flag - we need it to track stock arrival status
     if (salesOrder.isOutOfStock && warehouseAssigned) {
-      console.log("🎯 Warehouse assigned to out-of-stock order - clearing isOutOfStock flag");
-      salesOrder.isOutOfStock = false;
-      salesOrder.stockValidation = [];
+      console.log("🎯 Warehouse assigned to out-of-stock order - keeping isOutOfStock=true for stock tracking");
+      // salesOrder.isOutOfStock = false;  // REMOVED: Keep flag for stock tracking
+      salesOrder.stockValidation = [];  // Clear validation since warehouse is now assigned
     }
 
-    // CRITICAL: Prevent status changes for out-of-stock orders (unless warehouse just assigned)
-    if (salesOrder.isOutOfStock && status !== "Cancelled" && status !== "Rejected") {
+    // CRITICAL: Prevent status changes for out-of-stock orders ONLY if stock is not ready
+    // Allow status change if stock is ready (all products available)
+    if (salesOrder.isOutOfStock && 
+        status !== "Cancelled" && 
+        status !== "Rejected" &&
+        salesOrder.orderStockStatus?.overallStatus !== 'ready') {
       return res.status(400).json({
         success: false,
-        message: "Cannot change status of out-of-stock orders. Please assign a warehouse first, then you can change the status."
+        message: "Cannot change status of out-of-stock orders until stock arrives. Current stock status: " + (salesOrder.orderStockStatus?.overallStatus || 'unknown')
       });
     }
 
@@ -984,9 +1007,10 @@ export const assignWarehouseToOutOfStockOrder = async (req, res) => {
       }
     }
 
-    // Clear out-of-stock flag and allow status changes
-    salesOrder.isOutOfStock = false;
-    salesOrder.stockValidation = []; // Clear validation results
+    // Keep out-of-stock flag for stock tracking - DO NOT clear it
+    // The flag is needed to track stock arrival status
+    // salesOrder.isOutOfStock = false;  // REMOVED: Keep flag for stock tracking
+    salesOrder.stockValidation = []; // Clear validation results since warehouse is assigned
 
     await salesOrder.save();
 
@@ -1719,10 +1743,14 @@ export const getPendingQuantities = async (req, res) => {
   try {
     const { productId, warehouseId } = req.query;
 
-    // Build query for out-of-stock orders that are still pending
+    // Build query for out-of-stock orders that are still pending (exclude expired)
     const query = {
       isOutOfStock: true,
-      status: "Pending"
+      status: "Pending",
+      $or: [
+        { isExpired: { $ne: true } }, // Not expired
+        { isExpired: { $exists: false } } // Or isExpired field doesn't exist
+      ]
     };
 
     // If specific product or warehouse requested, filter further
@@ -1741,7 +1769,7 @@ export const getPendingQuantities = async (req, res) => {
     // Get all out-of-stock pending orders
     const outOfStockOrders = await SalesOrder.find(query)
       .populate("dealer", "name")
-      .populate("products.product", "itemName productCode")
+      .populate("products.product") // Populate ALL product fields for wishlist compatibility
       .populate("products.warehouse", "name")
       .lean();
 
@@ -2762,6 +2790,87 @@ export const autoExpireOrders = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error auto-expiring orders",
+      error: error.message
+    });
+  }
+};
+
+
+// @desc    Get stock status for a specific order
+// @route   GET /api/sales-orders/:id/stock-status
+// @access  Private
+export const getOrderStockStatus = async (req, res) => {
+  try {
+    const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
+    
+    const result = await StockArrivalService.checkOrderStockStatus(req.params.id);
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Get Order Stock Status Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error getting order stock status',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Manually refresh stock status for an order
+// @route   POST /api/sales-orders/:id/refresh-stock-status
+// @access  Private
+export const refreshOrderStockStatus = async (req, res) => {
+  try {
+    const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
+    
+    const result = await StockArrivalService.checkOrderStockStatus(req.params.id);
+    
+    res.json({
+      success: true,
+      message: 'Stock status refreshed successfully',
+      ...result
+    });
+  } catch (error) {
+    console.error('Refresh Order Stock Status Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error refreshing order stock status',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Manually refresh stock status for an order by order number
+// @route   POST /api/sales-orders/refresh-by-order-number/:orderNumber
+// @access  Private
+export const refreshOrderStockStatusByOrderNumber = async (req, res) => {
+  try {
+    const { orderNumber } = req.params;
+    
+    // Find order by order number
+    const order = await SalesOrder.findOne({ orderNumber });
+    
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: `Order ${orderNumber} not found`
+      });
+    }
+    
+    const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
+    
+    const result = await StockArrivalService.checkOrderStockStatus(order._id);
+    
+    res.json({
+      success: true,
+      message: `Stock status refreshed successfully for order ${orderNumber}`,
+      ...result
+    });
+  } catch (error) {
+    console.error('Refresh Order Stock Status By Order Number Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error refreshing order stock status',
       error: error.message
     });
   }

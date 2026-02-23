@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import DealerInvoice from "../models/DealerInvoice.js";
 import SalesOrder from "../models/SalesOrder.js";
 import Dealer from "../models/Dealer.js";
@@ -5,6 +6,7 @@ import Product from "../models/Product.js";
 import DiscountMapping from "../models/DiscountMapping.js";
 import Points from "../models/Points.js";
 import Stock from "../models/Stock.js";
+import StockMovement from "../models/Stock.js"; // StockMovement is exported from Stock.js
 import DealerLedger from "../models/DealerLedger.js";
 import Notification from "../models/Notification.js";
 
@@ -58,11 +60,17 @@ export const getDealerInvoices = async (req, res) => {
       region,
       startDate,
       endDate,
-      salesOrder
+      salesOrder,
+      showCancelled = 'false' // New parameter to show/hide cancelled invoices
     } = req.query;
 
     // Build query object
     const query = {};
+    
+    // By default, exclude cancelled/deleted invoices
+    if (showCancelled !== 'true') {
+      query.isDeleted = { $ne: true };
+    }
 
     // Search functionality
     if (search) {
@@ -113,6 +121,7 @@ export const getDealerInvoices = async (req, res) => {
       .populate("salesOrder", "orderNumber")
       .populate("createdBy", "name email")
       .populate("approvedBy", "name email")
+      .populate("deletedBy", "name email") // Populate who cancelled the invoice
       .populate("items.product", "itemName productCode HSNCode")
       .populate("items.warehouse", "name")
       .sort({ createdAt: -1 })
@@ -922,47 +931,201 @@ export const approveInvoice = async (req, res) => {
 };
 
 // @desc    Delete dealer invoice
+// @desc    Cancel (Soft Delete) Dealer Invoice
 // @route   DELETE /api/dealer-invoices/:id
 // @access  Private
 export const deleteDealerInvoice = async (req, res) => {
+  const session = await mongoose.startSession();
+  
   try {
-    const invoice = await DealerInvoice.findById(req.params.id);
+    await session.startTransaction();
+    
+    const { reason } = req.body;
+    console.log(`🗑️ Attempting to cancel invoice ${req.params.id} with reason: ${reason}`);
+    
+    const invoice = await DealerInvoice.findById(req.params.id).session(session);
 
     if (!invoice) {
+      await session.abortTransaction();
       return res.status(404).json({
         success: false,
         message: "Dealer invoice not found"
       });
     }
 
-    // Prevent deletion of approved invoices
-    if (invoice.status === "Approved") {
+    console.log(`📄 Found invoice: ${invoice.invoiceNumber}, Status: ${invoice.status}`);
+
+    // Prevent cancellation of approved/paid invoices
+    if (['Approved', 'Dispatched', 'Delivered'].includes(invoice.status)) {
+      await session.abortTransaction();
       return res.status(400).json({
         success: false,
-        message: "Cannot delete approved invoices"
+        message: "Cannot cancel approved/dispatched invoices. Please create a Credit Note instead."
       });
     }
 
-    // Only allow deletion of draft invoices
-    if (invoice.status !== "Draft") {
+    // Prevent cancellation if payment has been made
+    if (invoice.paidAmount && invoice.paidAmount > 0) {
+      await session.abortTransaction();
       return res.status(400).json({
         success: false,
-        message: "Only draft invoices can be deleted"
+        message: "Cannot cancel invoice with payments. Please refund payments first."
       });
     }
 
-    await DealerInvoice.findByIdAndDelete(req.params.id);
+    console.log(`🗑️ Cancelling invoice ${invoice.invoiceNumber}`);
+
+    // SOFT DELETE: Mark as cancelled instead of deleting
+    invoice.isDeleted = true;
+    invoice.deletedAt = new Date();
+    invoice.deletedBy = req.user._id;
+    invoice.deletionReason = reason || 'No reason provided';
+    invoice.cancellationReason = reason || 'No reason provided';
+    invoice.status = 'Cancelled';
+    
+    await invoice.save({ session });
+    console.log(`✅ Invoice marked as cancelled`);
+    
+    // RELEASE SALES ORDER: Set status back to "Confirmed" so new invoice can be created
+    let salesOrderReleased = false;
+    if (invoice.salesOrder) {
+      try {
+        const salesOrder = await SalesOrder.findById(invoice.salesOrder).session(session);
+        
+        if (salesOrder) {
+          console.log(`📋 Releasing sales order ${salesOrder.orderNumber} - setting status back to Confirmed`);
+          
+          // Set status back to Confirmed so it can be invoiced again
+          salesOrder.status = 'Confirmed';
+          await salesOrder.save({ session });
+          salesOrderReleased = true;
+          
+          console.log(`✅ Sales order ${salesOrder.orderNumber} released - can create new invoice`);
+        }
+      } catch (soError) {
+        console.error(`⚠️ Error releasing sales order:`, soError.message);
+        // Continue even if sales order release fails
+      }
+    }
+    
+    // REVERSE STOCK MOVEMENTS: Restore stock that was deducted
+    let stockReversed = false;
+    try {
+      const stockMovements = await StockMovement.find({
+        referenceNo: invoice.invoiceNumber,
+        referenceType: 'INVOICE'
+      }).session(session);
+      
+      if (stockMovements.length > 0) {
+        console.log(`📦 Reversing ${stockMovements.length} stock movements`);
+        
+        for (const movement of stockMovements) {
+          // Create reverse movement
+          const reverseMovement = new StockMovement({
+            productId: movement.productId,
+            warehouseId: movement.warehouseId,
+            type: movement.type === 'OUT' ? 'IN' : 'OUT', // Reverse the type
+            quantity: movement.quantity,
+            balance: 0, // Will be calculated
+            referenceNo: invoice.invoiceNumber,
+            referenceType: 'INVOICE_CANCELLATION',
+            date: new Date(),
+            remarks: `Reversal of invoice ${invoice.invoiceNumber} cancellation`,
+            createdBy: req.user._id
+          });
+          
+          // Calculate new balance
+          const lastMovement = await StockMovement.findOne({
+            productId: movement.productId,
+            warehouseId: movement.warehouseId
+          }).sort({ date: -1, createdAt: -1 }).session(session);
+          
+          if (lastMovement) {
+            if (reverseMovement.type === 'IN') {
+              reverseMovement.balance = lastMovement.balance + reverseMovement.quantity;
+            } else {
+              reverseMovement.balance = lastMovement.balance - reverseMovement.quantity;
+            }
+          } else {
+            reverseMovement.balance = reverseMovement.type === 'IN' ? reverseMovement.quantity : -reverseMovement.quantity;
+          }
+          
+          await reverseMovement.save({ session });
+        }
+        
+        stockReversed = true;
+        console.log(`✅ Stock movements reversed`);
+      } else {
+        console.log(`ℹ️ No stock movements found for invoice ${invoice.invoiceNumber}`);
+      }
+    } catch (stockError) {
+      console.error(`⚠️ Error reversing stock movements:`, stockError.message);
+      // Continue even if stock reversal fails
+    }
+    
+    // REVERSE LEDGER ENTRIES: Remove dealer ledger entries
+    let ledgerReversed = false;
+    try {
+      const ledgerEntries = await DealerLedger.find({
+        invoiceNumber: invoice.invoiceNumber
+      }).session(session);
+      
+      if (ledgerEntries.length > 0) {
+        console.log(`💰 Reversing ${ledgerEntries.length} ledger entries`);
+        
+        for (const entry of ledgerEntries) {
+          // Create reverse entry
+          const reverseEntry = new DealerLedger({
+            dealer: entry.dealer,
+            transactionType: 'Adjustment', // Use valid enum value
+            invoiceNumber: invoice.invoiceNumber,
+            entryDate: new Date(),
+            debitAmount: entry.creditAmount || 0, // Reverse: debit becomes credit
+            creditAmount: entry.debitAmount || 0, // Reverse: credit becomes debit
+            runningBalance: 0, // Will be calculated by pre-save hook
+            description: `Cancellation of invoice ${invoice.invoiceNumber}`,
+            remarks: `Reversal entry for cancelled invoice ${invoice.invoiceNumber}. Reason: ${reason || 'No reason provided'}`,
+            createdBy: req.user._id
+          });
+          
+          await reverseEntry.save({ session });
+        }
+        
+        ledgerReversed = true;
+        console.log(`✅ Ledger entries reversed`);
+      } else {
+        console.log(`ℹ️ No ledger entries found for invoice ${invoice.invoiceNumber}`);
+      }
+    } catch (ledgerError) {
+      console.error(`⚠️ Error reversing ledger entries:`, ledgerError.message);
+      // Continue even if ledger reversal fails
+    }
+    
+    await session.commitTransaction();
+    
+    console.log(`✅ Invoice ${invoice.invoiceNumber} cancelled successfully`);
 
     res.json({
       success: true,
-      message: "Dealer invoice deleted successfully"
+      message: `Invoice ${invoice.invoiceNumber} cancelled successfully. Sales order released for new invoice.`,
+      data: {
+        invoiceNumber: invoice.invoiceNumber,
+        salesOrderReleased,
+        stockReversed,
+        ledgerReversed
+      }
     });
   } catch (error) {
-    console.error("Delete dealer invoice error:", error);
+    await session.abortTransaction();
+    console.error("Cancel dealer invoice error:", error);
+    console.error("Error stack:", error.stack);
     res.status(500).json({
       success: false,
-      message: "Server error while deleting dealer invoice"
+      message: "Server error while cancelling dealer invoice",
+      error: error.message
     });
+  } finally {
+    session.endSession();
   }
 };
 

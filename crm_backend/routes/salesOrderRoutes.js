@@ -20,7 +20,10 @@ import {
   cancelOrderExpiry,
   approveCreditOverlimit,
   checkStockAvailabilityForOutOfStockOrders,
-  autoExpireOrders
+  autoExpireOrders,
+  getOrderStockStatus,
+  refreshOrderStockStatus,
+  refreshOrderStockStatusByOrderNumber
 } from "../controllers/salesOrderController.js";
 import { protect } from "../middleware/authMiddleware.js";
 import { logActivity } from "../middleware/activityLogMiddleware.js";
@@ -85,6 +88,17 @@ router.route("/:id/cancel-expiry")
 
 router.route("/:id/approve-credit-overlimit")
   .patch(logActivity("Sales Order Dashboard", "Approved credit overlimit order", "UPDATE"), approveCreditOverlimit);
+
+// NEW: Stock status routes
+router.route("/:id/stock-status")
+  .get(logActivity("Sales Order Dashboard", "Viewed order stock status", "READ"), getOrderStockStatus);
+
+router.route("/:id/refresh-stock-status")
+  .post(logActivity("Sales Order Dashboard", "Refreshed order stock status", "UPDATE"), refreshOrderStockStatus);
+
+// NEW: Refresh stock status by order number (easier for manual fixes)
+router.route("/refresh-by-order-number/:orderNumber")
+  .post(logActivity("Sales Order Dashboard", "Refreshed order stock status by order number", "UPDATE"), refreshOrderStockStatusByOrderNumber);
 
 // Check stock availability for out-of-stock orders
 router.route("/check-stock-availability")

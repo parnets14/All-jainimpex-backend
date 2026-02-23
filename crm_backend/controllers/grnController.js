@@ -343,6 +343,24 @@ export const createGRN = async (req, res) => {
     // Commit transaction
     await session.commitTransaction();
     
+    // IMPORTANT: Check waiting orders for stock arrival (after transaction commits)
+    // This runs outside the transaction to avoid blocking GRN creation
+    try {
+      const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
+      
+      for (const item of grnItems) {
+        await StockArrivalService.checkWaitingOrdersForStock(
+          item.productId,
+          warehouseId,
+          item.acceptedQuantity
+        );
+      }
+      console.log(`✅ Checked waiting orders for stock arrival after GRN: ${grn.grnNo}`);
+    } catch (arrivalError) {
+      console.error('⚠️  Error checking waiting orders (non-critical):', arrivalError);
+      // Don't fail GRN creation if stock arrival check fails
+    }
+    
     // Populate the saved GRN for response
     const populatedGRN = await GRN.findById(grn._id)
       .populate('poId', 'poNumber')

@@ -30,7 +30,7 @@ const stockMovementSchema = new mongoose.Schema({
   },
   referenceType: {
     type: String,
-    enum: ['GRN', 'SALE', 'ADJUSTMENT', 'TRANSFER'],
+    enum: ['GRN', 'SALE', 'ADJUSTMENT', 'TRANSFER', 'INVOICE', 'INVOICE_CANCELLATION'],
     required: true
   },
   date: {

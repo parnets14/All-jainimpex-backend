@@ -67,6 +67,24 @@ const productSchema = new mongoose.Schema({
     discountType: String,
     targetType: String,
     selectedLevel: Number
+  },
+  // Stock arrival tracking fields
+  stockStatus: {
+    type: String,
+    enum: ['waiting', 'partial', 'available', 'unknown'],
+    default: 'unknown'
+  },
+  availableQuantity: {
+    type: Number,
+    default: 0
+  },
+  stockArrivedAt: {
+    type: Date,
+    default: null
+  },
+  stockCheckedAt: {
+    type: Date,
+    default: null
   }
 });
 
@@ -255,6 +273,34 @@ const salesOrderSchema = new mongoose.Schema({
     },
     approvedAt: Date,
     approvalNotes: String
+  },
+  // Order-level stock status summary
+  orderStockStatus: {
+    totalProducts: {
+      type: Number,
+      default: 0
+    },
+    availableProducts: {
+      type: Number,
+      default: 0
+    },
+    partialProducts: {
+      type: Number,
+      default: 0
+    },
+    waitingProducts: {
+      type: Number,
+      default: 0
+    },
+    overallStatus: {
+      type: String,
+      enum: ['ready', 'partial', 'waiting', 'unknown'],
+      default: 'unknown'
+    },
+    lastChecked: {
+      type: Date,
+      default: null
+    }
   }
 }, {
   timestamps: true
