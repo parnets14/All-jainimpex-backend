@@ -595,12 +595,15 @@ export const createDealerInvoice = async (req, res) => {
       }
     }
 
-    // Generate invoice number
-    const invoiceNumber = await generateInvoiceNumber();
+    // DON'T generate invoice number for drafts - will be generated on approval
+    // const invoiceNumber = await generateInvoiceNumber(); // REMOVED
 
-    // Create invoice data
+    // Create invoice data as DRAFT
     const invoiceData = {
-      invoiceNumber,
+      invoiceNumber: null, // No number for drafts
+      invoiceDate: null,   // No date for drafts
+      isDraft: true,       // Mark as draft
+      status: "Draft",     // Set status to Draft
       dealer: dealerId,
       dealerName: dealer.name,
       dealerCode: dealer.code,
@@ -630,10 +633,16 @@ export const createDealerInvoice = async (req, res) => {
       invoiceData.customerGST = customerInfo.gst || dealer.gst;
     }
 
-    // Create the invoice
+    // Create the invoice as DRAFT
     const invoice = new DealerInvoice(invoiceData);
     await invoice.save();
 
+    console.log(`✅ Draft invoice created: ${invoice._id} (no invoice number yet)`);
+
+    // DON'T create dealer ledger entry for drafts - will be created on approval
+    // Ledger entry creation moved to approval step
+    
+    /* REMOVED - Will be done on approval
     // Create dealer ledger entry for the invoice
     try {
       // Get the last entry for this dealer to calculate running balance
@@ -688,7 +697,9 @@ export const createDealerInvoice = async (req, res) => {
       if (salesOrder && salesOrder.orderNumber) {
         message = `Invoice ${invoice.invoiceNumber} has been generated for your purchase order ${salesOrder.orderNumber} with an amount of ₹${invoice.totalAmount.toLocaleString()}.`;
       }
+      */
       
+      /* REMOVED - Notifications will be sent on approval
       const title = salesOrder && salesOrder.orderNumber 
         ? `Invoice Generated for Order ${salesOrder.orderNumber}`
         : `Invoice ${invoice.invoiceNumber} Generated`;
@@ -751,6 +762,7 @@ export const createDealerInvoice = async (req, res) => {
         // Don't fail the invoice creation if notification fails
       }
     }
+    */
 
     // Populate the created invoice
     const populatedInvoice = await DealerInvoice.findById(invoice._id)
@@ -762,7 +774,7 @@ export const createDealerInvoice = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: "Dealer invoice created successfully",
+      message: "Draft invoice created successfully. Approve to generate invoice number.",
       invoice: populatedInvoice
     });
   } catch (error) {
@@ -771,6 +783,205 @@ export const createDealerInvoice = async (req, res) => {
       success: false,
       message: "Server error while creating dealer invoice"
     });
+  }
+};
+
+// @desc    Approve draft invoice (generate invoice number, create ledger entry)
+// @route   PUT /api/dealer-invoices/:id/approve
+// @access  Private
+export const approveDealerInvoice = async (req, res) => {
+  const session = await mongoose.startSession();
+  
+  try {
+    await session.startTransaction();
+    
+    const invoice = await DealerInvoice.findById(req.params.id).session(session);
+    
+    if (!invoice) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: "Invoice not found"
+      });
+    }
+    
+    if (invoice.status !== "Draft") {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: "Only draft invoices can be approved"
+      });
+    }
+    
+    console.log(`📋 Approving draft invoice ${invoice._id}...`);
+    
+    // Generate invoice number NOW
+    invoice.invoiceNumber = await generateInvoiceNumber();
+    invoice.invoiceDate = new Date();
+    invoice.status = "Approved";
+    invoice.isDraft = false;
+    invoice.approvedBy = req.user._id;
+    invoice.approvedAt = new Date();
+    
+    // Calculate due date based on credit days
+    invoice.dueDate = new Date();
+    invoice.dueDate.setDate(invoice.dueDate.getDate() + (invoice.creditDays || 30));
+    
+    await invoice.save({ session });
+    
+    console.log(`✅ Invoice number generated: ${invoice.invoiceNumber}`);
+    
+    // NOW create ledger entry
+    try {
+      const dealer = await Dealer.findById(invoice.dealer).session(session);
+      
+      // Get the last entry for this dealer to calculate running balance
+      const lastEntry = await DealerLedger.findOne(
+        { dealer: invoice.dealer },
+        {},
+        { sort: { 'createdAt': -1 } }
+      ).session(session);
+      
+      let previousBalance = 0;
+      if (lastEntry) {
+        previousBalance = lastEntry.runningBalance;
+      }
+      
+      // Determine sales type from items
+      let determinedSalesType = 'Regular Sale';
+      const hasCDSales = invoice.items.some(item => item.salesType === 'CD Sales');
+      const hasRegularSales = invoice.items.some(item => item.salesType === 'Regular Sale' || !item.salesType);
+      
+      if (hasCDSales && !hasRegularSales) {
+        determinedSalesType = 'CD Sales';
+      } else if (hasCDSales && hasRegularSales) {
+        determinedSalesType = 'Mixed';
+      }
+      
+      const ledgerEntry = new DealerLedger({
+        dealer: invoice.dealer,
+        dealerName: invoice.dealerName,
+        dealerCode: invoice.dealerCode,
+        entryDate: invoice.invoiceDate,
+        transactionType: "Invoice",
+        invoice: invoice._id,
+        invoiceNumber: invoice.invoiceNumber,
+        invoiceValue: invoice.totalAmount,
+        salesType: determinedSalesType,
+        creditDaysApplied: invoice.creditDays,
+        debitAmount: invoice.totalAmount,
+        creditAmount: 0,
+        runningBalance: previousBalance + invoice.totalAmount,
+        description: `Invoice ${invoice.invoiceNumber} (${determinedSalesType})`,
+        creditDays: invoice.creditDays,
+        dueDate: invoice.dueDate,
+        pointsEarned: invoice.totalPoints || 0,
+        schemeAmount: invoice.totalDiscount || 0,
+        createdBy: req.user._id
+      });
+      
+      await ledgerEntry.save({ session });
+      console.log(`✅ Ledger entry created for invoice: ${invoice.invoiceNumber}`);
+    } catch (ledgerError) {
+      console.error("Error creating ledger entry:", ledgerError);
+      throw ledgerError; // Fail the transaction if ledger creation fails
+    }
+    
+    // NOW create notifications
+    try {
+      const salesOrder = invoice.salesOrder ? await SalesOrder.findById(invoice.salesOrder).session(session) : null;
+      
+      // Invoice generated notification
+      let message = `Invoice ${invoice.invoiceNumber} has been generated for an amount of ₹${invoice.totalAmount.toLocaleString()}.`;
+      if (salesOrder && salesOrder.orderNumber) {
+        message = `Invoice ${invoice.invoiceNumber} has been generated for your purchase order ${salesOrder.orderNumber} with an amount of ₹${invoice.totalAmount.toLocaleString()}.`;
+      }
+      
+      const title = salesOrder && salesOrder.orderNumber 
+        ? `Invoice Generated for Order ${salesOrder.orderNumber}`
+        : `Invoice ${invoice.invoiceNumber} Generated`;
+      
+      await Notification.create([{
+        dealer: invoice.dealer,
+        type: 'system',
+        title: title,
+        message: message,
+        orderId: invoice.salesOrder || null,
+        orderNumber: salesOrder?.orderNumber || null,
+        status: null,
+        read: false,
+        priority: 'high',
+        metadata: {
+          originalType: 'invoice_created',
+          invoiceId: invoice._id.toString(),
+          invoiceNumber: invoice.invoiceNumber,
+          invoiceAmount: invoice.totalAmount,
+          salesOrderNumber: salesOrder?.orderNumber || null
+        }
+      }], { session });
+      
+      console.log(`✅ Notification created for invoice: ${invoice.invoiceNumber}`);
+      
+      // Points earned notification
+      if (invoice.totalPoints && invoice.totalPoints > 0) {
+        const pointsMessage = salesOrder && salesOrder.orderNumber
+          ? `You have earned ${invoice.totalPoints} points from invoice ${invoice.invoiceNumber} for your purchase order ${salesOrder.orderNumber}.`
+          : `You have earned ${invoice.totalPoints} points from invoice ${invoice.invoiceNumber}.`;
+        
+        await Notification.create([{
+          dealer: invoice.dealer,
+          type: 'system',
+          title: 'Points Earned! 🎉',
+          message: pointsMessage,
+          orderId: invoice.salesOrder || null,
+          orderNumber: salesOrder?.orderNumber || null,
+          status: null,
+          read: false,
+          priority: 'high',
+          metadata: {
+            originalType: 'points_earned',
+            invoiceId: invoice._id.toString(),
+            invoiceNumber: invoice.invoiceNumber,
+            pointsEarned: invoice.totalPoints,
+            salesOrderNumber: salesOrder?.orderNumber || null
+          }
+        }], { session });
+        
+        console.log(`✅ Points notification created: ${invoice.totalPoints} points`);
+      }
+    } catch (notificationError) {
+      console.error('Error creating notifications:', notificationError);
+      // Don't fail the transaction if notification fails
+    }
+    
+    await session.commitTransaction();
+    
+    // Populate and return the approved invoice
+    const populatedInvoice = await DealerInvoice.findById(invoice._id)
+      .populate("dealer", "name code dealerType")
+      .populate("region", "name")
+      .populate("salesOrder", "orderNumber")
+      .populate("items.product", "itemName productCode HSNCode")
+      .populate("items.warehouse", "name")
+      .populate("approvedBy", "name email");
+    
+    console.log(`🎉 Invoice approved successfully: ${invoice.invoiceNumber}`);
+    
+    res.json({
+      success: true,
+      message: `Invoice ${invoice.invoiceNumber} approved successfully`,
+      invoice: populatedInvoice
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    console.error("Approve invoice error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error while approving invoice",
+      error: error.message
+    });
+  } finally {
+    session.endSession();
   }
 };
 
@@ -931,7 +1142,7 @@ export const approveInvoice = async (req, res) => {
 };
 
 // @desc    Delete dealer invoice
-// @desc    Cancel (Soft Delete) Dealer Invoice
+// @desc    Delete Draft or Cancel Approved Invoice
 // @route   DELETE /api/dealer-invoices/:id
 // @access  Private
 export const deleteDealerInvoice = async (req, res) => {
@@ -941,52 +1152,68 @@ export const deleteDealerInvoice = async (req, res) => {
     await session.startTransaction();
     
     const { reason } = req.body;
-    console.log(`🗑️ Attempting to cancel invoice ${req.params.id} with reason: ${reason}`);
-    
     const invoice = await DealerInvoice.findById(req.params.id).session(session);
 
     if (!invoice) {
       await session.abortTransaction();
       return res.status(404).json({
         success: false,
-        message: "Dealer invoice not found"
+        message: "Invoice not found"
       });
     }
 
-    console.log(`📄 Found invoice: ${invoice.invoiceNumber}, Status: ${invoice.status}`);
+    console.log(`📄 Invoice ${invoice._id}, Status: ${invoice.status}, Draft: ${invoice.isDraft}`);
 
-    // Prevent cancellation of approved/paid invoices
-    if (['Approved', 'Dispatched', 'Delivered'].includes(invoice.status)) {
-      await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: "Cannot cancel approved/dispatched invoices. Please create a Credit Note instead."
+    // CASE 1: Delete Draft Invoice (permanently delete)
+    if (invoice.status === "Draft" || invoice.isDraft) {
+      console.log(`🗑️ Permanently deleting draft invoice ${invoice._id}`);
+      
+      // Release sales order
+      if (invoice.salesOrder) {
+        await SalesOrder.findByIdAndUpdate(
+          invoice.salesOrder,
+          { status: "Confirmed" },
+          { session }
+        );
+        console.log(`✅ Sales order ${invoice.salesOrder} released`);
+      }
+      
+      // Permanently delete the draft
+      await DealerInvoice.findByIdAndDelete(invoice._id).session(session);
+      
+      await session.commitTransaction();
+      
+      return res.json({
+        success: true,
+        message: "Draft invoice deleted successfully"
       });
     }
 
-    // Prevent cancellation if payment has been made
-    if (invoice.paidAmount && invoice.paidAmount > 0) {
-      await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: "Cannot cancel invoice with payments. Please refund payments first."
-      });
-    }
+    // CASE 2: Cancel Approved Invoice (soft delete)
+    if (invoice.status === "Approved") {
+      console.log(`❌ Cancelling approved invoice ${invoice.invoiceNumber}`);
+      
+      // Prevent cancellation if payment has been made
+      if (invoice.paidAmount && invoice.paidAmount > 0) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: "Cannot cancel invoice with payments. Please refund payments first."
+        });
+      }
 
-    console.log(`🗑️ Cancelling invoice ${invoice.invoiceNumber}`);
-
-    // SOFT DELETE: Mark as cancelled instead of deleting
-    invoice.isDeleted = true;
-    invoice.deletedAt = new Date();
-    invoice.deletedBy = req.user._id;
-    invoice.deletionReason = reason || 'No reason provided';
-    invoice.cancellationReason = reason || 'No reason provided';
-    invoice.status = 'Cancelled';
-    
-    await invoice.save({ session });
-    console.log(`✅ Invoice marked as cancelled`);
-    
-    // RELEASE SALES ORDER: Set status back to "Confirmed" so new invoice can be created
+      // SOFT DELETE: Mark as cancelled
+      invoice.isDeleted = true;
+      invoice.deletedAt = new Date();
+      invoice.deletedBy = req.user._id;
+      invoice.deletionReason = reason || 'No reason provided';
+      invoice.cancellationReason = reason || 'No reason provided';
+      invoice.status = 'Cancelled';
+      
+      await invoice.save({ session });
+      console.log(`✅ Invoice marked as cancelled`);
+      
+      // RELEASE SALES ORDER
     let salesOrderReleased = false;
     if (invoice.salesOrder) {
       try {
@@ -1105,7 +1332,7 @@ export const deleteDealerInvoice = async (req, res) => {
     
     console.log(`✅ Invoice ${invoice.invoiceNumber} cancelled successfully`);
 
-    res.json({
+    return res.json({
       success: true,
       message: `Invoice ${invoice.invoiceNumber} cancelled successfully. Sales order released for new invoice.`,
       data: {
@@ -1115,6 +1342,8 @@ export const deleteDealerInvoice = async (req, res) => {
         ledgerReversed
       }
     });
+    } // Close CASE 2: Cancel Approved Invoice
+    
   } catch (error) {
     await session.abortTransaction();
     console.error("Cancel dealer invoice error:", error);

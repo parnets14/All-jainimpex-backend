@@ -430,13 +430,20 @@ export const createSalesOrder = async (req, res) => {
       stockValidation: stockValidation || []
     });
     
-    // Initialize stock tracking fields for out-of-stock orders
-    if (isOutOfStock) {
-      validatedProducts.forEach(product => {
+    // Initialize stock tracking fields for ALL orders (not just out-of-stock)
+    // This ensures stock status is always available for display
+    for (const product of validatedProducts) {
+      if (isOutOfStock) {
+        // Out-of-stock orders: mark as waiting
         product.stockStatus = 'waiting';
         product.availableQuantity = 0;
         product.stockCheckedAt = new Date();
-      });
+      } else {
+        // In-stock orders: mark as available (stock was validated during creation)
+        product.stockStatus = 'available';
+        product.availableQuantity = product.quantity;
+        product.stockCheckedAt = new Date();
+      }
     }
     
     const salesOrder = new SalesOrder({
@@ -465,15 +472,15 @@ export const createSalesOrder = async (req, res) => {
       stockValidation: stockValidation || [],
       // Credit overlimit fields
       creditOverlimit: req.body.creditOverlimit || undefined,
-      // Initialize order-level stock status for out-of-stock orders
-      orderStockStatus: isOutOfStock ? {
+      // Initialize order-level stock status for ALL orders
+      orderStockStatus: {
         totalProducts: validatedProducts.length,
-        availableProducts: 0,
+        availableProducts: isOutOfStock ? 0 : validatedProducts.length,
         partialProducts: 0,
-        waitingProducts: validatedProducts.length,
-        overallStatus: 'waiting',
+        waitingProducts: isOutOfStock ? validatedProducts.length : 0,
+        overallStatus: isOutOfStock ? 'waiting' : 'ready',
         lastChecked: new Date()
-      } : undefined
+      }
     });
 
     // Automatically set 15-day expiry for Pending orders
@@ -2633,18 +2640,15 @@ export const approveCreditOverlimit = async (req, res) => {
     salesOrder.creditOverlimit.approvalNotes = approvalNotes || 'Credit overlimit approved';
     salesOrder.creditOverlimit.requiresApproval = false;
 
-    // Change status from Pending to Confirmed (order can now proceed)
-    if (salesOrder.status === "Pending") {
-      salesOrder.status = "Confirmed";
-      salesOrder.approvedBy = req.user._id;
-      salesOrder.approvedAt = new Date();
-    }
+    // DON'T auto-confirm the order - keep it Pending for manual review
+    // The order should be manually confirmed after credit approval
+    // This allows for additional verification before stock is blocked
 
     await salesOrder.save();
 
     res.json({
       success: true,
-      message: "Credit overlimit approved successfully. Order status changed to Confirmed.",
+      message: "Credit overlimit approved successfully. Order remains Pending - please confirm manually to proceed.",
       salesOrder
     });
   } catch (error) {

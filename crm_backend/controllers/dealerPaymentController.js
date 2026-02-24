@@ -183,9 +183,10 @@ export const createDealerPayment = async (req, res) => {
       source = "Web" // Default to Web, can be "App" from mobile
     } = req.body;
 
-    // Get the invoice details (exclude cancelled)
+    // Get the invoice details (exclude drafts and cancelled)
     const invoice = await DealerInvoice.findOne({ 
       _id: dealerInvoiceId,
+      isDraft: false, // Exclude draft invoices
       isDeleted: { $ne: true } // Exclude cancelled invoices
     })
       .populate("dealer", "name code");
@@ -193,7 +194,7 @@ export const createDealerPayment = async (req, res) => {
     if (!invoice) {
       return res.status(404).json({
         success: false,
-        message: "Invoice not found or has been cancelled"
+        message: "Invoice not found, is a draft, or has been cancelled"
       });
     }
 
@@ -303,9 +304,10 @@ export const updateDealerPaymentStatus = async (req, res) => {
       payment.approvedBy = req.user._id;
       payment.approvedAt = new Date();
       
-      // Update invoice payment status (exclude cancelled)
+      // Update invoice payment status (exclude drafts and cancelled)
       const invoice = await DealerInvoice.findOne({
         _id: payment.dealerInvoice,
+        isDraft: false, // Exclude draft invoices
         isDeleted: { $ne: true } // Exclude cancelled invoices
       })
         .populate("dealer", "name code");
@@ -423,8 +425,9 @@ export const getAvailableInvoicesForPayment = async (req, res) => {
     
     console.log('🔍 Fetching available invoices for payment, dealer:', dealer, 'page:', page, 'limit:', limit);
     
-    // Show all invoices regardless of status - no approval needed for payments
+    // Show all approved invoices - no drafts
     const query = {
+      isDraft: false, // Exclude draft invoices
       isDeleted: { $ne: true } // Exclude cancelled invoices
     };
     

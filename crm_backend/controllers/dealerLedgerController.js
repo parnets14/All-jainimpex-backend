@@ -554,9 +554,10 @@ export const syncLedgerEntries = async (req, res) => {
   try {
     const { dealerId } = req.params;
 
-    // Get all invoices for the dealer that don't have ledger entries (exclude cancelled)
+    // Get all invoices for the dealer that don't have ledger entries (exclude drafts and cancelled)
     const invoices = await DealerInvoice.find({ 
       dealer: dealerId,
+      isDraft: false, // Exclude draft invoices
       isDeleted: { $ne: true } // Exclude cancelled invoices
     });
     const creditNotes = await CreditNote.find({ dealer: dealerId });

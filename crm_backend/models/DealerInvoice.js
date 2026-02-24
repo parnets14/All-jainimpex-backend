@@ -88,7 +88,7 @@ const invoiceItemSchema = new mongoose.Schema({
 const dealerInvoiceSchema = new mongoose.Schema({
   invoiceNumber: {
     type: String,
-    required: true,
+    sparse: true, // Allow null for drafts, but unique when set
     unique: true
   },
   dealer: {
@@ -123,13 +123,19 @@ const dealerInvoiceSchema = new mongoose.Schema({
   // Invoice Details
   invoiceDate: {
     type: Date,
-    required: true,
-    default: Date.now
+    default: null // Null for drafts, set on approval
   },
   dueDate: Date,
   creditDays: {
     type: Number,
     default: 30
+  },
+  
+  // Draft Status
+  isDraft: {
+    type: Boolean,
+    default: true,
+    index: true
   },
   
   // Items
@@ -315,11 +321,14 @@ dealerInvoiceSchema.pre("save", function(next) {
   next();
 });
 
-// Generate invoice number
+// Generate invoice number (only for non-draft invoices)
 dealerInvoiceSchema.pre("save", async function(next) {
-  if (!this.invoiceNumber) {
+  // Only generate invoice number if:
+  // 1. Invoice doesn't have a number yet
+  // 2. Invoice is NOT a draft (isDraft = false)
+  if (!this.invoiceNumber && !this.isDraft) {
     const year = new Date().getFullYear();
-    const count = await mongoose.model("DealerInvoice").countDocuments();
+    const count = await mongoose.model("DealerInvoice").countDocuments({ isDraft: false });
     this.invoiceNumber = `INV-${year}-${String(count + 1).padStart(4, "0")}`;
   }
   next();

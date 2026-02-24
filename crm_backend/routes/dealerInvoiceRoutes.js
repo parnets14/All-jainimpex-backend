@@ -5,6 +5,7 @@ import {
   getDealerSalesOrders,
   calculateDiscountsAndPoints,
   createDealerInvoice,
+  approveDealerInvoice,
   updateDealerInvoice,
   updateInvoiceStatus,
   approveInvoice,
@@ -47,6 +48,11 @@ router.get("/:id", getDealerInvoice);
 // @desc    Create new dealer invoice
 // @access  Private
 router.post("/", createDealerInvoice);
+
+// @route   PUT /api/dealer-invoices/:id/approve
+// @desc    Approve draft dealer invoice (generate invoice number, create ledger entry)
+// @access  Private
+router.put("/:id/approve", approveDealerInvoice);
 
 // @route   PUT /api/dealer-invoices/:id
 // @desc    Update dealer invoice
