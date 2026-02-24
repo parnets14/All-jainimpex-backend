@@ -20,15 +20,16 @@ class StockArrivalService {
       const currentStock = await StockMovementService.getCurrentStock(productId, warehouseId);
       console.log(`   Current stock: ${currentStock} units`);
       
-      // Find all out-of-stock orders waiting for this product in this warehouse
+      // Find all orders waiting for this product in this warehouse
+      // Include both fully out-of-stock orders AND orders with partial/waiting products
       // Use $elemMatch to ensure product and warehouse match in the SAME array element
       const waitingOrders = await SalesOrder.find({
-        isOutOfStock: true,
         status: 'Pending',
         products: {
           $elemMatch: {
             product: productId,
-            warehouse: warehouseId
+            warehouse: warehouseId,
+            stockStatus: { $in: ['waiting', 'partial'] } // Only check orders that need this stock
           }
         }
       }).populate('dealer', 'name email phone');
@@ -83,60 +84,64 @@ class StockArrivalService {
       let waitingCount = 0;
       let totalCount = 0;
       
+      // Import Stock model
+      const Stock = (await import('../models/Stock.js')).default;
+      
       // Update stock status for each product in the order
       for (const product of order.products) {
         totalCount++;
         
-        // Check if this is the product that stock arrived for
+        // Skip products without warehouse
+        if (!product.warehouse) {
+          product.stockStatus = 'waiting';
+          product.availableQuantity = 0;
+          waitingCount++;
+          continue;
+        }
+        
+        const oldStatus = product.stockStatus || 'unknown';
+        const oldAvailable = product.availableQuantity || 0;
+        
+        // Get current stock for this product (either from parameter or query)
+        let stockAvailable = 0;
         if (product.product.toString() === productId.toString() &&
             product.warehouse.toString() === warehouseId.toString()) {
-          
-          const oldStatus = product.stockStatus || 'unknown';
-          const oldAvailable = product.availableQuantity || 0;
-          
-          // Calculate available quantity for this product
-          product.availableQuantity = Math.min(currentStock, product.quantity);
-          
-          // Determine stock status
-          if (currentStock >= product.quantity) {
-            product.stockStatus = 'available';
-            if (oldStatus !== 'available') {
-              product.stockArrivedAt = new Date();
-            }
-            availableCount++;
-          } else if (currentStock > 0) {
-            product.stockStatus = 'partial';
-            partialCount++;
-          } else {
-            product.stockStatus = 'waiting';
-            waitingCount++;
-          }
-          
-          product.stockCheckedAt = new Date();
-          
-          if (oldStatus !== product.stockStatus || oldAvailable !== product.availableQuantity) {
-            orderUpdated = true;
-            console.log(`   📝 ${order.orderNumber}: ${product.productName || product.productCode}`);
-            console.log(`      Status: ${oldStatus} → ${product.stockStatus}`);
-            console.log(`      Available: ${oldAvailable}/${product.quantity} → ${product.availableQuantity}/${product.quantity}`);
-          }
+          // Use the provided current stock for the product that just arrived
+          stockAvailable = currentStock;
         } else {
-          // Count existing status for other products
-          // Initialize stockStatus if missing
-          if (!product.stockStatus || product.stockStatus === 'unknown') {
-            product.stockStatus = 'waiting';
-            product.availableQuantity = 0;
-            product.stockCheckedAt = new Date();
-            orderUpdated = true; // Mark as updated since we initialized fields
+          // Query current stock for other products to ensure accuracy
+          const stockRecord = await Stock.findOne({
+            productId: product.product,
+            warehouseId: product.warehouse
+          });
+          stockAvailable = stockRecord ? (stockRecord.netStock || stockRecord.quantity || 0) : 0;
+        }
+        
+        // Calculate available quantity for this product
+        product.availableQuantity = Math.min(stockAvailable, product.quantity);
+        
+        // Determine stock status
+        if (stockAvailable >= product.quantity) {
+          product.stockStatus = 'available';
+          if (oldStatus !== 'available') {
+            product.stockArrivedAt = new Date();
           }
-          
-          if (product.stockStatus === 'available') {
-            availableCount++;
-          } else if (product.stockStatus === 'partial') {
-            partialCount++;
-          } else {
-            waitingCount++;
-          }
+          availableCount++;
+        } else if (stockAvailable > 0) {
+          product.stockStatus = 'partial';
+          partialCount++;
+        } else {
+          product.stockStatus = 'waiting';
+          waitingCount++;
+        }
+        
+        product.stockCheckedAt = new Date();
+        
+        if (oldStatus !== product.stockStatus || oldAvailable !== product.availableQuantity) {
+          orderUpdated = true;
+          console.log(`   📝 ${order.orderNumber}: ${product.productName || product.productCode}`);
+          console.log(`      Status: ${oldStatus} → ${product.stockStatus}`);
+          console.log(`      Available: ${oldAvailable}/${product.quantity} → ${product.availableQuantity}/${product.quantity}`);
         }
       }
       
@@ -193,10 +198,15 @@ class StockArrivalService {
         throw new Error('Order not found');
       }
       
-      if (!order.isOutOfStock) {
+      // Allow refresh for any order with waiting/partial stock, not just isOutOfStock orders
+      const hasWaitingOrPartialProducts = order.products?.some(p => 
+        p.stockStatus === 'waiting' || p.stockStatus === 'partial'
+      );
+      
+      if (!order.isOutOfStock && !hasWaitingOrPartialProducts) {
         return {
           success: false,
-          message: 'Order is not marked as out-of-stock'
+          message: 'Order does not have any products waiting for stock'
         };
       }
       
