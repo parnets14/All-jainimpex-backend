@@ -1,0 +1,1573 @@
+[
+  {
+    "_id": "6999a52bbe06838446a603fe",
+    "invoiceNumber": "INV-2026-0010",
+    "dealer": "699305d2d02de00313082e5b",
+    "dealerName": "nandi elec",
+    "dealerCode": "DLR1003",
+    "dealerType": "Retailer",
+    "region": "6978ed2ee1643566de925629",
+    "pinCode": "main road murnad",
+    "customerName": "nandi elec",
+    "customerAddress": "main road murnad",
+    "customerPhone": "9731345007",
+    "customerEmail": "",
+    "customerGST": "",
+    "salesOrder": "69999733be06838446a5c304",
+    "salesOrderNumber": "SO-2026-0033",
+    "creditDays": 60,
+    "items": [
+      {
+        "product": "6996ea6605f626d0dc08eb97",
+        "productCode": "66415646",
+        "productName": "r 8mill 850mtr tape",
+        "HSNCode": "41654165",
+        "category": "6996e9d705f626d0dc08ea94",
+        "subcategory": "6996ea1205f626d0dc08eaef",
+        "brand": "6996e9af05f626d0dc08ea6f",
+        "quantity": 100,
+        "unitPrice": 1100,
+        "gst": 5,
+        "gstAmount": 5500,
+        "discountAmount": 0,
+        "discountPercentage": 0,
+        "selectedDiscountLevels": [],
+        "manualDiscountLevels": {},
+        "dealerExtraDiscount": 0,
+        "appliedDiscounts": [],
+        "pointsEarned": 0,
+        "totalPrice": 115500,
+        "warehouse": "68e8f0283f5fd5a817866df6",
+        "warehouseName": "Jain Impex Hub",
+        "_id": "6999a52bbe06838446a603ff"
+      },
+      {
+        "product": "698614feb72264de728011af",
+        "productCode": "1654616",
+        "productName": "tf 50mm cpvc pipe",
+        "HSNCode": "646496",
+        "category": "69861200b72264de72800fdc",
+        "subcategory": "69861270b72264de72801048",
+        "brand": "69861054b72264de72800f05",
+        "quantity": 1,
+        "unitPrice": 4500,
+        "gst": 18,
+        "gstAmount": 380.7,
+        "discountAmount": 2385,
+        "discountPercentage": 53,
+        "selectedDiscountLevels": [],
+        "manualDiscountLevels": {},
+        "dealerExtraDiscount": 0,
+        "appliedDiscounts": [
+          {
+            "discountName": "ddw",
+            "discountType": "both",
+            "directDiscountPercentage": 53,
+            "levels": [
+              {
+                "levelName": "Executive Discount",
+                "discountPercentage": 4,
+                "_id": "699412e5de8864279163ec6f"
+              },
+              {
+                "levelName": "Prompt Discount",
+                "discountPercentage": 3,
+                "_id": "699412e5de8864279163ec70"
+              },
+              {
+                "levelName": "MD Discount",
+                "discountPercentage": 3.5,
+                "_id": "699412e5de8864279163ec71"
+              },
+              {
+                "levelName": "CD Discount",
+                "discountPercentage": 4,
+                "_id": "699412e5de8864279163ec72"
+              }
+            ],
+            "targetType": "subcategory",
+            "maxDiscountPercentage": 12,
+            "_id": "6999a52bbe06838446a60401"
+          }
+        ],
+        "pointsEarned": 0,
+        "totalPrice": 2495.7,
+        "warehouse": "68e8f0283f5fd5a817866df6",
+        "warehouseName": "Jain Impex Hub",
+        "_id": "6999a52bbe06838446a60400"
+      },
+      {
+        "product": "69930e38d02de00313083953",
+        "productCode": "41416464",
+        "productName": "tf cpcv  tee 25mm",
+        "HSNCode": "1646468",
+        "category": "698612cdb72264de728010a3",
+        "subcategory": "6986175ab72264de728012fd",
+        "brand": "69861054b72264de72800f05",
+        "quantity": 1,
+        "unitPrice": 50,
+        "gst": 18,
+        "gstAmount": 3.6,
+        "discountAmount": 30,
+        "discountPercentage": 55,
+        "selectedDiscountLevels": [],
+        "manualDiscountLevels": {},
+        "dealerExtraDiscount": 5,
+        "appliedDiscounts": [
+          {
+            "discountName": "vv",
+            "discountType": "both",
+            "directDiscountPercentage": 55,
+            "levels": [
+              {
+                "levelName": "Consistency Discount",
+                "discountPercentage": 2,
+                "_id": "69941275de8864279163ec48"
+              },
+              {
+                "levelName": "Executive Discount",
+                "discountPercentage": 4,
+                "_id": "69941275de8864279163ec49"
+              },
+              {
+                "levelName": "MD Discount",
+                "discountPercentage": 3,
+                "_id": "69941275de8864279163ec4a"
+              },
+              {
+                "levelName": "CD Discount",
+                "discountPercentage": 4,
+                "_id": "69941275de8864279163ec4b"
+              }
+            ],
+            "targetType": "subcategory",
+            "maxDiscountPercentage": 19,
+            "_id": "6999a52bbe06838446a60407"
+          }
+        ],
+        "pointsEarned": 0,
+        "totalPrice": 23.6,
+        "warehouse": "68e8f0283f5fd5a817866df6",
+        "warehouseName": "Jain Impex Hub",
+        "_id": "6999a52bbe06838446a60406"
+      },
+      {
+        "product": "6986143db72264de7280113e",
+        "productCode": "1694646",
+        "productName": "tf cpvc 20mm pipe",
+        "HSNCode": "15415416",
+        "category": "69861200b72264de72800fdc",
+        "subcategory": "6986122ab72264de72800ff6",
+        "brand": "69861054b72264de72800f05",
+        "quantity": 1,
+        "unitPrice": 580,
+        "gst": 18,
+        "gstAmount": 45.93599999999999,
+        "discountAmount": 324.8,
+        "discountPercentage": 56,
+        "selectedDiscountLevels": [],
+        "manualDiscountLevels": {},
+        "dealerExtraDiscount": 0,
+        "appliedDiscounts": [
+          {
+            "discountName": "ddl",
+            "discountType": "both",
+            "directDiscountPercentage": 56,
+            "levels": [
+              {
+                "levelName": "Loyalty Discount",
+                "discountPercentage": 4,
+                "_id": "6994136fde8864279163ec96"
+              },
+              {
+                "levelName": "Consistency Discount",
+                "discountPercentage": 2,
+                "_id": "6994136fde8864279163ec97"
+              },
+              {
+                "levelName": "Executive Discount",
+                "discountPercentage": 5,
+                "_id": "6994136fde8864279163ec98"
+              },
+              {
+                "levelName": "MD Discount",
+                "discountPercentage": 3,
+                "_id": "6994136fde8864279163ec99"
+              },
+              {
+                "levelName": "CD Discount",
+                "discountPercentage": 4,
+                "_id": "6994136fde8864279163ec9a"
+              }
+            ],
+            "targetType": "subcategory",
+            "maxDiscountPercentage": 13,
+            "_id": "6999a52bbe06838446a6040d"
+          }
+        ],
+        "pointsEarned": 0,
+        "totalPrice": 301.13599999999997,
+        "warehouse": "68e8f0283f5fd5a817866df6",
+        "warehouseName": "Jain Impex Hub",
+        "_id": "6999a52bbe06838446a6040c"
+      },
+      {
+        "product": "6991fb0065eba9543a0ec61b",
+        "productCode": "154154658",
+        "productName": "tf cpvc nrv 20mm",
+        "HSNCode": "6494996",
+        "category": "698612cdb72264de728010a3",
+        "subcategory": "699167837d9ec5ba34ed8b40",
+        "brand": "69861054b72264de72800f05",
+        "quantity": 1,
+        "unitPrice": 480,
+        "gst": 18,
+        "gstAmount": 38.88,
+        "discountAmount": 264,
+        "discountPercentage": 50,
+        "selectedDiscountLevels": [],
+        "manualDiscountLevels": {},
+        "dealerExtraDiscount": 5,
+        "appliedDiscounts": [
+          {
+            "discountName": "dsd",
+            "discountType": "both",
+            "directDiscountPercentage": 50,
+            "levels": [
+              {
+                "levelName": "Consistency Discount",
+                "discountPercentage": 4,
+                "_id": "69941010de8864279163ebbb"
+              },
+              {
+                "levelName": "Executive Discount",
+                "discountPercentage": 5,
+                "_id": "69941010de8864279163ebbc"
+              },
+              {
+                "levelName": "MD Discount",
+                "discountPercentage": 3,
+                "_id": "69941010de8864279163ebbd"
+              },
+              {
+                "levelName": "CD Discount",
+                "discountPercentage": 6,
+                "_id": "69941010de8864279163ebbe"
+              }
+            ],
+            "targetType": "subcategory",
+            "maxDiscountPercentage": 17,
+            "_id": "6999a52bbe06838446a60414"
+          }
+        ],
+        "pointsEarned": 0,
+        "totalPrice": 254.88,
+        "warehouse": "68e8f0283f5fd5a817866df6",
+        "warehouseName": "Jain Impex Hub",
+        "_id": "6999a52bbe06838446a60413"
+      },
+      {
+        "product": "699200bc65eba9543a0ecf51",
+        "productCode": "1166663",
+        "productName": "tf pvc elbow 90mm",
+        "HSNCode": "4996566",
+        "category": "699166687d9ec5ba34ed8b07",
+        "subcategory": "6991fc7d65eba9543a0ecd66",
+        "brand": "69861054b72264de72800f05",
+        "quantity": 1,
+        "unitPrice": 125,
+        "gst": 18,
+        "gstAmount": 15.075,
+        "discountAmount": 41.25,
+        "discountPercentage": 33,
+        "selectedDiscountLevels": [],
+        "manualDiscountLevels": {},
+        "dealerExtraDiscount": 0,
+        "appliedDiscounts": [
+          {
+            "discountName": "s pv",
+            "discountType": "both",
+            "directDiscountPercentage": 33,
+            "levels": [
+              {
+                "levelName": "Load Discount",
+                "discountPercentage": 2,
+                "_id": "69940d29de8864279163eb08"
+              },
+              {
+                "levelName": "Consistency Discount",
+                "discountPercentage": 3,
+                "_id": "69940d29de8864279163eb09"
+              },
+              {
+                "levelName": "Prompt Discount",
+                "discountPercentage": 3,
+                "_id": "69940d29de8864279163eb0a"
+              },
+              {
+                "levelName": "Executive Discount",
+                "discountPercentage": 4,
+                "_id": "69940d29de8864279163eb0b"
+              },
+              {
+                "levelName": "CD Discount",
+                "discountPercentage": 4,
+                "_id": "69940d29de8864279163eb0c"
+              }
+            ],
+            "targetType": "subcategory",
+            "maxDiscountPercentage": 15,
+            "_id": "6999a52bbe06838446a6041a"
+          }
+        ],
+        "pointsEarned": 0,
+        "totalPrice": 98.825,
+        "warehouse": "68e8f0283f5fd5a817866df6",
+        "warehouseName": "Jain Impex Hub",
+        "_id": "6999a52bbe06838446a60419"
+      },
+      {
+        "product": "698617a7b72264de72801398",
+        "productCode": "165466",
+        "productName": "tf cpvc elbow 25mm",
+        "HSNCode": "13213213",
+        "category": "698612cdb72264de728010a3",
+        "subcategory": "6986175ab72264de728012fd",
+        "brand": "69861054b72264de72800f05",
+        "quantity": 1,
+        "unitPrice": 50,
+        "gst": 18,
+        "gstAmount": 3.6,
+        "discountAmount": 30,
+        "discountPercentage": 55,
+        "selectedDiscountLevels": [],
+        "manualDiscountLevels": {},
+        "dealerExtraDiscount": 5,
+        "appliedDiscounts": [
+          {
+            "discountName": "vv",
+            "discountType": "both",
+            "directDiscountPercentage": 55,
+            "levels": [
+              {
+                "levelName": "Consistency Discount",
+                "discountPercentage": 2,
+                "_id": "69941275de8864279163ec48"
+              },
+              {
+                "levelName": "Executive Discount",
+                "discountPercentage": 4,
+                "_id": "69941275de8864279163ec49"
+              },
+              {
+                "levelName": "MD Discount",
+                "discountPercentage": 3,
+                "_id": "69941275de8864279163ec4a"
+              },
+              {
+                "levelName": "CD Discount",
+                "discountPercentage": 4,
+                "_id": "69941275de8864279163ec4b"
+              }
+            ],
+            "targetType": "subcategory",
+            "maxDiscountPercentage": 19,
+            "_id": "6999a52bbe06838446a60421"
+          }
+        ],
+        "pointsEarned": 0,
+        "totalPrice": 23.6,
+        "warehouse": "68e8f0283f5fd5a817866df6",
+        "warehouseName": "Jain Impex Hub",
+        "_id": "6999a52bbe06838446a60420"
+      }
+    ],
+    "subtotal": 115785,
+    "totalDiscount": 3075.05,
+    "totalGst": 5987.791,
+    "totalAmount": 118697.741,
+    "totalPoints": 0,
+    "status": "Cancelled",
+    "paymentStatus": "Pending",
+    "paidAmount": 0,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "remarks": "",
+    "internalNotes": "",
+    "printSettings": {
+      "showSerialNumber": true,
+      "showProductCode": true,
+      "showProductName": true,
+      "showDescription": false,
+      "showHSNCode": true,
+      "showUnit": true,
+      "showAlternateUnit": false,
+      "showCategory": false,
+      "showSubcategory": false,
+      "showBrand": false,
+      "showProductType": false,
+      "showSalesType": false,
+      "showQuantity": true,
+      "showRate": true,
+      "showAmount": true,
+      "showDiscount": true,
+      "showGST": true,
+      "showTotal": true,
+      "showCompanyLogo": true,
+      "showCompanyDetails": true,
+      "showTermsAndConditions": true,
+      "showBankDetails": true,
+      "showSignature": true,
+      "showPointsEarned": true,
+      "showWarehouse": false,
+      "fontSize": "medium",
+      "orientation": "portrait",
+      "showImages": false
+    },
+    "invoiceDate": "2026-02-21T12:29:31.824Z",
+    "createdAt": "2026-02-21T12:29:31.899Z",
+    "updatedAt": "2026-02-23T12:24:31.435Z",
+    "dueDate": "2026-04-22T12:29:31.824Z",
+    "__v": 0,
+    "cancellationReason": "gg",
+    "deletedAt": "2026-02-23T12:24:31.420Z",
+    "deletedBy": "68db7209bf7b5baece4a20aa",
+    "deletionReason": "gg",
+    "isDeleted": true
+  },
+  {
+    "_id": "699c45c4f7e49056c9014b7b",
+    "invoiceNumber": "INV-2026-0013",
+    "dealer": "697c631b88ce4a6086ffee8e",
+    "dealerName": "Kiran Kumar",
+    "dealerCode": "DLR1001",
+    "dealerType": "sub distributors",
+    "region": "6978ed2ee1643566de925629",
+    "pinCode": "sambaram College nearby",
+    "customerName": "Kiran Kumar",
+    "customerAddress": "sambaram College nearby",
+    "customerPhone": "9876543210",
+    "customerEmail": "kiran123@gmail.com",
+    "customerGST": "",
+    "salesOrder": "699c28078d931f6ea5e090e8",
+    "salesOrderNumber": "SO-2026-0040",
+    "creditDays": 10,
+    "items": [
+      {
+        "product": "6996c585ccba2369f7ad7341",
+        "productCode": "5415656",
+        "productName": "tf pvc end cap 90mm",
+        "HSNCode": "5416666",
+        "category": "699166687d9ec5ba34ed8b07",
+        "subcategory": "6991fc7d65eba9543a0ecd66",
+        "brand": "69861054b72264de72800f05",
+        "quantity": 1,
+        "unitPrice": 45,
+        "gst": 18,
+        "gstAmount": 5.103,
+        "discountAmount": 16.65,
+        "discountPercentage": 35,
+        "selectedDiscountLevels": [
+          "Load Discount"
+        ],
+        "manualDiscountLevels": {
+          "Load Discount": 2
+        },
+        "dealerExtraDiscount": 2,
+        "appliedDiscounts": [
+          {
+            "discountName": "s pv",
+            "discountType": "both",
+            "directDiscountPercentage": 33,
+            "levels": [
+              {
+                "levelName": "Load Discount",
+                "discountPercentage": 2,
+                "_id": "69940d29de8864279163eb08"
+              },
+              {
+                "levelName": "Consistency Discount",
+                "discountPercentage": 3,
+                "_id": "69940d29de8864279163eb09"
+              },
+              {
+                "levelName": "Prompt Discount",
+                "discountPercentage": 3,
+                "_id": "69940d29de8864279163eb0a"
+              },
+              {
+                "levelName": "Executive Discount",
+                "discountPercentage": 4,
+                "_id": "69940d29de8864279163eb0b"
+              },
+              {
+                "levelName": "CD Discount",
+                "discountPercentage": 4,
+                "_id": "69940d29de8864279163eb0c"
+              }
+            ],
+            "targetType": "subcategory",
+            "maxDiscountPercentage": 15,
+            "_id": "699c45c4f7e49056c9014b7d"
+          }
+        ],
+        "pointsEarned": 0,
+        "totalPrice": 33.453,
+        "warehouse": "68e8f0283f5fd5a817866df6",
+        "warehouseName": "Assigned Warehouse",
+        "_id": "699c45c4f7e49056c9014b7c"
+      },
+      {
+        "product": "6996c5fbccba2369f7ad74c6",
+        "productCode": "15466668",
+        "productName": "tf pvc pipe 110mm",
+        "HSNCode": "66652665",
+        "category": "699164677d9ec5ba34ed8a3d",
+        "subcategory": "6991651a7d9ec5ba34ed8ae3",
+        "brand": "69861054b72264de72800f05",
+        "quantity": 1,
+        "unitPrice": 1105,
+        "gst": 18,
+        "gstAmount": 109.395,
+        "discountAmount": 497.25,
+        "discountPercentage": 43,
+        "selectedDiscountLevels": [
+          "MD Discount"
+        ],
+        "manualDiscountLevels": {
+          "MD Discount": 3
+        },
+        "dealerExtraDiscount": 2,
+        "appliedDiscounts": [
+          {
+            "discountName": "df",
+            "discountType": "both",
+            "directDiscountPercentage": 40,
+            "levels": [
+              {
+                "levelName": "Bulk Discount",
+                "discountPercentage": 3,
+                "_id": "69940e42de8864279163eb31"
+              },
+              {
+                "levelName": "Consistency Discount",
+                "discountPercentage": 2,
+                "_id": "69940e42de8864279163eb32"
+              },
+              {
+                "levelName": "Prompt Discount",
+                "discountPercentage": 3,
+                "_id": "69940e42de8864279163eb33"
+              },
+              {
+                "levelName": "MD Discount",
+                "discountPercentage": 3,
+                "_id": "69940e42de8864279163eb34"
+              },
+              {
+                "levelName": "Executive Discount",
+                "discountPercentage": 5,
+                "_id": "69940e42de8864279163eb35"
+              },
+              {
+                "levelName": "CD Discount",
+                "discountPercentage": 4,
+                "_id": "69940e42de8864279163eb36"
+              }
+            ],
+            "targetType": "subcategory",
+            "maxDiscountPercentage": 18,
+            "_id": "699c45c4f7e49056c9014b84"
+          }
+        ],
+        "pointsEarned": 0,
+        "totalPrice": 717.145,
+        "warehouse": "68e8f0283f5fd5a817866df6",
+        "warehouseName": "Assigned Warehouse",
+        "_id": "699c45c4f7e49056c9014b83"
+      }
+    ],
+    "subtotal": 1150,
+    "totalDiscount": 513.9,
+    "totalGst": 114.49799999999999,
+    "totalAmount": 750.598,
+    "totalPoints": 0,
+    "status": "Cancelled",
+    "paymentStatus": "Pending",
+    "paidAmount": 0,
+    "isDeleted": true,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "remarks": "",
+    "internalNotes": "",
+    "printSettings": {
+      "showSerialNumber": true,
+      "showProductCode": true,
+      "showProductName": true,
+      "showDescription": false,
+      "showHSNCode": true,
+      "showUnit": true,
+      "showAlternateUnit": false,
+      "showCategory": false,
+      "showSubcategory": false,
+      "showBrand": false,
+      "showProductType": false,
+      "showSalesType": false,
+      "showQuantity": true,
+      "showRate": true,
+      "showAmount": true,
+      "showDiscount": true,
+      "showGST": true,
+      "showTotal": true,
+      "showCompanyLogo": true,
+      "showCompanyDetails": true,
+      "showTermsAndConditions": true,
+      "showBankDetails": true,
+      "showSignature": true,
+      "showPointsEarned": true,
+      "showWarehouse": false,
+      "fontSize": "medium",
+      "orientation": "portrait",
+      "showImages": false
+    },
+    "invoiceDate": "2026-02-23T12:19:16.255Z",
+    "createdAt": "2026-02-23T12:19:16.260Z",
+    "updatedAt": "2026-02-23T12:23:19.300Z",
+    "dueDate": "2026-03-05T12:19:16.255Z",
+    "__v": 0,
+    "cancellationReason": "gg 950",
+    "deletedAt": "2026-02-23T12:23:19.288Z",
+    "deletedBy": "68db7209bf7b5baece4a20aa",
+    "deletionReason": "gg 950"
+  },
+  {
+    "_id": "699c47e7ccf3b854de372744",
+    "invoiceNumber": "INV-2026-0015",
+    "dealer": "697c631b88ce4a6086ffee8e",
+    "dealerName": "Kiran Kumar",
+    "dealerCode": "DLR1001",
+    "dealerType": "sub distributors",
+    "region": "6978ed2ee1643566de925629",
+    "pinCode": "sambaram College nearby",
+    "customerName": "Kiran Kumar",
+    "customerAddress": "sambaram College nearby",
+    "customerPhone": "9876543210",
+    "customerEmail": "kiran123@gmail.com",
+    "customerGST": "",
+    "salesOrder": "699c28078d931f6ea5e090e8",
+    "salesOrderNumber": "SO-2026-0040",
+    "creditDays": 10,
+    "items": [
+      {
+        "product": "6996c585ccba2369f7ad7341",
+        "productCode": "5415656",
+        "productName": "tf pvc end cap 90mm",
+        "HSNCode": "5416666",
+        "category": "699166687d9ec5ba34ed8b07",
+        "subcategory": "6991fc7d65eba9543a0ecd66",
+        "brand": "69861054b72264de72800f05",
+        "quantity": 1,
+        "unitPrice": 45,
+        "gst": 18,
+        "gstAmount": 5.103,
+        "discountAmount": 16.65,
+        "discountPercentage": 35,
+        "selectedDiscountLevels": [
+          "Load Discount"
+        ],
+        "manualDiscountLevels": {
+          "Load Discount": 2
+        },
+        "dealerExtraDiscount": 2,
+        "appliedDiscounts": [
+          {
+            "discountName": "s pv",
+            "discountType": "both",
+            "directDiscountPercentage": 33,
+            "levels": [
+              {
+                "levelName": "Load Discount",
+                "discountPercentage": 2,
+                "_id": "69940d29de8864279163eb08"
+              },
+              {
+                "levelName": "Consistency Discount",
+                "discountPercentage": 3,
+                "_id": "69940d29de8864279163eb09"
+              },
+              {
+                "levelName": "Prompt Discount",
+                "discountPercentage": 3,
+                "_id": "69940d29de8864279163eb0a"
+              },
+              {
+                "levelName": "Executive Discount",
+                "discountPercentage": 4,
+                "_id": "69940d29de8864279163eb0b"
+              },
+              {
+                "levelName": "CD Discount",
+                "discountPercentage": 4,
+                "_id": "69940d29de8864279163eb0c"
+              }
+            ],
+            "targetType": "subcategory",
+            "maxDiscountPercentage": 15,
+            "_id": "699c47e7ccf3b854de372746"
+          }
+        ],
+        "pointsEarned": 0,
+        "totalPrice": 33.453,
+        "warehouse": "68e8f0283f5fd5a817866df6",
+        "warehouseName": "Assigned Warehouse",
+        "_id": "699c47e7ccf3b854de372745"
+      },
+      {
+        "product": "6996c5fbccba2369f7ad74c6",
+        "productCode": "15466668",
+        "productName": "tf pvc pipe 110mm",
+        "HSNCode": "66652665",
+        "category": "699164677d9ec5ba34ed8a3d",
+        "subcategory": "6991651a7d9ec5ba34ed8ae3",
+        "brand": "69861054b72264de72800f05",
+        "quantity": 1,
+        "unitPrice": 1105,
+        "gst": 18,
+        "gstAmount": 105.41699999999999,
+        "discountAmount": 519.35,
+        "discountPercentage": 45,
+        "selectedDiscountLevels": [
+          "Executive Discount"
+        ],
+        "manualDiscountLevels": {
+          "Executive Discount": 5
+        },
+        "dealerExtraDiscount": 2,
+        "appliedDiscounts": [
+          {
+            "discountName": "df",
+            "discountType": "both",
+            "directDiscountPercentage": 40,
+            "levels": [
+              {
+                "levelName": "Bulk Discount",
+                "discountPercentage": 3,
+                "_id": "69940e42de8864279163eb31"
+              },
+              {
+                "levelName": "Consistency Discount",
+                "discountPercentage": 2,
+                "_id": "69940e42de8864279163eb32"
+              },
+              {
+                "levelName": "Prompt Discount",
+                "discountPercentage": 3,
+                "_id": "69940e42de8864279163eb33"
+              },
+              {
+                "levelName": "MD Discount",
+                "discountPercentage": 3,
+                "_id": "69940e42de8864279163eb34"
+              },
+              {
+                "levelName": "Executive Discount",
+                "discountPercentage": 5,
+                "_id": "69940e42de8864279163eb35"
+              },
+              {
+                "levelName": "CD Discount",
+                "discountPercentage": 4,
+                "_id": "69940e42de8864279163eb36"
+              }
+            ],
+            "targetType": "subcategory",
+            "maxDiscountPercentage": 18,
+            "_id": "699c47e7ccf3b854de37274d"
+          }
+        ],
+        "pointsEarned": 0,
+        "totalPrice": 691.067,
+        "warehouse": "68e8f0283f5fd5a817866df6",
+        "warehouseName": "Assigned Warehouse",
+        "_id": "699c47e7ccf3b854de37274c"
+      }
+    ],
+    "subtotal": 1150,
+    "totalDiscount": 536,
+    "totalGst": 110.51999999999998,
+    "totalAmount": 724.52,
+    "totalPoints": 0,
+    "status": "Cancelled",
+    "paymentStatus": "Pending",
+    "paidAmount": 0,
+    "isDeleted": true,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "remarks": "",
+    "internalNotes": "",
+    "printSettings": {
+      "showSerialNumber": true,
+      "showProductCode": true,
+      "showProductName": true,
+      "showDescription": false,
+      "showHSNCode": true,
+      "showUnit": true,
+      "showAlternateUnit": false,
+      "showCategory": false,
+      "showSubcategory": false,
+      "showBrand": false,
+      "showProductType": false,
+      "showSalesType": false,
+      "showQuantity": true,
+      "showRate": true,
+      "showAmount": true,
+      "showDiscount": true,
+      "showGST": true,
+      "showTotal": true,
+      "showCompanyLogo": true,
+      "showCompanyDetails": true,
+      "showTermsAndConditions": true,
+      "showBankDetails": true,
+      "showSignature": true,
+      "showPointsEarned": true,
+      "showWarehouse": false,
+      "fontSize": "medium",
+      "orientation": "portrait",
+      "showImages": false
+    },
+    "invoiceDate": "2026-02-23T12:28:23.261Z",
+    "createdAt": "2026-02-23T12:28:23.268Z",
+    "updatedAt": "2026-02-23T12:37:25.136Z",
+    "dueDate": "2026-03-05T12:28:23.261Z",
+    "__v": 0,
+    "cancellationReason": "gg950",
+    "deletedAt": "2026-02-23T12:37:25.123Z",
+    "deletedBy": "68db7209bf7b5baece4a20aa",
+    "deletionReason": "gg950"
+  },
+  {
+    "_id": "699c5509a7876095c4a1eb3e",
+    "invoiceNumber": "INV-2026-0017",
+    "dealer": "699309cbd02de0031308312e",
+    "dealerName": "sujan",
+    "dealerCode": "DLR1004",
+    "dealerType": "Retailer",
+    "region": "6991ff4c65eba9543a0ece30",
+    "pinCode": "main raod ch nagar",
+    "customerName": "sujan",
+    "customerAddress": "main raod ch nagar",
+    "customerPhone": "9606975967",
+    "customerEmail": "",
+    "customerGST": "",
+    "salesOrder": "699c4e25a7876095c4a1ca59",
+    "salesOrderNumber": "SO-2026-0041",
+    "creditDays": 60,
+    "items": [
+      {
+        "product": "699177c17d9ec5ba34ed968f",
+        "productCode": "51541587",
+        "productName": "v ewc tecla 220mm",
+        "HSNCode": "8554954954",
+        "category": "6980d49c47673d095ce1cd22",
+        "subcategory": "698610a1b72264de72800f3a",
+        "brand": "6980d39d47673d095ce1cd03",
+        "quantity": 10,
+        "unitPrice": 16500,
+        "gst": 18,
+        "gstAmount": 12177,
+        "discountAmount": 97350,
+        "discountPercentage": 59,
+        "selectedDiscountLevels": [
+          "Bulk Discount",
+          "Executive Discount"
+        ],
+        "manualDiscountLevels": {
+          "Bulk Discount": 6,
+          "Executive Discount": 5
+        },
+        "dealerExtraDiscount": 0,
+        "appliedDiscounts": [
+          {
+            "discountName": "kkl",
+            "discountType": "both",
+            "directDiscountPercentage": 48,
+            "levels": [
+              {
+                "levelName": "Bulk Discount",
+                "discountPercentage": 6,
+                "_id": "69941d14de8864279163f17a"
+              },
+              {
+                "levelName": "Prompt Discount",
+                "discountPercentage": 4,
+                "_id": "69941d14de8864279163f17b"
+              },
+              {
+                "levelName": "Executive Discount",
+                "discountPercentage": 5,
+                "_id": "69941d14de8864279163f17c"
+              },
+              {
+                "levelName": "CD Discount",
+                "discountPercentage": 5,
+                "_id": "69941d14de8864279163f17d"
+              }
+            ],
+            "targetType": "subcategory",
+            "maxDiscountPercentage": 14,
+            "_id": "699c5509a7876095c4a1eb40"
+          }
+        ],
+        "pointsEarned": 0,
+        "totalPrice": 79827,
+        "warehouse": "68e8f0283f5fd5a817866df6",
+        "warehouseName": "Jain Impex Hub",
+        "_id": "699c5509a7876095c4a1eb3f"
+      },
+      {
+        "product": "6980da4747673d095ce1cf6f",
+        "productCode": "5465131",
+        "productName": "v oren sink mixer",
+        "HSNCode": "51561663",
+        "category": "6980d4cf47673d095ce1cd2f",
+        "subcategory": "6980d53247673d095ce1cd4b",
+        "brand": "6980d39d47673d095ce1cd03",
+        "quantity": 10,
+        "unitPrice": 2750,
+        "gst": 18,
+        "gstAmount": 2326.5,
+        "discountAmount": 14575,
+        "discountPercentage": 50,
+        "selectedDiscountLevels": [
+          "Prompt Discount",
+          "CD Discount",
+          "Executive Discount"
+        ],
+        "manualDiscountLevels": {
+          "Prompt Discount": 3,
+          "CD Discount": 3,
+          "Executive Discount": 4
+        },
+        "dealerExtraDiscount": 3,
+        "appliedDiscounts": [
+          {
+            "discountName": "sum",
+            "discountType": "both",
+            "directDiscountPercentage": 40,
+            "levels": [
+              {
+                "levelName": "Prompt Discount",
+                "discountPercentage": 3,
+                "_id": "6994160cde8864279163ecbc"
+              },
+              {
+                "levelName": "MD Discount",
+                "discountPercentage": 5,
+                "_id": "6994160cde8864279163ecbd"
+              },
+              {
+                "levelName": "Executive Discount",
+                "discountPercentage": 4,
+                "_id": "6994160cde8864279163ecbe"
+              },
+              {
+                "levelName": "CD Discount",
+                "discountPercentage": 3,
+                "_id": "6994160cde8864279163ecbf"
+              },
+              {
+                "levelName": "Consistency Discount",
+                "discountPercentage": 6,
+                "_id": "6994160cde8864279163ecc0"
+              }
+            ],
+            "targetType": "subcategory",
+            "maxDiscountPercentage": 20,
+            "_id": "699c5509a7876095c4a1eb46"
+          }
+        ],
+        "pointsEarned": 0,
+        "totalPrice": 15251.5,
+        "warehouse": "68e8f0283f5fd5a817866df6",
+        "warehouseName": "Jain Impex Hub",
+        "_id": "699c5509a7876095c4a1eb45"
+      },
+      {
+        "product": "6980d80547673d095ce1ceba",
+        "productCode": "15151663",
+        "productName": "v oren pillar cock",
+        "HSNCode": "51556966",
+        "category": "6980d4cf47673d095ce1cd2f",
+        "subcategory": "6980d53247673d095ce1cd4b",
+        "brand": "6980d39d47673d095ce1cd03",
+        "quantity": 11,
+        "unitPrice": 1250,
+        "gst": 18,
+        "gstAmount": 1163.25,
+        "discountAmount": 7287.5,
+        "discountPercentage": 50,
+        "selectedDiscountLevels": [
+          "Prompt Discount",
+          "CD Discount",
+          "Executive Discount"
+        ],
+        "manualDiscountLevels": {
+          "Prompt Discount": 3,
+          "CD Discount": 3,
+          "Executive Discount": 4
+        },
+        "dealerExtraDiscount": 3,
+        "appliedDiscounts": [
+          {
+            "discountName": "sum",
+            "discountType": "both",
+            "directDiscountPercentage": 40,
+            "levels": [
+              {
+                "levelName": "Prompt Discount",
+                "discountPercentage": 3,
+                "_id": "6994160cde8864279163ecbc"
+              },
+              {
+                "levelName": "MD Discount",
+                "discountPercentage": 5,
+                "_id": "6994160cde8864279163ecbd"
+              },
+              {
+                "levelName": "Executive Discount",
+                "discountPercentage": 4,
+                "_id": "6994160cde8864279163ecbe"
+              },
+              {
+                "levelName": "CD Discount",
+                "discountPercentage": 3,
+                "_id": "6994160cde8864279163ecbf"
+              },
+              {
+                "levelName": "Consistency Discount",
+                "discountPercentage": 6,
+                "_id": "6994160cde8864279163ecc0"
+              }
+            ],
+            "targetType": "subcategory",
+            "maxDiscountPercentage": 20,
+            "_id": "699c5509a7876095c4a1eb4d"
+          }
+        ],
+        "pointsEarned": 0,
+        "totalPrice": 7625.75,
+        "warehouse": "68e8f0283f5fd5a817866df6",
+        "warehouseName": "Jain Impex Hub",
+        "_id": "699c5509a7876095c4a1eb4c"
+      }
+    ],
+    "subtotal": 206250,
+    "totalDiscount": 119212.5,
+    "totalGst": 15666.75,
+    "totalAmount": 102704.25,
+    "totalPoints": 0,
+    "status": "Cancelled",
+    "paymentStatus": "Pending",
+    "paidAmount": 0,
+    "isDeleted": true,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "remarks": "",
+    "internalNotes": "",
+    "printSettings": {
+      "showSerialNumber": true,
+      "showProductCode": true,
+      "showProductName": true,
+      "showDescription": false,
+      "showHSNCode": true,
+      "showUnit": true,
+      "showAlternateUnit": false,
+      "showCategory": false,
+      "showSubcategory": false,
+      "showBrand": false,
+      "showProductType": false,
+      "showSalesType": false,
+      "showQuantity": true,
+      "showRate": true,
+      "showAmount": true,
+      "showDiscount": true,
+      "showGST": true,
+      "showTotal": true,
+      "showCompanyLogo": true,
+      "showCompanyDetails": true,
+      "showTermsAndConditions": true,
+      "showBankDetails": true,
+      "showSignature": true,
+      "showPointsEarned": true,
+      "showWarehouse": false,
+      "fontSize": "medium",
+      "orientation": "portrait",
+      "showImages": false
+    },
+    "invoiceDate": "2026-02-24T06:24:16.316Z",
+    "createdAt": "2026-02-23T13:24:25.885Z",
+    "updatedAt": "2026-02-24T06:25:02.026Z",
+    "dueDate": "2026-04-25T06:24:16.316Z",
+    "__v": 0,
+    "approvedAt": "2026-02-24T06:24:16.316Z",
+    "approvedBy": "68db7209bf7b5baece4a20aa",
+    "isDraft": false,
+    "cancellationReason": "gg",
+    "deletedAt": "2026-02-24T06:25:02.022Z",
+    "deletedBy": "68db7209bf7b5baece4a20aa",
+    "deletionReason": "gg"
+  },
+  {
+    "_id": "699d50fceb98f4847c852a14",
+    "invoiceNumber": "INV-2026-0018",
+    "dealer": "697c631b88ce4a6086ffee8e",
+    "dealerName": "Kiran Kumar",
+    "dealerCode": "DLR1001",
+    "dealerType": "sub distributors",
+    "region": "6978ed2ee1643566de925629",
+    "pinCode": "sambaram College nearby",
+    "customerName": "Kiran Kumar",
+    "customerAddress": "sambaram College nearby",
+    "customerPhone": "9876543210",
+    "customerEmail": "kiran123@gmail.com",
+    "customerGST": "",
+    "salesOrder": "699d4d868cdc4f204c4922a9",
+    "salesOrderNumber": "SO-2026-0046",
+    "invoiceDate": "2026-02-24T07:20:37.796Z",
+    "creditDays": 10,
+    "isDraft": false,
+    "items": [
+      {
+        "product": "697b2ac00f3f5d530665d2c7",
+        "productCode": "BCS001",
+        "productName": "product2",
+        "HSNCode": "34",
+        "category": "697b2a770f3f5d530665d21f",
+        "subcategory": "697b2a830f3f5d530665d239",
+        "brand": "697b2a6b0f3f5d530665d203",
+        "quantity": 1,
+        "unitPrice": 222,
+        "gst": 18,
+        "gstAmount": 39.96,
+        "discountAmount": 0,
+        "discountPercentage": 0,
+        "selectedDiscountLevels": [],
+        "manualDiscountLevels": {},
+        "dealerExtraDiscount": 0,
+        "appliedDiscounts": [],
+        "pointsEarned": 0,
+        "totalPrice": 261.96,
+        "warehouse": "68e8f0283f5fd5a817866df6",
+        "warehouseName": "Jain Impex Hub",
+        "_id": "699d50fceb98f4847c852a15"
+      },
+      {
+        "product": "6996c430ccba2369f7ad724a",
+        "productCode": "415411",
+        "productName": "tf cpvc fta 25mm",
+        "HSNCode": "6526266",
+        "category": "698612cdb72264de728010a3",
+        "subcategory": "6986175ab72264de728012fd",
+        "brand": "69861054b72264de72800f05",
+        "quantity": 10,
+        "unitPrice": 65,
+        "gst": 18,
+        "gstAmount": 45.63,
+        "discountAmount": 396.5,
+        "discountPercentage": 59,
+        "selectedDiscountLevels": [
+          "Executive Discount"
+        ],
+        "manualDiscountLevels": {
+          "Executive Discount": 4
+        },
+        "dealerExtraDiscount": 2,
+        "appliedDiscounts": [
+          {
+            "discountName": "vv",
+            "discountType": "both",
+            "directDiscountPercentage": 55,
+            "levels": [
+              {
+                "levelName": "Consistency Discount",
+                "discountPercentage": 2,
+                "_id": "69941275de8864279163ec48"
+              },
+              {
+                "levelName": "Executive Discount",
+                "discountPercentage": 4,
+                "_id": "69941275de8864279163ec49"
+              },
+              {
+                "levelName": "MD Discount",
+                "discountPercentage": 3,
+                "_id": "69941275de8864279163ec4a"
+              },
+              {
+                "levelName": "CD Discount",
+                "discountPercentage": 4,
+                "_id": "69941275de8864279163ec4b"
+              }
+            ],
+            "targetType": "subcategory",
+            "maxDiscountPercentage": 19,
+            "_id": "699d50fceb98f4847c852a17"
+          }
+        ],
+        "pointsEarned": 0,
+        "totalPrice": 299.13,
+        "warehouse": "68e8f0283f5fd5a817866df6",
+        "warehouseName": "Jain Impex Hub",
+        "_id": "699d50fceb98f4847c852a16"
+      }
+    ],
+    "subtotal": 872,
+    "totalDiscount": 396.5,
+    "totalGst": 85.59,
+    "totalAmount": 561.09,
+    "totalPoints": 0,
+    "status": "Cancelled",
+    "paymentStatus": "Pending",
+    "paidAmount": 0,
+    "isDeleted": true,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "remarks": "",
+    "internalNotes": "",
+    "printSettings": {
+      "showSerialNumber": true,
+      "showProductCode": true,
+      "showProductName": true,
+      "showDescription": false,
+      "showHSNCode": true,
+      "showUnit": true,
+      "showAlternateUnit": false,
+      "showCategory": false,
+      "showSubcategory": false,
+      "showBrand": false,
+      "showProductType": false,
+      "showSalesType": false,
+      "showQuantity": true,
+      "showRate": true,
+      "showAmount": true,
+      "showDiscount": true,
+      "showGST": true,
+      "showTotal": true,
+      "showCompanyLogo": true,
+      "showCompanyDetails": true,
+      "showTermsAndConditions": true,
+      "showBankDetails": true,
+      "showSignature": true,
+      "showPointsEarned": true,
+      "showWarehouse": false,
+      "fontSize": "medium",
+      "orientation": "portrait",
+      "showImages": false
+    },
+    "createdAt": "2026-02-24T07:19:24.195Z",
+    "updatedAt": "2026-02-24T18:10:20.316Z",
+    "__v": 0,
+    "approvedAt": "2026-02-24T07:20:37.796Z",
+    "approvedBy": "68db7209bf7b5baece4a20aa",
+    "dueDate": "2026-03-06T07:20:37.796Z",
+    "cancellationReason": "NJ",
+    "deletedAt": "2026-02-24T18:10:20.313Z",
+    "deletedBy": "68db7209bf7b5baece4a20aa",
+    "deletionReason": "NJ"
+  },
+  {
+    "_id": "699d51c2eb98f4847c8545a7",
+    "invoiceNumber": "INV-2026-0019",
+    "dealer": "697c631b88ce4a6086ffee8e",
+    "dealerName": "Kiran Kumar",
+    "dealerCode": "DLR1001",
+    "dealerType": "sub distributors",
+    "region": "6978ed2ee1643566de925629",
+    "pinCode": "sambaram College nearby",
+    "customerName": "Kiran Kumar",
+    "customerAddress": "sambaram College nearby",
+    "customerPhone": "9876543210",
+    "customerEmail": "kiran123@gmail.com",
+    "customerGST": "",
+    "salesOrder": "699d4d878cdc4f204c4922d1",
+    "salesOrderNumber": "SO-2026-0047",
+    "invoiceDate": "2026-02-24T07:38:13.864Z",
+    "creditDays": 10,
+    "isDraft": false,
+    "items": [
+      {
+        "product": "6979b839be2f2eaac8767ccd",
+        "productCode": "BFS001",
+        "productName": "product1",
+        "HSNCode": "3847",
+        "category": "6979b7b3be2f2eaac8767ba8",
+        "subcategory": "6979b7c5be2f2eaac8767bc2",
+        "brand": "6979b7a6be2f2eaac8767b8f",
+        "quantity": 1,
+        "unitPrice": 300,
+        "gst": 12,
+        "gstAmount": 36,
+        "discountAmount": 0,
+        "discountPercentage": 0,
+        "selectedDiscountLevels": [],
+        "manualDiscountLevels": {},
+        "dealerExtraDiscount": 0,
+        "appliedDiscounts": [],
+        "pointsEarned": 0,
+        "totalPrice": 336,
+        "warehouse": "68e8f0283f5fd5a817866df6",
+        "warehouseName": "Jain Impex Hub",
+        "_id": "699d51c2eb98f4847c8545a8"
+      },
+      {
+        "product": "6996c798ccba2369f7ad7647",
+        "productCode": "521651",
+        "productName": "tf pvc pipe 250mm",
+        "HSNCode": "4166166",
+        "category": "699164677d9ec5ba34ed8a3d",
+        "subcategory": "699164cc7d9ec5ba34ed8aaf",
+        "brand": "69861054b72264de72800f05",
+        "quantity": 50,
+        "unitPrice": 5505,
+        "gst": 18,
+        "gstAmount": 25020.225,
+        "discountAmount": 136248.75,
+        "discountPercentage": 47.5,
+        "selectedDiscountLevels": [
+          "Executive Discount"
+        ],
+        "manualDiscountLevels": {
+          "Executive Discount": 6
+        },
+        "dealerExtraDiscount": 2,
+        "appliedDiscounts": [
+          {
+            "discountName": "hj",
+            "discountType": "both",
+            "directDiscountPercentage": 41.5,
+            "levels": [
+              {
+                "levelName": "Loyalty Discount",
+                "discountPercentage": 4,
+                "_id": "69941100de8864279163ebe2"
+              },
+              {
+                "levelName": "Prompt Discount",
+                "discountPercentage": 3,
+                "_id": "69941100de8864279163ebe3"
+              },
+              {
+                "levelName": "MD Discount",
+                "discountPercentage": 4,
+                "_id": "69941100de8864279163ebe4"
+              },
+              {
+                "levelName": "Executive Discount",
+                "discountPercentage": 6,
+                "_id": "69941100de8864279163ebe5"
+              },
+              {
+                "levelName": "CD Discount",
+                "discountPercentage": 3,
+                "_id": "69941100de8864279163ebe6"
+              }
+            ],
+            "targetType": "subcategory",
+            "maxDiscountPercentage": 16,
+            "_id": "699d51c2eb98f4847c8545aa"
+          }
+        ],
+        "pointsEarned": 0,
+        "totalPrice": 164021.475,
+        "warehouse": "68e8f0283f5fd5a817866df6",
+        "warehouseName": "Jain Impex Hub",
+        "_id": "699d51c2eb98f4847c8545a9"
+      }
+    ],
+    "subtotal": 275550,
+    "totalDiscount": 136248.75,
+    "totalGst": 25056.225,
+    "totalAmount": 164357.475,
+    "totalPoints": 0,
+    "status": "Cancelled",
+    "paymentStatus": "Pending",
+    "paidAmount": 0,
+    "isDeleted": true,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "remarks": "",
+    "internalNotes": "",
+    "printSettings": {
+      "showSerialNumber": true,
+      "showProductCode": true,
+      "showProductName": true,
+      "showDescription": false,
+      "showHSNCode": true,
+      "showUnit": true,
+      "showAlternateUnit": false,
+      "showCategory": false,
+      "showSubcategory": false,
+      "showBrand": false,
+      "showProductType": false,
+      "showSalesType": false,
+      "showQuantity": true,
+      "showRate": true,
+      "showAmount": true,
+      "showDiscount": true,
+      "showGST": true,
+      "showTotal": true,
+      "showCompanyLogo": true,
+      "showCompanyDetails": true,
+      "showTermsAndConditions": true,
+      "showBankDetails": true,
+      "showSignature": true,
+      "showPointsEarned": true,
+      "showWarehouse": false,
+      "fontSize": "medium",
+      "orientation": "portrait",
+      "showImages": false
+    },
+    "createdAt": "2026-02-24T07:22:42.690Z",
+    "updatedAt": "2026-02-24T07:40:05.411Z",
+    "__v": 0,
+    "approvedAt": "2026-02-24T07:38:13.864Z",
+    "approvedBy": "68db7209bf7b5baece4a20aa",
+    "dueDate": "2026-03-06T07:38:13.864Z",
+    "cancellationReason": "no",
+    "deletedAt": "2026-02-24T07:40:05.409Z",
+    "deletedBy": "68db7209bf7b5baece4a20aa",
+    "deletionReason": "no"
+  },
+  {
+    "_id": "699d9a7fe48a66f78aaca39d",
+    "invoiceNumber": "INV-2026-0020",
+    "dealer": "699309cbd02de0031308312e",
+    "dealerName": "sujan",
+    "dealerCode": "DLR1004",
+    "dealerType": "Retailer",
+    "region": "6991ff4c65eba9543a0ece30",
+    "pinCode": "India",
+    "customerName": "sujan",
+    "customerAddress": "New Private Bus Stand, Road, behind LIC office, Urban, Chamarajanagar, Karnataka 571313, India",
+    "customerPhone": "9606975967",
+    "customerEmail": "",
+    "customerGST": "",
+    "salesOrder": "699d968ae48a66f78aac89d5",
+    "salesOrderNumber": "SO-2026-0051",
+    "invoiceDate": "2026-02-24T12:34:29.831Z",
+    "creditDays": 60,
+    "isDraft": false,
+    "items": [
+      {
+        "product": "699009ff7cbb3e1dbf91bde8",
+        "productCode": "51654165",
+        "productName": "v oren wall mixer",
+        "HSNCode": "16516541",
+        "category": "6980d4cf47673d095ce1cd2f",
+        "subcategory": "6980d53247673d095ce1cd4b",
+        "brand": "6980d39d47673d095ce1cd03",
+        "quantity": 9,
+        "unitPrice": 3900,
+        "gst": 18,
+        "gstAmount": 3285.36,
+        "discountAmount": 16848,
+        "discountPercentage": 45,
+        "selectedDiscountLevels": [
+          "MD Discount"
+        ],
+        "manualDiscountLevels": {
+          "MD Discount": 5
+        },
+        "dealerExtraDiscount": 3,
+        "appliedDiscounts": [
+          {
+            "discountName": "sum",
+            "discountType": "both",
+            "directDiscountPercentage": 40,
+            "levels": [
+              {
+                "levelName": "Prompt Discount",
+                "discountPercentage": 3,
+                "_id": "6994160cde8864279163ecbc"
+              },
+              {
+                "levelName": "MD Discount",
+                "discountPercentage": 5,
+                "_id": "6994160cde8864279163ecbd"
+              },
+              {
+                "levelName": "Executive Discount",
+                "discountPercentage": 4,
+                "_id": "6994160cde8864279163ecbe"
+              },
+              {
+                "levelName": "CD Discount",
+                "discountPercentage": 3,
+                "_id": "6994160cde8864279163ecbf"
+              },
+              {
+                "levelName": "Consistency Discount",
+                "discountPercentage": 6,
+                "_id": "6994160cde8864279163ecc0"
+              }
+            ],
+            "targetType": "subcategory",
+            "maxDiscountPercentage": 20,
+            "_id": "699d9a7fe48a66f78aaca39f"
+          }
+        ],
+        "pointsEarned": 0,
+        "totalPrice": 21537.36,
+        "warehouse": "68e8f0283f5fd5a817866df6",
+        "warehouseName": "Assigned Warehouse",
+        "_id": "699d9a7fe48a66f78aaca39e"
+      }
+    ],
+    "subtotal": 35100,
+    "totalDiscount": 16848,
+    "totalGst": 3285.36,
+    "totalAmount": 21537.36,
+    "totalPoints": 0,
+    "status": "Cancelled",
+    "paymentStatus": "Pending",
+    "paidAmount": 0,
+    "isDeleted": true,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "remarks": "",
+    "internalNotes": "",
+    "printSettings": {
+      "showSerialNumber": true,
+      "showProductCode": true,
+      "showProductName": true,
+      "showDescription": false,
+      "showHSNCode": true,
+      "showUnit": true,
+      "showAlternateUnit": false,
+      "showCategory": false,
+      "showSubcategory": false,
+      "showBrand": false,
+      "showProductType": false,
+      "showSalesType": false,
+      "showQuantity": true,
+      "showRate": true,
+      "showAmount": true,
+      "showDiscount": true,
+      "showGST": true,
+      "showTotal": true,
+      "showCompanyLogo": true,
+      "showCompanyDetails": true,
+      "showTermsAndConditions": true,
+      "showBankDetails": true,
+      "showSignature": true,
+      "showPointsEarned": true,
+      "showWarehouse": false,
+      "fontSize": "medium",
+      "orientation": "portrait",
+      "showImages": false
+    },
+    "createdAt": "2026-02-24T12:33:03.019Z",
+    "updatedAt": "2026-02-24T12:38:40.898Z",
+    "__v": 0,
+    "approvedAt": "2026-02-24T12:34:29.831Z",
+    "approvedBy": "68db7209bf7b5baece4a20aa",
+    "dueDate": "2026-04-25T12:34:29.831Z",
+    "cancellationReason": "ujh",
+    "deletedAt": "2026-02-24T12:38:40.897Z",
+    "deletedBy": "68db7209bf7b5baece4a20aa",
+    "deletionReason": "ujh"
+  }
+]

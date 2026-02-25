@@ -1,0 +1,622 @@
+[
+  {
+    "_id": "6979c032eb98900d30cdcc29",
+    "grnNo": "GRN-1769586738376",
+    "poId": "6979c01beb98900d30cdcb8b",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "status": "Received",
+    "items": [
+      {
+        "productId": "6979b839be2f2eaac8767ccd",
+        "poQuantity": 100,
+        "receivedQuantity": 100,
+        "damageQuantity": 0,
+        "acceptedQuantity": 100,
+        "unitPrice": 300,
+        "gst": 12,
+        "totalPrice": 33600,
+        "_id": "6979c032eb98900d30cdcc2a"
+      }
+    ],
+    "totalAmount": 33600,
+    "remarks": "",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "receivedBy": "v",
+    "inspectedBy": "dgh",
+    "grnDate": "2026-01-28T07:52:18.395Z",
+    "createdAt": "2026-01-28T07:52:18.400Z",
+    "updatedAt": "2026-01-28T07:52:18.400Z",
+    "__v": 0
+  },
+  {
+    "_id": "697a0039a6d0cbd0de3ff6bb",
+    "grnNo": "GRN-1769603129624",
+    "poId": "6979ffe7a6d0cbd0de3ff628",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "status": "Received",
+    "items": [
+      {
+        "productId": "6979b839be2f2eaac8767ccd",
+        "poQuantity": 20,
+        "receivedQuantity": 20,
+        "damageQuantity": 0,
+        "acceptedQuantity": 20,
+        "unitPrice": 300,
+        "gst": 12,
+        "totalPrice": 6720.000000000001,
+        "_id": "697a0039a6d0cbd0de3ff6bc"
+      }
+    ],
+    "totalAmount": 6720.000000000001,
+    "remarks": "",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "receivedBy": "f",
+    "inspectedBy": "fs",
+    "grnDate": "2026-01-28T12:25:29.626Z",
+    "createdAt": "2026-01-28T12:25:29.627Z",
+    "updatedAt": "2026-01-28T12:25:29.627Z",
+    "__v": 0
+  },
+  {
+    "_id": "697b354e0f3f5d530665d746",
+    "grnNo": "GRN-1769682254251",
+    "poId": "697b302b0f3f5d530665d551",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "status": "Received",
+    "items": [
+      {
+        "productId": "6979b839be2f2eaac8767ccd",
+        "poQuantity": 1,
+        "receivedQuantity": 1,
+        "damageQuantity": 0,
+        "acceptedQuantity": 1,
+        "unitPrice": 300,
+        "gst": 12,
+        "totalPrice": 336.00000000000006,
+        "_id": "697b354e0f3f5d530665d747"
+      }
+    ],
+    "totalAmount": 336.00000000000006,
+    "remarks": "",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "receivedBy": "",
+    "inspectedBy": "",
+    "grnDate": "2026-01-29T10:24:14.256Z",
+    "createdAt": "2026-01-29T10:24:14.257Z",
+    "updatedAt": "2026-01-29T10:24:14.257Z",
+    "__v": 0
+  },
+  {
+    "_id": "697da1d0bcc269dd3c27e27d",
+    "grnNo": "GRN-1769841104079",
+    "poId": "697da1b7bcc269dd3c27e1af",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "status": "Received",
+    "items": [
+      {
+        "productId": "6979b839be2f2eaac8767ccd",
+        "poQuantity": 100,
+        "receivedQuantity": 100,
+        "damageQuantity": 0,
+        "acceptedQuantity": 100,
+        "unitPrice": 300,
+        "gst": 12,
+        "totalPrice": 33600,
+        "_id": "697da1d0bcc269dd3c27e27e"
+      },
+      {
+        "productId": "697b2ac00f3f5d530665d2c7",
+        "poQuantity": 220,
+        "receivedQuantity": 220,
+        "damageQuantity": 0,
+        "acceptedQuantity": 220,
+        "unitPrice": 222,
+        "gst": 18,
+        "totalPrice": 57631.2,
+        "_id": "697da1d0bcc269dd3c27e27f"
+      }
+    ],
+    "totalAmount": 91231.2,
+    "remarks": "",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "receivedBy": "",
+    "inspectedBy": "",
+    "grnDate": "2026-01-31T06:31:44.091Z",
+    "createdAt": "2026-01-31T06:31:44.093Z",
+    "updatedAt": "2026-01-31T06:31:44.093Z",
+    "__v": 0
+  },
+  {
+    "_id": "69905651e0c3190442dc0d97",
+    "grnNo": "GRN-1771066961355",
+    "poId": "6990561ce0c3190442dc0cc3",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "status": "Received",
+    "items": [
+      {
+        "productId": "6980d80547673d095ce1ceba",
+        "poQuantity": 150,
+        "receivedQuantity": 150,
+        "damageQuantity": 0,
+        "acceptedQuantity": 150,
+        "unitPrice": 1250,
+        "gst": 18,
+        "totalPrice": 221250,
+        "_id": "69905651e0c3190442dc0d98"
+      },
+      {
+        "productId": "6980d75b47673d095ce1ce76",
+        "poQuantity": 140,
+        "receivedQuantity": 140,
+        "damageQuantity": 0,
+        "acceptedQuantity": 140,
+        "unitPrice": 2500,
+        "gst": 18,
+        "totalPrice": 413000,
+        "_id": "69905651e0c3190442dc0d99"
+      },
+      {
+        "productId": "6986143db72264de7280113e",
+        "poQuantity": 1001,
+        "receivedQuantity": 1001,
+        "damageQuantity": 0,
+        "acceptedQuantity": 1001,
+        "unitPrice": 580,
+        "gst": 18,
+        "totalPrice": 685084.3999999999,
+        "_id": "69905651e0c3190442dc0d9a"
+      },
+      {
+        "productId": "698614feb72264de728011af",
+        "poQuantity": 251,
+        "receivedQuantity": 251,
+        "damageQuantity": 0,
+        "acceptedQuantity": 251,
+        "unitPrice": 4500,
+        "gst": 18,
+        "totalPrice": 1332810,
+        "_id": "69905651e0c3190442dc0d9b"
+      }
+    ],
+    "totalAmount": 2652144.4,
+    "remarks": "",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "receivedBy": "",
+    "inspectedBy": "",
+    "grnDate": "2026-02-14T11:02:41.356Z",
+    "createdAt": "2026-02-14T11:02:41.357Z",
+    "updatedAt": "2026-02-14T11:02:41.357Z",
+    "__v": 0
+  },
+  {
+    "_id": "69905c8de0c3190442dc1464",
+    "grnNo": "GRN-1771068557466",
+    "poId": "69905c53e0c3190442dc13a0",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "status": "Received",
+    "items": [
+      {
+        "productId": "69861894b72264de728014c0",
+        "poQuantity": 100,
+        "receivedQuantity": 100,
+        "damageQuantity": 0,
+        "acceptedQuantity": 100,
+        "unitPrice": 9000,
+        "gst": 18,
+        "totalPrice": 1062000,
+        "_id": "69905c8de0c3190442dc1465"
+      },
+      {
+        "productId": "698617a7b72264de72801398",
+        "poQuantity": 761,
+        "receivedQuantity": 761,
+        "damageQuantity": 0,
+        "acceptedQuantity": 761,
+        "unitPrice": 50,
+        "gst": 18,
+        "totalPrice": 44899,
+        "_id": "69905c8de0c3190442dc1466"
+      },
+      {
+        "productId": "6980d80547673d095ce1ceba",
+        "poQuantity": 431,
+        "receivedQuantity": 431,
+        "damageQuantity": 0,
+        "acceptedQuantity": 431,
+        "unitPrice": 1250,
+        "gst": 18,
+        "totalPrice": 635725,
+        "_id": "69905c8de0c3190442dc1467"
+      }
+    ],
+    "totalAmount": 1742624,
+    "remarks": "",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "receivedBy": "",
+    "inspectedBy": "",
+    "grnDate": "2026-02-14T11:29:17.470Z",
+    "createdAt": "2026-02-14T11:29:17.471Z",
+    "updatedAt": "2026-02-14T11:29:17.471Z",
+    "__v": 0
+  },
+  {
+    "_id": "6992e545cc0005ee28c85722",
+    "grnNo": "GRN-1771234629393",
+    "poId": "6992e510cc0005ee28c85498",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "status": "Received",
+    "items": [
+      {
+        "productId": "6979b839be2f2eaac8767ccd",
+        "poQuantity": 1,
+        "receivedQuantity": 1,
+        "damageQuantity": 0,
+        "acceptedQuantity": 1,
+        "unitPrice": 300,
+        "gst": 12,
+        "totalPrice": 336.00000000000006,
+        "_id": "6992e545cc0005ee28c85723"
+      },
+      {
+        "productId": "6991fb0065eba9543a0ec61b",
+        "poQuantity": 501,
+        "receivedQuantity": 501,
+        "damageQuantity": 1,
+        "acceptedQuantity": 500,
+        "unitPrice": 480,
+        "gst": 18,
+        "totalPrice": 283200,
+        "_id": "6992e545cc0005ee28c85724"
+      }
+    ],
+    "totalAmount": 283536,
+    "remarks": "",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "receivedBy": "",
+    "inspectedBy": "",
+    "grnDate": "2026-02-16T09:37:09.404Z",
+    "createdAt": "2026-02-16T09:37:09.405Z",
+    "updatedAt": "2026-02-16T09:37:09.405Z",
+    "__v": 0
+  },
+  {
+    "_id": "6992ed2efe704d9c575d293d",
+    "grnNo": "GRN-1771236654183",
+    "poId": "6992ed0ffe704d9c575d2863",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "status": "Received",
+    "items": [
+      {
+        "productId": "6980d8ed47673d095ce1cf10",
+        "poQuantity": 109,
+        "receivedQuantity": 109,
+        "damageQuantity": 9,
+        "acceptedQuantity": 100,
+        "unitPrice": 1750,
+        "gst": 18,
+        "totalPrice": 206500,
+        "_id": "6992ed2efe704d9c575d293e"
+      }
+    ],
+    "totalAmount": 206500,
+    "remarks": "",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "receivedBy": "",
+    "inspectedBy": "",
+    "grnDate": "2026-02-16T10:10:54.191Z",
+    "createdAt": "2026-02-16T10:10:54.192Z",
+    "updatedAt": "2026-02-16T10:10:54.192Z",
+    "__v": 0
+  },
+  {
+    "_id": "6992f59fc2618e8143fd84ae",
+    "grnNo": "GRN-1771238815007",
+    "poId": "6992f574c2618e8143fd82ad",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "status": "Received",
+    "items": [
+      {
+        "productId": "6980da4747673d095ce1cf6f",
+        "poQuantity": 105,
+        "receivedQuantity": 105,
+        "damageQuantity": 4,
+        "acceptedQuantity": 101,
+        "unitPrice": 2750,
+        "gst": 18,
+        "totalPrice": 327745,
+        "_id": "6992f59fc2618e8143fd84af"
+      }
+    ],
+    "totalAmount": 327745,
+    "remarks": "ok",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "receivedBy": "gg",
+    "inspectedBy": "ggj",
+    "grnDate": "2026-02-16T10:46:55.013Z",
+    "createdAt": "2026-02-16T10:46:55.014Z",
+    "updatedAt": "2026-02-16T10:46:55.014Z",
+    "__v": 0
+  },
+  {
+    "_id": "6999a225be06838446a5ec76",
+    "grnNo": "GRN-1771676197702",
+    "poId": "6999a1f8be06838446a5ebb2",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "status": "Received",
+    "items": [
+      {
+        "productId": "699177c17d9ec5ba34ed968f",
+        "poQuantity": 50,
+        "receivedQuantity": 50,
+        "damageQuantity": 0,
+        "acceptedQuantity": 50,
+        "unitPrice": 16500,
+        "gst": 18,
+        "totalPrice": 973500,
+        "_id": "6999a225be06838446a5ec77"
+      }
+    ],
+    "totalAmount": 973500,
+    "remarks": "",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "receivedBy": "",
+    "inspectedBy": "",
+    "grnDate": "2026-02-21T12:16:37.703Z",
+    "createdAt": "2026-02-21T12:16:37.704Z",
+    "updatedAt": "2026-02-21T12:16:37.704Z",
+    "__v": 0
+  },
+  {
+    "_id": "6999a34bbe06838446a5f805",
+    "grnNo": "GRN-1771676491072",
+    "poId": "6999a2f6be06838446a5f23b",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "status": "Received",
+    "items": [
+      {
+        "productId": "6996c798ccba2369f7ad7647",
+        "poQuantity": 50,
+        "receivedQuantity": 50,
+        "damageQuantity": 0,
+        "acceptedQuantity": 50,
+        "unitPrice": 5505,
+        "gst": 18,
+        "totalPrice": 324795,
+        "_id": "6999a34bbe06838446a5f806"
+      }
+    ],
+    "totalAmount": 324795,
+    "remarks": "",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "receivedBy": "",
+    "inspectedBy": "",
+    "grnDate": "2026-02-21T12:21:31.073Z",
+    "createdAt": "2026-02-21T12:21:31.074Z",
+    "updatedAt": "2026-02-21T12:21:31.074Z",
+    "__v": 0
+  },
+  {
+    "_id": "699c236d5b387687ba0dcd79",
+    "grnNo": "GRN-1771840365022",
+    "poId": "699c23575b387687ba0dcc7a",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "status": "Received",
+    "items": [
+      {
+        "productId": "6996cb4fccba2369f7ad7837",
+        "poQuantity": 15,
+        "receivedQuantity": 15,
+        "damageQuantity": 0,
+        "acceptedQuantity": 15,
+        "unitPrice": 600,
+        "gst": 18,
+        "totalPrice": 10620,
+        "_id": "699c236d5b387687ba0dcd7a"
+      },
+      {
+        "productId": "6996cba7ccba2369f7ad78b9",
+        "poQuantity": 15,
+        "receivedQuantity": 15,
+        "damageQuantity": 0,
+        "acceptedQuantity": 15,
+        "unitPrice": 1500,
+        "gst": 18,
+        "totalPrice": 26550,
+        "_id": "699c236d5b387687ba0dcd7b"
+      }
+    ],
+    "totalAmount": 37170,
+    "remarks": "",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "receivedBy": "",
+    "inspectedBy": "",
+    "grnDate": "2026-02-23T09:52:45.034Z",
+    "createdAt": "2026-02-23T09:52:45.036Z",
+    "updatedAt": "2026-02-23T09:52:45.036Z",
+    "__v": 0
+  },
+  {
+    "_id": "699c28ff8d931f6ea5e09e73",
+    "grnNo": "GRN-1771841791827",
+    "poId": "699c28dd8d931f6ea5e09c29",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "status": "Received",
+    "items": [
+      {
+        "productId": "6996c585ccba2369f7ad7341",
+        "poQuantity": 3,
+        "receivedQuantity": 3,
+        "damageQuantity": 0,
+        "acceptedQuantity": 3,
+        "unitPrice": 45,
+        "gst": 18,
+        "totalPrice": 159.29999999999998,
+        "_id": "699c28ff8d931f6ea5e09e74"
+      },
+      {
+        "productId": "6996c5fbccba2369f7ad74c6",
+        "poQuantity": 4,
+        "receivedQuantity": 4,
+        "damageQuantity": 0,
+        "acceptedQuantity": 4,
+        "unitPrice": 1105,
+        "gst": 18,
+        "totalPrice": 5215.599999999999,
+        "_id": "699c28ff8d931f6ea5e09e75"
+      }
+    ],
+    "totalAmount": 5374.9,
+    "remarks": "",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "receivedBy": "",
+    "inspectedBy": "",
+    "grnDate": "2026-02-23T10:16:31.843Z",
+    "createdAt": "2026-02-23T10:16:31.846Z",
+    "updatedAt": "2026-02-23T10:16:31.846Z",
+    "__v": 0
+  },
+  {
+    "_id": "699c51cea7876095c4a1d3bb",
+    "grnNo": "GRN-1771852238648",
+    "poId": "699c51a4a7876095c4a1d2d6",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "status": "Received",
+    "items": [
+      {
+        "productId": "6996ea6605f626d0dc08eb97",
+        "poQuantity": 100,
+        "receivedQuantity": 100,
+        "damageQuantity": 0,
+        "acceptedQuantity": 100,
+        "unitPrice": 1100,
+        "gst": 5,
+        "totalPrice": 115500,
+        "_id": "699c51cea7876095c4a1d3bc"
+      },
+      {
+        "productId": "699009ff7cbb3e1dbf91bde8",
+        "poQuantity": 1,
+        "receivedQuantity": 1,
+        "damageQuantity": 0,
+        "acceptedQuantity": 1,
+        "unitPrice": 3900,
+        "gst": 18,
+        "totalPrice": 4602,
+        "_id": "699c51cea7876095c4a1d3bd"
+      }
+    ],
+    "totalAmount": 120102,
+    "remarks": "",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "receivedBy": "",
+    "inspectedBy": "",
+    "grnDate": "2026-02-23T13:10:38.649Z",
+    "createdAt": "2026-02-23T13:10:38.650Z",
+    "updatedAt": "2026-02-23T13:10:38.650Z",
+    "__v": 0
+  },
+  {
+    "_id": "699d56ecffeb35985224a518",
+    "grnNo": "GRN-1771919084020",
+    "poId": "699d56ccffeb35985224a44c",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "status": "Received",
+    "items": [
+      {
+        "productId": "6996c430ccba2369f7ad724a",
+        "poQuantity": 1,
+        "receivedQuantity": 1,
+        "damageQuantity": 0,
+        "acceptedQuantity": 1,
+        "unitPrice": 65,
+        "gst": 18,
+        "totalPrice": 76.7,
+        "_id": "699d56ecffeb35985224a519"
+      }
+    ],
+    "totalAmount": 76.7,
+    "remarks": "",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "receivedBy": "",
+    "inspectedBy": "",
+    "grnDate": "2026-02-24T07:44:44.021Z",
+    "createdAt": "2026-02-24T07:44:44.022Z",
+    "updatedAt": "2026-02-24T07:44:44.022Z",
+    "__v": 0
+  },
+  {
+    "_id": "699d57e6ffeb35985224ada1",
+    "grnNo": "GRN-1771919334713",
+    "poId": "699d57caffeb35985224acda",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "status": "Received",
+    "items": [
+      {
+        "productId": "6996c430ccba2369f7ad724a",
+        "poQuantity": 3,
+        "receivedQuantity": 3,
+        "damageQuantity": 0,
+        "acceptedQuantity": 3,
+        "unitPrice": 65,
+        "gst": 18,
+        "totalPrice": 230.1,
+        "_id": "699d57e6ffeb35985224ada2"
+      }
+    ],
+    "totalAmount": 230.1,
+    "remarks": "",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "receivedBy": "",
+    "inspectedBy": "",
+    "grnDate": "2026-02-24T07:48:54.714Z",
+    "createdAt": "2026-02-24T07:48:54.714Z",
+    "updatedAt": "2026-02-24T07:48:54.714Z",
+    "__v": 0
+  },
+  {
+    "_id": "699d9741e48a66f78aac8d19",
+    "grnNo": "GRN-1771935553095",
+    "poId": "699d9720e48a66f78aac8c57",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "status": "Received",
+    "items": [
+      {
+        "productId": "699009ff7cbb3e1dbf91bde8",
+        "poQuantity": 10,
+        "receivedQuantity": 10,
+        "damageQuantity": 0,
+        "acceptedQuantity": 10,
+        "unitPrice": 3900,
+        "gst": 18,
+        "totalPrice": 46020,
+        "_id": "699d9741e48a66f78aac8d1a"
+      }
+    ],
+    "totalAmount": 46020,
+    "remarks": "",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "receivedBy": "",
+    "inspectedBy": "",
+    "grnDate": "2026-02-24T12:19:13.096Z",
+    "createdAt": "2026-02-24T12:19:13.097Z",
+    "updatedAt": "2026-02-24T12:19:13.097Z",
+    "__v": 0
+  }
+]

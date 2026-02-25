@@ -1,0 +1,3566 @@
+[
+  {
+    "_id": "68e7fe6c54a6d19a1e4b672f",
+    "poNumber": "PO-20251009-001",
+    "supplierId": "68e365d72c26392b1868c020",
+    "warehouseId": "68e62798ca1f1f0d13c67592",
+    "orderDate": "2025-10-09T18:26:52.346Z",
+    "expectedDate": "2025-10-14T00:00:00.000Z",
+    "status": "Rejected",
+    "paymentTermsDays": 60,
+    "billingAddress": "south south south, banglore, karnataka - 560075",
+    "shippingAddress": "south south south, banglore, karnataka - 560075",
+    "lines": [
+      {
+        "productId": "68e75437b05d66830f78c80e",
+        "quantity": 91,
+        "price": 5000,
+        "gst": 18,
+        "lastPrice": 900,
+        "currentPrice": 5000,
+        "last30DayPurchaseQuantity": 74,
+        "total": 536900,
+        "_id": "68e7fe6c54a6d19a1e4b6730"
+      }
+    ],
+    "subtotal": 455000,
+    "gstTotal": 81900,
+    "total": 536900,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "iijj",
+    "createdAt": "2025-10-09T18:26:52.408Z",
+    "updatedAt": "2025-10-10T05:41:03.395Z",
+    "__v": 0
+  },
+  {
+    "_id": "68e7ff1e8ea71e8eff9d0c7b",
+    "poNumber": "PO-20251009-002",
+    "supplierId": "68e365d72c26392b1868c020",
+    "warehouseId": "68e62798ca1f1f0d13c67592",
+    "orderDate": "2025-10-09T18:29:50.953Z",
+    "expectedDate": "2025-10-10T00:00:00.000Z",
+    "status": "Rejected",
+    "paymentTermsDays": 60,
+    "billingAddress": "south south south, banglore, karnataka - 560075",
+    "shippingAddress": "south south south, banglore, karnataka - 560075",
+    "lines": [
+      {
+        "productId": "68e75437b05d66830f78c80e",
+        "quantity": 81,
+        "price": 5000,
+        "gst": 18,
+        "lastPrice": 8000,
+        "currentPrice": 5000,
+        "last30DayPurchaseQuantity": 90,
+        "total": 477900,
+        "_id": "68e7ff1e8ea71e8eff9d0c7c"
+      }
+    ],
+    "subtotal": 405000,
+    "gstTotal": 72900,
+    "total": 477900,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "jjj",
+    "createdAt": "2025-10-09T18:29:51.018Z",
+    "updatedAt": "2025-10-10T05:40:54.850Z",
+    "__v": 0
+  },
+  {
+    "_id": "68e8069f8c932a8ba43338d5",
+    "poNumber": "PO-20251010-003",
+    "supplierId": "68e806678c932a8ba433388b",
+    "warehouseId": "68e62798ca1f1f0d13c67592",
+    "orderDate": "2025-10-09T19:01:51.276Z",
+    "expectedDate": "2025-10-22T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 45,
+    "billingAddress": "south south south, banglore, karnataka - 560075",
+    "shippingAddress": "south south south, banglore, karnataka - 560075",
+    "lines": [
+      {
+        "productId": "68e7491e52c20af5a082a94b",
+        "quantity": 100,
+        "price": 200.14,
+        "gst": 12,
+        "lastPrice": 100,
+        "currentPrice": 200.12,
+        "last30DayPurchaseQuantity": 25,
+        "total": 22415.680000000004,
+        "_id": "68e89565b231c6505a40ba35"
+      },
+      {
+        "productId": "68e75437b05d66830f78c80e",
+        "quantity": 10,
+        "price": 5000,
+        "gst": 18,
+        "lastPrice": 4000,
+        "currentPrice": 5000,
+        "last30DayPurchaseQuantity": 10,
+        "total": 59000,
+        "_id": "68e89565b231c6505a40ba36"
+      }
+    ],
+    "subtotal": 70014,
+    "gstTotal": 11401.68,
+    "total": 81415.68,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "kdfnlkdn",
+    "createdAt": "2025-10-09T19:01:51.290Z",
+    "updatedAt": "2025-10-11T04:48:53.141Z",
+    "__v": 1
+  },
+  {
+    "_id": "68e89730b231c6505a40ba4d",
+    "poNumber": "PO-20251010-004",
+    "supplierId": "68e806678c932a8ba433388b",
+    "warehouseId": "68e62798ca1f1f0d13c67592",
+    "orderDate": "2025-10-10T05:18:40.892Z",
+    "expectedDate": "2025-10-18T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 45,
+    "billingAddress": "south south south, banglore, karnataka - 560075\nola ola ola uber uber ",
+    "shippingAddress": "south south south, banglore, karnataka - 560075",
+    "lines": [
+      {
+        "productId": "68e75437b05d66830f78c80e",
+        "quantity": 21,
+        "price": 5000,
+        "gst": 18,
+        "lastPrice": 2220,
+        "currentPrice": 5000,
+        "last30DayPurchaseQuantity": 20,
+        "total": 123900,
+        "_id": "68e89730b231c6505a40ba4e"
+      }
+    ],
+    "subtotal": 105000,
+    "gstTotal": 18900,
+    "total": 123900,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "ok",
+    "createdAt": "2025-10-10T05:18:40.899Z",
+    "updatedAt": "2025-10-10T05:26:59.958Z",
+    "__v": 0
+  },
+  {
+    "_id": "68e89bd6ba3b314f58d1e43d",
+    "poNumber": "PO-20251010-005",
+    "supplierId": "68e365d72c26392b1868c020",
+    "warehouseId": "68e62798ca1f1f0d13c67592",
+    "orderDate": "2025-10-10T05:38:30.865Z",
+    "expectedDate": "2025-10-15T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 60,
+    "billingAddress": "south south south, banglore, karnataka - 560075\ngoods",
+    "shippingAddress": "south south south, banglore, karnataka - 560075\nbads",
+    "lines": [
+      {
+        "productId": "68e7491e52c20af5a082a94b",
+        "quantity": 11,
+        "price": 200,
+        "gst": 12,
+        "lastPrice": 190,
+        "currentPrice": 200,
+        "last30DayPurchaseQuantity": 10,
+        "total": 2464.0000000000005,
+        "_id": "68e89bd6ba3b314f58d1e43e"
+      },
+      {
+        "productId": "68e75437b05d66830f78c80e",
+        "quantity": 211,
+        "price": 5000,
+        "gst": 18,
+        "lastPrice": 4900,
+        "currentPrice": 5000,
+        "last30DayPurchaseQuantity": 20,
+        "total": 1244900,
+        "_id": "68e89bd6ba3b314f58d1e43f"
+      }
+    ],
+    "subtotal": 1057200,
+    "gstTotal": 190164,
+    "total": 1247364,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "ok got  it",
+    "createdAt": "2025-10-10T05:38:30.924Z",
+    "updatedAt": "2025-10-10T05:38:44.174Z",
+    "__v": 0
+  },
+  {
+    "_id": "68e8a2e34af28530f7651c4f",
+    "poNumber": "PO-20251010-006",
+    "supplierId": "68e806678c932a8ba433388b",
+    "warehouseId": "68e62798ca1f1f0d13c67592",
+    "orderDate": "2025-10-10T06:08:35.091Z",
+    "expectedDate": "2025-10-11T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 45,
+    "billingAddress": "south south south, banglore, karnataka - 560075",
+    "shippingAddress": "south south south, banglore, karnataka - 560075",
+    "lines": [
+      {
+        "productId": "68e7491e52c20af5a082a94b",
+        "quantity": 51,
+        "price": 200,
+        "gst": 12,
+        "lastPrice": 190,
+        "currentPrice": 200,
+        "last30DayPurchaseQuantity": 20,
+        "total": 11424.000000000002,
+        "_id": "68e8a2e34af28530f7651c50"
+      }
+    ],
+    "subtotal": 10200,
+    "gstTotal": 1224,
+    "total": 11424,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "ggf",
+    "createdAt": "2025-10-10T06:08:35.142Z",
+    "updatedAt": "2025-10-10T11:31:20.762Z",
+    "__v": 0
+  },
+  {
+    "_id": "68e8ae140542280641bff251",
+    "poNumber": "PO-20251010-007",
+    "supplierId": "68e806678c932a8ba433388b",
+    "warehouseId": "68e62798ca1f1f0d13c67592",
+    "orderDate": "2025-10-10T06:56:20.063Z",
+    "expectedDate": "2025-10-13T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 45,
+    "billingAddress": "south south south, banglore, karnataka - 560075cx",
+    "shippingAddress": "south south south, banglore, karnataka - 560075cx",
+    "lines": [
+      {
+        "productId": "68e75437b05d66830f78c80e",
+        "quantity": 51,
+        "price": 5000,
+        "gst": 18,
+        "lastPrice": 5550,
+        "currentPrice": 5000,
+        "last30DayPurchaseQuantity": 60,
+        "total": 300900,
+        "_id": "68e8ae140542280641bff252"
+      }
+    ],
+    "subtotal": 255000,
+    "gstTotal": 45900,
+    "total": 300900,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "tretretergrebf hhth hthet",
+    "createdAt": "2025-10-10T06:56:20.121Z",
+    "updatedAt": "2025-10-11T04:41:35.649Z",
+    "__v": 0
+  },
+  {
+    "_id": "68e8fbe22de06b05d0db9265",
+    "poNumber": "PO-20251010-008",
+    "supplierId": "68e365d72c26392b1868c020",
+    "warehouseId": "68e8efdb3f5fd5a817866dea",
+    "orderDate": "2025-10-10T12:28:18.314Z",
+    "expectedDate": "2025-10-11T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 60,
+    "billingAddress": "vidyaranyapura, Bangalore, Karnataka - 560043",
+    "shippingAddress": "vidyaranyapura, Bangalore, Karnataka - 560043",
+    "lines": [
+      {
+        "productId": "68e8eda4335c79c343d52f87",
+        "quantity": 61,
+        "price": 3243,
+        "gst": 2,
+        "lastPrice": 3220,
+        "currentPrice": 3243,
+        "last30DayPurchaseQuantity": 40,
+        "total": 201779.46,
+        "_id": "68e8fbe22de06b05d0db9266"
+      }
+    ],
+    "subtotal": 197823,
+    "gstTotal": 3956.46,
+    "total": 201779.46,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "okkkk",
+    "createdAt": "2025-10-10T12:28:18.356Z",
+    "updatedAt": "2025-10-10T12:33:19.044Z",
+    "__v": 0
+  },
+  {
+    "_id": "68ea01c59470307f1d936a6f",
+    "poNumber": "PO-20251011-009",
+    "supplierId": "68e365d72c26392b1868c020",
+    "warehouseId": "68e8efdb3f5fd5a817866dea",
+    "orderDate": "2025-10-11T07:05:41.107Z",
+    "expectedDate": "2025-10-16T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 60,
+    "billingAddress": "vidyaranyapura, Bangalore, Karnataka - 560043",
+    "shippingAddress": "vidyaranyapura, Bangalore, Karnataka - 560043",
+    "lines": [
+      {
+        "productId": "68e8eea63f5fd5a817866d46",
+        "quantity": 1,
+        "price": 4347,
+        "gst": 2,
+        "lastPrice": 4000,
+        "currentPrice": 4347,
+        "last30DayPurchaseQuantity": 220,
+        "total": 4433.9400000000005,
+        "_id": "68ea01c59470307f1d936a70"
+      },
+      {
+        "productId": "68e8eda4335c79c343d52f87",
+        "quantity": 1,
+        "price": 3243,
+        "gst": 2,
+        "lastPrice": 3000,
+        "currentPrice": 3243,
+        "last30DayPurchaseQuantity": 330,
+        "total": 3307.86,
+        "_id": "68ea01c59470307f1d936a71"
+      }
+    ],
+    "subtotal": 7590,
+    "gstTotal": 151.8,
+    "total": 7741.8,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "ht",
+    "createdAt": "2025-10-11T07:05:41.163Z",
+    "updatedAt": "2025-10-11T07:06:03.638Z",
+    "__v": 0
+  },
+  {
+    "_id": "68ea1ab5dc0f1bd3ac059562",
+    "poNumber": "PO-20251011-010",
+    "supplierId": "68e806678c932a8ba433388b",
+    "warehouseId": "68e8efdb3f5fd5a817866dea",
+    "orderDate": "2025-10-11T08:52:05.650Z",
+    "expectedDate": "2025-10-17T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 45,
+    "billingAddress": "vidyaranyapura, Bangalore, Karnataka - 560043",
+    "shippingAddress": "vidyaranyapura, Bangalore, Karnataka - 560043",
+    "lines": [
+      {
+        "productId": "68e7491e52c20af5a082a94b",
+        "quantity": 61,
+        "price": 200,
+        "gst": 12,
+        "lastPrice": 190,
+        "currentPrice": 200,
+        "last30DayPurchaseQuantity": 58,
+        "total": 13664.000000000002,
+        "_id": "68ea1ab5dc0f1bd3ac059563"
+      }
+    ],
+    "subtotal": 12200,
+    "gstTotal": 1464,
+    "total": 13664,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "tt",
+    "createdAt": "2025-10-11T08:52:05.658Z",
+    "updatedAt": "2025-10-11T08:52:09.511Z",
+    "__v": 0
+  },
+  {
+    "_id": "68ea1dfad625d4c312731985",
+    "poNumber": "PO-20251011-011",
+    "supplierId": "68e365d72c26392b1868c020",
+    "warehouseId": "68e8f06b3f5fd5a817866e02",
+    "orderDate": "2025-10-11T09:06:02.026Z",
+    "expectedDate": "2025-10-14T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 60,
+    "billingAddress": "North, Bangalore, Karnataka - 560067",
+    "shippingAddress": "North, Bangalore, Karnataka - 560067",
+    "lines": [
+      {
+        "productId": "68e7491e52c20af5a082a94b",
+        "quantity": 41,
+        "price": 200,
+        "gst": 12,
+        "lastPrice": 180,
+        "currentPrice": 200,
+        "last30DayPurchaseQuantity": 20,
+        "total": 9184,
+        "_id": "68ea1dfad625d4c312731986"
+      }
+    ],
+    "subtotal": 8200,
+    "gstTotal": 984,
+    "total": 9184,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "dfd",
+    "createdAt": "2025-10-11T09:06:02.041Z",
+    "updatedAt": "2025-10-11T09:06:16.662Z",
+    "__v": 0
+  },
+  {
+    "_id": "68ea2013d625d4c312731b06",
+    "poNumber": "PO-20251011-012",
+    "supplierId": "68e365d72c26392b1868c020",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2025-10-11T09:14:59.839Z",
+    "expectedDate": "2025-10-12T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 60,
+    "billingAddress": "vijayanagar, Bangalore, Karnataka - 560043",
+    "shippingAddress": "vijayanagar, Bangalore, Karnataka - 560043",
+    "lines": [
+      {
+        "productId": "68e7491e52c20af5a082a94b",
+        "quantity": 51,
+        "price": 200,
+        "gst": 12,
+        "lastPrice": 190,
+        "currentPrice": 200,
+        "last30DayPurchaseQuantity": 50,
+        "total": 11424.000000000002,
+        "_id": "68ea2013d625d4c312731b07"
+      }
+    ],
+    "subtotal": 10200,
+    "gstTotal": 1224,
+    "total": 11424,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "dgf",
+    "createdAt": "2025-10-11T09:14:59.843Z",
+    "updatedAt": "2025-10-11T09:15:03.525Z",
+    "__v": 0
+  },
+  {
+    "_id": "68ea4025ef51df5001a84ee0",
+    "poNumber": "PO-20251011-013",
+    "supplierId": "68e806678c932a8ba433388b",
+    "warehouseId": "68e8f0c03f5fd5a817866e0e",
+    "orderDate": "2025-10-11T11:31:49.813Z",
+    "expectedDate": "2025-10-17T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 45,
+    "billingAddress": "Bangalore South, Bangalore, Karnataka - 560094",
+    "shippingAddress": "Bangalore South, Bangalore, Karnataka - 560094",
+    "lines": [
+      {
+        "productId": "68e8eea63f5fd5a817866d46",
+        "quantity": 31,
+        "price": 4347,
+        "gst": 2,
+        "lastPrice": 1430,
+        "currentPrice": 4347,
+        "last30DayPurchaseQuantity": 20,
+        "total": 137452.14,
+        "_id": "68ea4025ef51df5001a84ee1"
+      }
+    ],
+    "subtotal": 134757,
+    "gstTotal": 2695.14,
+    "total": 137452.14,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "ff",
+    "createdAt": "2025-10-11T11:31:49.853Z",
+    "updatedAt": "2025-10-11T11:31:59.609Z",
+    "__v": 0
+  },
+  {
+    "_id": "68ebde2cc37ffd65c8008437",
+    "poNumber": "PO-20251012-014",
+    "supplierId": "68e806678c932a8ba433388b",
+    "warehouseId": "68e8f06b3f5fd5a817866e02",
+    "orderDate": "2025-10-12T16:58:20.387Z",
+    "expectedDate": "2025-10-14T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 45,
+    "billingAddress": "North, Bangalore, Karnataka - 560067",
+    "shippingAddress": "North, Bangalore, Karnataka - 560067",
+    "lines": [
+      {
+        "productId": "68e75437b05d66830f78c80e",
+        "quantity": 91,
+        "price": 5000,
+        "gst": 18,
+        "lastPrice": 2670,
+        "currentPrice": 5000,
+        "last30DayPurchaseQuantity": 10,
+        "total": 536900,
+        "_id": "68ebde2cc37ffd65c8008438"
+      },
+      {
+        "productId": "68e8eea63f5fd5a817866d46",
+        "quantity": 81,
+        "price": 4347,
+        "gst": 2,
+        "lastPrice": 5260,
+        "currentPrice": 4347,
+        "last30DayPurchaseQuantity": 20,
+        "total": 359149.14,
+        "_id": "68ebde2cc37ffd65c8008439"
+      },
+      {
+        "productId": "68e8eda4335c79c343d52f87",
+        "quantity": 71,
+        "price": 3243,
+        "gst": 2,
+        "lastPrice": 2540,
+        "currentPrice": 3243,
+        "last30DayPurchaseQuantity": 30,
+        "total": 234858.06,
+        "_id": "68ebde2cc37ffd65c800843a"
+      }
+    ],
+    "subtotal": 1037360,
+    "gstTotal": 93547.2,
+    "total": 1130907.2,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "gg",
+    "createdAt": "2025-10-12T16:58:20.436Z",
+    "updatedAt": "2025-10-12T16:58:34.303Z",
+    "__v": 0
+  },
+  {
+    "_id": "68ee1e9b4ede1482f974a7ed",
+    "poNumber": "PO-20251014-015",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68e8f06b3f5fd5a817866e02",
+    "orderDate": "2025-10-14T09:57:47.294Z",
+    "expectedDate": "2025-10-14T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "North, Bangalore, Karnataka - 560067",
+    "shippingAddress": "North, Bangalore, Karnataka - 560067",
+    "lines": [
+      {
+        "productId": "68edec883fe4850841054cdf",
+        "quantity": 101,
+        "price": 100,
+        "gst": 1,
+        "lastPrice": 90,
+        "currentPrice": 100,
+        "last30DayPurchaseQuantity": 120,
+        "total": 10201,
+        "_id": "68ee1e9b4ede1482f974a7ee"
+      }
+    ],
+    "subtotal": 10100,
+    "gstTotal": 101,
+    "total": 10201,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "asss",
+    "createdAt": "2025-10-14T09:57:47.315Z",
+    "updatedAt": "2025-10-14T09:58:19.062Z",
+    "__v": 0
+  },
+  {
+    "_id": "68ee22e4c3f90d7b33fe494e",
+    "poNumber": "PO-20251014-016",
+    "supplierId": "68e365d72c26392b1868c020",
+    "warehouseId": "68e8f06b3f5fd5a817866e02",
+    "orderDate": "2025-10-14T10:16:03.995Z",
+    "expectedDate": "2025-10-15T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 60,
+    "billingAddress": "North, Bangalore, Karnataka - 560067",
+    "shippingAddress": "North, Bangalore, Karnataka - 560067",
+    "lines": [
+      {
+        "productId": "68edec883fe4850841054cdf",
+        "quantity": 91,
+        "price": 100,
+        "gst": 1,
+        "lastPrice": 90,
+        "currentPrice": 100,
+        "last30DayPurchaseQuantity": 50,
+        "total": 9191,
+        "_id": "68ee22e4c3f90d7b33fe494f"
+      }
+    ],
+    "subtotal": 9100,
+    "gstTotal": 91,
+    "total": 9191,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2025-10-14T10:16:04.041Z",
+    "updatedAt": "2025-10-14T10:16:08.090Z",
+    "__v": 0
+  },
+  {
+    "_id": "68f079cc8d8c72c51198fd53",
+    "poNumber": "PO-20251016-017",
+    "supplierId": "68e365d72c26392b1868c020",
+    "warehouseId": "68e8f06b3f5fd5a817866e02",
+    "orderDate": "2025-10-16T04:51:24.815Z",
+    "expectedDate": "2025-10-17T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 60,
+    "billingAddress": "North, Bangalore, Karnataka - 560067",
+    "shippingAddress": "North, Bangalore, Karnataka - 560067",
+    "lines": [
+      {
+        "productId": "68edec883fe4850841054cdf",
+        "quantity": 991,
+        "price": 100,
+        "gst": 1,
+        "lastPrice": 50,
+        "currentPrice": 100,
+        "last30DayPurchaseQuantity": 50,
+        "total": 100091,
+        "_id": "68f079cc8d8c72c51198fd54"
+      },
+      {
+        "productId": "68edd8b9afe7f3a9a871a366",
+        "quantity": 881,
+        "price": 2345,
+        "gst": 2,
+        "lastPrice": 2300,
+        "currentPrice": 2345,
+        "last30DayPurchaseQuantity": 540,
+        "total": 2107263.9,
+        "_id": "68f079cc8d8c72c51198fd55"
+      },
+      {
+        "productId": "68e8eda4335c79c343d52f87",
+        "quantity": 771,
+        "price": 3243,
+        "gst": 2,
+        "lastPrice": 3200,
+        "currentPrice": 3243,
+        "last30DayPurchaseQuantity": 70,
+        "total": 2550360.06,
+        "_id": "68f079cc8d8c72c51198fd56"
+      }
+    ],
+    "subtotal": 4665398,
+    "gstTotal": 92316.95999999999,
+    "total": 4757714.96,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "ok",
+    "createdAt": "2025-10-16T04:51:24.832Z",
+    "updatedAt": "2025-10-16T04:52:47.377Z",
+    "__v": 0
+  },
+  {
+    "_id": "68f07cf8ebd70af89c731746",
+    "poNumber": "PO-20251016-018",
+    "supplierId": "68e806678c932a8ba433388b",
+    "warehouseId": "68e8efdb3f5fd5a817866dea",
+    "orderDate": "2025-10-16T05:04:56.823Z",
+    "expectedDate": "2025-10-17T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 45,
+    "billingAddress": "vidyaranyapura, Bangalore, Karnataka - 560043",
+    "shippingAddress": "vidyaranyapura, Bangalore, Karnataka - 560043",
+    "lines": [
+      {
+        "productId": "68e7491e52c20af5a082a94b",
+        "quantity": 201,
+        "price": 200,
+        "gst": 12,
+        "lastPrice": 190,
+        "currentPrice": 200,
+        "last30DayPurchaseQuantity": 200,
+        "total": 45024.00000000001,
+        "_id": "68f07cf8ebd70af89c731747"
+      }
+    ],
+    "subtotal": 40200,
+    "gstTotal": 4824,
+    "total": 45024,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "jj",
+    "createdAt": "2025-10-16T05:04:56.843Z",
+    "updatedAt": "2025-10-16T05:05:00.400Z",
+    "__v": 0
+  },
+  {
+    "_id": "68f0a2b3035753bd55303ff9",
+    "poNumber": "PO-20251016-019",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68f07912c0a5db07d4428b84",
+    "orderDate": "2025-10-16T07:45:55.087Z",
+    "expectedDate": "2025-10-17T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "shippingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "lines": [
+      {
+        "productId": "68edd8b9afe7f3a9a871a366",
+        "quantity": 501,
+        "price": 2345,
+        "gst": 2,
+        "lastPrice": 2000,
+        "currentPrice": 2345,
+        "last30DayPurchaseQuantity": 80,
+        "total": 1198341.9,
+        "_id": "68f0a2b3035753bd55303ffa"
+      }
+    ],
+    "subtotal": 1174845,
+    "gstTotal": 23496.9,
+    "total": 1198341.9,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "vdgssfg",
+    "createdAt": "2025-10-16T07:45:55.124Z",
+    "updatedAt": "2025-10-16T07:46:29.752Z",
+    "__v": 0
+  },
+  {
+    "_id": "68f1ecc6d661d179bdbd8fe5",
+    "poNumber": "PO-20251017-020",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68f07912c0a5db07d4428b84",
+    "orderDate": "2025-10-17T07:14:14.073Z",
+    "expectedDate": "2025-10-18T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "shippingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "lines": [
+      {
+        "productId": "68e7491e52c20af5a082a94b",
+        "quantity": 441,
+        "price": 200,
+        "gst": 12,
+        "lastPrice": 190,
+        "currentPrice": 200,
+        "last30DayPurchaseQuantity": 40,
+        "total": 98784.00000000001,
+        "_id": "68f1ecc6d661d179bdbd8fe6"
+      },
+      {
+        "productId": "68e8eda4335c79c343d52f87",
+        "quantity": 551,
+        "price": 3243,
+        "gst": 2,
+        "lastPrice": 3000,
+        "currentPrice": 3243,
+        "last30DayPurchaseQuantity": 200,
+        "total": 1822630.86,
+        "_id": "68f1ecc6d661d179bdbd8fe7"
+      }
+    ],
+    "subtotal": 1875093,
+    "gstTotal": 46321.86,
+    "total": 1921414.86,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "gg",
+    "createdAt": "2025-10-17T07:14:14.083Z",
+    "updatedAt": "2025-10-17T10:01:38.481Z",
+    "__v": 0
+  },
+  {
+    "_id": "68f1f0fbd0f103bcb94fb9d8",
+    "poNumber": "PO-20251017-021",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68e8efdb3f5fd5a817866dea",
+    "orderDate": "2025-10-17T07:32:11.391Z",
+    "expectedDate": "2025-10-16T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "vidyaranyapura, Bangalore, Karnataka - 560043",
+    "shippingAddress": "vidyaranyapura, Bangalore, Karnataka - 560043",
+    "lines": [
+      {
+        "productId": "68edd8b9afe7f3a9a871a366",
+        "quantity": 201,
+        "price": 2345,
+        "gst": 2,
+        "lastPrice": 2000,
+        "currentPrice": 2345,
+        "last30DayPurchaseQuantity": 230,
+        "total": 480771.9,
+        "_id": "68f1f0fbd0f103bcb94fb9d9"
+      }
+    ],
+    "subtotal": 471345,
+    "gstTotal": 9426.9,
+    "total": 480771.9,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "gg",
+    "createdAt": "2025-10-17T07:32:11.401Z",
+    "updatedAt": "2025-10-17T10:01:34.854Z",
+    "__v": 0
+  },
+  {
+    "_id": "68f24a2bd32c8b353f6b5e38",
+    "poNumber": "PO-20251017-022",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68e8efdb3f5fd5a817866dea",
+    "orderDate": "2025-10-17T13:52:43.094Z",
+    "expectedDate": "2025-10-18T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "vidyaranyapura, Bangalore, Karnataka - 560043",
+    "shippingAddress": "vidyaranyapura, Bangalore, Karnataka - 560043",
+    "lines": [
+      {
+        "productId": "68e8eda4335c79c343d52f87",
+        "quantity": 100,
+        "price": 3243,
+        "gst": 2,
+        "lastPrice": 3000,
+        "currentPrice": 3243,
+        "last30DayPurchaseQuantity": 200,
+        "total": 330786,
+        "_id": "68f24a2bd32c8b353f6b5e39"
+      }
+    ],
+    "subtotal": 324300,
+    "gstTotal": 6486,
+    "total": 330786,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2025-10-17T13:52:43.116Z",
+    "updatedAt": "2025-10-17T13:53:15.426Z",
+    "__v": 0
+  },
+  {
+    "_id": "68f3189b33cffbd7e16aa76e",
+    "poNumber": "PO-20251018-023",
+    "supplierId": "68e806678c932a8ba433388b",
+    "warehouseId": "68f07912c0a5db07d4428b84",
+    "orderDate": "2025-10-18T04:33:31.569Z",
+    "expectedDate": "2025-10-19T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 45,
+    "billingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "shippingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "lines": [
+      {
+        "productId": "68edec883fe4850841054cdf",
+        "quantity": 91,
+        "price": 100,
+        "gst": 1,
+        "lastPrice": 100,
+        "currentPrice": 110,
+        "last30DayPurchaseQuantity": 80,
+        "total": 9191,
+        "_id": "68f3189b33cffbd7e16aa76f"
+      }
+    ],
+    "subtotal": 9100,
+    "gstTotal": 91,
+    "total": 9191,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "gg",
+    "createdAt": "2025-10-18T04:33:31.575Z",
+    "updatedAt": "2025-10-18T04:34:57.057Z",
+    "__v": 0
+  },
+  {
+    "_id": "68f318dd33cffbd7e16aa78f",
+    "poNumber": "PO-20251018-024",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2025-10-18T04:34:37.743Z",
+    "expectedDate": "2025-10-19T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "vijayanagar, Bangalore, Karnataka - 560043",
+    "shippingAddress": "vijayanagar, Bangalore, Karnataka - 560043",
+    "lines": [
+      {
+        "productId": "68edec883fe4850841054cdf",
+        "quantity": 51,
+        "price": 110,
+        "gst": 1,
+        "lastPrice": 100,
+        "currentPrice": 100,
+        "last30DayPurchaseQuantity": 70,
+        "total": 5666.1,
+        "_id": "68f318dd33cffbd7e16aa790"
+      }
+    ],
+    "subtotal": 5610,
+    "gstTotal": 56.1,
+    "total": 5666.1,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2025-10-18T04:34:37.747Z",
+    "updatedAt": "2025-10-18T04:34:54.169Z",
+    "__v": 0
+  },
+  {
+    "_id": "68f8a7382203537d6bc56883",
+    "poNumber": "PO-20251022-025",
+    "supplierId": "68e365d72c26392b1868c020",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2025-10-22T09:43:20.396Z",
+    "expectedDate": "2025-10-23T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 60,
+    "billingAddress": "vijayanagar, Bangalore, Karnataka - 560043",
+    "shippingAddress": "vijayanagar, Bangalore, Karnataka - 560043",
+    "lines": [
+      {
+        "productId": "68f32bc7e1fa0c4f66e0b417",
+        "quantity": 551,
+        "price": 2324,
+        "gst": 3,
+        "lastPrice": 2324,
+        "currentPrice": 2324,
+        "last30DayPurchaseQuantity": 50,
+        "total": 1318939.72,
+        "_id": "68f8a7382203537d6bc56884"
+      }
+    ],
+    "subtotal": 1280524,
+    "gstTotal": 38415.72,
+    "total": 1318939.72,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "gg",
+    "createdAt": "2025-10-22T09:43:20.408Z",
+    "updatedAt": "2025-10-22T09:43:39.548Z",
+    "__v": 0
+  },
+  {
+    "_id": "68f8b2fa61a252fd7b068670",
+    "poNumber": "PO-20251022-026",
+    "supplierId": "68e806678c932a8ba433388b",
+    "warehouseId": "68e8f06b3f5fd5a817866e02",
+    "orderDate": "2025-10-22T10:33:30.347Z",
+    "expectedDate": "2025-10-23T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 45,
+    "billingAddress": "North, Bangalore, Karnataka - 560067",
+    "shippingAddress": "North, Bangalore, Karnataka - 560067",
+    "lines": [
+      {
+        "productId": "68f32bc7e1fa0c4f66e0b417",
+        "quantity": 331,
+        "price": 2324,
+        "gst": 3,
+        "lastPrice": 2324,
+        "currentPrice": 2324,
+        "last30DayPurchaseQuantity": 50,
+        "total": 792321.3200000001,
+        "_id": "68f8b2fa61a252fd7b068671"
+      }
+    ],
+    "subtotal": 769244,
+    "gstTotal": 23077.32,
+    "total": 792321.32,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "gg",
+    "createdAt": "2025-10-22T10:33:30.354Z",
+    "updatedAt": "2025-10-22T10:33:38.399Z",
+    "__v": 0
+  },
+  {
+    "_id": "68f8b5df90f5b2316196b9e5",
+    "poNumber": "PO-20251022-027",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68f07912c0a5db07d4428b84",
+    "orderDate": "2025-10-22T10:45:51.794Z",
+    "expectedDate": "2025-10-24T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "shippingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "lines": [
+      {
+        "productId": "68e8eda4335c79c343d52f87",
+        "quantity": 411,
+        "price": 3243,
+        "gst": 2,
+        "lastPrice": 3243,
+        "currentPrice": 3243,
+        "last30DayPurchaseQuantity": 550,
+        "total": 1359530.46,
+        "_id": "68f8b5df90f5b2316196b9e6"
+      }
+    ],
+    "subtotal": 1332873,
+    "gstTotal": 26657.46,
+    "total": 1359530.46,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "hhjh",
+    "createdAt": "2025-10-22T10:45:51.806Z",
+    "updatedAt": "2025-10-22T10:45:54.819Z",
+    "__v": 0
+  },
+  {
+    "_id": "68f8baa49ab6b44babf1e1be",
+    "poNumber": "PO-20251022-028",
+    "supplierId": "68e806678c932a8ba433388b",
+    "warehouseId": "68f07912c0a5db07d4428b84",
+    "orderDate": "2025-10-22T11:06:12.431Z",
+    "expectedDate": "2025-10-23T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 45,
+    "billingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "shippingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "lines": [
+      {
+        "productId": "68e8eda4335c79c343d52f87",
+        "quantity": 211,
+        "price": 3243,
+        "gst": 2,
+        "lastPrice": 3243,
+        "currentPrice": 3243,
+        "last30DayPurchaseQuantity": 20,
+        "total": 697958.46,
+        "_id": "68f8baa49ab6b44babf1e1bf"
+      }
+    ],
+    "subtotal": 684273,
+    "gstTotal": 13685.460000000001,
+    "total": 697958.46,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "gg",
+    "createdAt": "2025-10-22T11:06:12.437Z",
+    "updatedAt": "2025-10-22T11:06:15.432Z",
+    "__v": 0
+  },
+  {
+    "_id": "68f8bbf29ab6b44babf1e99b",
+    "poNumber": "PO-20251022-029",
+    "supplierId": "68e806678c932a8ba433388b",
+    "warehouseId": "68e8f06b3f5fd5a817866e02",
+    "orderDate": "2025-10-22T11:11:46.854Z",
+    "expectedDate": "2025-10-22T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 45,
+    "billingAddress": "North, Bangalore, Karnataka - 560067",
+    "shippingAddress": "North, Bangalore, Karnataka - 560067",
+    "lines": [
+      {
+        "productId": "68e7491e52c20af5a082a94b",
+        "quantity": 551,
+        "price": 200,
+        "gst": 12,
+        "lastPrice": 200,
+        "currentPrice": 200,
+        "last30DayPurchaseQuantity": 680,
+        "total": 123424.00000000001,
+        "_id": "68f8bbf29ab6b44babf1e99c"
+      }
+    ],
+    "subtotal": 110200,
+    "gstTotal": 13224,
+    "total": 123424,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "luk",
+    "createdAt": "2025-10-22T11:11:46.862Z",
+    "updatedAt": "2025-10-22T11:11:52.550Z",
+    "__v": 0
+  },
+  {
+    "_id": "68ff47e186a243cb20c186df",
+    "poNumber": "PO-20251027-030",
+    "supplierId": "68e806678c932a8ba433388b",
+    "warehouseId": "68e8f06b3f5fd5a817866e02",
+    "orderDate": "2025-10-27T10:22:25.067Z",
+    "expectedDate": "2025-10-28T00:00:00.000Z",
+    "status": "Draft",
+    "paymentTermsDays": 45,
+    "billingAddress": "Pranttik 3 1st Flr room no 1\n21/20 good she'd road",
+    "shippingAddress": "Pranttik 3 1st Flr room no 1\n21/20 good she'd road",
+    "lines": [
+      {
+        "productId": "68f32bc7e1fa0c4f66e0b417",
+        "quantity": 1,
+        "price": 2324,
+        "gst": 3,
+        "lastPrice": 2324,
+        "currentPrice": 2324,
+        "last30DayPurchaseQuantity": 0,
+        "total": 2393.7200000000003,
+        "_id": "68ff47e186a243cb20c186e0"
+      },
+      {
+        "productId": "68edec883fe4850841054cdf",
+        "quantity": 1,
+        "price": 100,
+        "gst": 1,
+        "lastPrice": 110,
+        "currentPrice": 100,
+        "last30DayPurchaseQuantity": 0,
+        "total": 101,
+        "_id": "68ff47e186a243cb20c186e1"
+      }
+    ],
+    "subtotal": 2424,
+    "gstTotal": 70.72,
+    "total": 2494.72,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "gsgs",
+    "createdAt": "2025-10-27T10:22:25.070Z",
+    "updatedAt": "2025-10-27T10:22:25.070Z",
+    "__v": 0
+  },
+  {
+    "_id": "69004e25adb4a25953a66996",
+    "poNumber": "PO-20251028-031",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68f07912c0a5db07d4428b84",
+    "orderDate": "2025-10-28T05:01:25.820Z",
+    "expectedDate": "2025-10-16T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "Bangalore",
+    "shippingAddress": "Bangalore",
+    "lines": [
+      {
+        "productId": "68f9df419657849fa2886c40",
+        "quantity": 10,
+        "price": 2000,
+        "gst": 12,
+        "lastPrice": 0,
+        "currentPrice": 2000,
+        "last30DayPurchaseQuantity": 0,
+        "total": 22400.000000000004,
+        "_id": "69004e25adb4a25953a66997"
+      }
+    ],
+    "subtotal": 20000,
+    "gstTotal": 2400,
+    "total": 22400,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "sss",
+    "createdAt": "2025-10-28T05:01:25.823Z",
+    "updatedAt": "2025-10-28T05:01:37.984Z",
+    "__v": 0
+  },
+  {
+    "_id": "69087078f9719fb377f7746b",
+    "poNumber": "PO-20251103-032",
+    "supplierId": "68e806678c932a8ba433388b",
+    "warehouseId": "68e8f06b3f5fd5a817866e02",
+    "orderDate": "2025-11-03T09:06:00.845Z",
+    "expectedDate": "2025-11-04T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 45,
+    "billingAddress": "North, Bangalore, Karnataka - 560067",
+    "shippingAddress": "North, Bangalore, Karnataka - 560067",
+    "lines": [
+      {
+        "productId": "68f9df419657849fa2886c40",
+        "quantity": 290,
+        "price": 2000,
+        "gst": 12,
+        "lastPrice": 1900,
+        "currentPrice": 2000,
+        "last30DayPurchaseQuantity": 50,
+        "total": 649600.0000000001,
+        "_id": "69087078f9719fb377f7746c"
+      }
+    ],
+    "subtotal": 580000,
+    "gstTotal": 69600,
+    "total": 649600,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "gg",
+    "createdAt": "2025-11-03T09:06:00.852Z",
+    "updatedAt": "2025-11-03T09:06:04.672Z",
+    "__v": 0
+  },
+  {
+    "_id": "69087309f9719fb377f77d61",
+    "poNumber": "PO-20251103-033",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2025-11-03T09:16:57.448Z",
+    "expectedDate": "2025-11-05T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "vijayanagar, Bangalore, Karnataka - 560043",
+    "shippingAddress": "vijayanagar, Bangalore, Karnataka - 560043",
+    "lines": [
+      {
+        "productId": "68f9df419657849fa2886c40",
+        "quantity": 100,
+        "price": 2000,
+        "gst": 12,
+        "lastPrice": 2000,
+        "currentPrice": 2000,
+        "last30DayPurchaseQuantity": 290,
+        "total": 224000.00000000003,
+        "_id": "69087309f9719fb377f77d62"
+      }
+    ],
+    "subtotal": 200000,
+    "gstTotal": 24000,
+    "total": 224000,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "gg",
+    "createdAt": "2025-11-03T09:16:57.453Z",
+    "updatedAt": "2025-11-03T09:17:00.831Z",
+    "__v": 0
+  },
+  {
+    "_id": "6908863af9719fb377f78403",
+    "poNumber": "PO-20251103-034",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68f07912c0a5db07d4428b84",
+    "orderDate": "2025-11-03T10:38:50.258Z",
+    "expectedDate": "2025-11-04T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "shippingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "lines": [
+      {
+        "productId": "68f9df419657849fa2886c40",
+        "quantity": 100,
+        "price": 2000,
+        "gst": 12,
+        "lastPrice": 2000,
+        "currentPrice": 2000,
+        "last30DayPurchaseQuantity": 550,
+        "total": 224000.00000000003,
+        "_id": "6908863af9719fb377f78404"
+      }
+    ],
+    "subtotal": 200000,
+    "gstTotal": 24000,
+    "total": 224000,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "gggbb",
+    "createdAt": "2025-11-03T10:38:50.262Z",
+    "updatedAt": "2025-11-03T10:38:55.413Z",
+    "__v": 0
+  },
+  {
+    "_id": "69089020f9719fb377f78d94",
+    "poNumber": "PO-20251103-035",
+    "supplierId": "68e365d72c26392b1868c020",
+    "warehouseId": "68e8f06b3f5fd5a817866e02",
+    "orderDate": "2025-11-03T11:21:04.259Z",
+    "expectedDate": "2025-11-08T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 60,
+    "billingAddress": "North, Bangalore, Karnataka - 560067",
+    "shippingAddress": "North, Bangalore, Karnataka - 560067",
+    "lines": [
+      {
+        "productId": "68e7491e52c20af5a082a94b",
+        "quantity": 431,
+        "price": 200,
+        "gst": 12,
+        "lastPrice": 200,
+        "currentPrice": 200,
+        "last30DayPurchaseQuantity": 560,
+        "total": 96544.00000000001,
+        "_id": "69089020f9719fb377f78d95"
+      }
+    ],
+    "subtotal": 86200,
+    "gstTotal": 10344,
+    "total": 96544,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "gg",
+    "createdAt": "2025-11-03T11:21:04.262Z",
+    "updatedAt": "2025-11-03T11:21:07.204Z",
+    "__v": 0
+  },
+  {
+    "_id": "6912d2357d17f18970f76f1b",
+    "poNumber": "PO-20251111-036",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68e8f06b3f5fd5a817866e02",
+    "orderDate": "2025-11-11T06:05:41.168Z",
+    "expectedDate": "2025-11-12T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "North, Bangalore, Karnataka - 560067",
+    "shippingAddress": "North, Bangalore, Karnataka - 560067",
+    "lines": [
+      {
+        "productId": "68f9df419657849fa2886c40",
+        "quantity": 100,
+        "price": 2000,
+        "gst": 12,
+        "lastPrice": 2000,
+        "currentPrice": 2000,
+        "last30DayPurchaseQuantity": 100,
+        "total": 224000.00000000003,
+        "_id": "6912d2357d17f18970f76f1c"
+      }
+    ],
+    "subtotal": 200000,
+    "gstTotal": 24000,
+    "total": 224000,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "hh",
+    "createdAt": "2025-11-11T06:05:41.173Z",
+    "updatedAt": "2025-11-11T06:05:51.659Z",
+    "__v": 0
+  },
+  {
+    "_id": "691313f77377d8c307ea69c5",
+    "poNumber": "PO-20251111-037",
+    "supplierId": "69130bc97377d8c307ea3766",
+    "warehouseId": "68f07912c0a5db07d4428b84",
+    "orderDate": "2025-11-11T10:46:15.619Z",
+    "expectedDate": "2025-11-11T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 30,
+    "billingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "shippingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "lines": [
+      {
+        "productId": "6912eb877377d8c307ea3358",
+        "quantity": 1,
+        "price": 100,
+        "gst": 5,
+        "lastPrice": 0,
+        "currentPrice": 100,
+        "last30DayPurchaseQuantity": 0,
+        "total": 105,
+        "_id": "691313f77377d8c307ea69c6"
+      }
+    ],
+    "subtotal": 100,
+    "gstTotal": 5,
+    "total": 105,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "zxdsdd",
+    "createdAt": "2025-11-11T10:46:15.621Z",
+    "updatedAt": "2025-11-11T10:46:33.807Z",
+    "__v": 0
+  },
+  {
+    "_id": "6913152a7377d8c307ea71bd",
+    "poNumber": "PO-20251111-038",
+    "supplierId": "69130bc97377d8c307ea3766",
+    "warehouseId": "68f07912c0a5db07d4428b84",
+    "orderDate": "2025-11-11T10:51:22.386Z",
+    "expectedDate": "2025-11-11T00:00:00.000Z",
+    "status": "Draft",
+    "paymentTermsDays": 30,
+    "billingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "shippingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "lines": [
+      {
+        "productId": "6912eb877377d8c307ea3358",
+        "quantity": 30,
+        "price": 100,
+        "gst": 5,
+        "lastPrice": 100,
+        "currentPrice": 100,
+        "last30DayPurchaseQuantity": 0,
+        "total": 3150,
+        "_id": "6913152a7377d8c307ea71be"
+      }
+    ],
+    "subtotal": 3000,
+    "gstTotal": 150,
+    "total": 3150,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "aaaa",
+    "createdAt": "2025-11-11T10:51:22.387Z",
+    "updatedAt": "2025-11-11T10:51:22.387Z",
+    "__v": 0
+  },
+  {
+    "_id": "6914622c79950542c4ba9c97",
+    "poNumber": "PO-20251112-039",
+    "supplierId": "68e365d72c26392b1868c020",
+    "warehouseId": "68f07912c0a5db07d4428b84",
+    "orderDate": "2025-11-12T10:32:12.777Z",
+    "expectedDate": "2025-11-12T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 60,
+    "billingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "shippingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "lines": [
+      {
+        "productId": "6914618279950542c4ba9b3f",
+        "quantity": 100,
+        "price": 1000,
+        "gst": 2,
+        "lastPrice": 0,
+        "currentPrice": 1000,
+        "last30DayPurchaseQuantity": 0,
+        "total": 102000,
+        "_id": "6914622c79950542c4ba9c98"
+      }
+    ],
+    "subtotal": 100000,
+    "gstTotal": 2000,
+    "total": 102000,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2025-11-12T10:32:12.780Z",
+    "updatedAt": "2025-11-12T10:33:16.029Z",
+    "__v": 0
+  },
+  {
+    "_id": "6933f0fbfd34b9af5e280438",
+    "poNumber": "PO-20251206-040",
+    "supplierId": "68e806678c932a8ba433388b",
+    "warehouseId": "68f07912c0a5db07d4428b84",
+    "orderDate": "2025-12-06T09:01:47.910Z",
+    "expectedDate": "2025-12-07T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 45,
+    "billingAddress": "Pranttik 3 1st Flr room no 1\n21/20 good she'd road",
+    "shippingAddress": "Pranttik 3 1st Flr room no 1\n21/20 good she'd road",
+    "lines": [
+      {
+        "productId": "6914618279950542c4ba9b3f",
+        "quantity": 50,
+        "price": 1000,
+        "gst": 2,
+        "lastPrice": 0.01,
+        "currentPrice": 1000,
+        "last30DayPurchaseQuantity": 0,
+        "total": 51000,
+        "_id": "6933f0fbfd34b9af5e280439"
+      }
+    ],
+    "subtotal": 50000,
+    "gstTotal": 1000,
+    "total": 51000,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "ssss",
+    "createdAt": "2025-12-06T09:01:47.914Z",
+    "updatedAt": "2025-12-06T09:02:05.704Z",
+    "__v": 0
+  },
+  {
+    "_id": "69367c7847e5703364730171",
+    "poNumber": "PO-20251208-041",
+    "supplierId": "69130bc97377d8c307ea3766",
+    "warehouseId": "68f07912c0a5db07d4428b84",
+    "orderDate": "2025-12-08T07:21:28.390Z",
+    "expectedDate": "2025-12-08T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 30,
+    "billingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "shippingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "lines": [
+      {
+        "productId": "69367b9c47e5703364730003",
+        "quantity": 100,
+        "price": 80,
+        "gst": 1,
+        "lastPrice": 80,
+        "currentPrice": 100,
+        "last30DayPurchaseQuantity": 0,
+        "total": 8080,
+        "_id": "69367c7847e5703364730172"
+      }
+    ],
+    "subtotal": 8000,
+    "gstTotal": 80,
+    "total": 8080,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2025-12-08T07:21:28.392Z",
+    "updatedAt": "2025-12-08T07:21:37.888Z",
+    "__v": 0
+  },
+  {
+    "_id": "693a770c68192aaf19abe513",
+    "poNumber": "PO-20251211-042",
+    "supplierId": "69130bc97377d8c307ea3766",
+    "warehouseId": "68f07912c0a5db07d4428b84",
+    "orderDate": "2025-12-11T07:47:24.494Z",
+    "expectedDate": "2025-12-12T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 30,
+    "billingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "shippingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "lines": [
+      {
+        "productId": "69367b9c47e5703364730003",
+        "quantity": 10,
+        "price": 100,
+        "gst": 1,
+        "lastPrice": 80,
+        "currentPrice": 100,
+        "last30DayPurchaseQuantity": 0,
+        "total": 1010,
+        "_id": "693a770c68192aaf19abe514"
+      }
+    ],
+    "subtotal": 1000,
+    "gstTotal": 10,
+    "total": 1010,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2025-12-11T07:47:24.496Z",
+    "updatedAt": "2025-12-11T07:47:43.470Z",
+    "__v": 0
+  },
+  {
+    "_id": "693a8a0ffb527eda54cb24d1",
+    "poNumber": "PO-20251211-043",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68e8f06b3f5fd5a817866e02",
+    "orderDate": "2025-12-11T09:08:31.289Z",
+    "expectedDate": "2025-12-11T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "North, Bangalore, Karnataka - 560067",
+    "shippingAddress": "North, Bangalore, Karnataka - 560067",
+    "lines": [
+      {
+        "productId": "693a89b6fb527eda54cb2475",
+        "quantity": 1,
+        "price": 100,
+        "gst": 5,
+        "lastPrice": 0,
+        "currentPrice": 100,
+        "last30DayPurchaseQuantity": 0,
+        "total": 105,
+        "_id": "693a8a0ffb527eda54cb24d2"
+      }
+    ],
+    "subtotal": 100,
+    "gstTotal": 5,
+    "total": 105,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2025-12-11T09:08:31.292Z",
+    "updatedAt": "2025-12-11T09:08:40.392Z",
+    "__v": 0
+  },
+  {
+    "_id": "693aab90a61148cb07b1ef31",
+    "poNumber": "PO-20251211-044",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68f07912c0a5db07d4428b84",
+    "orderDate": "2025-12-11T11:31:28.157Z",
+    "expectedDate": "2025-12-12T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "shippingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "lines": [
+      {
+        "productId": "68edec883fe4850841054cdf",
+        "quantity": 1,
+        "price": 100,
+        "gst": 1,
+        "lastPrice": 110,
+        "currentPrice": 100,
+        "last30DayPurchaseQuantity": 50,
+        "total": 101,
+        "_id": "693aab90a61148cb07b1ef32"
+      }
+    ],
+    "subtotal": 100,
+    "gstTotal": 1,
+    "total": 101,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2025-12-11T11:31:28.161Z",
+    "updatedAt": "2025-12-11T11:31:40.311Z",
+    "__v": 0
+  },
+  {
+    "_id": "693aadbba61148cb07b1f41d",
+    "poNumber": "PO-20251211-045",
+    "supplierId": "69130bc97377d8c307ea3766",
+    "warehouseId": "68f07912c0a5db07d4428b84",
+    "orderDate": "2025-12-11T11:40:43.440Z",
+    "expectedDate": "2025-12-11T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 30,
+    "billingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "shippingAddress": "fhdgvyuy  y uru, Bangalore, Karnataka - 560077",
+    "lines": [
+      {
+        "productId": "693a89b6fb527eda54cb2475",
+        "quantity": 1,
+        "price": 120,
+        "gst": 5,
+        "lastPrice": 0,
+        "currentPrice": 120,
+        "last30DayPurchaseQuantity": 0,
+        "total": 126,
+        "_id": "693aadbba61148cb07b1f41e"
+      }
+    ],
+    "subtotal": 120,
+    "gstTotal": 6,
+    "total": 126,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2025-12-11T11:40:43.442Z",
+    "updatedAt": "2025-12-11T11:41:03.941Z",
+    "__v": 0
+  },
+  {
+    "_id": "69675de2f70c5e2117fccc74",
+    "poNumber": "PO-20260114-046",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68e8f06b3f5fd5a817866e02",
+    "orderDate": "2026-01-14T09:12:02.245Z",
+    "expectedDate": "2026-01-15T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "North, Bangalore, Karnataka - 560067",
+    "shippingAddress": "North, Bangalore, Karnataka - 560067",
+    "lines": [
+      {
+        "productId": "69673b5ec4463d5f9e75299d",
+        "quantity": 51,
+        "price": 39,
+        "gst": 3,
+        "lastPrice": 0,
+        "currentPrice": 33,
+        "last30DayPurchaseQuantity": 0,
+        "total": 2048.67,
+        "_id": "69675de2f70c5e2117fccc75"
+      }
+    ],
+    "subtotal": 1989,
+    "gstTotal": 59.669999999999995,
+    "total": 2048.67,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "ok",
+    "createdAt": "2026-01-14T09:12:02.258Z",
+    "updatedAt": "2026-01-14T09:13:18.359Z",
+    "__v": 0
+  },
+  {
+    "_id": "696b3e86a6d83e228af10d4c",
+    "poNumber": "PO-20260117-047",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-01-17T07:47:18.557Z",
+    "expectedDate": "2026-01-18T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6969fb7ab7dee0bae29842ed",
+        "quantity": 200,
+        "price": 1541,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 1541,
+        "last30DayPurchaseQuantity": 0,
+        "total": 363676,
+        "_id": "696b3e86a6d83e228af10d4d"
+      }
+    ],
+    "subtotal": 308200,
+    "gstTotal": 55476,
+    "total": 363676,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-01-17T07:47:18.559Z",
+    "updatedAt": "2026-01-17T07:47:26.648Z",
+    "__v": 0
+  },
+  {
+    "_id": "696e02fc7875d85a043d3b7f",
+    "poNumber": "PO-20260119-048",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-01-19T10:10:04.190Z",
+    "expectedDate": "2026-01-20T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "696dbc6c28b5f6168171ebfa",
+        "quantity": 100,
+        "price": 234,
+        "gst": 2,
+        "lastPrice": 0,
+        "currentPrice": 234,
+        "last30DayPurchaseQuantity": 0,
+        "total": 23868,
+        "_id": "696e02fc7875d85a043d3b80"
+      },
+      {
+        "productId": "696dbcde28b5f6168171ec4b",
+        "quantity": 100,
+        "price": 344,
+        "gst": 4,
+        "lastPrice": 0,
+        "currentPrice": 344,
+        "last30DayPurchaseQuantity": 0,
+        "total": 35776,
+        "_id": "696e02fc7875d85a043d3b81"
+      }
+    ],
+    "subtotal": 57800,
+    "gstTotal": 1844,
+    "total": 59644,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "gg",
+    "createdAt": "2026-01-19T10:10:04.198Z",
+    "updatedAt": "2026-01-19T10:10:08.959Z",
+    "__v": 0
+  },
+  {
+    "_id": "696f66492a5b528965591738",
+    "poNumber": "PO-20260120-049",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-01-20T11:26:01.632Z",
+    "expectedDate": "2026-01-21T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "696ce6d40588aebfaecac52f",
+        "quantity": 190,
+        "price": 250,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 250,
+        "last30DayPurchaseQuantity": 0,
+        "total": 56050,
+        "_id": "696f66492a5b528965591739"
+      }
+    ],
+    "subtotal": 47500,
+    "gstTotal": 8550,
+    "total": 56050,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-01-20T11:26:01.635Z",
+    "updatedAt": "2026-01-20T11:26:10.178Z",
+    "__v": 0
+  },
+  {
+    "_id": "69709b25b6d600ecf14f6de8",
+    "poNumber": "PO-20260121-050",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-01-21T09:23:49.982Z",
+    "expectedDate": "2026-01-22T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6969fc44b7dee0bae2984351",
+        "quantity": 100,
+        "price": 18500,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 18500,
+        "last30DayPurchaseQuantity": 0,
+        "total": 2183000,
+        "_id": "69709b25b6d600ecf14f6de9"
+      }
+    ],
+    "subtotal": 1850000,
+    "gstTotal": 333000,
+    "total": 2183000,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-01-21T09:23:49.992Z",
+    "updatedAt": "2026-01-21T09:23:54.180Z",
+    "__v": 0
+  },
+  {
+    "_id": "6970be3e03ab217a676117ef",
+    "poNumber": "PO-20260121-051",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-01-21T11:53:34.508Z",
+    "expectedDate": "2026-01-22T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "696a223e92f73fb83d564b80",
+        "quantity": 200,
+        "price": 190,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 123,
+        "last30DayPurchaseQuantity": 0,
+        "total": 44840,
+        "_id": "6970be3e03ab217a676117f0"
+      }
+    ],
+    "subtotal": 38000,
+    "gstTotal": 6840,
+    "total": 44840,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-01-21T11:53:34.511Z",
+    "updatedAt": "2026-01-21T11:53:41.254Z",
+    "__v": 0
+  },
+  {
+    "_id": "69720fd07e8f2f3ead41d778",
+    "poNumber": "PO-20260122-052",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-01-22T11:53:52.802Z",
+    "expectedDate": "2026-01-23T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "696cea0a0588aebfaecac617",
+        "quantity": 100,
+        "price": 201,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 201,
+        "last30DayPurchaseQuantity": 0,
+        "total": 23718,
+        "_id": "69720fd07e8f2f3ead41d779"
+      }
+    ],
+    "subtotal": 20100,
+    "gstTotal": 3618,
+    "total": 23718,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-01-22T11:53:52.821Z",
+    "updatedAt": "2026-01-22T11:53:57.477Z",
+    "__v": 0
+  },
+  {
+    "_id": "69721537cbaf4b4b138c9fc1",
+    "poNumber": "PO-20260122-053",
+    "supplierId": "69130bc97377d8c307ea3766",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-01-22T12:16:55.784Z",
+    "expectedDate": "2026-01-23T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 30,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6971ee886ff1360e0143a587",
+        "quantity": 10,
+        "price": 1500,
+        "gst": 5,
+        "lastPrice": 0,
+        "currentPrice": 1500,
+        "last30DayPurchaseQuantity": 0,
+        "total": 15750,
+        "_id": "69721537cbaf4b4b138c9fc2"
+      }
+    ],
+    "subtotal": 15000,
+    "gstTotal": 750,
+    "total": 15750,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-01-22T12:16:55.787Z",
+    "updatedAt": "2026-01-22T12:17:25.631Z",
+    "__v": 0
+  },
+  {
+    "_id": "6973045321df7861e0eec8b3",
+    "poNumber": "PO-20260123-054",
+    "supplierId": "69130bc97377d8c307ea3766",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-01-23T05:17:07.475Z",
+    "expectedDate": "2026-01-23T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 30,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6971b32839870bccbb5cc5c1",
+        "quantity": 1,
+        "price": 1000,
+        "gst": 2,
+        "lastPrice": 0,
+        "currentPrice": 1000,
+        "last30DayPurchaseQuantity": 0,
+        "total": 1020,
+        "_id": "6973045321df7861e0eec8b4"
+      }
+    ],
+    "subtotal": 1000,
+    "gstTotal": 20,
+    "total": 1020,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-01-23T05:17:07.478Z",
+    "updatedAt": "2026-01-23T05:18:15.553Z",
+    "__v": 0
+  },
+  {
+    "_id": "697348543b57455e7d7702a4",
+    "poNumber": "PO-20260123-055",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-01-23T10:07:16.085Z",
+    "expectedDate": "2026-01-24T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6969d72d0ae8fdeacfdb68d1",
+        "quantity": 10,
+        "price": 15000,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 15000,
+        "last30DayPurchaseQuantity": 0,
+        "total": 177000,
+        "_id": "697348543b57455e7d7702a5"
+      }
+    ],
+    "subtotal": 150000,
+    "gstTotal": 27000,
+    "total": 177000,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-01-23T10:07:16.099Z",
+    "updatedAt": "2026-01-23T10:07:20.327Z",
+    "__v": 0
+  },
+  {
+    "_id": "69745055a1be83a6a762a765",
+    "poNumber": "PO-20260124-056",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-01-24T04:53:41.742Z",
+    "expectedDate": "2026-01-25T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6971ee886ff1360e0143a587",
+        "quantity": 100,
+        "price": 1400,
+        "gst": 5,
+        "lastPrice": 0,
+        "currentPrice": 1500,
+        "last30DayPurchaseQuantity": 0,
+        "total": 147000,
+        "_id": "69745055a1be83a6a762a766"
+      }
+    ],
+    "subtotal": 140000,
+    "gstTotal": 7000,
+    "total": 147000,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-01-24T04:53:41.759Z",
+    "updatedAt": "2026-01-24T04:53:45.270Z",
+    "__v": 0
+  },
+  {
+    "_id": "69745a36084db811b8ddfe97",
+    "poNumber": "PO-20260124-057",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-01-24T05:35:50.828Z",
+    "expectedDate": "2026-01-26T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6971b32839870bccbb5cc5c1",
+        "quantity": 100,
+        "price": 900,
+        "gst": 2,
+        "lastPrice": 0,
+        "currentPrice": 1000,
+        "last30DayPurchaseQuantity": 0,
+        "total": 91800,
+        "_id": "69745a36084db811b8ddfe98"
+      },
+      {
+        "productId": "6971ee886ff1360e0143a587",
+        "quantity": 100,
+        "price": 1450,
+        "gst": 5,
+        "lastPrice": 1400,
+        "currentPrice": 1500,
+        "last30DayPurchaseQuantity": 0,
+        "total": 152250,
+        "_id": "69745a36084db811b8ddfe99"
+      }
+    ],
+    "subtotal": 235000,
+    "gstTotal": 9050,
+    "total": 244050,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-01-24T05:35:50.851Z",
+    "updatedAt": "2026-01-24T05:35:58.881Z",
+    "__v": 0
+  },
+  {
+    "_id": "69745b9b084db811b8de0161",
+    "poNumber": "PO-20260124-058",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-01-24T05:41:47.026Z",
+    "expectedDate": "2026-01-28T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "Bangalore",
+    "shippingAddress": "Bangalore",
+    "lines": [
+      {
+        "productId": "696cea0a0588aebfaecac617",
+        "quantity": 100,
+        "price": 209,
+        "gst": 18,
+        "lastPrice": 201,
+        "currentPrice": 201,
+        "last30DayPurchaseQuantity": 0,
+        "total": 24662,
+        "_id": "69745b9b084db811b8de0162"
+      }
+    ],
+    "subtotal": 20900,
+    "gstTotal": 3762,
+    "total": 24662,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-01-24T05:41:47.033Z",
+    "updatedAt": "2026-01-24T05:41:50.645Z",
+    "__v": 0
+  },
+  {
+    "_id": "6978a02fca7bab8c1e5cac68",
+    "poNumber": "PO-20260127-059",
+    "supplierId": "68ede165cab041c7e841b7bc",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-01-27T11:23:27.826Z",
+    "expectedDate": "2026-01-28T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "696cea0a0588aebfaecac617",
+        "quantity": 100,
+        "price": 290,
+        "gst": 18,
+        "lastPrice": 209,
+        "currentPrice": 290,
+        "last30DayPurchaseQuantity": 0,
+        "total": 34220,
+        "_id": "6978a02fca7bab8c1e5cac69"
+      }
+    ],
+    "subtotal": 29000,
+    "gstTotal": 5220,
+    "total": 34220,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-01-27T11:23:27.828Z",
+    "updatedAt": "2026-01-27T11:23:34.345Z",
+    "__v": 0
+  },
+  {
+    "_id": "6978f41ee1643566de925f4f",
+    "poNumber": "PO-20260127-060",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-01-27T17:21:34.775Z",
+    "expectedDate": "2026-01-29T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6978ec03e1643566de925540",
+        "quantity": 25,
+        "price": 2500,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 2500,
+        "last30DayPurchaseQuantity": 0,
+        "total": 73750,
+        "_id": "6978f41ee1643566de925f50"
+      },
+      {
+        "productId": "6978ea82e1643566de9253f9",
+        "quantity": 30,
+        "price": 990,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 990,
+        "last30DayPurchaseQuantity": 0,
+        "total": 35046,
+        "_id": "6978f41ee1643566de925f51"
+      }
+    ],
+    "subtotal": 92200,
+    "gstTotal": 16596,
+    "total": 108796,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-01-27T17:21:34.778Z",
+    "updatedAt": "2026-01-27T17:22:52.496Z",
+    "__v": 0
+  },
+  {
+    "_id": "6979c01beb98900d30cdcb8b",
+    "poNumber": "PO-20260128-061",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-01-28T07:51:55.043Z",
+    "expectedDate": "2026-01-29T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 15,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6979b839be2f2eaac8767ccd",
+        "quantity": 100,
+        "price": 300,
+        "gst": 12,
+        "lastPrice": 0,
+        "currentPrice": 300,
+        "last30DayPurchaseQuantity": 0,
+        "total": 33600,
+        "_id": "6979c01beb98900d30cdcb8c"
+      }
+    ],
+    "subtotal": 30000,
+    "gstTotal": 3600,
+    "total": 33600,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-01-28T07:51:55.047Z",
+    "updatedAt": "2026-01-28T07:51:59.271Z",
+    "__v": 0
+  },
+  {
+    "_id": "6979ffe7a6d0cbd0de3ff628",
+    "poNumber": "PO-20260128-062",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-01-28T12:24:07.011Z",
+    "expectedDate": "2026-01-29T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 25,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6979b839be2f2eaac8767ccd",
+        "quantity": 20,
+        "price": 300,
+        "gst": 12,
+        "lastPrice": 300,
+        "currentPrice": 300,
+        "last30DayPurchaseQuantity": 0,
+        "total": 6720.000000000001,
+        "_id": "6979ffe7a6d0cbd0de3ff629"
+      }
+    ],
+    "subtotal": 6000,
+    "gstTotal": 720,
+    "total": 6720,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-01-28T12:24:07.014Z",
+    "updatedAt": "2026-01-28T12:25:01.549Z",
+    "__v": 0
+  },
+  {
+    "_id": "697b302b0f3f5d530665d551",
+    "poNumber": "PO-20260129-063",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-01-29T10:02:19.314Z",
+    "expectedDate": "2026-01-30T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 25,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6979b839be2f2eaac8767ccd",
+        "quantity": 1,
+        "price": 300,
+        "gst": 12,
+        "lastPrice": 300,
+        "currentPrice": 300,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": true,
+          "directDiscountPercentage": 6,
+          "floatingDiscountRange": {
+            "enabled": true,
+            "min": 0,
+            "max": 10
+          },
+          "referenceFloatingDiscount": 2,
+          "potentialDiscountedPrice": 282,
+          "originalPrice": 300,
+          "applicableDiscounts": [
+            {
+              "id": "6979bfdfeb98900d30cdcb02",
+              "name": "purchase",
+              "directDiscountPercentage": 6,
+              "floatingDiscountEnabled": true,
+              "floatingDiscountMin": 0,
+              "floatingDiscountMax": 10,
+              "_id": "697b302b0f3f5d530665d553"
+            }
+          ]
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 336.00000000000006,
+        "_id": "697b302b0f3f5d530665d552"
+      }
+    ],
+    "subtotal": 300,
+    "gstTotal": 36,
+    "total": 336,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-01-29T10:02:19.327Z",
+    "updatedAt": "2026-01-29T10:17:05.842Z",
+    "__v": 0
+  },
+  {
+    "_id": "697d8ed19c16fa921903e23c",
+    "poNumber": "PO-20260131-064",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-01-31T05:10:41.612Z",
+    "expectedDate": "2026-02-04T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 25,
+    "billingAddress": "amddd",
+    "shippingAddress": "amddd",
+    "lines": [
+      {
+        "productId": "6979b839be2f2eaac8767ccd",
+        "quantity": 10,
+        "price": 300,
+        "gst": 12,
+        "lastPrice": 300,
+        "currentPrice": 300,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": true,
+          "directDiscountPercentage": 6,
+          "floatingDiscountRange": {
+            "enabled": true,
+            "min": 0,
+            "max": 10
+          },
+          "referenceFloatingDiscount": 2,
+          "potentialDiscountedPrice": 282,
+          "originalPrice": 300,
+          "applicableDiscounts": [
+            {
+              "id": "6979bfdfeb98900d30cdcb02",
+              "name": "purchase",
+              "directDiscountPercentage": 6,
+              "floatingDiscountEnabled": true,
+              "floatingDiscountMin": 0,
+              "floatingDiscountMax": 10,
+              "_id": "697d8ed19c16fa921903e23e"
+            }
+          ]
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 3360.0000000000005,
+        "_id": "697d8ed19c16fa921903e23d"
+      }
+    ],
+    "subtotal": 3000,
+    "gstTotal": 360,
+    "total": 3360,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-01-31T05:10:41.628Z",
+    "updatedAt": "2026-01-31T05:10:46.242Z",
+    "__v": 0
+  },
+  {
+    "_id": "697da1b7bcc269dd3c27e1af",
+    "poNumber": "PO-20260131-065",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-01-31T06:31:19.514Z",
+    "expectedDate": "2026-02-04T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 25,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6979b839be2f2eaac8767ccd",
+        "quantity": 100,
+        "price": 300,
+        "gst": 12,
+        "lastPrice": 300,
+        "currentPrice": 300,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": true,
+          "directDiscountPercentage": 6,
+          "floatingDiscountRange": {
+            "enabled": true,
+            "min": 0,
+            "max": 10
+          },
+          "referenceFloatingDiscount": 2,
+          "potentialDiscountedPrice": 282,
+          "originalPrice": 300,
+          "applicableDiscounts": [
+            {
+              "id": "6979bfdfeb98900d30cdcb02",
+              "name": "purchase",
+              "directDiscountPercentage": 6,
+              "floatingDiscountEnabled": true,
+              "floatingDiscountMin": 0,
+              "floatingDiscountMax": 10,
+              "_id": "697da1b7bcc269dd3c27e1b1"
+            }
+          ]
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 33600,
+        "_id": "697da1b7bcc269dd3c27e1b0"
+      },
+      {
+        "productId": "697b2ac00f3f5d530665d2c7",
+        "quantity": 220,
+        "price": 222,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 222,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 222,
+          "originalPrice": 222,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 57631.2,
+        "_id": "697da1b7bcc269dd3c27e1b2"
+      }
+    ],
+    "subtotal": 78840,
+    "gstTotal": 12391.199999999999,
+    "total": 91231.2,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-01-31T06:31:19.530Z",
+    "updatedAt": "2026-01-31T06:31:24.244Z",
+    "__v": 0
+  },
+  {
+    "_id": "6990561ce0c3190442dc0cc3",
+    "poNumber": "PO-20260214-066",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-02-14T11:01:48.029Z",
+    "expectedDate": "2026-02-15T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 25,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6980d80547673d095ce1ceba",
+        "quantity": 150,
+        "price": 1250,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 1250,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 1250,
+          "originalPrice": 1250,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 221250,
+        "_id": "6990561ce0c3190442dc0cc4"
+      },
+      {
+        "productId": "6980d75b47673d095ce1ce76",
+        "quantity": 140,
+        "price": 2500,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 2500,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 2500,
+          "originalPrice": 2500,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 413000,
+        "_id": "6990561ce0c3190442dc0cc5"
+      },
+      {
+        "productId": "6986143db72264de7280113e",
+        "quantity": 1001,
+        "price": 580,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 580,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 580,
+          "originalPrice": 580,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 685084.3999999999,
+        "_id": "6990561ce0c3190442dc0cc6"
+      },
+      {
+        "productId": "698614feb72264de728011af",
+        "quantity": 251,
+        "price": 4500,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 4500,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 4500,
+          "originalPrice": 4500,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 1332810,
+        "_id": "6990561ce0c3190442dc0cc7"
+      }
+    ],
+    "subtotal": 2247580,
+    "gstTotal": 404564.4,
+    "total": 2652144.4,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-02-14T11:01:48.034Z",
+    "updatedAt": "2026-02-14T11:02:06.598Z",
+    "__v": 0
+  },
+  {
+    "_id": "69905c53e0c3190442dc13a0",
+    "poNumber": "PO-20260214-067",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-02-14T11:28:19.267Z",
+    "expectedDate": "2026-02-15T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 25,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "69861894b72264de728014c0",
+        "quantity": 100,
+        "price": 9000,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 9000,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 9000,
+          "originalPrice": 9000,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 1062000,
+        "_id": "69905c53e0c3190442dc13a1"
+      },
+      {
+        "productId": "698617a7b72264de72801398",
+        "quantity": 761,
+        "price": 50,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 50,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 50,
+          "originalPrice": 50,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 44899,
+        "_id": "69905c53e0c3190442dc13a2"
+      },
+      {
+        "productId": "6980d80547673d095ce1ceba",
+        "quantity": 431,
+        "price": 1250,
+        "gst": 18,
+        "lastPrice": 1250,
+        "currentPrice": 1250,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 1250,
+          "originalPrice": 1250,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 635725,
+        "_id": "69905c53e0c3190442dc13a3"
+      }
+    ],
+    "subtotal": 1476800,
+    "gstTotal": 265824,
+    "total": 1742624,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "gg",
+    "createdAt": "2026-02-14T11:28:19.272Z",
+    "updatedAt": "2026-02-14T11:28:28.019Z",
+    "__v": 0
+  },
+  {
+    "_id": "6992e510cc0005ee28c85498",
+    "poNumber": "PO-20260216-068",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-02-16T09:36:16.570Z",
+    "expectedDate": "2026-02-18T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 25,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6979b839be2f2eaac8767ccd",
+        "quantity": 1,
+        "price": 300,
+        "gst": 12,
+        "lastPrice": 300,
+        "currentPrice": 300,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 300,
+          "originalPrice": 300,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 336.00000000000006,
+        "_id": "6992e510cc0005ee28c85499"
+      },
+      {
+        "productId": "6991fb0065eba9543a0ec61b",
+        "quantity": 501,
+        "price": 480,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 480,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 480,
+          "originalPrice": 480,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 283766.39999999997,
+        "_id": "6992e510cc0005ee28c8549a"
+      }
+    ],
+    "subtotal": 240780,
+    "gstTotal": 43322.4,
+    "total": 284102.4,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-02-16T09:36:16.581Z",
+    "updatedAt": "2026-02-16T09:36:21.706Z",
+    "__v": 0
+  },
+  {
+    "_id": "6992ed0ffe704d9c575d2863",
+    "poNumber": "PO-20260216-069",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-02-16T10:10:23.993Z",
+    "expectedDate": "2026-02-17T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 25,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6980d8ed47673d095ce1cf10",
+        "quantity": 109,
+        "price": 1750,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 1750,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 1750,
+          "originalPrice": 1750,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 225085,
+        "_id": "6992ed0ffe704d9c575d2864"
+      }
+    ],
+    "subtotal": 190750,
+    "gstTotal": 34335,
+    "total": 225085,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-02-16T10:10:24.007Z",
+    "updatedAt": "2026-02-16T10:10:27.530Z",
+    "__v": 0
+  },
+  {
+    "_id": "6992f574c2618e8143fd82ad",
+    "poNumber": "PO-20260216-070",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-02-16T10:46:12.340Z",
+    "expectedDate": "2026-02-17T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 25,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6980da4747673d095ce1cf6f",
+        "quantity": 105,
+        "price": 2750,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 2750,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 2750,
+          "originalPrice": 2750,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 340725,
+        "_id": "6992f574c2618e8143fd82ae"
+      }
+    ],
+    "subtotal": 288750,
+    "gstTotal": 51975,
+    "total": 340725,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-02-16T10:46:12.347Z",
+    "updatedAt": "2026-02-16T10:46:28.451Z",
+    "__v": 0
+  },
+  {
+    "_id": "6999a1f8be06838446a5ebb2",
+    "poNumber": "PO-20260221-071",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-02-21T12:15:52.681Z",
+    "expectedDate": "2026-02-22T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 25,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "699177c17d9ec5ba34ed968f",
+        "quantity": 50,
+        "price": 16500,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 16500,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 16500,
+          "originalPrice": 16500,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 973500,
+        "_id": "6999a1f8be06838446a5ebb3"
+      }
+    ],
+    "subtotal": 825000,
+    "gstTotal": 148500,
+    "total": 973500,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-02-21T12:15:52.683Z",
+    "updatedAt": "2026-02-21T12:16:09.648Z",
+    "__v": 0
+  },
+  {
+    "_id": "6999a2f6be06838446a5f23b",
+    "poNumber": "PO-20260221-072",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-02-21T12:20:06.647Z",
+    "expectedDate": "2026-02-23T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 25,
+    "billingAddress": "amddd",
+    "shippingAddress": "amddd",
+    "lines": [
+      {
+        "productId": "6996c798ccba2369f7ad7647",
+        "quantity": 50,
+        "price": 5505,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 5505,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 5505,
+          "originalPrice": 5505,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 324795,
+        "_id": "6999a2f6be06838446a5f23c"
+      }
+    ],
+    "subtotal": 275250,
+    "gstTotal": 49545,
+    "total": 324795,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-02-21T12:20:06.649Z",
+    "updatedAt": "2026-02-21T12:20:15.496Z",
+    "__v": 0
+  },
+  {
+    "_id": "699aacb6ae214e962e4ee1db",
+    "poNumber": "PO-20260222-073",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-02-22T07:13:58.923Z",
+    "expectedDate": "2026-02-24T00:00:00.000Z",
+    "status": "Draft",
+    "paymentTermsDays": 25,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6979b839be2f2eaac8767ccd",
+        "quantity": 12,
+        "price": 300,
+        "gst": 12,
+        "lastPrice": 300,
+        "currentPrice": 300,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 300,
+          "originalPrice": 300,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 4032.0000000000005,
+        "_id": "699aaeeaae214e962e4ee365"
+      },
+      {
+        "productId": "697b2ac00f3f5d530665d2c7",
+        "quantity": 11,
+        "price": 222,
+        "gst": 18,
+        "lastPrice": 222,
+        "currentPrice": 222,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 222,
+          "originalPrice": 222,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 2881.56,
+        "_id": "699aaeeaae214e962e4ee366"
+      }
+    ],
+    "subtotal": 6042,
+    "gstTotal": 871.56,
+    "total": 6913.5599999999995,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-02-22T07:13:58.928Z",
+    "updatedAt": "2026-02-22T07:23:22.934Z",
+    "__v": 1
+  },
+  {
+    "_id": "699c23575b387687ba0dcc7a",
+    "poNumber": "PO-20260223-074",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-02-23T09:52:23.238Z",
+    "expectedDate": "2026-02-24T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 25,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6996cb4fccba2369f7ad7837",
+        "quantity": 15,
+        "price": 600,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 600,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 600,
+          "originalPrice": 600,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 10620,
+        "_id": "699c23575b387687ba0dcc7b"
+      },
+      {
+        "productId": "6996cba7ccba2369f7ad78b9",
+        "quantity": 15,
+        "price": 1500,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 1500,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 1500,
+          "originalPrice": 1500,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 26550,
+        "_id": "699c23575b387687ba0dcc7c"
+      }
+    ],
+    "subtotal": 31500,
+    "gstTotal": 5670,
+    "total": 37170,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-02-23T09:52:23.247Z",
+    "updatedAt": "2026-02-23T09:52:26.821Z",
+    "__v": 0
+  },
+  {
+    "_id": "699c28dd8d931f6ea5e09c29",
+    "poNumber": "PO-20260223-075",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-02-23T10:15:57.641Z",
+    "expectedDate": "2026-02-24T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 25,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6996c585ccba2369f7ad7341",
+        "quantity": 3,
+        "price": 45,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 45,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 45,
+          "originalPrice": 45,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 159.29999999999998,
+        "_id": "699c28dd8d931f6ea5e09c2a"
+      },
+      {
+        "productId": "6996c5fbccba2369f7ad74c6",
+        "quantity": 4,
+        "price": 1105,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 1105,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 1105,
+          "originalPrice": 1105,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 5215.599999999999,
+        "_id": "699c28dd8d931f6ea5e09c2b"
+      }
+    ],
+    "subtotal": 4555,
+    "gstTotal": 819.9,
+    "total": 5374.9,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-02-23T10:15:57.647Z",
+    "updatedAt": "2026-02-23T10:16:16.692Z",
+    "__v": 0
+  },
+  {
+    "_id": "699c51a4a7876095c4a1d2d6",
+    "poNumber": "PO-20260223-076",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-02-23T13:09:56.246Z",
+    "expectedDate": "2026-02-24T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 25,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6996ea6605f626d0dc08eb97",
+        "quantity": 100,
+        "price": 1100,
+        "gst": 5,
+        "lastPrice": 0,
+        "currentPrice": 1100,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 1100,
+          "originalPrice": 1100,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 115500,
+        "_id": "699c51a4a7876095c4a1d2d7"
+      },
+      {
+        "productId": "699009ff7cbb3e1dbf91bde8",
+        "quantity": 1,
+        "price": 3900,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 3900,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 3900,
+          "originalPrice": 3900,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 4602,
+        "_id": "699c51a4a7876095c4a1d2d8"
+      }
+    ],
+    "subtotal": 113900,
+    "gstTotal": 6202,
+    "total": 120102,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-02-23T13:09:56.248Z",
+    "updatedAt": "2026-02-23T13:10:05.863Z",
+    "__v": 0
+  },
+  {
+    "_id": "699d56ccffeb35985224a44c",
+    "poNumber": "PO-20260224-077",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-02-24T07:44:12.682Z",
+    "expectedDate": "2026-02-25T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 25,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6996c430ccba2369f7ad724a",
+        "quantity": 1,
+        "price": 65,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 65,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 65,
+          "originalPrice": 65,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 76.7,
+        "_id": "699d56ccffeb35985224a44d"
+      }
+    ],
+    "subtotal": 65,
+    "gstTotal": 11.7,
+    "total": 76.7,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-02-24T07:44:12.686Z",
+    "updatedAt": "2026-02-24T07:44:23.011Z",
+    "__v": 0
+  },
+  {
+    "_id": "699d57caffeb35985224acda",
+    "poNumber": "PO-20260224-078",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-02-24T07:48:26.627Z",
+    "expectedDate": "2026-02-25T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 25,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "6996c430ccba2369f7ad724a",
+        "quantity": 3,
+        "price": 65,
+        "gst": 18,
+        "lastPrice": 65,
+        "currentPrice": 65,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 65,
+          "originalPrice": 65,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 230.1,
+        "_id": "699d57caffeb35985224acdb"
+      }
+    ],
+    "subtotal": 195,
+    "gstTotal": 35.1,
+    "total": 230.1,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-02-24T07:48:26.630Z",
+    "updatedAt": "2026-02-24T07:48:33.927Z",
+    "__v": 0
+  },
+  {
+    "_id": "699d9720e48a66f78aac8c57",
+    "poNumber": "PO-20260224-079",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-02-24T12:18:40.090Z",
+    "expectedDate": "2026-02-25T00:00:00.000Z",
+    "status": "Approved",
+    "paymentTermsDays": 25,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "699009ff7cbb3e1dbf91bde8",
+        "quantity": 10,
+        "price": 3900,
+        "gst": 18,
+        "lastPrice": 3900,
+        "currentPrice": 3900,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 3900,
+          "originalPrice": 3900,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 46020,
+        "_id": "699d9720e48a66f78aac8c58"
+      }
+    ],
+    "subtotal": 39000,
+    "gstTotal": 7020,
+    "total": 46020,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-02-24T12:18:40.091Z",
+    "updatedAt": "2026-02-24T12:18:47.914Z",
+    "__v": 0
+  },
+  {
+    "_id": "699d9e2ce48a66f78aacabf8",
+    "poNumber": "PO-20260224-080",
+    "supplierId": "6978efcce1643566de925992",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-02-24T12:48:44.277Z",
+    "expectedDate": "2026-02-26T00:00:00.000Z",
+    "status": "Draft",
+    "paymentTermsDays": 25,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "69861834b72264de72801465",
+        "quantity": 10,
+        "price": 7500,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 7500,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": true,
+          "directDiscountPercentage": 59,
+          "floatingDiscountRange": {
+            "enabled": true,
+            "min": 12,
+            "max": 100
+          },
+          "referenceFloatingDiscount": 20,
+          "potentialDiscountedPrice": 3075,
+          "originalPrice": 7500,
+          "applicableDiscounts": [
+            {
+              "id": "699ab12bae214e962e4ee512",
+              "name": "bulky",
+              "directDiscountPercentage": 59,
+              "floatingDiscountEnabled": true,
+              "floatingDiscountMin": 12,
+              "floatingDiscountMax": 100,
+              "_id": "699d9e2ce48a66f78aacabfa"
+            }
+          ]
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 88500,
+        "_id": "699d9e2ce48a66f78aacabf9"
+      }
+    ],
+    "subtotal": 75000,
+    "gstTotal": 13500,
+    "total": 88500,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-02-24T12:48:44.281Z",
+    "updatedAt": "2026-02-24T12:48:44.281Z",
+    "__v": 0
+  },
+  {
+    "_id": "699d9ee1e48a66f78aacac4b",
+    "poNumber": "PO-20260224-081",
+    "supplierId": "69130bc97377d8c307ea3766",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-02-24T12:51:45.034Z",
+    "expectedDate": "2026-02-27T00:00:00.000Z",
+    "status": "Draft",
+    "paymentTermsDays": 30,
+    "billingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "shippingAddress": "Mysore, Mysore, Karnataka - 560120",
+    "lines": [
+      {
+        "productId": "69861834b72264de72801465",
+        "quantity": 2,
+        "price": 7500,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 7500,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": true,
+          "directDiscountPercentage": 59,
+          "floatingDiscountRange": {
+            "enabled": true,
+            "min": 12,
+            "max": 100
+          },
+          "referenceFloatingDiscount": 15,
+          "potentialDiscountedPrice": 3075,
+          "originalPrice": 7500,
+          "applicableDiscounts": [
+            {
+              "id": "699ab12bae214e962e4ee512",
+              "name": "bulky",
+              "directDiscountPercentage": 59,
+              "floatingDiscountEnabled": true,
+              "floatingDiscountMin": 12,
+              "floatingDiscountMax": 100,
+              "_id": "699d9ee1e48a66f78aacac4d"
+            }
+          ]
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 17700,
+        "_id": "699d9ee1e48a66f78aacac4c"
+      }
+    ],
+    "subtotal": 15000,
+    "gstTotal": 2700,
+    "total": 17700,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-02-24T12:51:45.037Z",
+    "updatedAt": "2026-02-24T12:51:45.037Z",
+    "__v": 0
+  },
+  {
+    "_id": "699da08ee48a66f78aacb04c",
+    "poNumber": "PO-20260224-082",
+    "supplierId": "69130bc97377d8c307ea3766",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "orderDate": "2026-02-24T12:58:54.389Z",
+    "expectedDate": "2026-02-27T00:00:00.000Z",
+    "status": "Draft",
+    "paymentTermsDays": 30,
+    "billingAddress": "saaaa\nqaaaa",
+    "shippingAddress": "saaaa\nqaaaa",
+    "lines": [
+      {
+        "productId": "69861894b72264de728014c0",
+        "quantity": 5,
+        "price": 9000,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 9000,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 9000,
+          "originalPrice": 9000,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 53100,
+        "_id": "699da0c2e48a66f78aacb070"
+      },
+      {
+        "productId": "6980d8ed47673d095ce1cf10",
+        "quantity": 4,
+        "price": 1750,
+        "gst": 18,
+        "lastPrice": 0,
+        "currentPrice": 1750,
+        "last30DayPurchaseQuantity": 0,
+        "purchaseDiscount": {
+          "hasDiscount": false,
+          "directDiscountPercentage": 0,
+          "floatingDiscountRange": {
+            "enabled": false,
+            "min": 0,
+            "max": 0
+          },
+          "referenceFloatingDiscount": 0,
+          "potentialDiscountedPrice": 1750,
+          "originalPrice": 1750,
+          "applicableDiscounts": []
+        },
+        "supplierExtraDiscount": {
+          "hasDiscount": false,
+          "discountPercentage": 0
+        },
+        "total": 8260,
+        "_id": "699da0c2e48a66f78aacb071"
+      }
+    ],
+    "subtotal": 52000,
+    "gstTotal": 9360,
+    "total": 61360,
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "notes": "",
+    "createdAt": "2026-02-24T12:58:54.392Z",
+    "updatedAt": "2026-02-24T12:59:46.698Z",
+    "__v": 1
+  }
+]

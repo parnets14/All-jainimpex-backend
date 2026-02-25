@@ -20,7 +20,7 @@ const dealerLedgerSchema = new mongoose.Schema({
   // Transaction Type
   transactionType: {
     type: String,
-    enum: ["Invoice", "Payment", "Credit Note", "Adjustment", "Opening Balance"],
+    enum: ["Invoice", "Payment", "Credit Note", "Adjustment", "Opening Balance", "Advance Payment", "Advance Adjustment"],
     required: true
   },
   
@@ -139,6 +139,19 @@ const dealerLedgerSchema = new mongoose.Schema({
     type: String,
     enum: ["Active", "Settled", "Overdue", "Cancelled"],
     default: "Active"
+  },
+  
+  // Advance Payment Details
+  advanceDetails: {
+    isAdvance: Boolean,
+    advancePaymentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "DealerPayment"
+    },
+    adjustedInvoiceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "DealerInvoice"
+    }
   },
   
   // Aging Information

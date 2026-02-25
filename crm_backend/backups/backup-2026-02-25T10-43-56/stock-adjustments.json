@@ -1,0 +1,284 @@
+[
+  {
+    "_id": "69930bfcd02de00313083522",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "adjustmentType": "ADD",
+    "reason": "Stock Found",
+    "items": [
+      {
+        "productId": "699200bc65eba9543a0ecf51",
+        "productCode": "1166663",
+        "itemName": "tf pvc elbow 90mm",
+        "currentStock": 0,
+        "quantity": 50,
+        "unitPrice": 125,
+        "totalValue": 6250,
+        "remarks": "",
+        "_id": "69930bfcd02de00313083523"
+      },
+      {
+        "productId": "6992004b65eba9543a0eced6",
+        "productCode": "116516996",
+        "itemName": "tf swr bend 110mm",
+        "currentStock": 0,
+        "quantity": 50,
+        "unitPrice": 182,
+        "totalValue": 9100,
+        "remarks": "",
+        "_id": "69930bfcd02de00313083524"
+      },
+      {
+        "productId": "6991fb0065eba9543a0ec61b",
+        "productCode": "154154658",
+        "itemName": "tf cpvc nrv 20mm",
+        "currentStock": 500,
+        "quantity": 50,
+        "unitPrice": 480,
+        "totalValue": 24000,
+        "remarks": "",
+        "_id": "69930bfcd02de00313083525"
+      },
+      {
+        "productId": "6991ed81ca89ba93d16f2789",
+        "productCode": "5156536",
+        "itemName": "tf pvc 75mm pipe",
+        "currentStock": 0,
+        "quantity": 50,
+        "unitPrice": 905,
+        "totalValue": 45250,
+        "remarks": "",
+        "_id": "69930bfcd02de00313083526"
+      },
+      {
+        "productId": "699177c17d9ec5ba34ed968f",
+        "productCode": "51541587",
+        "itemName": "v ewc tecla 220mm",
+        "currentStock": 0,
+        "quantity": 5,
+        "unitPrice": 16500,
+        "totalValue": 82500,
+        "remarks": "",
+        "_id": "69930bfcd02de00313083527"
+      },
+      {
+        "productId": "699009ff7cbb3e1dbf91bde8",
+        "productCode": "51654165",
+        "itemName": "v oren wall mixer",
+        "currentStock": 0,
+        "quantity": 25,
+        "unitPrice": 3900,
+        "totalValue": 97500,
+        "remarks": "",
+        "_id": "69930bfcd02de00313083528"
+      },
+      {
+        "productId": "6980d8ed47673d095ce1cf10",
+        "productCode": "15454636",
+        "itemName": "v midas rg pillar cock",
+        "currentStock": 100,
+        "quantity": 50,
+        "unitPrice": 1750,
+        "totalValue": 87500,
+        "remarks": "",
+        "_id": "69930bfcd02de00313083529"
+      },
+      {
+        "productId": "69861834b72264de72801465",
+        "productCode": "1313168",
+        "itemName": "v clr unitone green",
+        "currentStock": 0,
+        "quantity": 10,
+        "unitPrice": 7500,
+        "totalValue": 75000,
+        "remarks": "",
+        "_id": "69930bfcd02de0031308352a"
+      },
+      {
+        "productId": "698614feb72264de728011af",
+        "productCode": "1654616",
+        "itemName": "tf 50mm cpvc pipe",
+        "currentStock": 250,
+        "quantity": 100,
+        "unitPrice": 4500,
+        "totalValue": 450000,
+        "remarks": "",
+        "_id": "69930bfcd02de0031308352b"
+      },
+      {
+        "productId": "6986143db72264de7280113e",
+        "productCode": "1694646",
+        "itemName": "tf cpvc 20mm pipe",
+        "currentStock": 1000,
+        "quantity": 200,
+        "unitPrice": 580,
+        "totalValue": 116000,
+        "remarks": "",
+        "_id": "69930bfcd02de0031308352c"
+      },
+      {
+        "productId": "69861894b72264de728014c0",
+        "productCode": "46464",
+        "itemName": "v luna ewc",
+        "currentStock": 100,
+        "quantity": 10,
+        "unitPrice": 9000,
+        "totalValue": 90000,
+        "remarks": "",
+        "_id": "69930bfcd02de0031308352d"
+      },
+      {
+        "productId": "698617a7b72264de72801398",
+        "productCode": "165466",
+        "itemName": "tf cpvc elbow 25mm",
+        "currentStock": 761,
+        "quantity": 200,
+        "unitPrice": 50,
+        "totalValue": 10000,
+        "remarks": "",
+        "_id": "69930bfcd02de0031308352e"
+      },
+      {
+        "productId": "6980d75b47673d095ce1ce76",
+        "productCode": "16551616",
+        "itemName": "v midas rg sink cock",
+        "currentStock": 139,
+        "quantity": 10,
+        "unitPrice": 2500,
+        "totalValue": 25000,
+        "remarks": "",
+        "_id": "69930bfcd02de0031308352f"
+      }
+    ],
+    "totalItems": 13,
+    "totalQuantity": 810,
+    "totalValue": 1118100,
+    "remarks": "",
+    "status": "Completed",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "adjustmentDate": "2026-02-16T12:22:20.963Z",
+    "createdAt": "2026-02-16T12:22:20.965Z",
+    "updatedAt": "2026-02-16T12:22:20.965Z",
+    "adjustmentNo": "ADJ-20260216-001",
+    "__v": 0
+  },
+  {
+    "_id": "69930f0bd02de00313083bfb",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "adjustmentType": "ADD",
+    "reason": "Opening Stock",
+    "items": [
+      {
+        "productId": "69930e38d02de00313083953",
+        "productCode": "41416464",
+        "itemName": "tf cpcv  tee 25mm",
+        "currentStock": 0,
+        "quantity": 100,
+        "unitPrice": 50,
+        "totalValue": 5000,
+        "remarks": "",
+        "_id": "69930f0bd02de00313083bfc"
+      }
+    ],
+    "totalItems": 1,
+    "totalQuantity": 100,
+    "totalValue": 5000,
+    "remarks": "",
+    "status": "Completed",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "adjustmentDate": "2026-02-16T12:35:23.239Z",
+    "createdAt": "2026-02-16T12:35:23.240Z",
+    "updatedAt": "2026-02-16T12:35:23.240Z",
+    "adjustmentNo": "ADJ-20260216-002",
+    "__v": 0
+  },
+  {
+    "_id": "6998814ef1a26c52dfef8b21",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "adjustmentType": "ADD",
+    "reason": "Stock Found",
+    "items": [
+      {
+        "productId": "6996ea6605f626d0dc08eb97",
+        "productCode": "66415646",
+        "itemName": "r 8mill 850mtr tape",
+        "currentStock": 0,
+        "quantity": 110,
+        "unitPrice": 1100,
+        "totalValue": 121000,
+        "remarks": "",
+        "_id": "6998814ef1a26c52dfef8b22"
+      }
+    ],
+    "totalItems": 1,
+    "totalQuantity": 110,
+    "totalValue": 121000,
+    "remarks": "",
+    "status": "Completed",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "adjustmentDate": "2026-02-20T15:44:14.116Z",
+    "createdAt": "2026-02-20T15:44:14.117Z",
+    "updatedAt": "2026-02-20T15:44:14.117Z",
+    "adjustmentNo": "ADJ-20260220-001",
+    "__v": 0
+  },
+  {
+    "_id": "699bfd1b44720e3440ba7cad",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "adjustmentType": "ADD",
+    "reason": "Stock Found",
+    "items": [
+      {
+        "productId": "6996c430ccba2369f7ad724a",
+        "productCode": "415411",
+        "itemName": "tf cpvc fta 25mm",
+        "currentStock": 0,
+        "quantity": 10,
+        "unitPrice": 65,
+        "totalValue": 650,
+        "remarks": "ggg",
+        "_id": "699bfd1b44720e3440ba7cae"
+      }
+    ],
+    "totalItems": 1,
+    "totalQuantity": 10,
+    "totalValue": 650,
+    "remarks": "",
+    "status": "Completed",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "adjustmentDate": "2026-02-23T07:09:15.517Z",
+    "createdAt": "2026-02-23T07:09:15.521Z",
+    "updatedAt": "2026-02-23T07:09:15.521Z",
+    "adjustmentNo": "ADJ-20260223-001",
+    "__v": 0
+  },
+  {
+    "_id": "699c00cead0593d8adf3d22e",
+    "warehouseId": "68e8f0283f5fd5a817866df6",
+    "adjustmentType": "ADD",
+    "reason": "Stock Found",
+    "items": [
+      {
+        "productId": "6996cb4fccba2369f7ad7837",
+        "productCode": "1541654165",
+        "itemName": "tf cpvc pipe 25mm",
+        "currentStock": 0,
+        "quantity": 5,
+        "unitPrice": 600,
+        "totalValue": 3000,
+        "remarks": "",
+        "_id": "699c00cead0593d8adf3d22f"
+      }
+    ],
+    "totalItems": 1,
+    "totalQuantity": 5,
+    "totalValue": 3000,
+    "remarks": "",
+    "status": "Completed",
+    "createdBy": "68db7209bf7b5baece4a20aa",
+    "adjustmentDate": "2026-02-23T07:25:02.166Z",
+    "createdAt": "2026-02-23T07:25:02.170Z",
+    "updatedAt": "2026-02-23T07:25:02.170Z",
+    "adjustmentNo": "ADJ-20260223-002",
+    "__v": 0
+  }
+]

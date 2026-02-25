@@ -190,6 +190,35 @@ const dealerSchema = new mongoose.Schema(
       min: [0, "Sales target cannot be negative"],
     },
 
+    // Advance Payment Tracking
+    advanceBalance: {
+      type: Number,
+      default: 0,
+      min: [0, "Advance balance cannot be negative"],
+    },
+    advancePayments: [{
+      payment: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "DealerPayment"
+      },
+      amount: {
+        type: Number,
+        required: true
+      },
+      date: {
+        type: Date,
+        required: true
+      },
+      adjustedAmount: {
+        type: Number,
+        default: 0
+      },
+      remainingAmount: {
+        type: Number,
+        required: true
+      }
+    }],
+
     // Legal Information
     gst: {
       type: String,

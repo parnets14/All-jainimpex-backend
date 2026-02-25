@@ -211,7 +211,7 @@ export const getAllDealerLedgerEntries = async (req, res) => {
 
     // Build filter object - exclude Credit Notes by default
     const filter = {
-      transactionType: { $in: ['Invoice', 'Payment'] } // Only show invoices and payments
+      transactionType: { $in: ['Invoice', 'Payment', 'Advance Payment', 'Advance Adjustment'] } // Show invoices, payments, and advance transactions
     };
     if (dealerId) filter.dealer = dealerId;
     // Allow override if specific transaction type is requested
@@ -279,7 +279,7 @@ export const getDealerLedgerByDealer = async (req, res) => {
     // Build filter - exclude Credit Notes by default
     const filter = { 
       dealer: dealerId,
-      transactionType: { $in: ['Invoice', 'Payment'] } // Only show invoices and payments
+      transactionType: { $in: ['Invoice', 'Payment', 'Advance Payment', 'Advance Adjustment'] } // Show invoices, payments, and advance transactions
     };
     if (startDate || endDate) {
       filter.entryDate = {};
@@ -313,6 +313,35 @@ export const getDealerLedgerByDealer = async (req, res) => {
     // Get dealer information
     const dealer = await Dealer.findById(dealerId);
 
+    // Calculate opening balance for current page
+    let openingBalance = 0;
+    
+    // Step 1: If date filter is applied, calculate balance from ALL entries before startDate
+    if (startDate) {
+      const entriesBeforeStartDate = await DealerLedger.find({
+        dealer: dealerId,
+        transactionType: { $in: ['Invoice', 'Payment', 'Advance Payment', 'Advance Adjustment'] },
+        entryDate: { $lt: new Date(startDate) }
+      }).sort({ entryDate: 1 });
+      
+      entriesBeforeStartDate.forEach(entry => {
+        openingBalance += (entry.debitAmount || 0);
+        openingBalance -= (entry.creditAmount || 0);
+      });
+    }
+    
+    // Step 2: Add entries from previous pages (within the date range) to opening balance
+    if (skip > 0) {
+      const entriesBeforeCurrentPage = await DealerLedger.find(filter)
+        .sort(sort)
+        .limit(skip);
+      
+      entriesBeforeCurrentPage.forEach(entry => {
+        openingBalance += (entry.debitAmount || 0);
+        openingBalance -= (entry.creditAmount || 0);
+      });
+    }
+
     // Calculate summary from ALL entries (not just current page)
     const allEntries = await DealerLedger.find({ dealer: dealerId })
       .sort({ entryDate: 1 });
@@ -332,7 +361,8 @@ export const getDealerLedgerByDealer = async (req, res) => {
       data: {
         dealer,
         entries,
-        summary
+        summary,
+        openingBalance  // Send opening balance for current page
       },
       pagination: {
         currentPage: pageNumber,
@@ -652,7 +682,7 @@ export const sendDealerLedgerEmail = async (req, res) => {
     // Build filter
     const filter = { 
       dealer: dealerId,
-      transactionType: { $in: ['Invoice', 'Payment'] }
+      transactionType: { $in: ['Invoice', 'Payment', 'Advance Payment', 'Advance Adjustment'] }
     };
     if (startDate || endDate) {
       filter.entryDate = {};

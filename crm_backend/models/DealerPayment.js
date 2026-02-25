@@ -8,13 +8,24 @@ const dealerPaymentSchema = new mongoose.Schema({
   dealerInvoice: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "DealerInvoice",
-    required: true
+    required: function() {
+      return this.paymentCategory === "Invoice Payment";
+    }
   },
   dealer: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Dealer",
     required: true
   },
+  
+  // Payment Category - NEW
+  paymentCategory: {
+    type: String,
+    enum: ["Invoice Payment", "Advance Payment"],
+    default: "Invoice Payment",
+    required: true
+  },
+  
   paymentDate: {
     type: Date,
     required: true,
@@ -108,18 +119,53 @@ const dealerPaymentSchema = new mongoose.Schema({
     default: ""
   },
   
-  // Invoice details for reference
+  // Invoice details for reference (conditionally required)
   invoiceNumber: {
     type: String,
-    required: true
+    required: function() {
+      return this.paymentCategory === "Invoice Payment";
+    }
   },
   invoiceAmount: {
     type: Number,
-    required: true
+    required: function() {
+      return this.paymentCategory === "Invoice Payment";
+    }
   },
   remainingAmount: {
     type: Number,
-    required: true
+    required: function() {
+      return this.paymentCategory === "Invoice Payment";
+    }
+  },
+  
+  // Advance Payment Details
+  advanceDetails: {
+    isAdvance: {
+      type: Boolean,
+      default: false
+    },
+    advanceAmount: {
+      type: Number,
+      default: 0
+    },
+    adjustedAmount: {
+      type: Number,
+      default: 0
+    },
+    remainingAdvance: {
+      type: Number,
+      default: 0
+    },
+    adjustedAgainstInvoices: [{
+      invoice: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "DealerInvoice"
+      },
+      invoiceNumber: String,
+      adjustedAmount: Number,
+      adjustedDate: Date
+    }]
   },
   
   // Source of payment (App or Web)
