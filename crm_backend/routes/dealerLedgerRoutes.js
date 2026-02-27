@@ -8,7 +8,8 @@ import {
   deleteDealerLedgerEntry,
   getDealerLedgerStats,
   syncLedgerEntries,
-  sendDealerLedgerEmail
+  sendDealerLedgerEmail,
+  getCombinedDealerLedger
 } from "../controllers/dealerLedgerController.js";
 import { protect } from "../middleware/authMiddleware.js";
 
@@ -21,9 +22,10 @@ router.use(protect);
 router.post("/", createDealerLedgerEntry);
 router.get("/", getAllDealerLedgerEntries);
 router.get("/stats", getDealerLedgerStats);
+router.get("/combined/:dealerId", getCombinedDealerLedger); // NEW: Combined ledger (old + voucher system)
 router.get("/dealer/:dealerId", getDealerLedgerByDealer);
 router.get("/sync/:dealerId", syncLedgerEntries);
-router.post("/send-email/:dealerId", sendDealerLedgerEmail); // NEW: Send ledger via email
+router.post("/send-email/:dealerId", sendDealerLedgerEmail);
 router.get("/:id", getDealerLedgerEntry);
 router.put("/:id", updateDealerLedgerEntry);
 router.delete("/:id", deleteDealerLedgerEntry);

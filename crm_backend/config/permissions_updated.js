@@ -159,31 +159,6 @@ export const AVAILABLE_PERMISSIONS = {
       description: "Delete regions"
     },
     {
-      id: "route.master",
-      name: "Route Master",
-      description: "Manage route master data"
-    },
-    {
-      id: "routes.view",
-      name: "View Routes",
-      description: "View route information"
-    },
-    {
-      id: "routes.create",
-      name: "Create Routes",
-      description: "Create new routes"
-    },
-    {
-      id: "routes.update",
-      name: "Update Routes",
-      description: "Update route information"
-    },
-    {
-      id: "routes.delete",
-      name: "Delete Routes",
-      description: "Delete routes"
-    },
-    {
       id: "category.setup",
       name: "Category Setup",
       description: "Setup categories"
@@ -232,16 +207,6 @@ export const AVAILABLE_PERMISSIONS = {
       id: "warehouses.delete",
       name: "Delete Warehouses",
       description: "Delete warehouses"
-    },
-    {
-      id: "price.tier.master",
-      name: "Price Tier Master",
-      description: "Manage price tier configurations"
-    },
-    {
-      id: "employee.master",
-      name: "Employee Master",
-      description: "Manage employee master data"
     }
   ],
   "Sales & Purchase Management": [
@@ -526,36 +491,6 @@ export const AVAILABLE_PERMISSIONS = {
       id: "stock.adjustments",
       name: "Stock Adjustments",
       description: "Make manual stock adjustments"
-    },
-    {
-      id: "realtime.stock.report",
-      name: "Real-Time Stock Report",
-      description: "View real-time stock reports"
-    },
-    {
-      id: "damaged.expired.goods",
-      name: "Damaged/Expired Goods",
-      description: "Manage damaged and expired goods"
-    },
-    {
-      id: "manual.stock.adjustment",
-      name: "Manual Stock Adjustment",
-      description: "Perform manual stock adjustments"
-    },
-    {
-      id: "category.manager",
-      name: "Category Manager",
-      description: "Manage inventory categories"
-    },
-    {
-      id: "inventory.management.full",
-      name: "Full Inventory Management",
-      description: "Complete inventory management access"
-    },
-    {
-      id: "stock.with.adjustment",
-      name: "Stock With Adjustment",
-      description: "View stock with adjustment details"
     }
   ],
   "HRMS Administration": [
@@ -643,11 +578,6 @@ export const AVAILABLE_PERMISSIONS = {
       id: "salary.delete",
       name: "Delete Salary",
       description: "Delete salary records"
-    },
-    {
-      id: "salary.processing",
-      name: "Salary Processing",
-      description: "Process employee salaries"
     },
     {
       id: "shifts.management",
@@ -949,48 +879,6 @@ export const AVAILABLE_PERMISSIONS = {
       id: "expenses.delete",
       name: "Delete Expenses",
       description: "Delete expense records"
-    },
-    {
-      id: "expense.claim.approval",
-      name: "Expense Claim Approval",
-      description: "Approve or reject expense claims"
-    },
-    {
-      id: "expense.document.tracker",
-      name: "Expense Document Tracker",
-      description: "Track expense documents"
-    }
-  ],
-  "Supplier Incentive Management": [
-    {
-      id: "supplier.incentive.management",
-      name: "Supplier Incentive Management Access",
-      description: "Access to supplier incentive management module"
-    },
-    {
-      id: "supplier.scheme.analysis",
-      name: "Supplier Scheme Analysis",
-      description: "Analyze supplier schemes and incentives"
-    },
-    {
-      id: "supplier.purchase.entry",
-      name: "Supplier Purchase Entry",
-      description: "Enter purchases with auto-calculation"
-    },
-    {
-      id: "supplier.scheme.entry",
-      name: "Supplier Scheme Entry",
-      description: "Enter and manage supplier schemes"
-    },
-    {
-      id: "supplier.claim.submission",
-      name: "Supplier Claim Submission",
-      description: "Submit claims to suppliers"
-    },
-    {
-      id: "supplier.reconciliation.tracker",
-      name: "Supplier Reconciliation Tracker",
-      description: "Track supplier reconciliations"
     }
   ],
   "Support & Communication": [

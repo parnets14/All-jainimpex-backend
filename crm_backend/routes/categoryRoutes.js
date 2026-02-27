@@ -23,40 +23,30 @@ const router = express.Router();
 // All routes are protected
 router.use(protect);
 
-// Category routes
-router.get("/stats", requirePermission("categories.view"), getCategoryStats);
-router.get(
-  "/:id/child-counts",
-  requirePermission("categories.view"),
-  getCategoryChildCounts
-);
+// Category routes - READ operations (no permission check)
+router.get("/stats", getCategoryStats);
+router.get("/:id/child-counts", getCategoryChildCounts);
+router.get("/:id/change-parent-preview", getCategoryParentChangePreview);
+router.get("/", getCategories);
+router.get("/:id", getCategory);
+
+// Category WRITE operations (require permissions)
 router.delete(
   "/:id/cascade",
   requirePermission("categories.delete"),
   deleteCategoryWithCascade
-);
-router.get(
-  "/:id/change-parent-preview",
-  requirePermission("categories.view"),
-  getCategoryParentChangePreview
 );
 router.put(
   "/:id/change-parent",
   requirePermission("categories.update"),
   changeCategoryParent
 );
-router.get("/", requirePermission("categories.view"), getCategories);
-router.get("/:id", requirePermission("categories.view"), getCategory);
 router.post("/", requirePermission("categories.create"), createCategory);
 router.put("/:id", requirePermission("categories.update"), updateCategory);
 router.delete("/:id", requirePermission("categories.delete"), deleteCategory);
 
 // Subcategory routes under category
-router.get(
-  "/:categoryId/subcategories",
-  requirePermission("categories.view"),
-  getSubcategoriesByCategory
-);
+router.get("/:categoryId/subcategories", getSubcategoriesByCategory); // READ - no permission check
 router.post(
   "/:categoryId/subcategories",
   requirePermission("categories.create"),

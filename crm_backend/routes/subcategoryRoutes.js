@@ -14,13 +14,11 @@ const router = express.Router();
 // All routes are protected
 router.use(protect);
 
-// Subcategory routes
-router.get("/", requirePermission("categories.view"), getSubcategories);
-router.get(
-  "/:id/change-parent-preview",
-  requirePermission("categories.view"),
-  getSubcategoryParentChangePreview
-);
+// Subcategory routes - READ operations (no permission check)
+router.get("/", getSubcategories);
+router.get("/:id/change-parent-preview", getSubcategoryParentChangePreview);
+
+// Subcategory WRITE operations (require permissions)
 router.put(
   "/:id/change-parent",
   requirePermission("categories.update"),

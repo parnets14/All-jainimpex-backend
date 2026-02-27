@@ -28,27 +28,19 @@ const router = express.Router();
 // All routes are protected
 router.use(protect);
 
-// Brand stats and child counts
-router.get("/stats", requirePermission("categories.view"), getBrandStats);
-router.get(
-  "/:id/child-counts",
-  requirePermission("categories.view"),
-  getBrandChildCounts
-);
+// Brand stats and child counts - READ operations (no permission check)
+router.get("/stats", getBrandStats);
+router.get("/:id/child-counts", getBrandChildCounts);
 
 // Brand CRUD routes
-router.get("/", requirePermission("categories.view"), getBrands);
-router.get("/:id", requirePermission("categories.view"), getBrand);
+router.get("/", getBrands); // READ - no permission check
+router.get("/:id", getBrand); // READ - no permission check
 router.post("/", requirePermission("categories.create"), createBrand);
 router.put("/:id", requirePermission("categories.update"), updateBrand);
 router.delete("/:id", requirePermission("categories.delete"), deleteBrand);
 
 // Nested routes: Brand → Categories
-router.get(
-  "/:brandId/categories",
-  requirePermission("categories.view"),
-  getCategoriesByBrand
-);
+router.get("/:brandId/categories", getCategoriesByBrand); // READ - no permission check
 router.post(
   "/:brandId/categories",
   requirePermission("categories.create"),
@@ -58,9 +50,8 @@ router.post(
 // Nested routes: Brand → Category → Subcategories
 router.get(
   "/:brandId/categories/:categoryId/subcategories",
-  requirePermission("categories.view"),
   getSubcategoriesByBrandAndCategory
-);
+); // READ - no permission check
 router.post(
   "/:brandId/categories/:categoryId/subcategories",
   requirePermission("categories.create"),
@@ -70,9 +61,8 @@ router.post(
 // Nested routes: Brand → Category → Subcategory → Extended
 router.get(
   "/:brandId/categories/:categoryId/subcategories/:subcategoryId/extended",
-  requirePermission("categories.view"),
   getExtendedByBrandCategorySubcategory
-);
+); // READ - no permission check
 router.post(
   "/:brandId/categories/:categoryId/subcategories/:subcategoryId/extended",
   requirePermission("categories.create"),

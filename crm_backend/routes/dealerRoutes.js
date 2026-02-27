@@ -22,29 +22,29 @@ const router = express.Router();
 // All routes are protected
 router.use(protect);
 
-// Get dealer statistics
-router.get("/stats", logActivity("Dealer Management", "Viewed dealer statistics", "READ"), requirePermission("dealers.view"), getDealerStats);
+// Get dealer statistics - Allow all authenticated users (needed for dashboard)
+router.get("/stats", logActivity("Dealer Management", "Viewed dealer statistics", "READ"), getDealerStats);
 
 // Product Access Control Routes
 // Get products accessible to a specific dealer based on hierarchy permissions
-router.get("/:id/accessible-products", logActivity("Sales Order", "Viewed dealer accessible products", "READ"), requirePermission("sales_orders.view"), getDealerAccessibleProducts);
+router.get("/:id/accessible-products", logActivity("Sales Order", "Viewed dealer accessible products", "READ"), getDealerAccessibleProducts);
 
 // Get dealer's allowed hierarchy options for filtering
-router.get("/:id/hierarchy-options", logActivity("Sales Order", "Viewed dealer hierarchy options", "READ"), requirePermission("sales_orders.view"), getDealerHierarchyOptions);
+router.get("/:id/hierarchy-options", logActivity("Dealer Management", "Viewed dealer hierarchy options", "READ"), getDealerHierarchyOptions);
 
-// Get dealer outstanding balance
-router.get("/:id/outstanding", logActivity("Dealer Management", "Viewed dealer outstanding balance", "READ"), requirePermission("dealers.view"), getDealerOutstanding);
+// Get dealer outstanding balance - Allow all authenticated users (needed for invoices/payments)
+router.get("/:id/outstanding", logActivity("Dealer Management", "Viewed dealer outstanding balance", "READ"), getDealerOutstanding);
 
-// Get all dealers with pagination
-router.get("/", logActivity("Dealer Management", "Viewed dealers list", "READ"), requirePermission("dealers.view"), getDealers);
+// Get all dealers with pagination - Allow all authenticated users (needed for dropdowns in invoices/payments)
+router.get("/", logActivity("Dealer Management", "Viewed dealers list", "READ"), getDealers);
 
-// Get complete dealer info for Sales Order Dashboard
-router.get("/:id/complete-info", logActivity("Dealer Management", "Viewed dealer complete info", "READ"), requirePermission("dealers.view"), getDealerCompleteInfo);
+// Get complete dealer info for Sales Order Dashboard - Allow all authenticated users
+router.get("/:id/complete-info", logActivity("Dealer Management", "Viewed dealer complete info", "READ"), getDealerCompleteInfo);
 
-// Get single dealer
-router.get("/:id", logActivity("Dealer Management", "Viewed dealer details", "READ"), requirePermission("dealers.view"), getDealer);
+// Get single dealer - Allow all authenticated users (needed for various features)
+router.get("/:id", logActivity("Dealer Management", "Viewed dealer details", "READ"), getDealer);
 
-// Create new dealer
+// Create new dealer - Requires specific permission
 router.post("/", logActivity("Dealer Management", "Created new dealer", "CREATE"), requirePermission("dealers.create"), createDealer);
 
 // Update dealer

@@ -38,13 +38,20 @@ export const getUsers = async (req, res) => {
       .select('-password')
       .sort({ createdAt: -1 })
       .limit(limit * 1)
-      .skip((page - 1) * limit);
+      .skip((page - 1) * limit)
+      .lean(); // Convert to plain objects
+
+    // Ensure all users have consistent ID field
+    const usersWithId = users.map(user => ({
+      ...user,
+      id: user._id.toString() // Add id field for frontend consistency
+    }));
 
     const total = await User.countDocuments(filter);
 
     res.json({
       success: true,
-      users,
+      users: usersWithId,
       totalPages: Math.ceil(total / limit),
       currentPage: page,
       total
@@ -61,7 +68,7 @@ export const getUsers = async (req, res) => {
 // Get single user
 export const getUserById = async (req, res) => {
   try {
-    const user = await User.findById(req.params.id).select('-password');
+    const user = await User.findById(req.params.id).select('-password').lean();
     
     if (!user) {
       return res.status(404).json({
@@ -70,9 +77,15 @@ export const getUserById = async (req, res) => {
       });
     }
 
+    // Add id field for consistency
+    const userWithId = {
+      ...user,
+      id: user._id.toString()
+    };
+
     res.json({
       success: true,
-      user
+      user: userWithId
     });
   } catch (error) {
     console.error('Get user error:', error);
@@ -96,6 +109,7 @@ export const createUser = async (req, res) => {
       status,
       permissions,
       assignedRegions,
+      allowedDiscountLevels,
       location
     } = req.body;
 
@@ -125,17 +139,24 @@ export const createUser = async (req, res) => {
       status: status || 'Active',
       permissions: userPermissions,
       assignedRegions: assignedRegions || [],
+      allowedDiscountLevels: allowedDiscountLevels || [],
       location: location || 'Default Location',
       createdBy: req.user._id
     });
 
     // Remove password from response
-    const userResponse = await User.findById(user._id).select('-password');
+    const userResponse = await User.findById(user._id).select('-password').lean();
+
+    // Add id field for consistency
+    const userWithId = {
+      ...userResponse,
+      id: userResponse._id.toString()
+    };
 
     res.status(201).json({
       success: true,
       message: 'User created successfully',
-      user: userResponse
+      user: userWithId
     });
   } catch (error) {
     console.error('Create user error:', error);
@@ -158,9 +179,21 @@ export const updateUser = async (req, res) => {
       status,
       permissions,
       assignedRegions,
+      allowedDiscountLevels,
       location,
       password
     } = req.body;
+
+    // VALIDATE FIRST - before any database operations
+    // Password validation if provided
+    if (password && password.trim()) {
+      if (password.length < 6) {
+        return res.status(400).json({
+          success: false,
+          message: 'Password must be at least 6 characters long'
+        });
+      }
+    }
 
     // Check if user exists
     const user = await User.findById(req.params.id).select('+password');
@@ -186,66 +219,39 @@ export const updateUser = async (req, res) => {
       });
     }
 
-    // Prepare update data
-    const updateData = {
-      name,
-      username,
-      email,
-      phone,
-      role,
-      status,
-      permissions,
-      assignedRegions,
-      location
-    };
-
-    // Handle password update if provided
+    // Update user fields
+    user.name = name;
+    user.username = username;
+    user.email = email;
+    user.phone = phone;
+    user.role = role;
+    user.status = status;
+    user.permissions = permissions;
+    user.assignedRegions = assignedRegions;
+    user.allowedDiscountLevels = allowedDiscountLevels || [];
+    user.location = location;
+    
+    // Update password only if provided
     if (password && password.trim()) {
-      // Validate password length
-      if (password.length < 6) {
-        return res.status(400).json({
-          success: false,
-          message: 'Password must be at least 6 characters long'
-        });
-      }
-      
-      // Update all fields including password using save() to trigger pre('save') middleware
-      user.name = name;
-      user.username = username;
-      user.email = email;
-      user.phone = phone;
-      user.role = role;
-      user.status = status;
-      user.permissions = permissions;
-      user.assignedRegions = assignedRegions;
-      user.location = location;
       user.password = password; // This will trigger the pre('save') middleware to hash it
-      
-      await user.save();
-      
       console.log(`Password updated for user: ${email}`);
-    } else {
-      // Update other fields without password change
-      user.name = name;
-      user.username = username;
-      user.email = email;
-      user.phone = phone;
-      user.role = role;
-      user.status = status;
-      user.permissions = permissions;
-      user.assignedRegions = assignedRegions;
-      user.location = location;
-      
-      await user.save();
     }
+    
+    await user.save();
 
     // Get the updated user without password
-    const updatedUser = await User.findById(req.params.id).select('-password');
+    const updatedUser = await User.findById(req.params.id).select('-password').lean();
+
+    // Add id field for consistency
+    const userWithId = {
+      ...updatedUser,
+      id: updatedUser._id.toString()
+    };
 
     res.json({
       success: true,
       message: 'User updated successfully',
-      user: updatedUser
+      user: userWithId
     });
   } catch (error) {
     console.error('Update user error:', error);

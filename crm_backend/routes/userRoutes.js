@@ -17,13 +17,23 @@ import { logActivity } from '../middleware/activityLogMiddleware.js';
 
 const router = express.Router();
 
-// Middleware to check if user is super admin or sub admin
-const requireSuperAdmin = async (req, res, next) => {
+// Middleware to check if user has user management permissions
+const requireUserManagement = async (req, res, next) => {
   try {
-    if (req.user.role !== 'super_admin' && req.user.role !== 'sub_admin') {
+    // Super admin always has access
+    if (req.user.role === 'super_admin') {
+      return next();
+    }
+    
+    // Check if user has users.manage or user.management permission
+    const hasPermission = req.user.permissions?.includes('users.manage') || 
+                         req.user.permissions?.includes('user.management') ||
+                         req.user.permissions?.includes('*');
+    
+    if (!hasPermission) {
       return res.status(403).json({
         success: false,
-        message: 'Access denied. Super admin privileges required.'
+        message: 'Access denied. User management permissions required.'
       });
     }
     next();
@@ -37,8 +47,8 @@ const requireSuperAdmin = async (req, res, next) => {
 
 // Apply protect middleware to all routes
 router.use(protect);
-// Apply super admin middleware to all routes
-router.use(requireSuperAdmin);
+// Apply user management permission check to all routes
+router.use(requireUserManagement);
 
 // Routes with activity logging
 router.get('/', logActivity("User Management", "Viewed users list", "READ"), getUsers);

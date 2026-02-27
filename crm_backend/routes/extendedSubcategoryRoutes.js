@@ -20,16 +20,18 @@ const router = express.Router();
 // All routes are protected
 router.use(protect);
 
-// Extended subcategory routes
-router.get('/', requirePermission('categories.view'), getExtendedSubcategories);
+// Extended subcategory routes - READ operations (no permission check)
+router.get('/', getExtendedSubcategories);
+router.get('/tree', getExtendedSubcategoryTree);
+router.get('/by-subcategory/:subcategoryId', getExtendedSubcategoriesBySubcategory);
+router.get('/by-parent/:parentId', getExtendedSubcategoriesByParent);
+router.get('/:id/parent-chain', getExtendedSubcategoryWithParentChain);
+router.get('/:id/change-parent-preview', getExtendedSubcategoryParentChangePreview);
+router.get('/:id', getExtendedSubcategory);
+
+// Extended subcategory WRITE operations (require permissions)
 router.post('/', requirePermission('categories.create'), createExtendedSubcategory);
-router.get('/tree', requirePermission('categories.view'), getExtendedSubcategoryTree);
-router.get('/by-subcategory/:subcategoryId', requirePermission('categories.view'), getExtendedSubcategoriesBySubcategory);
-router.get('/by-parent/:parentId', requirePermission('categories.view'), getExtendedSubcategoriesByParent);
-router.get('/:id/parent-chain', requirePermission('categories.view'), getExtendedSubcategoryWithParentChain);
-router.get('/:id/change-parent-preview', requirePermission('categories.view'), getExtendedSubcategoryParentChangePreview);
 router.put('/:id/change-parent', requirePermission('categories.update'), changeExtendedSubcategoryParent);
-router.get('/:id', requirePermission('categories.view'), getExtendedSubcategory);
 router.put('/:id', requirePermission('categories.update'), updateExtendedSubcategory);
 router.delete('/:id', requirePermission('categories.delete'), deleteExtendedSubcategory);
 

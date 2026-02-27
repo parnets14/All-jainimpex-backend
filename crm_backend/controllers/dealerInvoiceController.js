@@ -9,6 +9,9 @@ import Stock from "../models/Stock.js";
 import StockMovement from "../models/Stock.js"; // StockMovement is exported from Stock.js
 import DealerLedger from "../models/DealerLedger.js";
 import Notification from "../models/Notification.js";
+import PaymentAllocation from "../models/PaymentAllocation.js";
+import DealerPayment from "../models/DealerPayment.js";
+import Voucher from "../models/Voucher.js";
 
 // Generate unique invoice number
 const generateInvoiceNumber = async () => {
@@ -127,7 +130,48 @@ export const getDealerInvoices = async (req, res) => {
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit)
+      .lean() // Convert to plain JavaScript objects for modification
       .exec();
+
+    // Fetch payment allocations for each invoice
+    for (const invoice of invoices) {
+      // Get new system payment allocations
+      const allocations = await PaymentAllocation.find({
+        'allocations.invoiceId': invoice._id
+      })
+      .populate('voucherId', 'voucherNumber voucherDate voucherType transactionMode')
+      .lean();
+      
+      // Extract relevant allocation details
+      invoice.paymentAllocations = allocations.map(pa => {
+        const alloc = pa.allocations.find(a => a.invoiceId.toString() === invoice._id.toString());
+        return {
+          allocationNumber: pa.allocationNumber,
+          allocationDate: pa.allocationDate,
+          voucherNumber: pa.voucherId?.voucherNumber || 'N/A',
+          voucherDate: pa.voucherId?.voucherDate,
+          voucherType: pa.voucherId?.voucherType || 'Receipt',
+          paymentMethod: pa.voucherId?.transactionMode || 'N/A',
+          allocatedAmount: alloc?.allocatedAmount || 0,
+          allocationId: pa._id
+        };
+      });
+      
+      // Get old system payments (DealerPayment) for backward compatibility
+      const oldPayments = await DealerPayment.find({
+        dealerInvoice: invoice._id,
+        status: 'Approved'
+      }).lean();
+      
+      invoice.oldPayments = oldPayments.map(p => ({
+        paymentNumber: p.paymentNumber,
+        paymentDate: p.paymentDate,
+        paymentMethod: p.paymentMethod,
+        paymentAmount: p.paymentAmount,
+        paymentType: p.paymentType,
+        paymentId: p._id
+      }));
+    }
 
     // Get total count for pagination
     const total = await DealerInvoice.countDocuments(query);

@@ -121,6 +121,21 @@ const userSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Region'
   }],
+  allowedDiscountLevels: [{
+    type: String,
+    enum: [
+      'Loyalty Discount',
+      'Bulk Discount',
+      'Load Discount',
+      'Consistency Discount',
+      'Prompt Discount',
+      'Executive Discount',
+      'MD Discount',
+      'ACD Discount',
+      'CD Discount',
+      'Others'
+    ]
+  }],
   lastLogin: {
     type: Date,
     default: null

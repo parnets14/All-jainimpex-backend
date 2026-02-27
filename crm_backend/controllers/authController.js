@@ -66,6 +66,7 @@ export const login = async (req, res) => {
         status: userResponse.status,
         permissions: userResponse.permissions,
         assignedRegions: userResponse.assignedRegions,
+        allowedDiscountLevels: userResponse.allowedDiscountLevels,
         lastLogin: userResponse.lastLogin,
         phone: userResponse.phone,
         location: userResponse.location
@@ -96,6 +97,7 @@ export const getCurrentUser = async (req, res) => {
         status: user.status,
         permissions: user.permissions,
         assignedRegions: user.assignedRegions,
+        allowedDiscountLevels: user.allowedDiscountLevels,
         lastLogin: user.lastLogin,
         phone: user.phone,
         location: user.location,

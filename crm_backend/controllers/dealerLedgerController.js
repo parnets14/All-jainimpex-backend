@@ -2,6 +2,8 @@ import DealerLedger from "../models/DealerLedger.js";
 import Dealer from "../models/Dealer.js";
 import DealerInvoice from "../models/DealerInvoice.js";
 import CreditNote from "../models/CreditNote.js";
+import Voucher from "../models/Voucher.js";
+import PaymentAllocation from "../models/PaymentAllocation.js";
 import nodemailer from "nodemailer";
 import PDFDocument from "pdfkit";
 
@@ -262,7 +264,7 @@ export const getAllDealerLedgerEntries = async (req, res) => {
   }
 };
 
-// Get Dealer Ledger by Dealer ID
+// Get Dealer Ledger by Dealer ID (Enhanced with Voucher Integration)
 export const getDealerLedgerByDealer = async (req, res) => {
   try {
     const { dealerId } = req.params;
@@ -272,105 +274,188 @@ export const getDealerLedgerByDealer = async (req, res) => {
       transactionType,
       page = 1,
       limit = 20,
-      sortBy = 'entryDate',
+      sortBy = 'date',
       sortOrder = 'asc'
     } = req.query;
 
-    // Build filter - exclude Credit Notes by default
-    const filter = { 
+    // Build date filter
+    const dateFilter = {};
+    if (startDate) dateFilter.$gte = new Date(startDate);
+    if (endDate) dateFilter.$lte = new Date(endDate);
+
+    // 1. Get old ledger entries (invoices, old payments)
+    const oldLedgerFilter = { 
       dealer: dealerId,
-      transactionType: { $in: ['Invoice', 'Payment', 'Advance Payment', 'Advance Adjustment'] } // Show invoices, payments, and advance transactions
+      transactionType: { $in: ['Invoice', 'Payment', 'Advance Payment', 'Advance Adjustment'] }
     };
-    if (startDate || endDate) {
-      filter.entryDate = {};
-      if (startDate) filter.entryDate.$gte = new Date(startDate);
-      if (endDate) filter.entryDate.$lte = new Date(endDate);
-    }
-    // Allow override if specific transaction type is requested
-    if (transactionType) filter.transactionType = transactionType;
+    if (startDate || endDate) oldLedgerFilter.entryDate = dateFilter;
+    if (transactionType && transactionType !== 'all') oldLedgerFilter.transactionType = transactionType;
 
-    // Calculate pagination
-    const pageNumber = parseInt(page);
-    const limitNumber = parseInt(limit);
-    const skip = (pageNumber - 1) * limitNumber;
-
-    // Build sort object
-    const sort = {};
-    sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
-
-    // Get total count for pagination
-    const total = await DealerLedger.countDocuments(filter);
-
-    // Get paginated entries
-    const entries = await DealerLedger.find(filter)
-      .populate('invoice', 'invoiceNumber totalAmount invoiceDate items')
+    const oldEntries = await DealerLedger.find(oldLedgerFilter)
+      .populate('invoice', 'invoiceNumber totalAmount invoiceDate')
       .populate('creditNote', 'creditNoteNumber creditAmount creditNoteDate')
-      .populate('createdBy', 'name email')
-      .sort(sort)
-      .skip(skip)
-      .limit(limitNumber);
+      .lean();
+
+    // 2. Get voucher entries (new system)
+    const voucherFilter = { 
+      partyId: dealerId,
+      status: 'Posted'
+    };
+    if (startDate || endDate) voucherFilter.voucherDate = dateFilter;
+
+    const vouchers = await Voucher.find(voucherFilter).lean();
+
+    // 3. Get payment allocations
+    const allocationFilter = { partyId: dealerId };
+    if (startDate || endDate) allocationFilter.allocationDate = dateFilter;
+
+    const allocations = await PaymentAllocation.find(allocationFilter)
+      .populate('allocations.invoiceId', 'invoiceNumber')
+      .lean();
+
+    // 4. Combine all entries
+    const combinedEntries = [];
+
+    // Add old ledger entries
+    oldEntries.forEach(entry => {
+      combinedEntries.push({
+        entryDate: entry.entryDate,
+        transactionType: entry.transactionType,
+        invoiceNumber: entry.invoiceNumber || '',
+        creditNoteNumber: entry.creditNoteNumber || '',
+        debitAmount: entry.debitAmount || 0,
+        creditAmount: entry.creditAmount || 0,
+        description: entry.description || entry.remarks || '',
+        remarks: entry.remarks || '',
+        paymentMethod: entry.paymentMethod || '',
+        chequeDetails: entry.chequeDetails || null,
+        upiDetails: entry.upiDetails || null,
+        bankTransferDetails: entry.bankTransferDetails || null,
+        creditDays: entry.creditDays || 0,
+        creditDaysApplied: entry.creditDaysApplied || 0,
+        salesType: entry.salesType || '',
+        source: 'old_ledger',
+        invoice: entry.invoice, // Include invoice ID for eye button
+        _id: entry._id
+      });
+    });
+
+    // Add voucher entries
+    vouchers.forEach(voucher => {
+      combinedEntries.push({
+        entryDate: voucher.voucherDate,
+        transactionType: voucher.voucherType,
+        invoiceNumber: '',
+        creditNoteNumber: '',
+        debitAmount: 0,
+        creditAmount: voucher.voucherType === 'Receipt' ? voucher.totalAmount : 0,
+        description: voucher.narration || `${voucher.voucherType} - ${voucher.transactionMode}`,
+        remarks: `Voucher: ${voucher.voucherNumber}`,
+        paymentMethod: voucher.transactionMode,
+        source: 'voucher',
+        _id: voucher._id,
+        allocatedAmount: voucher.allocatedAmount,
+        unallocatedAmount: voucher.unallocatedAmount,
+        voucherNumber: voucher.voucherNumber
+      });
+    });
+
+    // Add payment allocation details as sub-entries
+    allocations.forEach(allocation => {
+      allocation.allocations.forEach(alloc => {
+        combinedEntries.push({
+          entryDate: allocation.allocationDate,
+          transactionType: 'Payment Allocation',
+          invoiceNumber: alloc.invoiceNumber || '',
+          creditNoteNumber: '',
+          debitAmount: 0,
+          creditAmount: 0, // Allocation doesn't change balance, just links payment to invoice
+          description: `Payment allocated to invoice ${alloc.invoiceNumber}`,
+          remarks: `${allocation.voucherNumber} → ${alloc.invoiceNumber}`,
+          source: 'allocation',
+          _id: allocation._id,
+          isAllocation: true,
+          allocatedAmount: alloc.allocatedAmount,
+          voucherNumber: allocation.voucherNumber
+        });
+      });
+    });
+
+    // Sort by date
+    combinedEntries.sort((a, b) => {
+      const dateCompare = new Date(a.entryDate) - new Date(b.entryDate);
+      return sortOrder === 'desc' ? -dateCompare : dateCompare;
+    });
+
+    // Calculate running balance
+    let runningBalance = 0;
+    
+    // Calculate opening balance (entries before startDate)
+    if (startDate) {
+      const entriesBeforeStart = await DealerLedger.find({
+        dealer: dealerId,
+        entryDate: { $lt: new Date(startDate) }
+      }).lean();
+      
+      entriesBeforeStart.forEach(entry => {
+        runningBalance += (entry.debitAmount || 0) - (entry.creditAmount || 0);
+      });
+      
+      const vouchersBeforeStart = await Voucher.find({
+        partyId: dealerId,
+        status: 'Posted',
+        voucherDate: { $lt: new Date(startDate) }
+      }).lean();
+      
+      vouchersBeforeStart.forEach(voucher => {
+        if (voucher.voucherType === 'Receipt') {
+          runningBalance -= voucher.totalAmount;
+        }
+      });
+    }
+    
+    const openingBalance = runningBalance;
+    
+    combinedEntries.forEach(entry => {
+      if (!entry.isAllocation) { // Allocations don't affect balance
+        runningBalance += entry.debitAmount - entry.creditAmount;
+      }
+      entry.balance = runningBalance;
+    });
+
+    // Paginate
+    const total = combinedEntries.length;
+    const startIndex = (page - 1) * limit;
+    const endIndex = startIndex + parseInt(limit);
+    const paginatedEntries = combinedEntries.slice(startIndex, endIndex);
+
+    // Calculate summary
+    const summary = {
+      openingBalance,
+      totalDebit: combinedEntries.reduce((sum, e) => sum + e.debitAmount, 0),
+      totalCredit: combinedEntries.reduce((sum, e) => sum + e.creditAmount, 0),
+      currentBalance: runningBalance,
+      totalTransactions: total
+    };
 
     // Get dealer information
     const dealer = await Dealer.findById(dealerId);
-
-    // Calculate opening balance for current page
-    let openingBalance = 0;
-    
-    // Step 1: If date filter is applied, calculate balance from ALL entries before startDate
-    if (startDate) {
-      const entriesBeforeStartDate = await DealerLedger.find({
-        dealer: dealerId,
-        transactionType: { $in: ['Invoice', 'Payment', 'Advance Payment', 'Advance Adjustment'] },
-        entryDate: { $lt: new Date(startDate) }
-      }).sort({ entryDate: 1 });
-      
-      entriesBeforeStartDate.forEach(entry => {
-        openingBalance += (entry.debitAmount || 0);
-        openingBalance -= (entry.creditAmount || 0);
-      });
-    }
-    
-    // Step 2: Add entries from previous pages (within the date range) to opening balance
-    if (skip > 0) {
-      const entriesBeforeCurrentPage = await DealerLedger.find(filter)
-        .sort(sort)
-        .limit(skip);
-      
-      entriesBeforeCurrentPage.forEach(entry => {
-        openingBalance += (entry.debitAmount || 0);
-        openingBalance -= (entry.creditAmount || 0);
-      });
-    }
-
-    // Calculate summary from ALL entries (not just current page)
-    const allEntries = await DealerLedger.find({ dealer: dealerId })
-      .sort({ entryDate: 1 });
-    
-    const summary = {
-      totalDebit: allEntries.reduce((sum, entry) => sum + (entry.debitAmount || 0), 0),
-      totalCredit: allEntries.reduce((sum, entry) => sum + (entry.creditAmount || 0), 0),
-      currentBalance: allEntries.length > 0 ? allEntries[allEntries.length - 1].runningBalance : 0,
-      totalInvoices: allEntries.filter(e => e.transactionType === 'Invoice').length,
-      totalPayments: allEntries.filter(e => e.transactionType === 'Payment').length,
-      totalCreditNotes: allEntries.filter(e => e.transactionType === 'Credit Note').length,
-      overdueAmount: allEntries.filter(e => e.agingDays > 0).reduce((sum, entry) => sum + entry.runningBalance, 0)
-    };
 
     res.status(200).json({
       success: true,
       data: {
         dealer,
-        entries,
+        entries: paginatedEntries,
         summary,
-        openingBalance  // Send opening balance for current page
+        openingBalance
       },
       pagination: {
-        currentPage: pageNumber,
-        totalPages: Math.ceil(total / limitNumber),
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / limit),
         totalItems: total,
-        itemsPerPage: limitNumber,
-        hasNextPage: pageNumber < Math.ceil(total / limitNumber),
-        hasPrevPage: pageNumber > 1
+        itemsPerPage: parseInt(limit),
+        hasNextPage: parseInt(page) < Math.ceil(total / limit),
+        hasPrevPage: parseInt(page) > 1
       }
     });
 
@@ -873,6 +958,163 @@ export const sendDealerLedgerEmail = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error sending dealer ledger email",
+      error: error.message
+    });
+  }
+};
+
+
+/**
+ * Get Combined Dealer Ledger (Old System + New Voucher System)
+ * GET /api/dealer-ledger/combined/:dealerId
+ */
+export const getCombinedDealerLedger = async (req, res) => {
+  try {
+    const { dealerId } = req.params;
+    const { 
+      startDate, 
+      endDate,
+      page = 1,
+      limit = 50
+    } = req.query;
+
+    // Get dealer information
+    const dealer = await Dealer.findById(dealerId);
+    if (!dealer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Dealer not found'
+      });
+    }
+
+    // Build date filter
+    const dateFilter = {};
+    if (startDate) dateFilter.$gte = new Date(startDate);
+    if (endDate) dateFilter.$lte = new Date(endDate);
+
+    // 1. Get old ledger entries (invoices, payments, credit notes)
+    const oldLedgerFilter = { dealer: dealerId };
+    if (startDate || endDate) oldLedgerFilter.entryDate = dateFilter;
+
+    const oldLedgerEntries = await DealerLedger.find(oldLedgerFilter)
+      .populate('invoice', 'invoiceNumber totalAmount invoiceDate')
+      .populate('creditNote', 'creditNoteNumber creditAmount creditNoteDate')
+      .lean();
+
+    // 2. Get voucher entries (new system)
+    const voucherFilter = { 
+      partyId: dealerId,
+      status: 'Posted'
+    };
+    if (startDate || endDate) voucherFilter.voucherDate = dateFilter;
+
+    const vouchers = await Voucher.find(voucherFilter).lean();
+
+    // 3. Get payment allocations
+    const allocationFilter = { partyId: dealerId };
+    if (startDate || endDate) allocationFilter.allocationDate = dateFilter;
+
+    const allocations = await PaymentAllocation.find(allocationFilter)
+      .populate('allocations.invoiceId', 'invoiceNumber')
+      .lean();
+
+    // 4. Combine all transactions
+    const allTransactions = [];
+
+    // Add old ledger entries
+    oldLedgerEntries.forEach(entry => {
+      allTransactions.push({
+        date: entry.entryDate,
+        type: entry.transactionType,
+        reference: entry.invoiceNumber || entry.creditNoteNumber || '-',
+        description: entry.description || entry.transactionType,
+        debit: entry.debitAmount || 0,
+        credit: entry.creditAmount || 0,
+        source: 'old_system',
+        _id: entry._id
+      });
+    });
+
+    // Add voucher entries
+    vouchers.forEach(voucher => {
+      // Add voucher as transaction
+      allTransactions.push({
+        date: voucher.voucherDate,
+        type: voucher.voucherType === 'Receipt' ? 'Voucher Receipt' : 
+              voucher.voucherType === 'Payment' ? 'Voucher Payment' : 'Voucher Contra',
+        reference: voucher.voucherNumber,
+        description: voucher.narration || `${voucher.voucherType} - ${voucher.transactionMode}`,
+        debit: voucher.voucherType === 'Payment' ? voucher.totalAmount : 0,
+        credit: voucher.voucherType === 'Receipt' ? voucher.totalAmount : 0,
+        source: 'voucher_system',
+        voucherId: voucher._id,
+        unallocated: voucher.unallocatedAmount
+      });
+    });
+
+    // Add payment allocations as separate entries
+    allocations.forEach(allocation => {
+      allocation.allocations.forEach(alloc => {
+        allTransactions.push({
+          date: allocation.allocationDate,
+          type: 'Payment Allocation',
+          reference: `${allocation.voucherNumber} → ${alloc.invoiceNumber}`,
+          description: `Allocated ₹${alloc.allocatedAmount.toLocaleString('en-IN')} to ${alloc.invoiceNumber}`,
+          debit: 0,
+          credit: alloc.allocatedAmount,
+          source: 'allocation',
+          allocationId: allocation._id
+        });
+      });
+    });
+
+    // 5. Sort by date
+    allTransactions.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    // 6. Calculate running balance
+    let runningBalance = 0;
+    allTransactions.forEach(txn => {
+      runningBalance += txn.debit - txn.credit;
+      txn.balance = runningBalance;
+    });
+
+    // 7. Pagination
+    const total = allTransactions.length;
+    const startIndex = (page - 1) * limit;
+    const endIndex = startIndex + parseInt(limit);
+    const paginatedTransactions = allTransactions.slice(startIndex, endIndex);
+
+    // 8. Calculate summary
+    const summary = {
+      totalDebit: allTransactions.reduce((sum, txn) => sum + txn.debit, 0),
+      totalCredit: allTransactions.reduce((sum, txn) => sum + txn.credit, 0),
+      currentBalance: runningBalance,
+      totalTransactions: total,
+      oldSystemTransactions: oldLedgerEntries.length,
+      voucherSystemTransactions: vouchers.length,
+      allocationTransactions: allocations.reduce((sum, a) => sum + a.allocations.length, 0)
+    };
+
+    res.status(200).json({
+      success: true,
+      data: {
+        dealer,
+        transactions: paginatedTransactions,
+        summary
+      },
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / limit),
+        totalItems: total,
+        itemsPerPage: parseInt(limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching combined dealer ledger:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching combined dealer ledger',
       error: error.message
     });
   }
