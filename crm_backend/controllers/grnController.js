@@ -222,14 +222,9 @@ export const createGRN = async (req, res) => {
 
       const remainingQuantity = poLine.quantity - totalReceived;
       
-      if (item.receivedQuantity > remainingQuantity) {
-        await session.abortTransaction();
-        return res.status(400).json({
-          success: false,
-          message: `Cannot receive ${item.receivedQuantity} units of ${poLine.productId.itemName}. Only ${remainingQuantity} units remaining (Ordered: ${poLine.quantity}, Already received: ${totalReceived})`
-        });
-      }
-
+      // Allow receiving more than ordered quantity (supplier may send extra)
+      // No validation check - accept whatever quantity is received
+      
       const acceptedQuantity = item.receivedQuantity - (item.damageQuantity || 0);
       const itemTotal = acceptedQuantity * poLine.price * (1 + poLine.gst / 100);
 

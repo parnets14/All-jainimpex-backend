@@ -524,6 +524,14 @@ export const updateDiscountMappingStatus = async (req, res) => {
       });
     }
 
+    // Check if user is super admin for approval/rejection
+    if ((status === 'Approved' || status === 'Rejected') && req.user.role !== 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only Super Admin can approve or reject discount mappings'
+      });
+    }
+
     const updateData = { status };
 
     if (status === 'Approved') {

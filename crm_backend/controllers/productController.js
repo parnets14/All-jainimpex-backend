@@ -4,6 +4,9 @@ import Subcategory from "../models/Subcategory.js";
 import ExtendedSubcategory from "../models/ExtendedSubcategory.js";
 import Brand from "../models/Brand.js";
 import GRN from "../models/GRN.js";
+import StockMovement from "../models/Stock.js";
+import StockMovementService from "../services/stockMovementService.js";
+import mongoose from "mongoose";
 
 // @desc    Get all products
 // @route   GET /api/products
@@ -171,9 +174,131 @@ export const getProducts = async (req, res) => {
 
     const total = await Product.countDocuments(filter);
 
+    // Fetch stock information for each product
+    const productsWithStock = await Promise.all(
+      products.map(async (product) => {
+        try {
+          // Get all warehouses that have this product
+          const stockMovements = await StockMovement.find({ productId: product._id });
+          
+          // Group by warehouse and calculate totals
+          const warehouseStock = {};
+          
+          for (const movement of stockMovements) {
+            if (!movement.warehouseId) continue;
+            
+            const warehouseId = movement.warehouseId.toString();
+            
+            if (!warehouseStock[warehouseId]) {
+              warehouseStock[warehouseId] = {
+                totalStock: 0,
+                damagedStock: 0,
+                blockedStock: 0
+              };
+            }
+            
+            // Get current stock from StockMovementService
+            try {
+              const currentStock = await StockMovementService.getCurrentStock(product._id, warehouseId);
+              warehouseStock[warehouseId].totalStock = currentStock;
+              
+              // Calculate blocked stock (SALE movements)
+              const blockedResult = await StockMovement.aggregate([
+                {
+                  $match: {
+                    productId: product._id,
+                    warehouseId: new mongoose.Types.ObjectId(warehouseId),
+                    referenceType: 'SALE'
+                  }
+                },
+                {
+                  $group: {
+                    _id: '$type',
+                    totalQuantity: { $sum: '$quantity' }
+                  }
+                }
+              ]);
+              
+              let blockedQty = 0;
+              blockedResult.forEach(result => {
+                if (result._id === 'OUT') {
+                  blockedQty += result.totalQuantity;
+                } else if (result._id === 'IN') {
+                  blockedQty -= result.totalQuantity;
+                }
+              });
+              
+              warehouseStock[warehouseId].blockedStock = Math.max(0, blockedQty);
+              
+              // Calculate damaged stock (from GRN damage movements)
+              const damagedResult = await StockMovement.aggregate([
+                {
+                  $match: {
+                    productId: product._id,
+                    warehouseId: new mongoose.Types.ObjectId(warehouseId),
+                    referenceType: 'GRN',
+                    remarks: { $regex: /damage/i }
+                  }
+                },
+                {
+                  $group: {
+                    _id: null,
+                    totalDamaged: { $sum: '$quantity' }
+                  }
+                }
+              ]);
+              
+              warehouseStock[warehouseId].damagedStock = damagedResult.length > 0 ? Math.abs(damagedResult[0].totalDamaged) : 0;
+              
+            } catch (error) {
+              console.error(`Error calculating stock for product ${product._id} in warehouse ${warehouseId}:`, error);
+            }
+          }
+          
+          // Calculate totals across all warehouses
+          let totalStock = 0;
+          let totalDamaged = 0;
+          let totalBlocked = 0;
+          
+          Object.values(warehouseStock).forEach(stock => {
+            totalStock += stock.totalStock || 0;
+            totalDamaged += stock.damagedStock || 0;
+            totalBlocked += stock.blockedStock || 0;
+          });
+          
+          const netStock = totalStock - totalDamaged - totalBlocked;
+          
+          return {
+            ...product.toObject(),
+            stockInfo: {
+              totalStock,
+              damagedStock: totalDamaged,
+              blockedStock: totalBlocked,
+              availableStock: Math.max(0, netStock),
+              isLowStock: product.minStockLevel && netStock <= product.minStockLevel,
+              minStockLevel: product.minStockLevel || 0
+            }
+          };
+        } catch (error) {
+          console.error(`Error fetching stock for product ${product._id}:`, error);
+          return {
+            ...product.toObject(),
+            stockInfo: {
+              totalStock: 0,
+              damagedStock: 0,
+              blockedStock: 0,
+              availableStock: 0,
+              isLowStock: false,
+              minStockLevel: product.minStockLevel || 0
+            }
+          };
+        }
+      })
+    );
+
     res.json({
       success: true,
-      products,
+      products: productsWithStock,
       pagination: {
         currentPage: parseInt(page),
         totalPages: Math.ceil(total / limit),

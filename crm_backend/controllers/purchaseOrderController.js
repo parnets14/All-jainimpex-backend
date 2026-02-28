@@ -583,6 +583,14 @@ export const updatePurchaseOrderStatus = async (req, res) => {
   try {
     const { status } = req.body;
 
+    // Check if user is super admin for approval
+    if (status === 'Approved' && req.user.role !== 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        message: "Only Super Admin can approve purchase orders",
+      });
+    }
+
     const purchaseOrder = await PurchaseOrder.findById(req.params.id);
 
     if (!purchaseOrder) {

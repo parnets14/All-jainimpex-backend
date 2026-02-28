@@ -2612,6 +2612,14 @@ export const approveCreditOverlimit = async (req, res) => {
     const { approvalNotes } = req.body;
     const { id } = req.params;
 
+    // Check if user is super admin
+    if (req.user.role !== 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        message: "Only Super Admin can approve credit overlimit orders"
+      });
+    }
+
     const salesOrder = await SalesOrder.findById(id);
     if (!salesOrder) {
       return res.status(404).json({

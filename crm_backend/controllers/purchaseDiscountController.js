@@ -387,6 +387,14 @@ export const approvePurchaseDiscount = async (req, res) => {
   try {
     const { action, approvalRemarks } = req.body;
 
+    // Check if user is super admin
+    if (req.user.role !== 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only Super Admin can approve or reject purchase discount mappings'
+      });
+    }
+
     // Validate action
     if (!['approve', 'reject'].includes(action)) {
       return res.status(400).json({
