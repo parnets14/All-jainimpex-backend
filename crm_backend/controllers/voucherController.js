@@ -97,10 +97,10 @@ export const createReceiptVoucher = async (req, res) => {
       voucherDate: new Date(voucherDate),
       financialYear: getFinancialYear(new Date(voucherDate)),
       partyType,
-      partyId,
+      partyId: partyId || null, // Convert empty string to null
       partyName,
       transactionMode,
-      bankAccount,
+      bankAccount: bankAccount || null, // Convert empty string to null
       chequeNumber,
       chequeDate: chequeDate ? new Date(chequeDate) : null,
       chequeStatus: chequeNumber ? 'Pending' : null,
@@ -137,35 +137,59 @@ export const createReceiptVoucher = async (req, res) => {
     
     // Handle cash splitting
     if (needsSplitting) {
-      const splits = await splitCashPayment(voucherData, totalAmount, new Date(voucherDate));
-      
-      // Create all split vouchers
-      for (const splitData of splits) {
-        const voucher = new Voucher(splitData);
-        await voucher.save();
-        createdVouchers.push(voucher);
+      try {
+        const splits = await splitCashPayment(voucherData, totalAmount, new Date(voucherDate));
         
-        // Update account balance for each split
-        await updateAccountBalance('Receipt', splitData.transactionMode, splitData.bankAccount, splitData.totalAmount);
-      }
-      
-      // Set parent voucher ID for child splits
-      if (createdVouchers.length > 1) {
-        const parentId = createdVouchers[0]._id;
-        for (let i = 1; i < createdVouchers.length; i++) {
-          createdVouchers[i].parentVoucherId = parentId;
-          await createdVouchers[i].save();
+        // Create all split vouchers
+        for (const splitData of splits) {
+          const voucher = new Voucher(splitData);
+          await voucher.save();
+          createdVouchers.push(voucher);
+          
+          // Update account balance for each split
+          await updateAccountBalance('Receipt', splitData.transactionMode, splitData.bankAccount, splitData.totalAmount);
         }
+        
+        // Set parent voucher ID for child splits
+        if (createdVouchers.length > 1) {
+          const parentId = createdVouchers[0]._id;
+          for (let i = 1; i < createdVouchers.length; i++) {
+            createdVouchers[i].parentVoucherId = parentId;
+            await createdVouchers[i].save();
+          }
+        }
+      } catch (splitError) {
+        console.error('Error in cash splitting:', splitError);
+        throw new Error(`Cash splitting failed: ${splitError.message}`);
       }
     } else {
       // Create single voucher
-      voucherData.voucherNumber = await generateVoucherNumber('Receipt', new Date(voucherDate));
-      const voucher = new Voucher(voucherData);
-      await voucher.save();
-      createdVouchers.push(voucher);
+      try {
+        voucherData.voucherNumber = await generateVoucherNumber('Receipt', new Date(voucherDate));
+        console.log('Generated voucher number:', voucherData.voucherNumber);
+      } catch (genError) {
+        console.error('Error generating voucher number:', genError);
+        throw new Error(`Voucher number generation failed: ${genError.message}`);
+      }
+      
+      try {
+        const voucher = new Voucher(voucherData);
+        await voucher.save();
+        createdVouchers.push(voucher);
+        console.log('Voucher saved successfully:', voucher.voucherNumber);
+      } catch (saveError) {
+        console.error('Error saving voucher:', saveError);
+        throw new Error(`Voucher save failed: ${saveError.message}`);
+      }
       
       // Update account balance
-      await updateAccountBalance('Receipt', voucherData.transactionMode, voucherData.bankAccount, voucherData.totalAmount);
+      try {
+        await updateAccountBalance('Receipt', voucherData.transactionMode, voucherData.bankAccount, voucherData.totalAmount);
+        console.log('Account balance updated successfully');
+      } catch (balanceError) {
+        console.error('Error updating account balance:', balanceError);
+        throw new Error(`Account balance update failed: ${balanceError.message}`);
+      }
     }
     
     // Update invoice status if allocated
