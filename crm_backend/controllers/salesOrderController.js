@@ -258,10 +258,18 @@ export const createSalesOrder = async (req, res) => {
     }
 
     // Calculate order totals first (needed for credit limit check)
+    // IMPORTANT: Only include IN-STOCK products in credit limit calculation
     const tempValidatedProducts = [];
     for (const item of products) {
       const product = await Product.findById(item.product);
       if (!product) continue;
+      
+      // Skip out-of-stock products (no warehouse or warehouse is "No Stock")
+      const hasStock = item.warehouse && item.warehouse !== "No Stock";
+      if (!hasStock) {
+        console.log(`⏭️ Skipping product ${product.itemName} from credit limit calculation (out of stock)`);
+        continue;
+      }
       
       const unitPrice = item.unitPrice || product.rateSlabs[0]?.rate || 0;
       const gst = item.gst || product.gst || 0;
@@ -278,6 +286,12 @@ export const createSalesOrder = async (req, res) => {
     const orderGrossAmount = tempValidatedProducts.reduce((sum, p) => sum + (p.quantity * p.unitPrice), 0);
     const orderTotalGst = tempValidatedProducts.reduce((sum, p) => sum + p.gstAmount, 0);
     const orderTotalAmount = orderGrossAmount + orderTotalGst;
+
+    console.log(`💰 Credit Limit Calculation - In-Stock Products Only:`, {
+      totalProducts: products.length,
+      inStockProducts: tempValidatedProducts.length,
+      orderAmount: orderTotalAmount
+    });
 
     // Check credit limit if dealer has one set
     if (dealerData.creditLimit && dealerData.creditLimit > 0) {
@@ -1978,20 +1992,36 @@ async function createSingleSalesOrder(orderData, userId) {
   }
 
   // Check credit limit if dealer has one set
+  // IMPORTANT: Only count IN-STOCK products towards credit limit
   let creditOverlimitData = undefined;
   if (dealerData.creditLimit && dealerData.creditLimit > 0) {
+    // Calculate amount for IN-STOCK products only
+    const inStockProducts = validatedProducts.filter(p => p.warehouse !== null);
+    const inStockGrossAmount = inStockProducts.reduce((sum, product) => sum + (product.quantity * product.unitPrice), 0);
+    const inStockTotalGst = inStockProducts.reduce((sum, product) => sum + product.gstAmount, 0);
+    const inStockDiscountAmount = inStockProducts.reduce((sum, product) => sum + (product.discountAmount || 0), 0);
+    const inStockTotalAmount = inStockGrossAmount + inStockTotalGst - inStockDiscountAmount;
+    
+    console.log(`� Credit Limit Calculation - In-eStock Products Only:`, {
+      totalProducts: validatedProducts.length,
+      inStockProducts: inStockProducts.length,
+      outOfStockProducts: validatedProducts.length - inStockProducts.length,
+      inStockAmount: inStockTotalAmount,
+      totalOrderAmount: totalAmount
+    });
+    
     // Get dealer's current outstanding balance from ledger
     const DealerLedger = (await import("../models/DealerLedger.js")).default;
     const lastLedgerEntry = await DealerLedger.findOne({ dealer: dealer })
       .sort({ createdAt: -1 });
     
     const currentOutstanding = lastLedgerEntry ? lastLedgerEntry.runningBalance : 0;
-    const newOutstanding = currentOutstanding + totalAmount;
+    const newOutstanding = currentOutstanding + inStockTotalAmount; // Use in-stock amount only
     
     console.log(`💳 Credit Limit Check (Single Order):`, {
       creditLimit: dealerData.creditLimit,
       currentOutstanding,
-      orderAmount: totalAmount,
+      orderAmount: inStockTotalAmount,
       newOutstanding,
       overlimit: newOutstanding - dealerData.creditLimit
     });
@@ -2007,7 +2037,7 @@ async function createSingleSalesOrder(orderData, userId) {
         isOverlimit: true,
         creditLimit: dealerData.creditLimit,
         currentOutstanding,
-        orderAmount: totalAmount,
+        orderAmount: inStockTotalAmount, // Show in-stock amount
         newOutstanding,
         overlimitAmount,
         requiresApproval: true

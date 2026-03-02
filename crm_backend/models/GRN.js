@@ -85,6 +85,20 @@ const grnSchema = new mongoose.Schema({
   inspectedBy: {
     type: String,
     default: ''
+  },
+  // Invoice tracking - to prevent editing GRN after invoice creation
+  isInvoiceCreated: {
+    type: Boolean,
+    default: false
+  },
+  supplierInvoiceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'SupplierInvoice',
+    default: null
+  },
+  invoiceCreatedAt: {
+    type: Date,
+    default: null
   }
 }, {
   timestamps: true

@@ -248,14 +248,28 @@ export const createGRN = async (req, res) => {
 
     // Determine GRN status based on received quantities
     let grnStatus = 'Received'; // Default to fully received
+    let hasShortage = false;
+    let hasOverage = false;
     
-    // Check if any item is partially received
+    // Check each item for deviations
     for (const item of grnItems) {
-      if (item.receivedQuantity < item.poQuantity) {
-        grnStatus = 'Partially Received';
-        break;
+      if (item.acceptedQuantity < item.poQuantity) {
+        hasShortage = true;
+      }
+      if (item.acceptedQuantity > item.poQuantity) {
+        hasOverage = true;
       }
     }
+    
+    // Set status based on deviations
+    if (hasShortage && hasOverage) {
+      grnStatus = 'Partially Received'; // Mixed: some short, some over
+    } else if (hasShortage) {
+      grnStatus = 'Partially Received'; // Some items short
+    } else if (hasOverage) {
+      grnStatus = 'Received'; // All received (some extra) - still mark as received
+    }
+    // else: grnStatus remains 'Received' (all exact match)
 
     const grnData = {
       grnNo,
@@ -513,17 +527,41 @@ export const updateGRN = async (req, res) => {
       });
     }
 
+    // Check if invoice has been created for this GRN
+    if (existingGRN.isInvoiceCreated) {
+      return res.status(403).json({
+        success: false,
+        message: 'Cannot edit GRN. Supplier Invoice has already been created for this GRN.',
+        invoiceId: existingGRN.supplierInvoiceId,
+        invoiceCreatedAt: existingGRN.invoiceCreatedAt
+      });
+    }
+
     // If items are being updated, recalculate status and handle stock movements
     if (updateData.items && Array.isArray(updateData.items)) {
       let grnStatus = 'Received'; // Default to fully received
+      let hasShortage = false;
+      let hasOverage = false;
       
-      // Check if any item is partially received
+      // Check each item for deviations
       for (const item of updateData.items) {
-        if (item.receivedQuantity < item.poQuantity) {
-          grnStatus = 'Partially Received';
-          break;
+        if (item.acceptedQuantity < item.poQuantity) {
+          hasShortage = true;
+        }
+        if (item.acceptedQuantity > item.poQuantity) {
+          hasOverage = true;
         }
       }
+      
+      // Set status based on deviations
+      if (hasShortage && hasOverage) {
+        grnStatus = 'Partially Received'; // Mixed: some short, some over
+      } else if (hasShortage) {
+        grnStatus = 'Partially Received'; // Some items short
+      } else if (hasOverage) {
+        grnStatus = 'Received'; // All received (some extra) - still mark as received
+      }
+      // else: grnStatus remains 'Received' (all exact match)
       
       updateData.status = grnStatus;
 
@@ -599,6 +637,16 @@ export const deleteGRN = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'GRN not found'
+      });
+    }
+
+    // Check if invoice has been created for this GRN
+    if (grn.isInvoiceCreated) {
+      return res.status(403).json({
+        success: false,
+        message: 'Cannot delete GRN. Supplier Invoice has already been created for this GRN.',
+        invoiceId: grn.supplierInvoiceId,
+        invoiceCreatedAt: grn.invoiceCreatedAt
       });
     }
 

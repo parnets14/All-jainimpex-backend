@@ -312,6 +312,16 @@ export const createSupplierInvoice = async (req, res) => {
     // Save supplier invoice
     await supplierInvoice.save();
 
+    // Mark GRN as invoiced to prevent further editing
+    await GRN.findByIdAndUpdate(grnId, {
+      isInvoiceCreated: true,
+      supplierInvoiceId: supplierInvoice._id,
+      invoiceCreatedAt: new Date(),
+      status: 'Completed' // Mark GRN as completed once invoice is created
+    });
+
+    console.log(`GRN ${grn.grnNo} marked as invoiced and locked for editing`);
+
     // Create supplier ledger entry for the invoice
     try {
       // Get the last entry for this supplier to calculate running balance
@@ -576,6 +586,17 @@ export const deleteSupplierInvoice = async (req, res) => {
       });
     }
 
+    // Unlock the GRN if it was locked by this invoice
+    if (supplierInvoice.grn) {
+      await GRN.findByIdAndUpdate(supplierInvoice.grn, {
+        isInvoiceCreated: false,
+        supplierInvoiceId: null,
+        invoiceCreatedAt: null,
+        status: 'Received' // Reset to Received status
+      });
+      console.log(`GRN unlocked after deleting draft invoice ${supplierInvoice.invoiceNumber}`);
+    }
+
     // Delete the supplier invoice
     await SupplierInvoice.findByIdAndDelete(id);
 
@@ -601,7 +622,11 @@ export const getAvailableGRNs = async (req, res) => {
     const { supplier } = req.query;
 
     // Build query for GRNs that don't have invoices yet
-    const query = { status: "Received" }; // Changed from "Completed" to "Received"
+    // Allow Draft, Received, and Partially Received GRNs
+    const query = { 
+      status: { $in: ["Draft", "Received", "Partially Received"] },
+      isInvoiceCreated: false // Only GRNs without invoices
+    };
     if (supplier) {
       query.supplierId = supplier;
     }
