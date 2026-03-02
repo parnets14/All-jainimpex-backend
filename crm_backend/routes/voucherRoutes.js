@@ -19,6 +19,9 @@ router.post('/contra', voucherController.createContraVoucher);
 // Get all vouchers with filters
 router.get('/', voucherController.getVouchers);
 
+// Get current balances (cash and bank)
+router.get('/balances', voucherController.getBalances);
+
 // Get cash split preview (before creating voucher)
 router.get('/cash-split-preview', voucherController.getCashSplitPreview);
 

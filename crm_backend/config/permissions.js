@@ -20,6 +20,11 @@ export const AVAILABLE_PERMISSIONS = {
       id: "user.management",
       name: "User Management (Alt)",
       description: "Alternative user management permission"
+    },
+    {
+      id: "super.admin",
+      name: "Super Admin Access",
+      description: "Full system access including sensitive audit logs"
     }
   ],
   "Master Management": [

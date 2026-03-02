@@ -37,7 +37,10 @@ export const createReceiptVoucher = async (req, res) => {
       allocations,
       narration,
       notes,
-      confirmSplit
+      confirmSplit,
+      splitFrequency,
+      splitDirection,
+      checkDuplicates
     } = req.body;
     
     // Validate authentication
@@ -80,7 +83,11 @@ export const createReceiptVoucher = async (req, res) => {
     
     if (needsSplitting && !confirmSplit) {
       // Return split preview for user confirmation
-      const splitPreview = getSplitPreview(totalAmount, new Date(voucherDate));
+      const splitPreview = getSplitPreview(totalAmount, new Date(voucherDate), {
+        frequency: splitFrequency || 1,
+        direction: splitDirection || 'backward',
+        skipWeekends: false
+      });
       
       return res.status(200).json({
         success: true,
@@ -138,7 +145,11 @@ export const createReceiptVoucher = async (req, res) => {
     // Handle cash splitting
     if (needsSplitting) {
       try {
-        const splits = await splitCashPayment(voucherData, totalAmount, new Date(voucherDate));
+        const splits = await splitCashPayment(voucherData, totalAmount, new Date(voucherDate), {
+          frequency: splitFrequency || 1,
+          direction: splitDirection || 'backward',
+          checkDuplicates: checkDuplicates !== false
+        });
         
         // Create all split vouchers
         for (const splitData of splits) {
@@ -508,6 +519,7 @@ export const getVouchers = async (req, res) => {
       voucherType,
       partyId,
       transactionMode,
+      bankAccount,
       startDate,
       endDate,
       status,
@@ -521,6 +533,7 @@ export const getVouchers = async (req, res) => {
     if (voucherType) query.voucherType = voucherType;
     if (partyId) query.partyId = partyId;
     if (transactionMode) query.transactionMode = transactionMode;
+    if (bankAccount) query.bankAccount = bankAccount;
     if (status) query.status = status;
     
     if (startDate || endDate) {
@@ -777,6 +790,47 @@ export const getUnadjustedVouchers = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error fetching unadjusted vouchers',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Helper: Update account balance
+/**
+ * Get Current Balances (Cash and Bank)
+ * GET /api/vouchers/balances
+ */
+export const getBalances = async (req, res) => {
+  try {
+    // Get cash balance
+    const cashAccount = await CashAccount.getCashAccount();
+    const cashBalance = cashAccount ? cashAccount.currentBalance : 0;
+    
+    // Get all bank account balances
+    const bankAccounts = await BankAccount.find({ isActive: true })
+      .select('accountName accountNumber bankName currentBalance')
+      .sort({ accountName: 1 });
+    
+    const bankBalances = bankAccounts.map(acc => ({
+      _id: acc._id,
+      accountName: acc.accountName,
+      accountNumber: acc.accountNumber,
+      bankName: acc.bankName,
+      currentBalance: acc.currentBalance || 0
+    }));
+    
+    res.json({
+      success: true,
+      cashBalance,
+      bankBalances,
+      totalBankBalance: bankBalances.reduce((sum, acc) => sum + acc.currentBalance, 0)
+    });
+  } catch (error) {
+    console.error('Get balances error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching balances',
       error: error.message
     });
   }

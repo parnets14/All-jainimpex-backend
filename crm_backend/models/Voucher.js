@@ -27,7 +27,7 @@ const voucherSchema = new mongoose.Schema({
   // Party details
   partyType: {
     type: String,
-    enum: ['Dealer', 'Supplier', 'Other', 'Internal'],
+    enum: ['Dealer', 'Supplier', 'Other', 'Internal', 'Family/Friends'],
     required: true
   },
   partyId: {
@@ -101,6 +101,21 @@ const voucherSchema = new mongoose.Schema({
     type: String,
     default: 'Cash limit compliance (₹10,000/day)'
   },
+  splitDirection: {
+    type: String,
+    enum: ['forward', 'backward'],
+    default: 'backward'
+  },
+  splitFrequency: {
+    type: Number,
+    enum: [1, 2, 3],
+    default: 1
+  },
+  hasConflicts: {
+    type: Boolean,
+    default: false
+  },
+  conflictResolution: String,
   
   // Invoice allocations
   allocations: [{

@@ -296,16 +296,16 @@ export const getDealerLedgerByDealer = async (req, res) => {
       .populate('creditNote', 'creditNoteNumber creditAmount creditNoteDate')
       .lean();
 
-    // 2. Get voucher entries (new system)
-    const voucherFilter = { 
-      partyId: dealerId,
-      status: 'Posted'
+    // 2. Get invoices (new system)
+    const invoiceFilter = { 
+      dealerId: dealerId,
+      isDeleted: false
     };
-    if (startDate || endDate) voucherFilter.voucherDate = dateFilter;
+    if (startDate || endDate) invoiceFilter.invoiceDate = dateFilter;
 
-    const vouchers = await Voucher.find(voucherFilter).lean();
+    const invoices = await DealerInvoice.find(invoiceFilter).lean();
 
-    // 3. Get payment allocations
+    // 3. Get payment allocations (replaces individual vouchers)
     const allocationFilter = { partyId: dealerId };
     if (startDate || endDate) allocationFilter.allocationDate = dateFilter;
 
@@ -335,49 +335,56 @@ export const getDealerLedgerByDealer = async (req, res) => {
         creditDaysApplied: entry.creditDaysApplied || 0,
         salesType: entry.salesType || '',
         source: 'old_ledger',
-        invoice: entry.invoice, // Include invoice ID for eye button
+        invoice: entry.invoice,
         _id: entry._id
       });
     });
 
-    // Add voucher entries
-    vouchers.forEach(voucher => {
+    // Add invoice entries (from new system)
+    invoices.forEach(invoice => {
       combinedEntries.push({
-        entryDate: voucher.voucherDate,
-        transactionType: voucher.voucherType,
-        invoiceNumber: '',
+        entryDate: invoice.invoiceDate,
+        transactionType: 'Invoice',
+        invoiceNumber: invoice.invoiceNumber,
         creditNoteNumber: '',
-        debitAmount: 0,
-        creditAmount: voucher.voucherType === 'Receipt' ? voucher.totalAmount : 0,
-        description: voucher.narration || `${voucher.voucherType} - ${voucher.transactionMode}`,
-        remarks: `Voucher: ${voucher.voucherNumber}`,
-        paymentMethod: voucher.transactionMode,
-        source: 'voucher',
-        _id: voucher._id,
-        allocatedAmount: voucher.allocatedAmount,
-        unallocatedAmount: voucher.unallocatedAmount,
-        voucherNumber: voucher.voucherNumber
+        debitAmount: invoice.totalAmount,
+        creditAmount: 0,
+        description: `Invoice ${invoice.invoiceNumber}`,
+        remarks: invoice.remarks || '',
+        paymentMethod: '',
+        creditDays: invoice.creditDays || 0,
+        creditDaysApplied: invoice.creditDays || 0,
+        salesType: invoice.salesType || '',
+        source: 'invoice',
+        invoice: {
+          _id: invoice._id,
+          paymentStatus: invoice.paymentStatus,
+          paidAmount: invoice.paidAmount,
+          pendingAmount: invoice.pendingAmount
+        },
+        _id: invoice._id
       });
     });
 
-    // Add payment allocation details as sub-entries
+    // Add payment allocations (grouped by allocation, not individual vouchers)
     allocations.forEach(allocation => {
-      allocation.allocations.forEach(alloc => {
-        combinedEntries.push({
-          entryDate: allocation.allocationDate,
-          transactionType: 'Payment Allocation',
-          invoiceNumber: alloc.invoiceNumber || '',
-          creditNoteNumber: '',
-          debitAmount: 0,
-          creditAmount: 0, // Allocation doesn't change balance, just links payment to invoice
-          description: `Payment allocated to invoice ${alloc.invoiceNumber}`,
-          remarks: `${allocation.voucherNumber} → ${alloc.invoiceNumber}`,
-          source: 'allocation',
-          _id: allocation._id,
-          isAllocation: true,
-          allocatedAmount: alloc.allocatedAmount,
-          voucherNumber: allocation.voucherNumber
-        });
+      const totalAllocated = allocation.totalAllocated || 0;
+      const invoiceNumbers = allocation.allocations.map(a => a.invoiceNumber).join(', ');
+      
+      combinedEntries.push({
+        entryDate: allocation.allocationDate,
+        transactionType: 'Payment',
+        invoiceNumber: invoiceNumbers,
+        creditNoteNumber: '',
+        debitAmount: 0,
+        creditAmount: totalAllocated,
+        description: `Payment allocated to: ${invoiceNumbers}`,
+        remarks: `Allocation: ${allocation.allocationNumber}`,
+        paymentMethod: allocation.voucherType || 'Receipt',
+        source: 'allocation',
+        _id: allocation._id,
+        allocationNumber: allocation.allocationNumber,
+        voucherNumber: allocation.voucherNumber
       });
     });
 
@@ -392,6 +399,7 @@ export const getDealerLedgerByDealer = async (req, res) => {
     
     // Calculate opening balance (entries before startDate)
     if (startDate) {
+      // Old ledger entries before start date
       const entriesBeforeStart = await DealerLedger.find({
         dealer: dealerId,
         entryDate: { $lt: new Date(startDate) }
@@ -401,25 +409,32 @@ export const getDealerLedgerByDealer = async (req, res) => {
         runningBalance += (entry.debitAmount || 0) - (entry.creditAmount || 0);
       });
       
-      const vouchersBeforeStart = await Voucher.find({
-        partyId: dealerId,
-        status: 'Posted',
-        voucherDate: { $lt: new Date(startDate) }
+      // Invoices before start date
+      const invoicesBeforeStart = await DealerInvoice.find({
+        dealerId: dealerId,
+        isDeleted: false,
+        invoiceDate: { $lt: new Date(startDate) }
       }).lean();
       
-      vouchersBeforeStart.forEach(voucher => {
-        if (voucher.voucherType === 'Receipt') {
-          runningBalance -= voucher.totalAmount;
-        }
+      invoicesBeforeStart.forEach(invoice => {
+        runningBalance += invoice.totalAmount;
+      });
+      
+      // Payment allocations before start date
+      const allocationsBeforeStart = await PaymentAllocation.find({
+        partyId: dealerId,
+        allocationDate: { $lt: new Date(startDate) }
+      }).lean();
+      
+      allocationsBeforeStart.forEach(allocation => {
+        runningBalance -= (allocation.totalAllocated || 0);
       });
     }
     
     const openingBalance = runningBalance;
     
     combinedEntries.forEach(entry => {
-      if (!entry.isAllocation) { // Allocations don't affect balance
-        runningBalance += entry.debitAmount - entry.creditAmount;
-      }
+      runningBalance += entry.debitAmount - entry.creditAmount;
       entry.balance = runningBalance;
     });
 
