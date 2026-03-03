@@ -726,12 +726,71 @@ export const updateSalesOrderStatus = async (req, res) => {
 
     // Special handling for Confirmed status (stock allocation) - only for in-stock orders
     if (status === "Confirmed" && !salesOrder.isOutOfStock) {
-      // Verify stock availability for all products
+      // CRITICAL: Verify stock availability for all products BEFORE confirming
+      const StockMovement = (await import("../models/Stock.js")).default;
+      const stockShortages = [];
+      
       for (const product of salesOrder.products) {
         if (product.warehouse) {
-          // Note: Stock verification is done via StockMovement calculations in stockController
-          // We don't need to check here as the StockMovement system handles it
+          // Get current balance
+          const latestMovement = await StockMovement.findOne({
+            productId: product.product,
+            warehouseId: product.warehouse
+          }).sort({ date: -1, createdAt: -1 });
+          
+          const currentBalance = latestMovement ? latestMovement.balance : 0;
+          
+          // Check if enough stock available
+          if (currentBalance < product.quantity) {
+            const productDetails = await Product.findById(product.product);
+            stockShortages.push({
+              productName: productDetails?.itemName || product.productName || 'Unknown',
+              productCode: productDetails?.productCode || 'N/A',
+              required: product.quantity,
+              available: currentBalance,
+              shortage: product.quantity - currentBalance
+            });
+          }
         }
+      }
+      
+      // If there are stock shortages, provide guidance on splitting the order
+      if (stockShortages.length > 0) {
+        console.log("⚠️ Stock shortage detected during confirmation:", stockShortages);
+        
+        // Calculate total available vs required
+        const totalRequired = stockShortages.reduce((sum, s) => sum + s.required, 0);
+        const totalAvailable = stockShortages.reduce((sum, s) => sum + s.available, 0);
+        const totalShortage = stockShortages.reduce((sum, s) => sum + s.shortage, 0);
+        
+        // Build detailed error message with splitting suggestion
+        const shortageDetails = stockShortages.map(s => 
+          `  • ${s.productName} (${s.productCode}): Need ${s.required}, Available ${s.available}, Short ${s.shortage}`
+        ).join('\n');
+        
+        return res.status(400).json({
+          success: false,
+          message: `Cannot confirm order - Insufficient stock for ${stockShortages.length} product(s)`,
+          stockShortages: stockShortages,
+          details: shortageDetails,
+          suggestion: {
+            action: 'split_order',
+            message: `This order should be split into two orders:
+            
+📦 Order 1 (In-Stock): ${totalAvailable} units - Can be confirmed immediately
+⏳ Order 2 (Pending): ${totalShortage} units - Will be fulfilled when stock arrives
+
+To split this order:
+1. Cancel this order (${salesOrder.orderNumber})
+2. Create a new order with ${totalAvailable} units (available stock)
+3. Create another order with ${totalShortage} units (mark as out-of-stock)
+
+OR wait for stock to arrive and this order will be auto-processed.`,
+            totalRequired: totalRequired,
+            totalAvailable: totalAvailable,
+            totalShortage: totalShortage
+          }
+        });
       }
 
       // Update order with approval info
