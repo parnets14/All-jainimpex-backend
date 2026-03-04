@@ -913,6 +913,23 @@ OR wait for stock to arrive and this order will be auto-processed.`,
             });
             await unblockMovement.save();
             console.log(`Unblocked ${product.quantity} units of product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
+            
+            // Check if any waiting orders can now be fulfilled with the restored stock
+            try {
+              const StockArrivalService = (await import("../services/stockArrivalService.js")).default;
+              const checkResult = await StockArrivalService.checkWaitingOrdersForStock(
+                product.product,
+                product.warehouse,
+                product.quantity
+              );
+              
+              if (checkResult.ordersUpdated > 0) {
+                console.log(`✅ Stock restored from cancellation - ${checkResult.ordersUpdated} waiting orders updated (${checkResult.ordersReady} ready, ${checkResult.ordersPartial} partial)`);
+              }
+            } catch (stockCheckError) {
+              console.error('Error checking waiting orders after cancellation:', stockCheckError);
+              // Don't fail the cancellation if stock check fails
+            }
           }
         }
       }
