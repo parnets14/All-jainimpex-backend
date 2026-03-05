@@ -33,6 +33,61 @@ const calculateDamagedQuantity = async (productId, warehouseId) => {
   }
 };
 
+// NEW: Calculate GRN Available Quantity
+// This shows: GRN IN quantity - Only Delivered OUT quantity
+// Does NOT deduct Confirmed/Blocked orders - only actual delivered orders
+const calculateGRNAvailableQuantity = async (productId, warehouseId) => {
+  try {
+    // Step 1: Get total GRN IN quantity (accepted quantity from all GRNs)
+    const grns = await GRN.find({
+      'items.productId': productId,
+      warehouseId: new mongoose.Types.ObjectId(warehouseId)
+    }).lean();
+
+    let grnInQty = 0;
+    grns.forEach(grn => {
+      grn.items.forEach(item => {
+        if (item.productId.toString() === productId.toString()) {
+          grnInQty += item.acceptedQuantity || 0;
+        }
+      });
+    });
+
+    // Step 2: Get only DELIVERED sales order quantities (not Confirmed/Blocked)
+    // We need to find sales orders with "Delivered" status and sum their quantities
+    const SalesOrder = (await import('../models/SalesOrder.js')).default;
+    const deliveredOrders = await SalesOrder.find({
+      'products.product': productId,
+      'products.warehouse': new mongoose.Types.ObjectId(warehouseId),
+      status: 'Delivered' // Only count delivered orders
+    }).lean();
+
+    let deliveredQty = 0;
+    deliveredOrders.forEach(order => {
+      order.products.forEach(product => {
+        if (product.product.toString() === productId.toString() && 
+            product.warehouse && product.warehouse.toString() === warehouseId.toString()) {
+          deliveredQty += product.quantity || 0;
+        }
+      });
+    });
+
+    // Step 3: Calculate GRN Available = GRN IN - Delivered OUT
+    const grnAvailableQty = Math.max(0, grnInQty - deliveredQty);
+
+    console.log(`🔍 [GRN_AVAILABLE] Product ${productId} in warehouse ${warehouseId}:`, {
+      grnInQty,
+      deliveredQty,
+      grnAvailableQty
+    });
+
+    return grnAvailableQty;
+  } catch (error) {
+    console.error(`Error calculating GRN available quantity for product ${productId} in warehouse ${warehouseId}:`, error);
+    return 0;
+  }
+};
+
 // Utility function to recalculate all stock balances
 export const recalculateStockBalances = async (req, res) => {
   try {
@@ -355,6 +410,7 @@ export const getStock = async (req, res) => {
           console.log(`🔍 [STOCK_DEBUG] Current stock from movements for ${product.productCode} in warehouse ${warehouseId}: ${currentStock}`);
           
           // OPTIMIZED: Calculate blocked stock using aggregation
+          // Only count movements with "Stock Blocked" and "Stock Unblocked" remarks
           console.log(`🔍 [STOCK_DEBUG] Calculating blocked qty for product ${product._id} in warehouse ${warehouseId}`);
           console.log(`🔍 [STOCK_DEBUG] Warehouse ID type: ${typeof warehouseId}, value: ${warehouseId}`);
           
@@ -363,7 +419,8 @@ export const getStock = async (req, res) => {
               $match: {
                 productId: product._id,
                 warehouseId: new mongoose.Types.ObjectId(warehouseId), // Convert string to ObjectId
-                referenceType: 'SALE'
+                referenceType: 'SALE',
+                remarks: { $regex: /Stock (Blocked|Unblocked)/ } // Only count block/unblock movements
               }
             },
             {
@@ -379,9 +436,9 @@ export const getStock = async (req, res) => {
           let blockedQty = 0;
           blockedResult.forEach(result => {
             if (result._id === 'OUT') {
-              blockedQty += result.totalQuantity;
+              blockedQty += result.totalQuantity; // Stock Blocked movements
             } else if (result._id === 'IN') {
-              blockedQty -= result.totalQuantity;
+              blockedQty -= result.totalQuantity; // Stock Unblocked movements
             }
           });
           
@@ -393,14 +450,21 @@ export const getStock = async (req, res) => {
           const damagedQty = await calculateDamagedQuantity(product._id, warehouseId);
           console.log(`🔍 [STOCK_DEBUG] Damaged quantity for ${product.productCode} in warehouse ${warehouseId}: ${damagedQty}`);
           
+          // NEW: Calculate GRN Available Quantity (GRN IN - Only Delivered OUT)
+          // This shows physical stock from GRN minus only delivered orders
+          const grnAvailableQty = await calculateGRNAvailableQuantity(product._id, warehouseId);
+          console.log(`🔍 [STOCK_DEBUG] GRN Available quantity for ${product.productCode} in warehouse ${warehouseId}: ${grnAvailableQty}`);
+          
           // Update the warehouse stock with current stock from movements
           warehouseStock[warehouseId].currentStock = currentStock;
           warehouseStock[warehouseId].blockedQty = blockedQty;
           warehouseStock[warehouseId].damagedQty = damagedQty; // Override with correct value from movements
+          warehouseStock[warehouseId].grnAvailableQty = grnAvailableQty; // NEW: GRN-based available quantity
         } catch (error) {
           console.error(`Error getting current stock for product ${product.productCode} in warehouse ${warehouseId}:`, error);
           warehouseStock[warehouseId].currentStock = warehouseStock[warehouseId].totalQty;
           warehouseStock[warehouseId].blockedQty = 0;
+          warehouseStock[warehouseId].grnAvailableQty = 0;
         }
       }
 
@@ -457,6 +521,7 @@ export const getStock = async (req, res) => {
             totalQty: currentStock, // FIXED: Show current stock, not cumulative GRN receipts
             damagedQty: warehouse.damagedQty,
             blockedQty: blockedQty,
+            grnAvailableQty: warehouse.grnAvailableQty || 0, // NEW: GRN-based available quantity
             netStock,
             minStockLevel: product.minStockLevel
           };

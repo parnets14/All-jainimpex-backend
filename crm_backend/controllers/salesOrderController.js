@@ -836,7 +836,7 @@ OR wait for stock to arrive and this order will be auto-processed.`,
         }
       } else if (status === "Delivered") {
         // Handle delivered orders - either from Confirmed or directly from Pending
-        console.log(`Order delivered - ${originalStatus === "Confirmed" ? "permanently reducing already blocked stock" : "permanently reducing stock"}`);
+        console.log(`Order delivered - ${originalStatus === "Confirmed" ? "unblocking and permanently reducing stock" : "permanently reducing stock"}`);
         for (const product of salesOrder.products) {
           if (product.warehouse) {
             // Get current balance before creating the movement
@@ -849,13 +849,30 @@ OR wait for stock to arrive and this order will be auto-processed.`,
             const currentBalance = latestMovement ? latestMovement.balance : 0;
             
             if (originalStatus === "Confirmed") {
-              // Stock is already blocked, just create tracking record
+              // Step 1: Unblock the previously blocked stock
+              const unblockMovement = new StockMovement({
+                productId: product.product,
+                warehouseId: product.warehouse,
+                type: 'IN',
+                quantity: product.quantity,
+                balance: currentBalance + product.quantity,
+                referenceNo: salesOrder.orderNumber,
+                referenceType: 'SALE',
+                date: new Date(),
+                remarks: `Order ${salesOrder.orderNumber} - Stock Unblocked (Delivered)`,
+                createdBy: req.user._id
+              });
+              await unblockMovement.save();
+              console.log(`Unblocked ${product.quantity} units for order ${salesOrder.orderNumber} - product ${product.product} in warehouse ${product.warehouse}`);
+              
+              // Step 2: Permanently reduce stock
+              const newBalance = currentBalance; // Balance stays same because we unblocked then reduced
               const deliveryMovement = new StockMovement({
                 productId: product.product,
                 warehouseId: product.warehouse,
                 type: 'OUT',
-                quantity: 0, // No quantity change, just tracking
-                balance: currentBalance, // Keep same balance
+                quantity: product.quantity,
+                balance: newBalance,
                 referenceNo: salesOrder.orderNumber,
                 referenceType: 'SALE',
                 date: new Date(),
@@ -863,7 +880,7 @@ OR wait for stock to arrive and this order will be auto-processed.`,
                 createdBy: req.user._id
               });
               await deliveryMovement.save();
-              console.log(`Order ${salesOrder.orderNumber} delivered - stock permanently reduced for product ${product.product} in warehouse ${product.warehouse}`);
+              console.log(`Order ${salesOrder.orderNumber} delivered - stock permanently reduced for product ${product.product} in warehouse ${product.warehouse}. Final balance: ${newBalance}`);
             } else {
               // Direct delivery from Pending - reduce stock permanently
               const newBalance = currentBalance - product.quantity;
@@ -1287,13 +1304,29 @@ export const updateSalesOrder = async (req, res) => {
             
             const currentBalance = latestMovement ? latestMovement.balance : 0;
             if (originalStatus === "Confirmed") {
-              // Stock already blocked, just create tracking record
+              // Step 1: Unblock the previously blocked stock
+              const unblockMovement = new StockMovement({
+                productId: product.product,
+                warehouseId: product.warehouse,
+                type: 'IN',
+                quantity: product.quantity,
+                balance: currentBalance + product.quantity,
+                referenceNo: salesOrder.orderNumber,
+                referenceType: 'SALE',
+                date: new Date(),
+                remarks: `Order ${salesOrder.orderNumber} - Stock Unblocked (Delivered)`,
+                createdBy: req.user._id
+              });
+              await unblockMovement.save();
+              
+              // Step 2: Permanently reduce stock
+              const newBalance = currentBalance; // Balance stays same because we unblocked then reduced
               const deliveryMovement = new StockMovement({
                 productId: product.product,
                 warehouseId: product.warehouse,
                 type: 'OUT',
-                quantity: 0,
-                balance: currentBalance,
+                quantity: product.quantity,
+                balance: newBalance,
                 referenceNo: salesOrder.orderNumber,
                 referenceType: 'SALE',
                 date: new Date(),

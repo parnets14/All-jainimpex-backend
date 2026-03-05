@@ -210,8 +210,10 @@ export const getProductsForDealer = async (req, res) => {
               }
               
               // Calculate blocked stock from movements
+              // Only count movements with "Stock Blocked" or "Stock Unblocked" remarks
               const blockedMovements = movements.filter(m => 
-                m.type === 'OUT' && m.referenceType === 'SALE'
+                m.type === 'OUT' && m.referenceType === 'SALE' && 
+                m.remarks && m.remarks.includes('Stock Blocked')
               );
               
               const unblockedMovements = movements.filter(m => 
@@ -422,11 +424,13 @@ export const getProductDetailsForDealer = async (req, res) => {
         try {
           const currentStock = await StockMovementService.getCurrentStock(product._id, warehouseId);
           
+          // Only count movements with "Stock Blocked" remark
           const blockedMovements = await StockMovement.find({
             productId: product._id,
             warehouseId: warehouseId,
             type: 'OUT',
-            referenceType: 'SALE'
+            referenceType: 'SALE',
+            remarks: { $regex: /Stock Blocked/ }
           });
           
           const unblockedMovements = await StockMovement.find({

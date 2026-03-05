@@ -174,97 +174,88 @@ export const getProducts = async (req, res) => {
 
     const total = await Product.countDocuments(filter);
 
-    // Fetch stock information for each product
+    // OPTIMIZED: Fetch stock information for all products in bulk
+    const productIds = products.map(p => p._id);
+    
+    // Get all stock movements for these products in one query
+    const allStockMovements = await StockMovement.find({ 
+      productId: { $in: productIds } 
+    }).lean();
+    
+    // Group movements by product and warehouse
+    const productWarehouseMap = {};
+    allStockMovements.forEach(movement => {
+      const productId = movement.productId.toString();
+      const warehouseId = movement.warehouseId?.toString();
+      
+      if (!warehouseId) return;
+      
+      const key = `${productId}-${warehouseId}`;
+      if (!productWarehouseMap[key]) {
+        productWarehouseMap[key] = [];
+      }
+      productWarehouseMap[key].push(movement);
+    });
+    
+    // Calculate stock for all products
     const productsWithStock = await Promise.all(
       products.map(async (product) => {
         try {
-          // Get all warehouses that have this product
-          const stockMovements = await StockMovement.find({ productId: product._id });
+          const productId = product._id.toString();
           
-          // Group by warehouse and calculate totals
-          const warehouseStock = {};
-          
-          for (const movement of stockMovements) {
-            if (!movement.warehouseId) continue;
-            
-            const warehouseId = movement.warehouseId.toString();
-            
-            if (!warehouseStock[warehouseId]) {
-              warehouseStock[warehouseId] = {
-                totalStock: 0,
-                damagedStock: 0,
-                blockedStock: 0
-              };
+          // Get unique warehouses for this product
+          const warehouseIds = new Set();
+          allStockMovements.forEach(m => {
+            if (m.productId.toString() === productId && m.warehouseId) {
+              warehouseIds.add(m.warehouseId.toString());
             }
-            
-            // Get current stock from StockMovementService
-            try {
-              const currentStock = await StockMovementService.getCurrentStock(product._id, warehouseId);
-              warehouseStock[warehouseId].totalStock = currentStock;
-              
-              // Calculate blocked stock (SALE movements)
-              const blockedResult = await StockMovement.aggregate([
-                {
-                  $match: {
-                    productId: product._id,
-                    warehouseId: new mongoose.Types.ObjectId(warehouseId),
-                    referenceType: 'SALE'
-                  }
-                },
-                {
-                  $group: {
-                    _id: '$type',
-                    totalQuantity: { $sum: '$quantity' }
-                  }
-                }
-              ]);
-              
-              let blockedQty = 0;
-              blockedResult.forEach(result => {
-                if (result._id === 'OUT') {
-                  blockedQty += result.totalQuantity;
-                } else if (result._id === 'IN') {
-                  blockedQty -= result.totalQuantity;
-                }
-              });
-              
-              warehouseStock[warehouseId].blockedStock = Math.max(0, blockedQty);
-              
-              // Calculate damaged stock (from GRN damage movements)
-              const damagedResult = await StockMovement.aggregate([
-                {
-                  $match: {
-                    productId: product._id,
-                    warehouseId: new mongoose.Types.ObjectId(warehouseId),
-                    referenceType: 'GRN',
-                    remarks: { $regex: /damage/i }
-                  }
-                },
-                {
-                  $group: {
-                    _id: null,
-                    totalDamaged: { $sum: '$quantity' }
-                  }
-                }
-              ]);
-              
-              warehouseStock[warehouseId].damagedStock = damagedResult.length > 0 ? Math.abs(damagedResult[0].totalDamaged) : 0;
-              
-            } catch (error) {
-              console.error(`Error calculating stock for product ${product._id} in warehouse ${warehouseId}:`, error);
-            }
-          }
+          });
           
-          // Calculate totals across all warehouses
           let totalStock = 0;
           let totalDamaged = 0;
           let totalBlocked = 0;
           
-          Object.values(warehouseStock).forEach(stock => {
-            totalStock += stock.totalStock || 0;
-            totalDamaged += stock.damagedStock || 0;
-            totalBlocked += stock.blockedStock || 0;
-          });
+          // Calculate stock for each warehouse
+          for (const warehouseId of warehouseIds) {
+            const key = `${productId}-${warehouseId}`;
+            const movements = productWarehouseMap[key] || [];
+            
+            // Get current stock from latest movement balance
+            const sortedMovements = movements.sort((a, b) => {
+              const dateA = new Date(a.date || a.createdAt);
+              const dateB = new Date(b.date || b.createdAt);
+              return dateB - dateA;
+            });
+            const currentStock = sortedMovements[0]?.balance || 0;
+            totalStock += currentStock;
+            
+            // Calculate blocked stock from movements
+            const blockedMovements = movements.filter(m => 
+              m.type === 'OUT' && 
+              m.referenceType === 'SALE' && 
+              m.remarks && 
+              m.remarks.includes('Stock Blocked')
+            );
+            const unblockedMovements = movements.filter(m => 
+              m.type === 'IN' && 
+              m.referenceType === 'SALE' && 
+              m.remarks && 
+              m.remarks.includes('Stock Unblocked')
+            );
+            
+            let blockedQty = 0;
+            blockedMovements.forEach(m => blockedQty += m.quantity || 0);
+            unblockedMovements.forEach(m => blockedQty -= m.quantity || 0);
+            totalBlocked += Math.max(0, blockedQty);
+            
+            // Calculate damaged stock from GRN movements
+            const damagedMovements = movements.filter(m => 
+              m.referenceType === 'GRN' && 
+              m.remarks && 
+              m.remarks.toLowerCase().includes('damage')
+            );
+            damagedMovements.forEach(m => totalDamaged += Math.abs(m.quantity || 0));
+          }
           
           const netStock = totalStock - totalDamaged - totalBlocked;
           

@@ -51,11 +51,12 @@ router.get('/products', protect, async (req, res) => {
     }
 
     // Aggregate sales data from SalesOrder collection only (as requested)
+    // Only count orders with "Delivered" status
     const salesOrderData = await SalesOrder.aggregate([
       {
         $match: {
-          createdAt: { $gte: startDate, $lte: endDate }
-          // Removed status filter to show ALL orders
+          createdAt: { $gte: startDate, $lte: endDate },
+          status: 'Delivered' // Only count delivered orders
         }
       },
       { $unwind: '$products' },
@@ -140,10 +141,10 @@ router.get('/product-details', protect, async (req, res) => {
       customEndDate.setHours(23, 59, 59, 999);
     }
 
-    // Base match criteria (removed status filter to show all orders)
+    // Base match criteria - only count delivered orders
     const baseMatch = {
-      'products.product': new mongoose.Types.ObjectId(productId.toString())
-      // Removed status filter to show ALL orders
+      'products.product': new mongoose.Types.ObjectId(productId.toString()),
+      status: 'Delivered' // Only count delivered orders
     };
 
     // Note: warehouseId filtering is handled in the aggregation pipeline
