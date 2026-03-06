@@ -621,15 +621,37 @@ export const getAvailableGRNs = async (req, res) => {
   try {
     const { supplier } = req.query;
 
+    console.log('🔍 === GET AVAILABLE GRNs DEBUG ===');
+    console.log('📥 Request params:', { supplier });
+    
+    // First, let's see ALL GRNs in the database
+    const allGRNs = await GRN.find({}).select('grnNo status isInvoiceCreated supplierId').lean();
+    console.log(`📊 Total GRNs in database: ${allGRNs.length}`);
+    if (allGRNs.length > 0) {
+      console.log('📋 All GRNs status breakdown:');
+      allGRNs.forEach(grn => {
+        console.log(`   - ${grn.grnNo}: status="${grn.status}", isInvoiceCreated=${grn.isInvoiceCreated}, supplierId=${grn.supplierId}`);
+      });
+    } else {
+      console.log('⚠️ No GRNs found in database at all!');
+    }
+
     // Build query for GRNs that don't have invoices yet
-    // Allow Draft, Received, and Partially Received GRNs
+    // ONLY allow "Received" and "Partially Received" GRNs for invoice creation
     const query = { 
-      status: { $in: ["Draft", "Received", "Partially Received"] },
-      isInvoiceCreated: false // Only GRNs without invoices
+      status: { $in: ["Received", "Partially Received"] },
+      // Match GRNs where isInvoiceCreated is false OR doesn't exist (undefined)
+      $or: [
+        { isInvoiceCreated: false },
+        { isInvoiceCreated: { $exists: false } }
+      ]
     };
     if (supplier) {
       query.supplierId = supplier;
+      console.log(`🔍 Filtering by supplier: ${supplier}`);
     }
+
+    console.log('🔍 Query:', JSON.stringify(query));
 
     // Get GRNs that don't have invoices
     const grns = await GRN.find(query)
@@ -640,21 +662,29 @@ export const getAvailableGRNs = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    // Filter out GRNs that already have invoices
+    console.log(`📦 Found ${grns.length} GRNs matching query`);
+
+    // Filter out GRNs that already have invoices (double-check)
     const availableGRNs = [];
     for (const grn of grns) {
       const existingInvoice = await SupplierInvoice.findOne({ grn: grn._id });
       if (!existingInvoice) {
         availableGRNs.push(grn);
+        console.log(`✅ Available: ${grn.grnNo}`);
+      } else {
+        console.log(`⏭️ Skipping GRN ${grn.grnNo} - already has invoice ${existingInvoice.invoiceNumber}`);
       }
     }
+
+    console.log(`✅ Returning ${availableGRNs.length} available GRNs`);
+    console.log('🔍 === END DEBUG ===');
 
     res.json({
       success: true,
       grns: availableGRNs
     });
   } catch (error) {
-    console.error("Get Available GRNs Error:", error);
+    console.error("❌ Get Available GRNs Error:", error);
     res.status(500).json({
       success: false,
       message: "Error fetching available GRNs",

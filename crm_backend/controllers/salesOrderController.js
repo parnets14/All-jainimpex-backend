@@ -980,6 +980,94 @@ OR wait for stock to arrive and this order will be auto-processed.`,
 
     await salesOrder.save();
 
+    // CREATE DEALER LEDGER ENTRY when order is CONFIRMED to block credit limit
+    if (status === "Confirmed" && originalStatus !== "Confirmed") {
+      try {
+        console.log(`💳 Creating ledger entry to block credit limit for order ${salesOrder.orderNumber}`);
+        
+        const DealerLedger = (await import("../models/DealerLedger.js")).default;
+        const Dealer = (await import("../models/Dealer.js")).default;
+        
+        // Get dealer details
+        const dealer = await Dealer.findById(salesOrder.dealer);
+        if (!dealer) {
+          console.error(`❌ Dealer not found for order ${salesOrder.orderNumber}`);
+        } else {
+          // Calculate due date based on credit days
+          let dueDate = null;
+          if (salesOrder.orderDate && salesOrder.creditDays) {
+            dueDate = new Date(salesOrder.orderDate);
+            dueDate.setDate(dueDate.getDate() + salesOrder.creditDays);
+          }
+          
+          // Create ledger entry to block credit limit
+          const ledgerEntry = new DealerLedger({
+            dealer: salesOrder.dealer,
+            dealerName: dealer.name,
+            dealerCode: dealer.code,
+            entryDate: new Date(),
+            transactionType: "Adjustment", // Using Adjustment type for order confirmation
+            salesType: salesOrder.salesType || 'Regular Sale',
+            creditDaysApplied: salesOrder.creditDays || 0,
+            debitAmount: salesOrder.totalAmount, // Increase outstanding (block credit)
+            creditAmount: 0,
+            description: `Order Confirmed - ${salesOrder.orderNumber}`,
+            remarks: `Credit limit blocked for confirmed order ${salesOrder.orderNumber}. Amount: ₹${salesOrder.totalAmount.toLocaleString()}`,
+            creditDays: salesOrder.creditDays || 0,
+            dueDate: dueDate,
+            status: "Active",
+            createdBy: req.user._id
+          });
+          
+          await ledgerEntry.save();
+          console.log(`✅ Ledger entry created - Credit limit blocked: ₹${salesOrder.totalAmount.toLocaleString()} for order ${salesOrder.orderNumber}`);
+          console.log(`   Running Balance: ₹${ledgerEntry.runningBalance.toLocaleString()}`);
+        }
+      } catch (ledgerError) {
+        console.error('❌ Error creating ledger entry for order confirmation:', ledgerError);
+        // Don't fail the request if ledger creation fails - log it for manual correction
+      }
+    }
+    
+    // REMOVE/REVERSE LEDGER ENTRY when order is CANCELLED or REJECTED (if it was previously Confirmed)
+    if ((status === "Cancelled" || status === "Rejected") && originalStatus === "Confirmed") {
+      try {
+        console.log(`💳 Reversing ledger entry to unblock credit limit for order ${salesOrder.orderNumber}`);
+        
+        const DealerLedger = (await import("../models/DealerLedger.js")).default;
+        const Dealer = (await import("../models/Dealer.js")).default;
+        
+        // Get dealer details
+        const dealer = await Dealer.findById(salesOrder.dealer);
+        if (!dealer) {
+          console.error(`❌ Dealer not found for order ${salesOrder.orderNumber}`);
+        } else {
+          // Create reverse ledger entry to unblock credit limit
+          const reverseLedgerEntry = new DealerLedger({
+            dealer: salesOrder.dealer,
+            dealerName: dealer.name,
+            dealerCode: dealer.code,
+            entryDate: new Date(),
+            transactionType: "Adjustment",
+            salesType: salesOrder.salesType || 'Regular Sale',
+            debitAmount: 0,
+            creditAmount: salesOrder.totalAmount, // Decrease outstanding (unblock credit)
+            description: `Order ${status} - ${salesOrder.orderNumber}`,
+            remarks: `Credit limit unblocked - order ${salesOrder.orderNumber} was ${status.toLowerCase()}. Amount released: ₹${salesOrder.totalAmount.toLocaleString()}`,
+            status: "Active",
+            createdBy: req.user._id
+          });
+          
+          await reverseLedgerEntry.save();
+          console.log(`✅ Reverse ledger entry created - Credit limit unblocked: ₹${salesOrder.totalAmount.toLocaleString()} for order ${salesOrder.orderNumber}`);
+          console.log(`   Running Balance: ₹${reverseLedgerEntry.runningBalance.toLocaleString()}`);
+        }
+      } catch (ledgerError) {
+        console.error('❌ Error creating reverse ledger entry:', ledgerError);
+        // Don't fail the request if ledger creation fails
+      }
+    }
+
     // Create notification for dealer about status change (for any status change)
     if (originalStatus !== status) {
       try {
@@ -1240,6 +1328,109 @@ export const updateSalesOrder = async (req, res) => {
           }
         }
       }
+      
+      // RE-CHECK CREDIT LIMIT when products are being edited
+      // This ensures that if quantities increase after approval, credit limit is re-validated
+      console.log("🔍 Re-checking credit limit after product edit...");
+      
+      // Get dealer data
+      const dealerData = await Dealer.findById(salesOrder.dealer);
+      if (!dealerData) {
+        return res.status(404).json({
+          success: false,
+          message: "Dealer not found"
+        });
+      }
+      
+      // Calculate new order totals with updated products
+      const updatedValidatedProducts = [];
+      for (const item of req.body.products) {
+        const product = await Product.findById(item.product);
+        if (!product) continue;
+        
+        // Skip out-of-stock products from credit calculation
+        const hasStock = item.warehouse && item.warehouse !== "No Stock";
+        if (!hasStock) {
+          console.log(`⏭️ Skipping product ${product.itemName} from credit limit calculation (out of stock)`);
+          continue;
+        }
+        
+        const unitPrice = item.unitPrice || product.rateSlabs[0]?.rate || 0;
+        const gst = item.gst || product.gst || 0;
+        const baseAmount = item.quantity * unitPrice;
+        const gstAmount = (baseAmount * gst) / 100;
+        
+        updatedValidatedProducts.push({
+          quantity: item.quantity,
+          unitPrice: unitPrice,
+          gstAmount: gstAmount
+        });
+      }
+      
+      const newGrossAmount = updatedValidatedProducts.reduce((sum, p) => sum + (p.quantity * p.unitPrice), 0);
+      const newTotalGst = updatedValidatedProducts.reduce((sum, p) => sum + p.gstAmount, 0);
+      const newTotalAmount = newGrossAmount + newTotalGst;
+      
+      console.log(`💰 Updated Order Amount: ₹${newTotalAmount.toFixed(2)}`);
+      
+      // Check credit limit if dealer has one set
+      if (dealerData.creditLimit && dealerData.creditLimit > 0) {
+        // Get dealer's current outstanding balance from ledger
+        const DealerLedger = (await import("../models/DealerLedger.js")).default;
+        const lastLedgerEntry = await DealerLedger.findOne({ dealer: salesOrder.dealer })
+          .sort({ createdAt: -1 });
+        
+        const currentOutstanding = lastLedgerEntry ? lastLedgerEntry.runningBalance : 0;
+        
+        // Subtract the original order amount and add the new order amount
+        const originalOrderAmount = salesOrder.totalAmount || 0;
+        const adjustedOutstanding = currentOutstanding - originalOrderAmount;
+        const newOutstanding = adjustedOutstanding + newTotalAmount;
+        
+        console.log(`💳 Credit Limit Re-Check:`, {
+          creditLimit: dealerData.creditLimit,
+          currentOutstanding,
+          originalOrderAmount,
+          adjustedOutstanding,
+          newOrderAmount: newTotalAmount,
+          newOutstanding,
+          overlimit: newOutstanding - dealerData.creditLimit
+        });
+        
+        // If credit limit exceeded, reset approval and force status to Pending
+        if (newOutstanding > dealerData.creditLimit) {
+          const overlimitAmount = newOutstanding - dealerData.creditLimit;
+          console.log(`⚠️ Credit limit exceeded by ₹${overlimitAmount.toFixed(2)} after edit - Resetting approval`);
+          
+          // Reset credit approval and force status back to Pending
+          req.body.status = "Pending";
+          req.body.creditOverlimit = {
+            isOverlimit: true,
+            creditLimit: dealerData.creditLimit,
+            currentOutstanding: adjustedOutstanding,
+            orderAmount: newTotalAmount,
+            newOutstanding,
+            overlimitAmount,
+            requiresApproval: true,
+            approvedBy: null, // Reset approval
+            approvedAt: null
+          };
+          
+          console.log(`🔄 Order status reset to Pending - Requires new Super Admin approval`);
+        } else {
+          // Credit limit is fine - clear any previous overlimit flags
+          console.log(`✅ Credit limit check passed - Order within limit`);
+          req.body.creditOverlimit = {
+            isOverlimit: false,
+            creditLimit: dealerData.creditLimit,
+            currentOutstanding: adjustedOutstanding,
+            orderAmount: newTotalAmount,
+            newOutstanding,
+            overlimitAmount: 0,
+            requiresApproval: false
+          };
+        }
+      }
     }
 
     // Store original status before update
@@ -1445,6 +1636,94 @@ export const updateSalesOrder = async (req, res) => {
         console.log(`📧 Notification created for dealer ${updatedOrder.dealer}: ${message} (Status changed from ${originalStatus} to ${newStatus})`);
       } catch (notificationError) {
         console.error('Error creating notification:', notificationError);
+      }
+      
+      // CREATE DEALER LEDGER ENTRY when order is CONFIRMED to block credit limit
+      if (newStatus === "Confirmed" && originalStatus !== "Confirmed") {
+        try {
+          console.log(`💳 Creating ledger entry to block credit limit for order ${updatedOrder.orderNumber}`);
+          
+          const DealerLedger = (await import("../models/DealerLedger.js")).default;
+          const Dealer = (await import("../models/Dealer.js")).default;
+          
+          // Get dealer details
+          const dealer = await Dealer.findById(updatedOrder.dealer);
+          if (!dealer) {
+            console.error(`❌ Dealer not found for order ${updatedOrder.orderNumber}`);
+          } else {
+            // Calculate due date based on credit days
+            let dueDate = null;
+            if (updatedOrder.orderDate && updatedOrder.creditDays) {
+              dueDate = new Date(updatedOrder.orderDate);
+              dueDate.setDate(dueDate.getDate() + updatedOrder.creditDays);
+            }
+            
+            // Create ledger entry to block credit limit
+            const ledgerEntry = new DealerLedger({
+              dealer: updatedOrder.dealer._id || updatedOrder.dealer,
+              dealerName: dealer.name,
+              dealerCode: dealer.code,
+              entryDate: new Date(),
+              transactionType: "Adjustment",
+              salesType: updatedOrder.salesType || 'Regular Sale',
+              creditDaysApplied: updatedOrder.creditDays || 0,
+              debitAmount: updatedOrder.totalAmount, // Increase outstanding (block credit)
+              creditAmount: 0,
+              description: `Order Confirmed - ${updatedOrder.orderNumber}`,
+              remarks: `Credit limit blocked for confirmed order ${updatedOrder.orderNumber}. Amount: ₹${updatedOrder.totalAmount.toLocaleString()}`,
+              creditDays: updatedOrder.creditDays || 0,
+              dueDate: dueDate,
+              status: "Active",
+              createdBy: req.user._id
+            });
+            
+            await ledgerEntry.save();
+            console.log(`✅ Ledger entry created - Credit limit blocked: ₹${updatedOrder.totalAmount.toLocaleString()} for order ${updatedOrder.orderNumber}`);
+            console.log(`   Running Balance: ₹${ledgerEntry.runningBalance.toLocaleString()}`);
+          }
+        } catch (ledgerError) {
+          console.error('❌ Error creating ledger entry for order confirmation:', ledgerError);
+          // Don't fail the request if ledger creation fails
+        }
+      }
+      
+      // REMOVE/REVERSE LEDGER ENTRY when order is CANCELLED or REJECTED (if it was previously Confirmed)
+      if ((newStatus === "Cancelled" || newStatus === "Rejected") && originalStatus === "Confirmed") {
+        try {
+          console.log(`💳 Reversing ledger entry to unblock credit limit for order ${updatedOrder.orderNumber}`);
+          
+          const DealerLedger = (await import("../models/DealerLedger.js")).default;
+          const Dealer = (await import("../models/Dealer.js")).default;
+          
+          // Get dealer details
+          const dealer = await Dealer.findById(updatedOrder.dealer);
+          if (!dealer) {
+            console.error(`❌ Dealer not found for order ${updatedOrder.orderNumber}`);
+          } else {
+            // Create reverse ledger entry to unblock credit limit
+            const reverseLedgerEntry = new DealerLedger({
+              dealer: updatedOrder.dealer._id || updatedOrder.dealer,
+              dealerName: dealer.name,
+              dealerCode: dealer.code,
+              entryDate: new Date(),
+              transactionType: "Adjustment",
+              salesType: updatedOrder.salesType || 'Regular Sale',
+              debitAmount: 0,
+              creditAmount: updatedOrder.totalAmount, // Decrease outstanding (unblock credit)
+              description: `Order ${newStatus} - ${updatedOrder.orderNumber}`,
+              remarks: `Credit limit unblocked - order ${updatedOrder.orderNumber} was ${newStatus.toLowerCase()}. Amount released: ₹${updatedOrder.totalAmount.toLocaleString()}`,
+              status: "Active",
+              createdBy: req.user._id
+            });
+            
+            await reverseLedgerEntry.save();
+            console.log(`✅ Reverse ledger entry created - Credit limit unblocked: ₹${updatedOrder.totalAmount.toLocaleString()} for order ${updatedOrder.orderNumber}`);
+            console.log(`   Running Balance: ₹${reverseLedgerEntry.runningBalance.toLocaleString()}`);
+          }
+        } catch (ledgerError) {
+          console.error('❌ Error creating reverse ledger entry:', ledgerError);
+          // Don't fail the request if ledger creation fails
+        }
       }
     }
 
