@@ -2,6 +2,7 @@ import Voucher from '../models/Voucher.js';
 import BankAccount from '../models/BankAccount.js';
 import CashAccount from '../models/CashAccount.js';
 import DealerInvoice from '../models/DealerInvoice.js';
+import DealerLedger from '../models/DealerLedger.js';
 import PaymentAllocation from '../models/PaymentAllocation.js';
 import { generateVoucherNumber, getFinancialYear } from '../services/voucherNumberService.js';
 import { 
@@ -203,6 +204,11 @@ export const createReceiptVoucher = async (req, res) => {
       }
     }
     
+    // Create dealer ledger entries for all vouchers
+    for (const voucher of createdVouchers) {
+      await createDealerLedgerEntry(voucher, req.user._id);
+    }
+    
     // Update invoice status if allocated
     if (allocations && allocations.length > 0) {
       for (const allocation of allocations) {
@@ -354,6 +360,11 @@ export const createPaymentVoucher = async (req, res) => {
       createdVouchers.push(voucher);
       
       await updateAccountBalance('Payment', voucherData.transactionMode, voucherData.bankAccount, voucherData.totalAmount);
+    }
+    
+    // Create dealer ledger entries for all vouchers
+    for (const voucher of createdVouchers) {
+      await createDealerLedgerEntry(voucher, req.user._id);
     }
     
     res.status(201).json({
@@ -879,5 +890,96 @@ const updateInvoicePaymentStatus = async (invoiceId, paidAmount) => {
     }
     
     await invoice.save();
+  }
+};
+
+/**
+ * Helper: Create dealer ledger entry for voucher
+ */
+const createDealerLedgerEntry = async (voucher, userId) => {
+  try {
+    // Only create ledger entry if party is a Dealer
+    if (voucher.partyType !== 'Dealer' || !voucher.partyId) {
+      console.log('Skipping ledger entry - not a dealer transaction');
+      return;
+    }
+    
+    console.log(`📝 Creating dealer ledger entry for voucher: ${voucher.voucherNumber}`);
+    
+    // Get last ledger entry for running balance
+    const lastEntry = await DealerLedger.findOne({ dealer: voucher.partyId })
+      .sort({ entryDate: -1, createdAt: -1 });
+    
+    const previousBalance = lastEntry ? lastEntry.runningBalance : 0;
+    
+    // Determine transaction type and amounts based on voucher type
+    let transactionType, debitAmount, creditAmount, runningBalance, description;
+    
+    if (voucher.voucherType === 'Receipt') {
+      // Receipt = Payment received from dealer = Credit (reduces outstanding)
+      transactionType = 'Payment'; // Fixed: DealerLedger uses "Payment" not "Receipt"
+      debitAmount = 0;
+      creditAmount = voucher.totalAmount;
+      runningBalance = previousBalance - voucher.totalAmount; // Reduces dealer's debt
+      description = `Payment Received - ${voucher.voucherNumber}`;
+      if (voucher.transactionMode) {
+        description += ` (${voucher.transactionMode})`;
+      }
+    } else if (voucher.voucherType === 'Payment') {
+      // Payment = Payment made to dealer = Debit (increases outstanding - rare case)
+      transactionType = 'Payment';
+      debitAmount = voucher.totalAmount;
+      creditAmount = 0;
+      runningBalance = previousBalance + voucher.totalAmount;
+      description = `Payment Made - ${voucher.voucherNumber}`;
+      if (voucher.transactionMode) {
+        description += ` (${voucher.transactionMode})`;
+      }
+    } else {
+      console.log('Skipping ledger entry - unsupported voucher type:', voucher.voucherType);
+      return;
+    }
+    
+    // Map transaction mode to payment method enum
+    let paymentMethod = voucher.transactionMode;
+    if (paymentMethod === 'Bank' || paymentMethod === 'NEFT' || paymentMethod === 'RTGS') {
+      paymentMethod = 'Bank Transfer';
+    }
+    // Valid values: "Cash", "Cheque", "UPI", "Bank Transfer", "Credit Note", "Adjustment"
+    
+    // Create ledger entry
+    const ledgerEntry = new DealerLedger({
+      dealer: voucher.partyId,
+      dealerName: voucher.partyName,
+      entryDate: voucher.voucherDate,
+      transactionType,
+      referenceType: 'Voucher',
+      referenceId: voucher._id,
+      referenceNumber: voucher.voucherNumber,
+      debitAmount,
+      creditAmount,
+      paymentReceived: creditAmount, // For payment received
+      runningBalance,
+      description,
+      remarks: voucher.narration || '',
+      paymentMethod,
+      chequeDetails: voucher.chequeNumber ? {
+        chequeNo: voucher.chequeNumber,
+        chequeDate: voucher.chequeDate,
+        status: voucher.chequeStatus || 'Pending'
+      } : undefined,
+      upiDetails: voucher.upiTransactionId ? {
+        transactionId: voucher.upiTransactionId
+      } : undefined,
+      createdBy: userId
+    });
+    
+    await ledgerEntry.save();
+    console.log(`✅ Dealer ledger entry created: ${ledgerEntry._id}`);
+    
+  } catch (error) {
+    console.error('❌ Error creating dealer ledger entry:', error);
+    // Don't throw error - ledger entry failure shouldn't block voucher creation
+    // But log it for debugging
   }
 };

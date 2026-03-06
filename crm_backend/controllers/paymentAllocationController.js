@@ -9,6 +9,10 @@ import { generateAllocationNumber } from '../services/voucherNumberService.js';
  */
 export const createPaymentAllocation = async (req, res) => {
   try {
+    console.log('📥 Creating payment allocation...');
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    console.log('User:', req.user?._id);
+    
     const {
       voucherId,
       allocations
@@ -39,14 +43,28 @@ export const createPaymentAllocation = async (req, res) => {
       });
     }
     
+    // Calculate unallocatedAmount on-the-fly if undefined (for legacy vouchers)
+    const allocatedAmount = voucher.allocatedAmount || 0;
+    const unallocatedAmount = voucher.unallocatedAmount !== undefined 
+      ? voucher.unallocatedAmount 
+      : voucher.totalAmount - allocatedAmount;
+    
+    // Initialize fields if they were undefined
+    if (voucher.allocatedAmount === undefined) {
+      voucher.allocatedAmount = 0;
+    }
+    if (voucher.unallocatedAmount === undefined) {
+      voucher.unallocatedAmount = voucher.totalAmount;
+    }
+    
     // Calculate total allocation
     const totalAllocated = allocations.reduce((sum, alloc) => sum + alloc.allocatedAmount, 0);
     
     // Check if allocation exceeds unallocated amount
-    if (totalAllocated > voucher.unallocatedAmount) {
+    if (totalAllocated > unallocatedAmount) {
       return res.status(400).json({
         success: false,
-        message: `Total allocation (₹${totalAllocated}) exceeds unallocated amount (₹${voucher.unallocatedAmount})`
+        message: `Total allocation (₹${totalAllocated}) exceeds unallocated amount (₹${unallocatedAmount})`
       });
     }
     
@@ -81,7 +99,7 @@ export const createPaymentAllocation = async (req, res) => {
         previouslyPaid,
         allocatedAmount: alloc.allocatedAmount,
         remainingAmount,
-        paymentStatus: remainingAmount === 0 ? 'Full' : 'Partial'
+        paymentStatus: remainingAmount === 0 ? 'Paid' : 'Partial'
       });
     }
     
@@ -133,7 +151,7 @@ export const createPaymentAllocation = async (req, res) => {
         if (invoice.paidAmount >= invoice.totalAmount) {
           invoice.paymentStatus = 'Paid';
         } else if (invoice.paidAmount > 0) {
-          invoice.paymentStatus = 'Partially Paid';
+          invoice.paymentStatus = 'Partial';  // Fixed: was "Partially Paid"
         }
         
         await invoice.save();
@@ -147,11 +165,15 @@ export const createPaymentAllocation = async (req, res) => {
     });
     
   } catch (error) {
-    console.error('Error creating payment allocation:', error);
+    console.error('❌ Error creating payment allocation:', error);
+    console.error('Error stack:', error.stack);
+    console.error('Request body:', req.body);
+    console.error('User:', req.user);
     res.status(500).json({
       success: false,
       message: 'Error creating payment allocation',
-      error: error.message
+      error: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 };
@@ -323,23 +345,33 @@ export const getUnadjustedPayments = async (req, res) => {
       });
     }
     
+    // Find all posted vouchers for this party (don't filter by unallocatedAmount yet)
     const vouchers = await Voucher.find({
       partyId,
       voucherType,
-      status: 'Posted',
-      unallocatedAmount: { $gt: 0 }
+      status: 'Posted'
     }).sort({ voucherDate: -1 });
     
-    const unadjustedPayments = vouchers.map(voucher => ({
-      _id: voucher._id,
-      voucherNumber: voucher.voucherNumber,
-      voucherDate: voucher.voucherDate,
-      totalAmount: voucher.totalAmount,
-      allocatedAmount: voucher.allocatedAmount,
-      unallocatedAmount: voucher.unallocatedAmount,
-      transactionMode: voucher.transactionMode,
-      narration: voucher.narration
-    }));
+    // Calculate unallocatedAmount on-the-fly if undefined (for legacy vouchers)
+    const unadjustedPayments = vouchers
+      .map(voucher => {
+        const allocatedAmount = voucher.allocatedAmount || 0;
+        const unallocatedAmount = voucher.unallocatedAmount !== undefined 
+          ? voucher.unallocatedAmount 
+          : voucher.totalAmount - allocatedAmount;
+        
+        return {
+          _id: voucher._id,
+          voucherNumber: voucher.voucherNumber,
+          voucherDate: voucher.voucherDate,
+          totalAmount: voucher.totalAmount,
+          allocatedAmount,
+          unallocatedAmount,
+          transactionMode: voucher.transactionMode,
+          narration: voucher.narration
+        };
+      })
+      .filter(v => v.unallocatedAmount > 0); // Filter after calculation
     
     const totalUnadjusted = unadjustedPayments.reduce((sum, v) => sum + v.unallocatedAmount, 0);
     
