@@ -875,7 +875,64 @@ export const approveDealerInvoice = async (req, res) => {
     
     console.log(`✅ Invoice number generated: ${invoice.invoiceNumber}`);
     
-    // NOW create ledger entry
+    // CRITICAL FIX: Remove/Reverse the sales order ledger entry to prevent double blocking
+    if (invoice.salesOrder) {
+      try {
+        console.log(`🔄 Checking for sales order ledger entry to remove/reverse...`);
+        
+        const salesOrder = await SalesOrder.findById(invoice.salesOrder).session(session);
+        if (salesOrder) {
+          // Find the "Order Confirmed" ledger entry for this sales order
+          const orderLedgerEntry = await DealerLedger.findOne({
+            dealer: invoice.dealer,
+            transactionType: "Order Confirmed",
+            description: { $regex: salesOrder.orderNumber }
+          }).session(session);
+          
+          if (orderLedgerEntry) {
+            console.log(`✅ Found order ledger entry: ${orderLedgerEntry._id}`);
+            console.log(`   Amount blocked by order: ₹${orderLedgerEntry.debitAmount.toLocaleString()}`);
+            
+            // Get the last entry for running balance calculation
+            const lastEntry = await DealerLedger.findOne(
+              { dealer: invoice.dealer },
+              {},
+              { sort: { 'createdAt': -1 } }
+            ).session(session);
+            
+            let previousBalance = lastEntry ? lastEntry.runningBalance : 0;
+            
+            // Create REVERSE entry to unblock the order amount
+            const reverseLedgerEntry = new DealerLedger({
+              dealer: invoice.dealer,
+              dealerName: invoice.dealerName,
+              dealerCode: invoice.dealerCode,
+              entryDate: invoice.invoiceDate,
+              transactionType: "Order Confirmed - Reversed",
+              description: `Reversed: Order ${salesOrder.orderNumber} (Invoice ${invoice.invoiceNumber} generated)`,
+              remarks: `Credit unblocked - order ${salesOrder.orderNumber} converted to invoice ${invoice.invoiceNumber}. This reverses the credit block from order confirmation.`,
+              debitAmount: 0,
+              creditAmount: orderLedgerEntry.debitAmount, // Unblock the order amount
+              runningBalance: previousBalance - orderLedgerEntry.debitAmount,
+              status: "Active",
+              createdBy: req.user._id
+            });
+            
+            await reverseLedgerEntry.save({ session });
+            console.log(`✅ Reversed order ledger entry - Unblocked: ₹${orderLedgerEntry.debitAmount.toLocaleString()}`);
+            console.log(`   New running balance: ₹${reverseLedgerEntry.runningBalance.toLocaleString()}`);
+          } else {
+            console.log(`ℹ️ No order ledger entry found for ${salesOrder.orderNumber} - may not have been confirmed or already reversed`);
+          }
+        }
+      } catch (reverseError) {
+        console.error("❌ Error reversing order ledger entry:", reverseError);
+        // Don't fail the transaction - log and continue
+        // The invoice ledger will still be created correctly
+      }
+    }
+    
+    // NOW create ledger entry for the invoice
     try {
       const dealer = await Dealer.findById(invoice.dealer).session(session);
       

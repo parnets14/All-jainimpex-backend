@@ -20,7 +20,7 @@ const dealerLedgerSchema = new mongoose.Schema({
   // Transaction Type
   transactionType: {
     type: String,
-    enum: ["Invoice", "Payment", "Credit Note", "Adjustment", "Opening Balance", "Advance Payment", "Advance Adjustment"],
+    enum: ["Invoice", "Payment", "Credit Note", "Adjustment", "Opening Balance", "Advance Payment", "Advance Adjustment", "Order Confirmed", "Order Confirmed - Reversed"],
     required: true
   },
   

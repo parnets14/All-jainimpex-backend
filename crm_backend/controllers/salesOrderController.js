@@ -1068,7 +1068,7 @@ OR wait for stock to arrive and this order will be auto-processed.`,
             dealerName: dealer.name,
             dealerCode: dealer.code,
             entryDate: new Date(),
-            transactionType: "Adjustment", // Using Adjustment type for order confirmation
+            transactionType: "Order Confirmed", // Order confirmation blocks credit
             salesType: salesOrder.salesType || 'Regular Sale',
             creditDaysApplied: salesOrder.creditDays || 0,
             debitAmount: salesOrder.totalAmount, // Increase outstanding (block credit)
@@ -1110,7 +1110,7 @@ OR wait for stock to arrive and this order will be auto-processed.`,
             dealerName: dealer.name,
             dealerCode: dealer.code,
             entryDate: new Date(),
-            transactionType: "Adjustment",
+            transactionType: "Order Confirmed - Reversed",
             salesType: salesOrder.salesType || 'Regular Sale',
             debitAmount: 0,
             creditAmount: salesOrder.totalAmount, // Decrease outstanding (unblock credit)
@@ -1393,104 +1393,114 @@ export const updateSalesOrder = async (req, res) => {
       
       // RE-CHECK CREDIT LIMIT when products are being edited
       // This ensures that if quantities increase after approval, credit limit is re-validated
+      // IMPORTANT: Skip this check if order is already approved by admin
       console.log("🔍 Re-checking credit limit after product edit...");
+      console.log("   Order creditOverlimit:", salesOrder.creditOverlimit);
+      console.log("   Already approved?", salesOrder.creditOverlimit?.approvedBy ? 'YES' : 'NO');
       
-      // Get dealer data
-      const dealerData = await Dealer.findById(salesOrder.dealer);
-      if (!dealerData) {
-        return res.status(404).json({
-          success: false,
-          message: "Dealer not found"
-        });
-      }
-      
-      // Calculate new order totals with updated products
-      const updatedValidatedProducts = [];
-      for (const item of req.body.products) {
-        const product = await Product.findById(item.product);
-        if (!product) continue;
+      // Skip credit limit re-check if already approved by admin
+      if (salesOrder.creditOverlimit && salesOrder.creditOverlimit.approvedBy) {
+        console.log("✅ Order already approved by admin - skipping credit limit re-check");
+      } else {
+        console.log("🔄 Performing credit limit re-check...");
         
-        // Skip out-of-stock products from credit calculation
-        const hasStock = item.warehouse && item.warehouse !== "No Stock";
-        if (!hasStock) {
-          console.log(`⏭️ Skipping product ${product.itemName} from credit limit calculation (out of stock)`);
-          continue;
+        // Get dealer data
+        const dealerData = await Dealer.findById(salesOrder.dealer);
+        if (!dealerData) {
+          return res.status(404).json({
+            success: false,
+            message: "Dealer not found"
+          });
         }
         
-        const unitPrice = item.unitPrice || product.rateSlabs[0]?.rate || 0;
-        const gst = item.gst || product.gst || 0;
-        const baseAmount = item.quantity * unitPrice;
-        const gstAmount = (baseAmount * gst) / 100;
-        
-        updatedValidatedProducts.push({
-          quantity: item.quantity,
-          unitPrice: unitPrice,
-          gstAmount: gstAmount
-        });
-      }
-      
-      const newGrossAmount = updatedValidatedProducts.reduce((sum, p) => sum + (p.quantity * p.unitPrice), 0);
-      const newTotalGst = updatedValidatedProducts.reduce((sum, p) => sum + p.gstAmount, 0);
-      const newTotalAmount = newGrossAmount + newTotalGst;
-      
-      console.log(`💰 Updated Order Amount: ₹${newTotalAmount.toFixed(2)}`);
-      
-      // Check credit limit if dealer has one set
-      if (dealerData.creditLimit && dealerData.creditLimit > 0) {
-        // Get dealer's current outstanding balance from ledger
-        const DealerLedger = (await import("../models/DealerLedger.js")).default;
-        const lastLedgerEntry = await DealerLedger.findOne({ dealer: salesOrder.dealer })
-          .sort({ createdAt: -1 });
-        
-        const currentOutstanding = lastLedgerEntry ? lastLedgerEntry.runningBalance : 0;
-        
-        // Subtract the original order amount and add the new order amount
-        const originalOrderAmount = salesOrder.totalAmount || 0;
-        const adjustedOutstanding = currentOutstanding - originalOrderAmount;
-        const newOutstanding = adjustedOutstanding + newTotalAmount;
-        
-        console.log(`💳 Credit Limit Re-Check:`, {
-          creditLimit: dealerData.creditLimit,
-          currentOutstanding,
-          originalOrderAmount,
-          adjustedOutstanding,
-          newOrderAmount: newTotalAmount,
-          newOutstanding,
-          overlimit: newOutstanding - dealerData.creditLimit
-        });
-        
-        // If credit limit exceeded, reset approval and force status to Pending
-        if (newOutstanding > dealerData.creditLimit) {
-          const overlimitAmount = newOutstanding - dealerData.creditLimit;
-          console.log(`⚠️ Credit limit exceeded by ₹${overlimitAmount.toFixed(2)} after edit - Resetting approval`);
+        // Calculate new order totals with updated products
+        const updatedValidatedProducts = [];
+        for (const item of req.body.products) {
+          const product = await Product.findById(item.product);
+          if (!product) continue;
           
-          // Reset credit approval and force status back to Pending
-          req.body.status = "Pending";
-          req.body.creditOverlimit = {
-            isOverlimit: true,
-            creditLimit: dealerData.creditLimit,
-            currentOutstanding: adjustedOutstanding,
-            orderAmount: newTotalAmount,
-            newOutstanding,
-            overlimitAmount,
-            requiresApproval: true,
-            approvedBy: null, // Reset approval
-            approvedAt: null
-          };
+          // Skip out-of-stock products from credit calculation
+          const hasStock = item.warehouse && item.warehouse !== "No Stock";
+          if (!hasStock) {
+            console.log(`⏭️ Skipping product ${product.itemName} from credit limit calculation (out of stock)`);
+            continue;
+          }
           
-          console.log(`🔄 Order status reset to Pending - Requires new Super Admin approval`);
-        } else {
-          // Credit limit is fine - clear any previous overlimit flags
-          console.log(`✅ Credit limit check passed - Order within limit`);
-          req.body.creditOverlimit = {
-            isOverlimit: false,
+          const unitPrice = item.unitPrice || product.rateSlabs[0]?.rate || 0;
+          const gst = item.gst || product.gst || 0;
+          const baseAmount = item.quantity * unitPrice;
+          const gstAmount = (baseAmount * gst) / 100;
+          
+          updatedValidatedProducts.push({
+            quantity: item.quantity,
+            unitPrice: unitPrice,
+            gstAmount: gstAmount
+          });
+        }
+        
+        const newGrossAmount = updatedValidatedProducts.reduce((sum, p) => sum + (p.quantity * p.unitPrice), 0);
+        const newTotalGst = updatedValidatedProducts.reduce((sum, p) => sum + p.gstAmount, 0);
+        const newTotalAmount = newGrossAmount + newTotalGst;
+        
+        console.log(`💰 Updated Order Amount: ₹${newTotalAmount.toFixed(2)}`);
+        
+        // Check credit limit if dealer has one set
+        if (dealerData.creditLimit && dealerData.creditLimit > 0) {
+          // Get dealer's current outstanding balance from ledger
+          const DealerLedger = (await import("../models/DealerLedger.js")).default;
+          const lastLedgerEntry = await DealerLedger.findOne({ dealer: salesOrder.dealer })
+            .sort({ createdAt: -1 });
+          
+          const currentOutstanding = lastLedgerEntry ? lastLedgerEntry.runningBalance : 0;
+          
+          // Subtract the original order amount and add the new order amount
+          const originalOrderAmount = salesOrder.totalAmount || 0;
+          const adjustedOutstanding = currentOutstanding - originalOrderAmount;
+          const newOutstanding = adjustedOutstanding + newTotalAmount;
+          
+          console.log(`💳 Credit Limit Re-Check:`, {
             creditLimit: dealerData.creditLimit,
-            currentOutstanding: adjustedOutstanding,
-            orderAmount: newTotalAmount,
+            currentOutstanding,
+            originalOrderAmount,
+            adjustedOutstanding,
+            newOrderAmount: newTotalAmount,
             newOutstanding,
-            overlimitAmount: 0,
-            requiresApproval: false
-          };
+            overlimit: newOutstanding - dealerData.creditLimit
+          });
+          
+          // If credit limit exceeded, reset approval and force status to Pending
+          if (newOutstanding > dealerData.creditLimit) {
+            const overlimitAmount = newOutstanding - dealerData.creditLimit;
+            console.log(`⚠️ Credit limit exceeded by ₹${overlimitAmount.toFixed(2)} after edit - Resetting approval`);
+            
+            // Reset credit approval and force status back to Pending
+            req.body.status = "Pending";
+            req.body.creditOverlimit = {
+              isOverlimit: true,
+              creditLimit: dealerData.creditLimit,
+              currentOutstanding: adjustedOutstanding,
+              orderAmount: newTotalAmount,
+              newOutstanding,
+              overlimitAmount,
+              requiresApproval: true,
+              approvedBy: null, // Reset approval
+              approvedAt: null
+            };
+            
+            console.log(`🔄 Order status reset to Pending - Requires new Super Admin approval`);
+          } else {
+            // Credit limit is fine - clear any previous overlimit flags
+            console.log(`✅ Credit limit check passed - Order within limit`);
+            req.body.creditOverlimit = {
+              isOverlimit: false,
+              creditLimit: dealerData.creditLimit,
+              currentOutstanding: adjustedOutstanding,
+              orderAmount: newTotalAmount,
+              newOutstanding,
+              overlimitAmount: 0,
+              requiresApproval: false
+            };
+          }
         }
       }
     }
