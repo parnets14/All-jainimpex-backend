@@ -905,70 +905,81 @@ OR wait for stock to arrive and this order will be auto-processed.`,
         // Unblock stock for cancelled/rejected orders
         console.log("Unblocking stock for cancelled/rejected order");
         
-        // SAFETY CHECK: If products array is empty, try to restore stock from stock movements
-        if (!salesOrder.products || salesOrder.products.length === 0) {
-          console.log("⚠️ WARNING: Products array is empty! Attempting to restore stock from stock movements...");
+        // ALWAYS check stock movements first (more reliable than products array)
+        const StockMovement = (await import("../models/Stock.js")).default;
+        
+        // Find all OUT movements for this order that haven't been restored
+        const outMovements = await StockMovement.find({
+          referenceNo: salesOrder.orderNumber,
+          type: 'OUT'
+        });
+        
+        console.log(`Found ${outMovements.length} OUT movements for order ${salesOrder.orderNumber}`);
+        
+        if (outMovements.length > 0) {
+          console.log("Restoring stock from stock movements...");
           
-          const StockMovement = (await import("../models/Stock.js")).default;
-          
-          // Find all OUT movements for this order
-          const outMovements = await StockMovement.find({
-            referenceNo: salesOrder.orderNumber,
-            type: 'OUT',
-            remarks: { $regex: /Stock Blocked/i }
-          });
-          
-          if (outMovements.length > 0) {
-            console.log(`Found ${outMovements.length} blocked stock movements to restore`);
+          for (const outMovement of outMovements) {
+            // Check if already restored
+            const existingInMovement = await StockMovement.findOne({
+              referenceNo: salesOrder.orderNumber,
+              type: 'IN',
+              productId: outMovement.productId,
+              warehouseId: outMovement.warehouseId
+            });
             
-            for (const outMovement of outMovements) {
+            if (existingInMovement) {
+              console.log(`Stock already restored for product ${outMovement.productId} in warehouse ${outMovement.warehouseId}`);
+              continue;
+            }
+            
+            // Get current balance
+            const latestMovement = await StockMovement.findOne({
+              productId: outMovement.productId,
+              warehouseId: outMovement.warehouseId
+            }).sort({ date: -1, createdAt: -1 });
+            
+            const currentBalance = latestMovement ? latestMovement.balance : 0;
+            const newBalance = currentBalance + outMovement.quantity;
+            
+            // Create IN movement to restore stock
+            const unblockMovement = new StockMovement({
+              productId: outMovement.productId,
+              warehouseId: outMovement.warehouseId,
+              type: 'IN',
+              quantity: outMovement.quantity,
+              balance: newBalance,
+              referenceNo: salesOrder.orderNumber,
+              referenceType: 'SALE',
+              date: new Date(),
+              remarks: `Order ${salesOrder.orderNumber} - Stock Unblocked (${status})`,
+              createdBy: req.user._id
+            });
+            await unblockMovement.save();
+            console.log(`✅ Restored ${outMovement.quantity} units of product ${outMovement.productId} in warehouse ${outMovement.warehouseId}. Balance: ${currentBalance} -> ${newBalance}`);
+          }
+        } else if (!salesOrder.products || salesOrder.products.length === 0) {
+          console.log("⚠️ WARNING: No OUT movements found and products array is empty!");
+        } else {
+          // Fallback: Use products array if no movements found (shouldn't happen normally)
+          console.log("No OUT movements found, using products array as fallback");
+          
+          for (const product of salesOrder.products) {
+            if (product.warehouse) {
               // Check if already restored
               const existingInMovement = await StockMovement.findOne({
                 referenceNo: salesOrder.orderNumber,
                 type: 'IN',
-                productId: outMovement.productId,
-                warehouseId: outMovement.warehouseId
+                productId: product.product,
+                warehouseId: product.warehouse
               });
               
               if (existingInMovement) {
-                console.log(`Stock already restored for product ${outMovement.productId} in warehouse ${outMovement.warehouseId}`);
+                console.log(`Stock already restored for product ${product.product} in warehouse ${product.warehouse}`);
                 continue;
               }
               
               // Get current balance
-              const latestMovement = await StockMovement.findOne({
-                productId: outMovement.productId,
-                warehouseId: outMovement.warehouseId
-              }).sort({ date: -1, createdAt: -1 });
-              
-              const currentBalance = latestMovement ? latestMovement.balance : 0;
-              const newBalance = currentBalance + outMovement.quantity;
-              
-              // Create IN movement to restore stock
-              const unblockMovement = new StockMovement({
-                productId: outMovement.productId,
-                warehouseId: outMovement.warehouseId,
-                type: 'IN',
-                quantity: outMovement.quantity,
-                balance: newBalance,
-                referenceNo: salesOrder.orderNumber,
-                referenceType: 'SALE',
-                date: new Date(),
-                remarks: `Order ${salesOrder.orderNumber} - Stock Unblocked (${status}) - Restored from movements`,
-                createdBy: req.user._id
-              });
-              await unblockMovement.save();
-              console.log(`✅ Restored ${outMovement.quantity} units of product ${outMovement.productId} in warehouse ${outMovement.warehouseId}. Balance: ${currentBalance} -> ${newBalance}`);
-            }
-          } else {
-            console.log("⚠️ No blocked stock movements found for this order");
-          }
-        } else {
-          // Normal flow: products array exists
-          for (const product of salesOrder.products) {
-            if (product.warehouse) {
-              // Get current balance before creating the movement
-              const StockMovement = (await import("../models/Stock.js")).default;
               const latestMovement = await StockMovement.findOne({
                 productId: product.product,
                 warehouseId: product.warehouse
@@ -991,26 +1002,28 @@ OR wait for stock to arrive and this order will be auto-processed.`,
               });
               await unblockMovement.save();
               console.log(`Unblocked ${product.quantity} units of product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
-              
-              // Check if any waiting orders can now be fulfilled with the restored stock
-              try {
-                const StockArrivalService = (await import("../services/stockArrivalService.js")).default;
-                const checkResult = await StockArrivalService.checkWaitingOrdersForStock(
-                  product.product,
-                  product.warehouse,
-                  product.quantity
-                );
-                
-                if (checkResult.ordersUpdated > 0) {
-                  console.log(`✅ Stock restored from cancellation - ${checkResult.ordersUpdated} waiting orders updated (${checkResult.ordersReady} ready, ${checkResult.ordersPartial} partial)`);
-                }
-              } catch (stockCheckError) {
-                console.error('Error checking waiting orders after cancellation:', stockCheckError);
-                // Don't fail the cancellation if stock check fails
-              }
             }
           }
         }
+        
+        // Check if any waiting orders can now be fulfilled
+        for (const outMovement of outMovements) {
+          try {
+            const StockArrivalService = (await import("../services/stockArrivalService.js")).default;
+            const checkResult = await StockArrivalService.checkWaitingOrdersForStock(
+              outMovement.productId,
+              outMovement.warehouseId,
+              req.user._id
+            );
+            if (checkResult.notifiedOrders > 0) {
+              console.log(`✅ Notified ${checkResult.notifiedOrders} waiting orders about stock availability`);
+            }
+          } catch (error) {
+            console.error("Error checking waiting orders:", error);
+          }
+        }
+      } else if ((status === "Cancelled" || status === "Rejected") && originalStatus !== "Confirmed") {
+        console.log("Order was not confirmed, no stock to restore");
       }
     } else {
       console.log("🚨 Out-of-stock order - no stock movements will be made");
@@ -3153,8 +3166,8 @@ export const approveCreditOverlimit = async (req, res) => {
     console.error("Approve Credit Overlimit Error:", error);
     res.status(500).json({
       success: false,
-// Check stock availability for out-of-stock orders (called after purchase order received)
-
+      message: "Error approving credit overlimit",
+      error: error.message
     });
   }
 };

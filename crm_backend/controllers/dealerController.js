@@ -4,6 +4,7 @@ import Category from "../models/Category.js";
 import Subcategory from "../models/Subcategory.js";
 import ExtendedSubcategory from "../models/ExtendedSubcategory.js";
 import DealerLedger from "../models/DealerLedger.js";
+import PaymentAllocation from "../models/PaymentAllocation.js";
 import Route from "../models/Route.js";
 
 // Helper function to safely parse numbers
@@ -736,12 +737,29 @@ export const getDealerCompleteInfo = async (req, res) => {
       });
     }
     
-    // 2. Calculate credit status from ledger
+    // 2. Calculate credit status from ledger AND payment allocations
     const ledgerEntries = await DealerLedger.find({ dealer: id }).sort({ entryDate: 1 });
     
-    const currentOutstanding = ledgerEntries.reduce((sum, entry) => {
+    // Get payment allocations (these are NOT in DealerLedger but should be counted)
+    const paymentAllocations = await PaymentAllocation.find({ partyId: id }).lean();
+    
+    // Calculate outstanding from ledger entries
+    let currentOutstanding = ledgerEntries.reduce((sum, entry) => {
       return sum + (entry.debitAmount || 0) - (entry.creditAmount || 0);
     }, 0);
+    
+    // Subtract payment allocations (these reduce outstanding)
+    const totalAllocatedPayments = paymentAllocations.reduce((sum, allocation) => {
+      return sum + (allocation.totalAllocated || 0);
+    }, 0);
+    
+    // Adjust outstanding by subtracting allocated payments
+    currentOutstanding = currentOutstanding - totalAllocatedPayments;
+    
+    console.log(`📊 Dealer ${dealer.name} Outstanding Calculation:`);
+    console.log(`   Ledger Balance: ₹${(currentOutstanding + totalAllocatedPayments).toLocaleString()}`);
+    console.log(`   Payment Allocations: ₹${totalAllocatedPayments.toLocaleString()}`);
+    console.log(`   Final Outstanding: ₹${currentOutstanding.toLocaleString()}`);
     
     const availableCredit = Math.max(0, dealer.creditLimit - currentOutstanding);
     const utilizationPercent = dealer.creditLimit > 0 
@@ -764,22 +782,73 @@ export const getDealerCompleteInfo = async (req, res) => {
     const today = new Date();
     let overdueAmount = 0;
     
-    // Find overdue entries (entries with dueDate passed and positive balance)
-    for (const entry of ledgerEntries) {
-      if (entry.dueDate && entry.runningBalance > 0) {
-        const dueDate = new Date(entry.dueDate);
-        if (today > dueDate) {
-          // This entry is overdue
-          overdueAmount += entry.runningBalance;
+    // Since we now have the correct outstanding (including payment allocations),
+    // we should only consider overdue if there's actually outstanding balance
+    if (currentOutstanding > 0) {
+      // Find overdue entries (entries with dueDate passed)
+      // But we need to recalculate running balance considering payment allocations
+      let runningBalance = 0;
+      
+      for (const entry of ledgerEntries) {
+        runningBalance += (entry.debitAmount || 0) - (entry.creditAmount || 0);
+        
+        if (entry.dueDate && runningBalance > 0) {
+          const dueDate = new Date(entry.dueDate);
+          if (today > dueDate) {
+            // This entry is overdue - but only count if we still have outstanding
+            // after considering payment allocations
+            const entryOverdue = Math.min(runningBalance, currentOutstanding);
+            if (entryOverdue > 0) {
+              overdueAmount += entryOverdue;
+            }
+          }
         }
+      }
+      
+      // If outstanding is 0 or negative (credit balance), overdue should be 0
+      if (currentOutstanding <= 0) {
+        overdueAmount = 0;
       }
     }
     
-    // Get last payment
-    const lastPayment = await DealerLedger.findOne({ 
+    console.log(`📊 Overdue Calculation:`);
+    console.log(`   Current Outstanding: ₹${currentOutstanding.toLocaleString()}`);
+    console.log(`   Overdue Amount: ₹${overdueAmount.toLocaleString()}`);
+    
+    // Get last payment - check both DealerLedger and PaymentAllocation
+    const lastLedgerPayment = await DealerLedger.findOne({ 
       dealer: id, 
       transactionType: 'Payment' 
     }).sort({ entryDate: -1 });
+    
+    const lastAllocationPayment = await PaymentAllocation.findOne({ 
+      partyId: id 
+    }).sort({ allocationDate: -1 });
+    
+    // Determine which is the most recent payment
+    let lastPayment = null;
+    let lastPaymentDate = null;
+    let lastPaymentAmount = 0;
+    
+    if (lastLedgerPayment && lastAllocationPayment) {
+      // Compare dates and use the most recent
+      const ledgerDate = new Date(lastLedgerPayment.entryDate);
+      const allocationDate = new Date(lastAllocationPayment.allocationDate);
+      
+      if (allocationDate > ledgerDate) {
+        lastPaymentDate = lastAllocationPayment.allocationDate;
+        lastPaymentAmount = lastAllocationPayment.totalAllocated || 0;
+      } else {
+        lastPaymentDate = lastLedgerPayment.entryDate;
+        lastPaymentAmount = lastLedgerPayment.creditAmount || 0;
+      }
+    } else if (lastAllocationPayment) {
+      lastPaymentDate = lastAllocationPayment.allocationDate;
+      lastPaymentAmount = lastAllocationPayment.totalAllocated || 0;
+    } else if (lastLedgerPayment) {
+      lastPaymentDate = lastLedgerPayment.entryDate;
+      lastPaymentAmount = lastLedgerPayment.creditAmount || 0;
+    }
     
     // Determine payment status
     let paymentStatusType = 'good';
@@ -850,8 +919,8 @@ export const getDealerCompleteInfo = async (req, res) => {
       paymentStatus: {
         totalOutstanding: Math.round(currentOutstanding),
         overdueAmount: Math.round(overdueAmount),
-        lastPaymentDate: lastPayment?.entryDate,
-        lastPaymentAmount: lastPayment?.creditAmount,
+        lastPaymentDate: lastPaymentDate,
+        lastPaymentAmount: lastPaymentAmount,
         status: paymentStatusType,
         canCreateOrder,
         blockReason
@@ -1271,8 +1340,8 @@ export const getDealerOutstanding = async (req, res) => {
       paymentStatus: {
         totalOutstanding: Math.round(currentOutstanding),
         overdueAmount: Math.round(overdueAmount),
-        lastPaymentDate: lastPayment?.entryDate,
-        lastPaymentAmount: lastPayment?.creditAmount,
+        lastPaymentDate: lastPaymentDate,
+        lastPaymentAmount: lastPaymentAmount,
         status: paymentStatusType,
         canCreateOrder,
         blockReason,

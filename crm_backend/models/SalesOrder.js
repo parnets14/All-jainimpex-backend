@@ -306,16 +306,23 @@ const salesOrderSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Pre-save middleware to calculate dates and amounts
+// Pre-save middleware to calculate product amounts first, then order totals
 salesOrderSchema.pre("save", function(next) {
-  // Calculate due date
+  // STEP 1: Calculate product-level amounts first
+  this.products.forEach(product => {
+    const baseAmount = product.quantity * product.unitPrice;
+    product.gstAmount = (baseAmount * product.gst) / 100;
+    product.totalPrice = baseAmount + product.gstAmount;
+  });
+
+  // STEP 2: Calculate due date
   if (this.orderDate && this.creditDays) {
     const dueDate = new Date(this.orderDate);
     dueDate.setDate(dueDate.getDate() + this.creditDays);
     this.dueDate = dueDate;
   }
 
-  // Calculate amounts
+  // STEP 3: Calculate order-level amounts using updated product amounts
   this.grossAmount = this.products.reduce((sum, product) => {
     return sum + (product.quantity * product.unitPrice);
   }, 0);
@@ -326,16 +333,6 @@ salesOrderSchema.pre("save", function(next) {
 
   this.totalAmount = this.grossAmount + this.totalGst - this.discountAmount;
 
-  next();
-});
-
-// Pre-save for product calculations
-salesOrderSchema.pre("save", function(next) {
-  this.products.forEach(product => {
-    const baseAmount = product.quantity * product.unitPrice;
-    product.gstAmount = (baseAmount * product.gst) / 100;
-    product.totalPrice = baseAmount + product.gstAmount;
-  });
   next();
 });
 
@@ -382,37 +379,9 @@ salesOrderSchema.post("save", async function(doc, next) {
     }
   }
   
-  // Restore stock if order is cancelled or rejected
-  if ((doc.status === "Cancelled" || doc.status === "Rejected") && doc.isModified("status")) {
-    try {
-      const Stock = mongoose.model("Stock");
-      const Product = mongoose.model("Product");
-      
-      for (const product of doc.products) {
-        // Restore stock in warehouse
-        await Stock.findOneAndUpdate(
-          { 
-            productId: product.product,
-            warehouseId: product.warehouse
-          },
-          { 
-            $inc: { 
-              blockedQty: -product.quantity,
-              netStock: product.quantity
-            }
-          }
-        );
-        
-        // Restore total product stock
-        await Product.findByIdAndUpdate(
-          product.product,
-          { $inc: { stock: product.quantity } }
-        );
-      }
-    } catch (error) {
-      console.error("Error restoring stock:", error);
-    }
-  }
+  // NOTE: Stock restoration for cancelled/rejected orders is handled in the controller
+  // (updateSalesOrderStatus and updateSalesOrder functions) because isModified() 
+  // doesn't work reliably in post('save') hooks
   
   next();
 });
