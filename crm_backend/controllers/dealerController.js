@@ -855,23 +855,24 @@ export const getDealerCompleteInfo = async (req, res) => {
     let canCreateOrder = true;
     let blockReason = null;
     
-    // ✅ FIXED: Changed AND to OR - block if EITHER condition is true
-    if (overdueAmount > 0 || currentOutstanding > dealer.creditLimit) {
-      // Determine specific reason for blocking
-      if (overdueAmount > 0 && currentOutstanding > dealer.creditLimit) {
-        paymentStatusType = 'overdue';
-        canCreateOrder = false;
-        blockReason = `Credit limit of ₹${dealer.creditLimit.toLocaleString()} exceeded with ₹${overdueAmount.toLocaleString()} overdue. Current outstanding: ₹${currentOutstanding.toLocaleString()}. Please collect payment first.`;
-      } else if (currentOutstanding > dealer.creditLimit) {
-        paymentStatusType = 'exceeded';
-        canCreateOrder = false;
-        blockReason = `Credit limit of ₹${dealer.creditLimit.toLocaleString()} exceeded. Current outstanding: ₹${currentOutstanding.toLocaleString()}. Available credit: ₹${availableCredit.toLocaleString()}. Please collect payment first.`;
-      } else if (overdueAmount > 0) {
-        paymentStatusType = 'overdue';
-        canCreateOrder = false;
-        blockReason = `Payment overdue: ₹${overdueAmount.toLocaleString()}. Please collect payment before creating new orders.`;
-      }
+    // IMPORTANT: Different handling for overdue vs credit limit exceeded
+    // - Overdue payment (past credit days): BLOCK completely - must collect payment
+    // - Credit limit exceeded: Allow Pending order - requires admin approval
+    
+    if (overdueAmount > 0) {
+      // STRICT BLOCK: Payment is overdue (past credit days)
+      paymentStatusType = 'overdue';
+      canCreateOrder = false;
+      blockReason = `Payment overdue: ₹${overdueAmount.toLocaleString()}. Please collect payment before creating new orders.`;
+    } else if (currentOutstanding > dealer.creditLimit) {
+      // WARNING: Credit limit exceeded but no overdue payment
+      // Allow creating Pending orders that require admin approval
+      paymentStatusType = 'exceeded';
+      canCreateOrder = true; // Allow Pending orders
+      blockReason = null; // No block, just warning
     }
+    
+    // Note: Credit limit warnings are shown in creditStatus, not paymentStatus
     
     // 5. Get dealer's extra discounts (instead of global available discounts)
     const extraDiscounts = dealer.extraDiscounts?.filter(discount => discount.isActive) || [];
@@ -1307,18 +1308,21 @@ export const getDealerOutstanding = async (req, res) => {
     let canCreateOrder = true;
     let blockReason = null;
 
-    if (overdueAmount > 0 || currentOutstanding > dealer.creditLimit) {
+    // IMPORTANT: Different handling for overdue vs credit limit exceeded
+    // - Overdue payment (past credit days): BLOCK completely - must collect payment
+    // - Credit limit exceeded: Allow Pending order - requires admin approval
+    
+    if (overdueAmount > 0) {
+      // STRICT BLOCK: Payment is overdue (past credit days)
+      paymentStatusType = 'overdue';
       canCreateOrder = false;
-      if (overdueAmount > 0 && currentOutstanding > dealer.creditLimit) {
-        paymentStatusType = 'overdue';
-        blockReason = `Credit limit of ₹${dealer.creditLimit.toLocaleString()} exceeded with ₹${overdueAmount.toLocaleString()} overdue. Current outstanding: ₹${currentOutstanding.toLocaleString()}. Please collect payment first.`;
-      } else if (currentOutstanding > dealer.creditLimit) {
-        paymentStatusType = 'exceeded';
-        blockReason = `Credit limit of ₹${dealer.creditLimit.toLocaleString()} exceeded. Current outstanding: ₹${currentOutstanding.toLocaleString()}. Available credit: ₹${availableCredit.toLocaleString()}. Please collect payment first.`;
-      } else if (overdueAmount > 0) {
-        paymentStatusType = 'overdue';
-        blockReason = `₹${overdueAmount.toLocaleString()} payment is overdue (${creditDays} days). Please collect payment first.`;
-      }
+      blockReason = `₹${overdueAmount.toLocaleString()} payment is overdue (${creditDays} days). Please collect payment first.`;
+    } else if (currentOutstanding > dealer.creditLimit) {
+      // WARNING: Credit limit exceeded but no overdue payment
+      // Allow creating Pending orders that require admin approval
+      paymentStatusType = 'exceeded';
+      canCreateOrder = true; // Allow Pending orders
+      blockReason = null; // No block, just warning
     }
 
     res.json({
