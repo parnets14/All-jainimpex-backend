@@ -936,6 +936,52 @@ export const approveDealerInvoice = async (req, res) => {
     try {
       const dealer = await Dealer.findById(invoice.dealer).session(session);
       
+      // CREDIT LIMIT CHECK - Block invoice approval if credit limit exceeded
+      if (dealer.creditLimit && dealer.creditLimit > 0) {
+        console.log(`💳 Checking credit limit for dealer ${dealer.name}...`);
+        
+        // Get the last entry for this dealer to get current outstanding
+        const lastEntry = await DealerLedger.findOne(
+          { dealer: invoice.dealer },
+          {},
+          { sort: { 'createdAt': -1 } }
+        ).session(session);
+        
+        const currentOutstanding = lastEntry ? lastEntry.runningBalance : 0;
+        const newOutstanding = currentOutstanding + invoice.totalAmount;
+        
+        console.log(`💳 Credit Limit Check:`, {
+          creditLimit: dealer.creditLimit,
+          currentOutstanding,
+          invoiceAmount: invoice.totalAmount,
+          newOutstanding,
+          overlimit: newOutstanding - dealer.creditLimit
+        });
+        
+        // If credit limit exceeded, block invoice approval
+        if (newOutstanding > dealer.creditLimit) {
+          const overlimitAmount = newOutstanding - dealer.creditLimit;
+          
+          console.log(`⚠️ Credit limit exceeded by ₹${overlimitAmount.toFixed(2)}`);
+          
+          await session.abortTransaction();
+          return res.status(400).json({
+            success: false,
+            message: `Cannot approve invoice - Credit limit exceeded by ₹${overlimitAmount.toLocaleString()}`,
+            creditLimitInfo: {
+              creditLimit: dealer.creditLimit,
+              currentOutstanding,
+              invoiceAmount: invoice.totalAmount,
+              newOutstanding,
+              overlimitAmount,
+              availableCredit: dealer.creditLimit - currentOutstanding
+            }
+          });
+        }
+        
+        console.log(`✅ Credit limit check passed - Available credit: ₹${(dealer.creditLimit - currentOutstanding).toLocaleString()}`);
+      }
+      
       // Get the last entry for this dealer to calculate running balance
       const lastEntry = await DealerLedger.findOne(
         { dealer: invoice.dealer },

@@ -6,6 +6,8 @@ import ExtendedSubcategory from "../models/ExtendedSubcategory.js";
 import DealerLedger from "../models/DealerLedger.js";
 import PaymentAllocation from "../models/PaymentAllocation.js";
 import Route from "../models/Route.js";
+import DealerInvoice from "../models/DealerInvoice.js";
+import SalesOrder from "../models/SalesOrder.js";
 
 // Helper function to safely parse numbers
 const safeParseInt = (value, defaultValue = 1) => {
@@ -1362,6 +1364,123 @@ export const getDealerOutstanding = async (req, res) => {
     res.status(500).json({
       success: false,
       message: error.message,
+    });
+  }
+};
+
+
+// Get dealer credit limit approval history (last 30 days)
+export const getDealerCreditApprovalHistory = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get dealer
+    const dealer = await Dealer.findById(id);
+    if (!dealer) {
+      return res.status(404).json({
+        success: false,
+        message: "Dealer not found",
+      });
+    }
+
+    // Calculate date 30 days ago
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const approvalHistory = [];
+
+    // 1. Check INVOICES that exceeded credit limit (new system)
+    const invoices = await DealerInvoice.find({
+      dealer: id,
+      approvedAt: { $gte: thirtyDaysAgo },
+      status: { $in: ['Approved', 'Confirmed', 'Processing', 'Delivered'] }
+    })
+    .populate('approvedBy', 'name email role')
+    .sort({ approvedAt: -1 });
+
+    for (const invoice of invoices) {
+      // Get ledger state at the time of invoice approval
+      const ledgerEntriesBeforeInvoice = await DealerLedger.find({
+        dealer: id,
+        createdAt: { $lt: invoice.approvedAt }
+      }).sort({ createdAt: 1 });
+      
+      // Calculate outstanding before this invoice
+      const outstandingBeforeInvoice = ledgerEntriesBeforeInvoice.reduce((sum, entry) => {
+        return sum + (entry.debitAmount || 0) - (entry.creditAmount || 0);
+      }, 0);
+      
+      const newOutstanding = outstandingBeforeInvoice + invoice.totalAmount;
+      const wasOverlimit = newOutstanding > dealer.creditLimit;
+      
+      if (wasOverlimit) {
+        approvalHistory.push({
+          type: 'invoice',
+          invoiceId: invoice._id,
+          invoiceNumber: invoice.invoiceNumber,
+          invoiceDate: invoice.invoiceDate,
+          amount: invoice.totalAmount,
+          approvedAt: invoice.approvedAt,
+          approvedBy: invoice.approvedBy,
+          creditLimit: dealer.creditLimit,
+          outstandingBefore: Math.round(outstandingBeforeInvoice),
+          newOutstanding: Math.round(newOutstanding),
+          overlimitAmount: Math.round(newOutstanding - dealer.creditLimit)
+        });
+      }
+    }
+
+    // 2. Check SALES ORDERS that exceeded credit limit and were approved (old system)
+    const salesOrders = await SalesOrder.find({
+      dealer: id,
+      'creditOverlimit.isOverlimit': true,
+      'creditOverlimit.approvedBy': { $exists: true, $ne: null },
+      'creditOverlimit.approvedAt': { $gte: thirtyDaysAgo },
+      status: { $in: ['Confirmed', 'Processing', 'Delivered'] }
+    })
+    .populate('creditOverlimit.approvedBy', 'name email role')
+    .sort({ 'creditOverlimit.approvedAt': -1 });
+
+    for (const order of salesOrders) {
+      if (order.creditOverlimit && order.creditOverlimit.approvedBy) {
+        approvalHistory.push({
+          type: 'sales_order',
+          orderId: order._id,
+          orderNumber: order.orderNumber,
+          orderDate: order.orderDate,
+          amount: order.totalAmount,
+          approvedAt: order.creditOverlimit.approvedAt,
+          approvedBy: order.creditOverlimit.approvedBy,
+          creditLimit: order.creditOverlimit.creditLimit || dealer.creditLimit,
+          outstandingBefore: Math.round(order.creditOverlimit.currentOutstanding || 0),
+          newOutstanding: Math.round(order.creditOverlimit.newOutstanding || 0),
+          overlimitAmount: Math.round(order.creditOverlimit.overlimitAmount || 0)
+        });
+      }
+    }
+
+    // Sort all approvals by date (newest first)
+    approvalHistory.sort((a, b) => new Date(b.approvedAt) - new Date(a.approvedAt));
+
+    res.json({
+      success: true,
+      dealerInfo: {
+        dealerId: dealer._id,
+        dealerName: dealer.name,
+        dealerCode: dealer.code,
+        creditLimit: dealer.creditLimit
+      },
+      approvalHistory: approvalHistory,
+      totalApprovalsLast30Days: approvalHistory.length,
+      periodStart: thirtyDaysAgo,
+      periodEnd: new Date()
+    });
+  } catch (error) {
+    console.error("Get dealer credit approval history error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error while fetching credit approval history",
+      error: error.message
     });
   }
 };

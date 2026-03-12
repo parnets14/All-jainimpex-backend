@@ -293,6 +293,12 @@ export const createSalesOrder = async (req, res) => {
       orderAmount: orderTotalAmount
     });
 
+    // NOTE: Credit limit check removed from sales order creation
+    // Credit limit is now checked and blocked at invoice approval stage
+    // This allows orders to be created and confirmed without credit limit blocking
+    // The actual credit commitment happens when invoice is generated and approved
+    
+    /* CREDIT LIMIT CHECK DISABLED - NOW HAPPENS AT INVOICE APPROVAL
     // Check credit limit if dealer has one set
     if (dealerData.creditLimit && dealerData.creditLimit > 0) {
       // Get dealer's current outstanding balance from ledger
@@ -329,6 +335,7 @@ export const createSalesOrder = async (req, res) => {
         };
       }
     }
+    */
 
     // Validate and process each product
     const validatedProducts = [];
@@ -712,6 +719,9 @@ export const updateSalesOrderStatus = async (req, res) => {
       });
     }
 
+    // NOTE: Credit limit blocking removed from status change
+    // Credit limit is now enforced at invoice approval stage only
+    /* CREDIT LIMIT BLOCKING DISABLED - NOW HAPPENS AT INVOICE APPROVAL
     // CRITICAL: Prevent status changes for orders with unapproved credit overlimit
     if (salesOrder.creditOverlimit && 
         salesOrder.creditOverlimit.isOverlimit && 
@@ -723,6 +733,7 @@ export const updateSalesOrderStatus = async (req, res) => {
         message: `Cannot change status - Credit limit exceeded by ₹${(salesOrder.creditOverlimit.overlimitAmount || 0).toLocaleString()}. Super Admin approval required before this order can proceed.`
       });
     }
+    */
 
     // Special handling for Confirmed status (stock allocation) - only for in-stock orders
     if (status === "Confirmed" && !salesOrder.isOutOfStock) {
@@ -1029,6 +1040,101 @@ OR wait for stock to arrive and this order will be auto-processed.`,
       console.log("🚨 Out-of-stock order - no stock movements will be made");
     }
 
+    // CRITICAL FIX: Release credit limit when order is cancelled or rejected
+    // This ensures dealer's available credit is restored
+    if ((status === "Cancelled" || status === "Rejected") && 
+        (originalStatus === "Confirmed" || originalStatus === "Processing")) {
+      
+      console.log(`🔓 Releasing credit limit for ${status} order ${salesOrder.orderNumber}`);
+      console.log(`   Original status: ${originalStatus}`);
+      console.log(`   Order amount: ₹${salesOrder.totalAmount.toFixed(2)}`);
+      
+      try {
+        // Create reversal ledger entry to release credit
+        const DealerLedger = (await import("../models/DealerLedger.js")).default;
+        
+        // Get last ledger entry for running balance
+        const lastLedgerEntry = await DealerLedger.findOne({ dealer: salesOrder.dealer })
+          .sort({ createdAt: -1 });
+        
+        const currentBalance = lastLedgerEntry ? lastLedgerEntry.runningBalance : 0;
+        const newBalance = currentBalance - salesOrder.totalAmount; // Reduce outstanding
+        
+        console.log(`   Current outstanding: ₹${currentBalance.toFixed(2)}`);
+        console.log(`   Amount to release: ₹${salesOrder.totalAmount.toFixed(2)}`);
+        console.log(`   New outstanding: ₹${newBalance.toFixed(2)}`);
+        
+        // Create credit release entry
+        const creditReleaseEntry = new DealerLedger({
+          dealer: salesOrder.dealer,
+          transactionType: 'CREDIT_RELEASE',
+          referenceType: 'SALES_ORDER',
+          referenceId: salesOrder._id,
+          referenceNumber: salesOrder.orderNumber,
+          debit: 0,
+          credit: salesOrder.totalAmount, // Credit back the amount
+          runningBalance: newBalance,
+          description: `Credit limit released - Order ${salesOrder.orderNumber} ${status}`,
+          transactionDate: new Date(),
+          createdBy: req.user._id
+        });
+        
+        await creditReleaseEntry.save();
+        console.log(`✅ Credit limit released successfully`);
+        console.log(`   Ledger entry created: ${creditReleaseEntry._id}`);
+      } catch (error) {
+        console.error(`❌ Error releasing credit limit:`, error);
+        // Don't fail the entire operation if ledger update fails
+        // Log the error but continue with status update
+      }
+    } else if (status === "Cancelled" || status === "Rejected") {
+      console.log(`ℹ️ No credit limit release needed - order was in ${originalStatus} status`);
+    }
+
+    // CRITICAL FIX: Block credit limit when order is confirmed
+    // This ensures dealer's available credit is reduced
+    if (status === "Confirmed" && originalStatus !== "Confirmed") {
+      console.log(`🔒 Blocking credit limit for confirmed order ${salesOrder.orderNumber}`);
+      console.log(`   Order amount: ₹${salesOrder.totalAmount.toFixed(2)}`);
+      
+      try {
+        const DealerLedger = (await import("../models/DealerLedger.js")).default;
+        
+        // Get last ledger entry
+        const lastLedgerEntry = await DealerLedger.findOne({ dealer: salesOrder.dealer })
+          .sort({ createdAt: -1 });
+        
+        const currentBalance = lastLedgerEntry ? lastLedgerEntry.runningBalance : 0;
+        const newBalance = currentBalance + salesOrder.totalAmount; // Increase outstanding
+        
+        console.log(`   Current outstanding: ₹${currentBalance.toFixed(2)}`);
+        console.log(`   Amount to block: ₹${salesOrder.totalAmount.toFixed(2)}`);
+        console.log(`   New outstanding: ₹${newBalance.toFixed(2)}`);
+        
+        // Create credit block entry
+        const creditBlockEntry = new DealerLedger({
+          dealer: salesOrder.dealer,
+          transactionType: 'CREDIT_BLOCK',
+          referenceType: 'SALES_ORDER',
+          referenceId: salesOrder._id,
+          referenceNumber: salesOrder.orderNumber,
+          debit: salesOrder.totalAmount, // Debit (increase outstanding)
+          credit: 0,
+          runningBalance: newBalance,
+          description: `Credit limit blocked - Order ${salesOrder.orderNumber} confirmed`,
+          transactionDate: new Date(),
+          createdBy: req.user._id
+        });
+        
+        await creditBlockEntry.save();
+        console.log(`✅ Credit limit blocked successfully`);
+        console.log(`   Ledger entry created: ${creditBlockEntry._id}`);
+      } catch (error) {
+        console.error(`❌ Error blocking credit limit:`, error);
+        // Don't fail the entire operation if ledger update fails
+      }
+    }
+
     // Update order status and remarks
     salesOrder.status = status;
     if (remarks) {
@@ -1055,87 +1161,56 @@ OR wait for stock to arrive and this order will be auto-processed.`,
 
     await salesOrder.save();
 
-    // CREATE DEALER LEDGER ENTRY when order is CONFIRMED to block credit limit
-    if (status === "Confirmed" && originalStatus !== "Confirmed") {
-      try {
-        console.log(`💳 Creating ledger entry to block credit limit for order ${salesOrder.orderNumber}`);
-        
-        const DealerLedger = (await import("../models/DealerLedger.js")).default;
-        const Dealer = (await import("../models/Dealer.js")).default;
-        
-        // Get dealer details
-        const dealer = await Dealer.findById(salesOrder.dealer);
-        if (!dealer) {
-          console.error(`❌ Dealer not found for order ${salesOrder.orderNumber}`);
-        } else {
-          // Calculate due date based on credit days
-          let dueDate = null;
-          if (salesOrder.orderDate && salesOrder.creditDays) {
-            dueDate = new Date(salesOrder.orderDate);
-            dueDate.setDate(dueDate.getDate() + salesOrder.creditDays);
-          }
-          
-          // Create ledger entry to block credit limit
-          const ledgerEntry = new DealerLedger({
-            dealer: salesOrder.dealer,
-            dealerName: dealer.name,
-            dealerCode: dealer.code,
-            entryDate: new Date(),
-            transactionType: "Order Confirmed", // Order confirmation blocks credit
-            salesType: salesOrder.salesType || 'Regular Sale',
-            creditDaysApplied: salesOrder.creditDays || 0,
-            debitAmount: salesOrder.totalAmount, // Increase outstanding (block credit)
-            creditAmount: 0,
-            description: `Order Confirmed - ${salesOrder.orderNumber}`,
-            remarks: `Credit limit blocked for confirmed order ${salesOrder.orderNumber}. Amount: ₹${salesOrder.totalAmount.toLocaleString()}`,
-            creditDays: salesOrder.creditDays || 0,
-            dueDate: dueDate,
-            status: "Active",
-            createdBy: req.user._id
-          });
-          
-          await ledgerEntry.save();
-          console.log(`✅ Ledger entry created - Credit limit blocked: ₹${salesOrder.totalAmount.toLocaleString()} for order ${salesOrder.orderNumber}`);
-          console.log(`   Running Balance: ₹${ledgerEntry.runningBalance.toLocaleString()}`);
-        }
-      } catch (ledgerError) {
-        console.error('❌ Error creating ledger entry for order confirmation:', ledgerError);
-        // Don't fail the request if ledger creation fails - log it for manual correction
-      }
-    }
+    // NOTE: Credit limit blocking moved to invoice approval stage
+    // Sales orders no longer block credit limit on confirmation
+    // Credit limit is blocked when invoice is approved, not when order is confirmed
     
     // REMOVE/REVERSE LEDGER ENTRY when order is CANCELLED or REJECTED (if it was previously Confirmed)
+    // NOTE: This is kept for backward compatibility with old orders that had ledger entries
     if ((status === "Cancelled" || status === "Rejected") && originalStatus === "Confirmed") {
       try {
-        console.log(`💳 Reversing ledger entry to unblock credit limit for order ${salesOrder.orderNumber}`);
+        console.log(`💳 Checking for ledger entry to reverse for order ${salesOrder.orderNumber}`);
         
         const DealerLedger = (await import("../models/DealerLedger.js")).default;
         const Dealer = (await import("../models/Dealer.js")).default;
         
-        // Get dealer details
-        const dealer = await Dealer.findById(salesOrder.dealer);
-        if (!dealer) {
-          console.error(`❌ Dealer not found for order ${salesOrder.orderNumber}`);
-        } else {
-          // Create reverse ledger entry to unblock credit limit
-          const reverseLedgerEntry = new DealerLedger({
-            dealer: salesOrder.dealer,
-            dealerName: dealer.name,
-            dealerCode: dealer.code,
-            entryDate: new Date(),
-            transactionType: "Order Confirmed - Reversed",
-            salesType: salesOrder.salesType || 'Regular Sale',
-            debitAmount: 0,
-            creditAmount: salesOrder.totalAmount, // Decrease outstanding (unblock credit)
-            description: `Order ${status} - ${salesOrder.orderNumber}`,
-            remarks: `Credit limit unblocked - order ${salesOrder.orderNumber} was ${status.toLowerCase()}. Amount released: ₹${salesOrder.totalAmount.toLocaleString()}`,
-            status: "Active",
-            createdBy: req.user._id
-          });
+        // Check if there's a ledger entry for this order (old orders might have one)
+        const existingLedgerEntry = await DealerLedger.findOne({
+          dealer: salesOrder.dealer,
+          transactionType: "Order Confirmed",
+          description: { $regex: salesOrder.orderNumber }
+        });
+        
+        if (existingLedgerEntry) {
+          console.log(`✅ Found existing ledger entry to reverse`);
           
-          await reverseLedgerEntry.save();
-          console.log(`✅ Reverse ledger entry created - Credit limit unblocked: ₹${salesOrder.totalAmount.toLocaleString()} for order ${salesOrder.orderNumber}`);
-          console.log(`   Running Balance: ₹${reverseLedgerEntry.runningBalance.toLocaleString()}`);
+          // Get dealer details
+          const dealer = await Dealer.findById(salesOrder.dealer);
+          if (!dealer) {
+            console.error(`❌ Dealer not found for order ${salesOrder.orderNumber}`);
+          } else {
+            // Create reverse ledger entry to unblock credit limit
+            const reverseLedgerEntry = new DealerLedger({
+              dealer: salesOrder.dealer,
+              dealerName: dealer.name,
+              dealerCode: dealer.code,
+              entryDate: new Date(),
+              transactionType: "Order Confirmed - Reversed",
+              salesType: salesOrder.salesType || 'Regular Sale',
+              debitAmount: 0,
+              creditAmount: salesOrder.totalAmount, // Decrease outstanding (unblock credit)
+              description: `Order ${status} - ${salesOrder.orderNumber}`,
+              remarks: `Credit limit unblocked - order ${salesOrder.orderNumber} was ${status.toLowerCase()}. Amount released: ₹${salesOrder.totalAmount.toLocaleString()}`,
+              status: "Active",
+              createdBy: req.user._id
+            });
+            
+            await reverseLedgerEntry.save();
+            console.log(`✅ Reverse ledger entry created - Credit limit unblocked: ₹${salesOrder.totalAmount.toLocaleString()} for order ${salesOrder.orderNumber}`);
+            console.log(`   Running Balance: ₹${reverseLedgerEntry.runningBalance.toLocaleString()}`);
+          }
+        } else {
+          console.log(`ℹ️ No ledger entry found for order ${salesOrder.orderNumber} - nothing to reverse`);
         }
       } catch (ledgerError) {
         console.error('❌ Error creating reverse ledger entry:', ledgerError);
@@ -1405,17 +1480,55 @@ export const updateSalesOrder = async (req, res) => {
       }
       
       // RE-CHECK CREDIT LIMIT when products are being edited
-      // This ensures that if quantities increase after approval, credit limit is re-validated
-      // IMPORTANT: Skip this check if order is already approved by admin
-      console.log("🔍 Re-checking credit limit after product edit...");
-      console.log("   Order creditOverlimit:", salesOrder.creditOverlimit);
-      console.log("   Already approved?", salesOrder.creditOverlimit?.approvedBy ? 'YES' : 'NO');
+      // CRITICAL FIX: Only re-check credit limit when products ACTUALLY CHANGE (quantity, price, or products added/removed)
+      // Do NOT recalculate when just changing status from Pending to Confirmed
+      console.log("🔍 Checking if products actually changed...");
       
-      // Skip credit limit re-check if already approved by admin
-      if (salesOrder.creditOverlimit && salesOrder.creditOverlimit.approvedBy) {
-        console.log("✅ Order already approved by admin - skipping credit limit re-check");
+      // Compare new products with existing products to detect actual changes
+      let productsActuallyChanged = false;
+      
+      // Check if number of products changed
+      if (req.body.products.length !== salesOrder.products.length) {
+        productsActuallyChanged = true;
+        console.log("   ✓ Product count changed");
       } else {
-        console.log("🔄 Performing credit limit re-check...");
+        // Check if any product quantity or price changed
+        for (let i = 0; i < req.body.products.length; i++) {
+          const newProduct = req.body.products[i];
+          const oldProduct = salesOrder.products[i];
+          
+          // Extract IDs for comparison
+          const newProductId = typeof newProduct.product === 'object' ? newProduct.product._id : newProduct.product;
+          const oldProductId = typeof oldProduct.product === 'object' ? oldProduct.product._id : oldProduct.product;
+          
+          if (newProductId.toString() !== oldProductId.toString()) {
+            productsActuallyChanged = true;
+            console.log(`   ✓ Product changed at index ${i}`);
+            break;
+          }
+          
+          if (newProduct.quantity !== oldProduct.quantity) {
+            productsActuallyChanged = true;
+            console.log(`   ✓ Quantity changed at index ${i}: ${oldProduct.quantity} → ${newProduct.quantity}`);
+            break;
+          }
+          
+          if (newProduct.unitPrice !== oldProduct.unitPrice) {
+            productsActuallyChanged = true;
+            console.log(`   ✓ Unit price changed at index ${i}: ${oldProduct.unitPrice} → ${newProduct.unitPrice}`);
+            break;
+          }
+        }
+      }
+      
+      if (!productsActuallyChanged) {
+        console.log("   ✅ No product changes detected - skipping credit limit recalculation");
+        console.log("   ℹ️ This is likely just a status change (e.g., Pending → Confirmed)");
+      } else {
+        console.log("   ⚠️ Products changed - performing credit limit re-check");
+        console.log("   Order creditOverlimit:", salesOrder.creditOverlimit);
+        console.log("   Previously approved?", salesOrder.creditOverlimit?.approvedBy ? 'YES' : 'NO');
+        console.log("   Original order amount:", salesOrder.totalAmount);
         
         // Get dealer data
         const dealerData = await Dealer.findById(salesOrder.dealer);
@@ -1454,8 +1567,14 @@ export const updateSalesOrder = async (req, res) => {
         const newGrossAmount = updatedValidatedProducts.reduce((sum, p) => sum + (p.quantity * p.unitPrice), 0);
         const newTotalGst = updatedValidatedProducts.reduce((sum, p) => sum + p.gstAmount, 0);
         const newTotalAmount = newGrossAmount + newTotalGst;
+        const originalOrderAmount = salesOrder.totalAmount || 0;
         
-        console.log(`💰 Updated Order Amount: ₹${newTotalAmount.toFixed(2)}`);
+        console.log(`💰 Order Amount Comparison:`, {
+          original: originalOrderAmount,
+          new: newTotalAmount,
+          difference: newTotalAmount - originalOrderAmount,
+          increased: newTotalAmount > originalOrderAmount
+        });
         
         // Check credit limit if dealer has one set
         if (dealerData.creditLimit && dealerData.creditLimit > 0) {
@@ -1467,7 +1586,6 @@ export const updateSalesOrder = async (req, res) => {
           const currentOutstanding = lastLedgerEntry ? lastLedgerEntry.runningBalance : 0;
           
           // Subtract the original order amount and add the new order amount
-          const originalOrderAmount = salesOrder.totalAmount || 0;
           const adjustedOutstanding = currentOutstanding - originalOrderAmount;
           const newOutstanding = adjustedOutstanding + newTotalAmount;
           
@@ -1478,29 +1596,70 @@ export const updateSalesOrder = async (req, res) => {
             adjustedOutstanding,
             newOrderAmount: newTotalAmount,
             newOutstanding,
-            overlimit: newOutstanding - dealerData.creditLimit
+            overlimit: newOutstanding - dealerData.creditLimit,
+            wasApproved: !!salesOrder.creditOverlimit?.approvedBy
           });
           
-          // If credit limit exceeded, reset approval and force status to Pending
+          // If credit limit exceeded, check if we need new approval
           if (newOutstanding > dealerData.creditLimit) {
             const overlimitAmount = newOutstanding - dealerData.creditLimit;
-            console.log(`⚠️ Credit limit exceeded by ₹${overlimitAmount.toFixed(2)} after edit - Resetting approval`);
             
-            // Reset credit approval and force status back to Pending
-            req.body.status = "Pending";
-            req.body.creditOverlimit = {
-              isOverlimit: true,
-              creditLimit: dealerData.creditLimit,
-              currentOutstanding: adjustedOutstanding,
-              orderAmount: newTotalAmount,
-              newOutstanding,
-              overlimitAmount,
-              requiresApproval: true,
-              approvedBy: null, // Reset approval
-              approvedAt: null
-            };
+            // Check if amount increased from previously approved amount
+            const amountIncreased = newTotalAmount > originalOrderAmount;
+            const wasApproved = salesOrder.creditOverlimit && salesOrder.creditOverlimit.approvedBy;
             
-            console.log(`🔄 Order status reset to Pending - Requires new Super Admin approval`);
+            if (amountIncreased && wasApproved) {
+              console.log(`⚠️ CRITICAL: Order amount increased from ₹${originalOrderAmount.toFixed(2)} to ₹${newTotalAmount.toFixed(2)}`);
+              console.log(`⚠️ Previous approval is NO LONGER VALID - Requires NEW Super Admin approval`);
+              
+              // Store previous approval info for audit trail
+              const previousApproval = {
+                approvedBy: salesOrder.creditOverlimit.approvedBy,
+                approvedAt: salesOrder.creditOverlimit.approvedAt,
+                approvedAmount: originalOrderAmount,
+                approvalNotes: salesOrder.creditOverlimit.approvalNotes
+              };
+              
+              // Reset credit approval and force status back to Pending
+              req.body.status = "Pending";
+              req.body.creditOverlimit = {
+                isOverlimit: true,
+                creditLimit: dealerData.creditLimit,
+                currentOutstanding: adjustedOutstanding,
+                orderAmount: newTotalAmount,
+                newOutstanding,
+                overlimitAmount,
+                requiresApproval: true,
+                approvedBy: null, // Reset approval
+                approvedAt: null,
+                approvalNotes: null,
+                previousApproval: previousApproval // Store history
+              };
+              
+              console.log(`🔄 Order status RESET to Pending - Requires NEW Super Admin approval`);
+              console.log(`📋 Previous approval stored in history for audit trail`);
+            } else if (!wasApproved) {
+              console.log(`⚠️ Credit limit exceeded by ₹${overlimitAmount.toFixed(2)} - Requires approval`);
+              
+              // First time exceeding limit or not previously approved
+              req.body.status = "Pending";
+              req.body.creditOverlimit = {
+                isOverlimit: true,
+                creditLimit: dealerData.creditLimit,
+                currentOutstanding: adjustedOutstanding,
+                orderAmount: newTotalAmount,
+                newOutstanding,
+                overlimitAmount,
+                requiresApproval: true,
+                approvedBy: null,
+                approvedAt: null
+              };
+              
+              console.log(`🔄 Order status set to Pending - Requires Super Admin approval`);
+            } else {
+              // Amount decreased or stayed same, keep existing approval
+              console.log(`✅ Order amount did not increase - keeping existing approval`);
+            }
           } else {
             // Credit limit is fine - clear any previous overlimit flags
             console.log(`✅ Credit limit check passed - Order within limit`);
@@ -1723,87 +1882,56 @@ export const updateSalesOrder = async (req, res) => {
         console.error('Error creating notification:', notificationError);
       }
       
-      // CREATE DEALER LEDGER ENTRY when order is CONFIRMED to block credit limit
-      if (newStatus === "Confirmed" && originalStatus !== "Confirmed") {
-        try {
-          console.log(`💳 Creating ledger entry to block credit limit for order ${updatedOrder.orderNumber}`);
-          
-          const DealerLedger = (await import("../models/DealerLedger.js")).default;
-          const Dealer = (await import("../models/Dealer.js")).default;
-          
-          // Get dealer details
-          const dealer = await Dealer.findById(updatedOrder.dealer);
-          if (!dealer) {
-            console.error(`❌ Dealer not found for order ${updatedOrder.orderNumber}`);
-          } else {
-            // Calculate due date based on credit days
-            let dueDate = null;
-            if (updatedOrder.orderDate && updatedOrder.creditDays) {
-              dueDate = new Date(updatedOrder.orderDate);
-              dueDate.setDate(dueDate.getDate() + updatedOrder.creditDays);
-            }
-            
-            // Create ledger entry to block credit limit
-            const ledgerEntry = new DealerLedger({
-              dealer: updatedOrder.dealer._id || updatedOrder.dealer,
-              dealerName: dealer.name,
-              dealerCode: dealer.code,
-              entryDate: new Date(),
-              transactionType: "Adjustment",
-              salesType: updatedOrder.salesType || 'Regular Sale',
-              creditDaysApplied: updatedOrder.creditDays || 0,
-              debitAmount: updatedOrder.totalAmount, // Increase outstanding (block credit)
-              creditAmount: 0,
-              description: `Order Confirmed - ${updatedOrder.orderNumber}`,
-              remarks: `Credit limit blocked for confirmed order ${updatedOrder.orderNumber}. Amount: ₹${updatedOrder.totalAmount.toLocaleString()}`,
-              creditDays: updatedOrder.creditDays || 0,
-              dueDate: dueDate,
-              status: "Active",
-              createdBy: req.user._id
-            });
-            
-            await ledgerEntry.save();
-            console.log(`✅ Ledger entry created - Credit limit blocked: ₹${updatedOrder.totalAmount.toLocaleString()} for order ${updatedOrder.orderNumber}`);
-            console.log(`   Running Balance: ₹${ledgerEntry.runningBalance.toLocaleString()}`);
-          }
-        } catch (ledgerError) {
-          console.error('❌ Error creating ledger entry for order confirmation:', ledgerError);
-          // Don't fail the request if ledger creation fails
-        }
-      }
+      // NOTE: Credit limit blocking moved to invoice approval stage
+      // Sales orders no longer block credit limit on confirmation
+      // Credit limit is blocked when invoice is approved, not when order is confirmed
       
       // REMOVE/REVERSE LEDGER ENTRY when order is CANCELLED or REJECTED (if it was previously Confirmed)
+      // NOTE: This is kept for backward compatibility with old orders that had ledger entries
       if ((newStatus === "Cancelled" || newStatus === "Rejected") && originalStatus === "Confirmed") {
         try {
-          console.log(`💳 Reversing ledger entry to unblock credit limit for order ${updatedOrder.orderNumber}`);
+          console.log(`💳 Checking for ledger entry to reverse for order ${updatedOrder.orderNumber}`);
           
           const DealerLedger = (await import("../models/DealerLedger.js")).default;
           const Dealer = (await import("../models/Dealer.js")).default;
           
-          // Get dealer details
-          const dealer = await Dealer.findById(updatedOrder.dealer);
-          if (!dealer) {
-            console.error(`❌ Dealer not found for order ${updatedOrder.orderNumber}`);
-          } else {
-            // Create reverse ledger entry to unblock credit limit
-            const reverseLedgerEntry = new DealerLedger({
-              dealer: updatedOrder.dealer._id || updatedOrder.dealer,
-              dealerName: dealer.name,
-              dealerCode: dealer.code,
-              entryDate: new Date(),
-              transactionType: "Adjustment",
-              salesType: updatedOrder.salesType || 'Regular Sale',
-              debitAmount: 0,
-              creditAmount: updatedOrder.totalAmount, // Decrease outstanding (unblock credit)
-              description: `Order ${newStatus} - ${updatedOrder.orderNumber}`,
-              remarks: `Credit limit unblocked - order ${updatedOrder.orderNumber} was ${newStatus.toLowerCase()}. Amount released: ₹${updatedOrder.totalAmount.toLocaleString()}`,
-              status: "Active",
-              createdBy: req.user._id
-            });
+          // Check if there's a ledger entry for this order (old orders might have one)
+          const existingLedgerEntry = await DealerLedger.findOne({
+            dealer: updatedOrder.dealer._id || updatedOrder.dealer,
+            transactionType: "Order Confirmed",
+            description: { $regex: updatedOrder.orderNumber }
+          });
+          
+          if (existingLedgerEntry) {
+            console.log(`✅ Found existing ledger entry to reverse`);
             
-            await reverseLedgerEntry.save();
-            console.log(`✅ Reverse ledger entry created - Credit limit unblocked: ₹${updatedOrder.totalAmount.toLocaleString()} for order ${updatedOrder.orderNumber}`);
-            console.log(`   Running Balance: ₹${reverseLedgerEntry.runningBalance.toLocaleString()}`);
+            // Get dealer details
+            const dealer = await Dealer.findById(updatedOrder.dealer);
+            if (!dealer) {
+              console.error(`❌ Dealer not found for order ${updatedOrder.orderNumber}`);
+            } else {
+              // Create reverse ledger entry to unblock credit limit
+              const reverseLedgerEntry = new DealerLedger({
+                dealer: updatedOrder.dealer._id || updatedOrder.dealer,
+                dealerName: dealer.name,
+                dealerCode: dealer.code,
+                entryDate: new Date(),
+                transactionType: "Adjustment",
+                salesType: updatedOrder.salesType || 'Regular Sale',
+                debitAmount: 0,
+                creditAmount: updatedOrder.totalAmount, // Decrease outstanding (unblock credit)
+                description: `Order ${newStatus} - ${updatedOrder.orderNumber}`,
+                remarks: `Credit limit unblocked - order ${updatedOrder.orderNumber} was ${newStatus.toLowerCase()}. Amount released: ₹${updatedOrder.totalAmount.toLocaleString()}`,
+                status: "Active",
+                createdBy: req.user._id
+              });
+              
+              await reverseLedgerEntry.save();
+              console.log(`✅ Reverse ledger entry created - Credit limit unblocked: ₹${updatedOrder.totalAmount.toLocaleString()} for order ${updatedOrder.orderNumber}`);
+              console.log(`   Running Balance: ₹${reverseLedgerEntry.runningBalance.toLocaleString()}`);
+            }
+          } else {
+            console.log(`ℹ️ No ledger entry found for order ${updatedOrder.orderNumber} - nothing to reverse`);
           }
         } catch (ledgerError) {
           console.error('❌ Error creating reverse ledger entry:', ledgerError);

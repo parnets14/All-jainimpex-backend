@@ -11,6 +11,7 @@ import {
   getDealerAccessibleProducts,
   getDealerHierarchyOptions,
   getDealerOutstanding,
+  getDealerCreditApprovalHistory,
 } from "../controllers/dealerController.js";
 import { protect } from "../middleware/authMiddleware.js";
 import { requirePermission } from "../middleware/authMiddleware.js";
@@ -34,6 +35,9 @@ router.get("/:id/hierarchy-options", logActivity("Dealer Management", "Viewed de
 
 // Get dealer outstanding balance - Allow all authenticated users (needed for invoices/payments)
 router.get("/:id/outstanding", logActivity("Dealer Management", "Viewed dealer outstanding balance", "READ"), getDealerOutstanding);
+
+// Get dealer credit approval history (last 30 days) - Allow all authenticated users
+router.get("/:id/credit-approval-history", logActivity("Dealer Management", "Viewed dealer credit approval history", "READ"), getDealerCreditApprovalHistory);
 
 // Get all dealers with pagination - Allow all authenticated users (needed for dropdowns in invoices/payments)
 router.get("/", logActivity("Dealer Management", "Viewed dealers list", "READ"), getDealers);
