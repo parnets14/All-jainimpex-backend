@@ -936,8 +936,21 @@ export const approveDealerInvoice = async (req, res) => {
     try {
       const dealer = await Dealer.findById(invoice.dealer).session(session);
       
+      // Check if this invoice's sales order had credit overlimit approval
+      let hasOrderApproval = false;
+      if (invoice.salesOrder) {
+        const salesOrder = await SalesOrder.findById(invoice.salesOrder).session(session);
+        if (salesOrder && salesOrder.creditOverlimit && salesOrder.creditOverlimit.isOverlimit && salesOrder.creditOverlimit.approvedBy) {
+          hasOrderApproval = true;
+          console.log(`✅ Sales order ${salesOrder.orderNumber} had credit overlimit approval - Skipping credit check for invoice`);
+          console.log(`   Approved by: ${salesOrder.creditOverlimit.approvedBy}`);
+          console.log(`   Approved at: ${salesOrder.creditOverlimit.approvedAt}`);
+        }
+      }
+      
       // CREDIT LIMIT CHECK - Block invoice approval if credit limit exceeded
-      if (dealer.creditLimit && dealer.creditLimit > 0) {
+      // SKIP if sales order was already approved for overlimit
+      if (!hasOrderApproval && dealer.creditLimit && dealer.creditLimit > 0) {
         console.log(`💳 Checking credit limit for dealer ${dealer.name}...`);
         
         // Get the last entry for this dealer to get current outstanding
@@ -980,6 +993,8 @@ export const approveDealerInvoice = async (req, res) => {
         }
         
         console.log(`✅ Credit limit check passed - Available credit: ₹${(dealer.creditLimit - currentOutstanding).toLocaleString()}`);
+      } else if (hasOrderApproval) {
+        console.log(`⏭️ Skipping credit limit check - Sales order was pre-approved for overlimit`);
       }
       
       // Get the last entry for this dealer to calculate running balance
