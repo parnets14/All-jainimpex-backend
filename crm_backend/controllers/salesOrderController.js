@@ -1555,6 +1555,15 @@ export const updateSalesOrder = async (req, res) => {
       
       // Compare new products with existing products to detect actual changes
       let productsActuallyChanged = false;
+
+      // If order is already approved by Super Admin, skip credit re-check entirely
+      const orderAlreadyApproved = salesOrder.creditOverlimit &&
+                                   salesOrder.creditOverlimit.isOverlimit &&
+                                   salesOrder.creditOverlimit.approvedBy;
+
+      if (orderAlreadyApproved) {
+        console.log("   ✅ Order already approved by Super Admin - skipping credit limit re-check");
+      } else {
       
       // Check if number of products changed
       if (req.body.products.length !== salesOrder.products.length) {
@@ -1576,13 +1585,13 @@ export const updateSalesOrder = async (req, res) => {
             break;
           }
           
-          if (newProduct.quantity !== oldProduct.quantity) {
+          if (Number(newProduct.quantity) !== Number(oldProduct.quantity)) {
             productsActuallyChanged = true;
             console.log(`   ✓ Quantity changed at index ${i}: ${oldProduct.quantity} → ${newProduct.quantity}`);
             break;
           }
           
-          if (newProduct.unitPrice !== oldProduct.unitPrice) {
+          if (Math.abs(Number(newProduct.unitPrice) - Number(oldProduct.unitPrice)) > 0.001) {
             productsActuallyChanged = true;
             console.log(`   ✓ Unit price changed at index ${i}: ${oldProduct.unitPrice} → ${newProduct.unitPrice}`);
             break;
@@ -1738,6 +1747,7 @@ export const updateSalesOrder = async (req, res) => {
           }
         }
       }
+      } // end !orderAlreadyApproved
     }
 
     // Store original status before update
