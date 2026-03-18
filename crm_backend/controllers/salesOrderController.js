@@ -6,6 +6,58 @@ import Stock from "../models/Stock.js";
 import User from "../models/User.js";
 import Notification from "../models/Notification.js";
 
+/**
+ * Calculate the true current credit outstanding for a dealer.
+ * Matches the logic in dealerController.getDealerPaymentStatus:
+ *   outstanding = (ledger debit - ledger credit) - paymentAllocations + confirmedOrdersNotYetInvoiced
+ * 
+ * @param {string} dealerId
+ * @param {string|null} excludeOrderId  - pass a sales order _id to exclude it from confirmed-orders sum (for edit re-check)
+ * @returns {Promise<number>}
+ */
+const getDealerCreditOutstanding = async (dealerId, excludeOrderId = null) => {
+  const DealerLedger = (await import("../models/DealerLedger.js")).default;
+  const DealerInvoice = (await import("../models/DealerInvoice.js")).default;
+  const PaymentAllocation = (await import("../models/PaymentAllocation.js")).default;
+
+  // 1. Ledger balance (invoices - payments)
+  const ledgerEntries = await DealerLedger.find({ dealer: dealerId });
+  const ledgerBalance = ledgerEntries.reduce(
+    (sum, e) => sum + (e.debitAmount || 0) - (e.creditAmount || 0),
+    0
+  );
+
+  // 2. Payment allocations (reduce outstanding)
+  const paymentAllocations = await PaymentAllocation.find({ partyId: dealerId }).lean();
+  const totalAllocated = paymentAllocations.reduce(
+    (sum, a) => sum + (a.totalAllocated || 0),
+    0
+  );
+
+  const invoiceOutstanding = ledgerBalance - totalAllocated;
+
+  // 3. Confirmed/Processing orders not yet invoiced
+  const confirmedOrders = await SalesOrder.find({
+    dealer: dealerId,
+    status: { $in: ['Confirmed', 'Processing', 'In Transit'] }
+  }).lean();
+
+  const invoicedOrderIds = await DealerInvoice.distinct('salesOrder', {
+    dealer: dealerId,
+    salesOrder: { $ne: null },
+    status: { $nin: ['Cancelled', 'Rejected'] }
+  });
+  const invoicedSet = new Set(invoicedOrderIds.map(id => id.toString()));
+
+  const confirmedAmount = confirmedOrders.reduce((sum, order) => {
+    if (invoicedSet.has(order._id.toString())) return sum;
+    if (excludeOrderId && order._id.toString() === excludeOrderId.toString()) return sum;
+    return sum + (order.totalAmount || 0);
+  }, 0);
+
+  return invoiceOutstanding + confirmedAmount;
+};
+
 // Generate unique order number
 const generateOrderNumber = async () => {
   try {
@@ -58,7 +110,17 @@ export const getSalesOrders = async (req, res) => {
       startDate,
       endDate,
       type,
-      stockArrived
+      stockArrived,
+      // Advanced filters
+      dateRange,
+      expired,
+      orderType,
+      warehouse,
+      dealerType,
+      creditDaysRange,
+      minAmount,
+      maxAmount,
+      product
     } = req.query;
 
     // Build query object
@@ -89,12 +151,17 @@ export const getSalesOrders = async (req, res) => {
       query.dealer = dealer;
     }
 
+    // Filter by product
+    if (product) {
+      query['products.product'] = product;
+    }
+
     // Filter by region
     if (region) {
       query.region = region;
     }
 
-    // Filter by order type
+    // Filter by order type (legacy param)
     if (type) {
       query.type = type;
     }
@@ -104,6 +171,85 @@ export const getSalesOrders = async (req, res) => {
       query.orderDate = {};
       if (startDate) query.orderDate.$gte = new Date(startDate);
       if (endDate) query.orderDate.$lte = new Date(endDate);
+    }
+
+    // Advanced: dateRange preset (overrides startDate/endDate if set)
+    if (dateRange && dateRange !== "all" && !startDate && !endDate) {
+      const now = new Date();
+      const rangeStart = new Date();
+      if (dateRange === "1day") rangeStart.setDate(now.getDate() - 1);
+      else if (dateRange === "7days") rangeStart.setDate(now.getDate() - 7);
+      else if (dateRange === "30days") rangeStart.setDate(now.getDate() - 30);
+      else if (dateRange === "6months") rangeStart.setMonth(now.getMonth() - 6);
+      else if (dateRange === "1year") rangeStart.setFullYear(now.getFullYear() - 1);
+      query.orderDate = { $gte: rangeStart, $lte: now };
+    }
+
+    // Advanced: Expiry status filter
+    if (expired && expired !== "all") {
+      const now = new Date();
+      if (expired === "expired") {
+        query.isExpired = true;
+      } else if (expired === "notExpired") {
+        query.$and = query.$and || [];
+        query.$and.push({
+          $or: [
+            { isExpired: false },
+            { isExpired: { $exists: false } }
+          ]
+        });
+      } else if (expired === "expiringSoon") {
+        const sevenDaysLater = new Date();
+        sevenDaysLater.setDate(now.getDate() + 7);
+        query.$and = query.$and || [];
+        query.$and.push({
+          expiryDate: { $gte: now, $lte: sevenDaysLater },
+          isExpired: { $ne: true }
+        });
+      }
+    }
+
+    // Advanced: Order type (CD vs Regular vs Out of Stock)
+    if (orderType && orderType !== "all") {
+      if (orderType === "cd") {
+        query.salesType = "CD Sales";
+      } else if (orderType === "regular") {
+        query.salesType = "Regular Sale";
+      } else if (orderType === "outOfStock") {
+        query.isOutOfStock = true;
+      }
+    }
+
+    // Advanced: Warehouse filter (filter orders that have products in this warehouse)
+    if (warehouse) {
+      query['products.warehouse'] = warehouse;
+    }
+
+    // Advanced: Dealer type filter
+    if (dealerType) {
+      query.dealerType = dealerType;
+    }
+
+    // Advanced: Credit days range filter
+    if (creditDaysRange && creditDaysRange !== "all") {
+      if (creditDaysRange === "0") {
+        query.creditDays = 0;
+      } else if (creditDaysRange === "1-7") {
+        query.creditDays = { $gte: 1, $lte: 7 };
+      } else if (creditDaysRange === "8-15") {
+        query.creditDays = { $gte: 8, $lte: 15 };
+      } else if (creditDaysRange === "16-30") {
+        query.creditDays = { $gte: 16, $lte: 30 };
+      } else if (creditDaysRange === "30+") {
+        query.creditDays = { $gt: 30 };
+      }
+    }
+
+    // Advanced: Amount range filter
+    if (minAmount || maxAmount) {
+      query.totalAmount = {};
+      if (minAmount) query.totalAmount.$gte = parseFloat(minAmount);
+      if (maxAmount) query.totalAmount.$lte = parseFloat(maxAmount);
     }
 
     // Execute query with pagination
@@ -293,23 +439,12 @@ export const createSalesOrder = async (req, res) => {
       orderAmount: orderTotalAmount
     });
 
-    // NOTE: Credit limit check removed from sales order creation
-    // Credit limit is now checked and blocked at invoice approval stage
-    // This allows orders to be created and confirmed without credit limit blocking
-    // The actual credit commitment happens when invoice is generated and approved
-    
-    /* CREDIT LIMIT CHECK DISABLED - NOW HAPPENS AT INVOICE APPROVAL
-    // Check credit limit if dealer has one set
+    // CREDIT LIMIT CHECK: If dealer has a credit limit and order exceeds it, force Pending status
     if (dealerData.creditLimit && dealerData.creditLimit > 0) {
-      // Get dealer's current outstanding balance from ledger
-      const DealerLedger = (await import("../models/DealerLedger.js")).default;
-      const lastLedgerEntry = await DealerLedger.findOne({ dealer: dealer })
-        .sort({ createdAt: -1 });
-      
-      const currentOutstanding = lastLedgerEntry ? lastLedgerEntry.runningBalance : 0;
+      const currentOutstanding = await getDealerCreditOutstanding(dealerData._id);
       const newOutstanding = currentOutstanding + orderTotalAmount;
       
-      console.log(`💳 Credit Limit Check:`, {
+      console.log(`💳 Credit Limit Check (createSalesOrder):`, {
         creditLimit: dealerData.creditLimit,
         currentOutstanding,
         orderAmount: orderTotalAmount,
@@ -317,12 +452,9 @@ export const createSalesOrder = async (req, res) => {
         overlimit: newOutstanding - dealerData.creditLimit
       });
       
-      // If credit limit exceeded, force status to Pending and add credit overlimit info
       if (newOutstanding > dealerData.creditLimit) {
         const overlimitAmount = newOutstanding - dealerData.creditLimit;
-        console.log(`⚠️ Credit limit exceeded by ₹${overlimitAmount.toFixed(2)}`);
-        
-        // Force status to Pending for approval
+        console.log(`⚠️ Credit limit exceeded by ₹${overlimitAmount.toFixed(2)} - forcing status to Pending`);
         req.body.status = "Pending";
         req.body.creditOverlimit = {
           isOverlimit: true,
@@ -335,7 +467,6 @@ export const createSalesOrder = async (req, res) => {
         };
       }
     }
-    */
 
     // Validate and process each product
     const validatedProducts = [];
@@ -420,7 +551,8 @@ export const createSalesOrder = async (req, res) => {
     }
 
     // Determine initial status based on stock availability
-    let initialStatus = status || "Pending";
+    // Use req.body.status in case credit limit check overrode it to "Pending"
+    let initialStatus = req.body.status || status || "Pending";
     
     // For out-of-stock orders, force status to Pending and prevent status changes
     if (isOutOfStock) {
@@ -719,21 +851,50 @@ export const updateSalesOrderStatus = async (req, res) => {
       });
     }
 
-    // NOTE: Credit limit blocking removed from status change
-    // Credit limit is now enforced at invoice approval stage only
-    /* CREDIT LIMIT BLOCKING DISABLED - NOW HAPPENS AT INVOICE APPROVAL
-    // CRITICAL: Prevent status changes for orders with unapproved credit overlimit
-    if (salesOrder.creditOverlimit && 
+    // CRITICAL: Prevent status change to Confirmed if credit limit is exceeded and not approved
+    if (status === "Confirmed" &&
+        salesOrder.creditOverlimit && 
         salesOrder.creditOverlimit.isOverlimit && 
-        !salesOrder.creditOverlimit.approvedBy &&
-        status !== "Cancelled" && 
-        status !== "Rejected") {
+        !salesOrder.creditOverlimit.approvedBy) {
       return res.status(400).json({
         success: false,
-        message: `Cannot change status - Credit limit exceeded by ₹${(salesOrder.creditOverlimit.overlimitAmount || 0).toLocaleString()}. Super Admin approval required before this order can proceed.`
+        message: `Cannot confirm order - Credit limit exceeded by ₹${(salesOrder.creditOverlimit.overlimitAmount || 0).toLocaleString()}. Super Admin approval required before this order can be confirmed.`
       });
     }
-    */
+
+    // Also check live credit limit when confirming, in case it wasn't checked at creation
+    // Skip if order was already approved by Super Admin
+    if (status === "Confirmed" && originalStatus !== "Confirmed") {
+      const alreadyApproved = salesOrder.creditOverlimit &&
+                              salesOrder.creditOverlimit.isOverlimit &&
+                              salesOrder.creditOverlimit.approvedBy;
+
+      if (!alreadyApproved) {
+        const dealerData = await Dealer.findById(salesOrder.dealer);
+        if (dealerData && dealerData.creditLimit && dealerData.creditLimit > 0) {
+          const currentOutstanding = await getDealerCreditOutstanding(salesOrder.dealer, salesOrder._id);
+          const newOutstanding = currentOutstanding + salesOrder.totalAmount;
+          if (newOutstanding > dealerData.creditLimit) {
+            const overlimitAmount = newOutstanding - dealerData.creditLimit;
+            salesOrder.creditOverlimit = {
+              isOverlimit: true,
+              creditLimit: dealerData.creditLimit,
+              currentOutstanding,
+              orderAmount: salesOrder.totalAmount,
+              newOutstanding,
+              overlimitAmount,
+              requiresApproval: true
+            };
+            await salesOrder.save();
+            return res.status(400).json({
+              success: false,
+              message: `Cannot confirm order - Credit limit exceeded by ₹${overlimitAmount.toLocaleString()}. Super Admin approval required.`,
+              creditOverlimit: salesOrder.creditOverlimit
+            });
+          }
+        }
+      }
+    }
 
     // Special handling for Confirmed status (stock allocation) - only for in-stock orders
     if (status === "Confirmed" && !salesOrder.isOutOfStock) {
@@ -1040,100 +1201,8 @@ OR wait for stock to arrive and this order will be auto-processed.`,
       console.log("🚨 Out-of-stock order - no stock movements will be made");
     }
 
-    // CRITICAL FIX: Release credit limit when order is cancelled or rejected
-    // This ensures dealer's available credit is restored
-    if ((status === "Cancelled" || status === "Rejected") && 
-        (originalStatus === "Confirmed" || originalStatus === "Processing")) {
-      
-      console.log(`🔓 Releasing credit limit for ${status} order ${salesOrder.orderNumber}`);
-      console.log(`   Original status: ${originalStatus}`);
-      console.log(`   Order amount: ₹${salesOrder.totalAmount.toFixed(2)}`);
-      
-      try {
-        // Create reversal ledger entry to release credit
-        const DealerLedger = (await import("../models/DealerLedger.js")).default;
-        
-        // Get last ledger entry for running balance
-        const lastLedgerEntry = await DealerLedger.findOne({ dealer: salesOrder.dealer })
-          .sort({ createdAt: -1 });
-        
-        const currentBalance = lastLedgerEntry ? lastLedgerEntry.runningBalance : 0;
-        const newBalance = currentBalance - salesOrder.totalAmount; // Reduce outstanding
-        
-        console.log(`   Current outstanding: ₹${currentBalance.toFixed(2)}`);
-        console.log(`   Amount to release: ₹${salesOrder.totalAmount.toFixed(2)}`);
-        console.log(`   New outstanding: ₹${newBalance.toFixed(2)}`);
-        
-        // Create credit release entry
-        const creditReleaseEntry = new DealerLedger({
-          dealer: salesOrder.dealer,
-          transactionType: 'CREDIT_RELEASE',
-          referenceType: 'SALES_ORDER',
-          referenceId: salesOrder._id,
-          referenceNumber: salesOrder.orderNumber,
-          debit: 0,
-          credit: salesOrder.totalAmount, // Credit back the amount
-          runningBalance: newBalance,
-          description: `Credit limit released - Order ${salesOrder.orderNumber} ${status}`,
-          transactionDate: new Date(),
-          createdBy: req.user._id
-        });
-        
-        await creditReleaseEntry.save();
-        console.log(`✅ Credit limit released successfully`);
-        console.log(`   Ledger entry created: ${creditReleaseEntry._id}`);
-      } catch (error) {
-        console.error(`❌ Error releasing credit limit:`, error);
-        // Don't fail the entire operation if ledger update fails
-        // Log the error but continue with status update
-      }
-    } else if (status === "Cancelled" || status === "Rejected") {
-      console.log(`ℹ️ No credit limit release needed - order was in ${originalStatus} status`);
-    }
-
-    // CRITICAL FIX: Block credit limit when order is confirmed
-    // This ensures dealer's available credit is reduced
-    if (status === "Confirmed" && originalStatus !== "Confirmed") {
-      console.log(`🔒 Blocking credit limit for confirmed order ${salesOrder.orderNumber}`);
-      console.log(`   Order amount: ₹${salesOrder.totalAmount.toFixed(2)}`);
-      
-      try {
-        const DealerLedger = (await import("../models/DealerLedger.js")).default;
-        
-        // Get last ledger entry
-        const lastLedgerEntry = await DealerLedger.findOne({ dealer: salesOrder.dealer })
-          .sort({ createdAt: -1 });
-        
-        const currentBalance = lastLedgerEntry ? lastLedgerEntry.runningBalance : 0;
-        const newBalance = currentBalance + salesOrder.totalAmount; // Increase outstanding
-        
-        console.log(`   Current outstanding: ₹${currentBalance.toFixed(2)}`);
-        console.log(`   Amount to block: ₹${salesOrder.totalAmount.toFixed(2)}`);
-        console.log(`   New outstanding: ₹${newBalance.toFixed(2)}`);
-        
-        // Create credit block entry
-        const creditBlockEntry = new DealerLedger({
-          dealer: salesOrder.dealer,
-          transactionType: 'CREDIT_BLOCK',
-          referenceType: 'SALES_ORDER',
-          referenceId: salesOrder._id,
-          referenceNumber: salesOrder.orderNumber,
-          debit: salesOrder.totalAmount, // Debit (increase outstanding)
-          credit: 0,
-          runningBalance: newBalance,
-          description: `Credit limit blocked - Order ${salesOrder.orderNumber} confirmed`,
-          transactionDate: new Date(),
-          createdBy: req.user._id
-        });
-        
-        await creditBlockEntry.save();
-        console.log(`✅ Credit limit blocked successfully`);
-        console.log(`   Ledger entry created: ${creditBlockEntry._id}`);
-      } catch (error) {
-        console.error(`❌ Error blocking credit limit:`, error);
-        // Don't fail the entire operation if ledger update fails
-      }
-    }
+    // Credit limit is tracked via getDealerCreditOutstanding which reads confirmed orders
+    // directly from SalesOrder collection - no ledger entries needed for credit blocking.
 
     // Update order status and remarks
     salesOrder.status = status;
@@ -1578,22 +1647,16 @@ export const updateSalesOrder = async (req, res) => {
         
         // Check credit limit if dealer has one set
         if (dealerData.creditLimit && dealerData.creditLimit > 0) {
-          // Get dealer's current outstanding balance from ledger
-          const DealerLedger = (await import("../models/DealerLedger.js")).default;
-          const lastLedgerEntry = await DealerLedger.findOne({ dealer: salesOrder.dealer })
-            .sort({ createdAt: -1 });
-          
-          const currentOutstanding = lastLedgerEntry ? lastLedgerEntry.runningBalance : 0;
-          
-          // Subtract the original order amount and add the new order amount
-          const adjustedOutstanding = currentOutstanding - originalOrderAmount;
-          const newOutstanding = adjustedOutstanding + newTotalAmount;
+          // Get correct outstanding: exclude this order itself (it's being edited), then add new amount
+          const baseOutstanding = await getDealerCreditOutstanding(salesOrder.dealer, salesOrder._id);
+          // baseOutstanding already excludes this order, so just add the new total
+          const newOutstanding = baseOutstanding + newTotalAmount;
+          const adjustedOutstanding = baseOutstanding; // for logging clarity
           
           console.log(`💳 Credit Limit Re-Check:`, {
             creditLimit: dealerData.creditLimit,
-            currentOutstanding,
+            baseOutstanding,
             originalOrderAmount,
-            adjustedOutstanding,
             newOrderAmount: newTotalAmount,
             newOutstanding,
             overlimit: newOutstanding - dealerData.creditLimit,
@@ -1625,7 +1688,7 @@ export const updateSalesOrder = async (req, res) => {
               req.body.creditOverlimit = {
                 isOverlimit: true,
                 creditLimit: dealerData.creditLimit,
-                currentOutstanding: adjustedOutstanding,
+                currentOutstanding: baseOutstanding,
                 orderAmount: newTotalAmount,
                 newOutstanding,
                 overlimitAmount,
@@ -1646,7 +1709,7 @@ export const updateSalesOrder = async (req, res) => {
               req.body.creditOverlimit = {
                 isOverlimit: true,
                 creditLimit: dealerData.creditLimit,
-                currentOutstanding: adjustedOutstanding,
+                currentOutstanding: baseOutstanding,
                 orderAmount: newTotalAmount,
                 newOutstanding,
                 overlimitAmount,
@@ -1666,7 +1729,7 @@ export const updateSalesOrder = async (req, res) => {
             req.body.creditOverlimit = {
               isOverlimit: false,
               creditLimit: dealerData.creditLimit,
-              currentOutstanding: adjustedOutstanding,
+              currentOutstanding: baseOutstanding,
               orderAmount: newTotalAmount,
               newOutstanding,
               overlimitAmount: 0,
@@ -1680,6 +1743,54 @@ export const updateSalesOrder = async (req, res) => {
     // Store original status before update
     const originalStatus = salesOrder.status;
     const newStatus = req.body.status;
+
+    // CRITICAL: Credit limit check when status is being changed to Confirmed
+    if (newStatus === "Confirmed" && originalStatus !== "Confirmed") {
+      // Block if already flagged as overlimit and not approved
+      if (salesOrder.creditOverlimit &&
+          salesOrder.creditOverlimit.isOverlimit &&
+          !salesOrder.creditOverlimit.approvedBy) {
+        return res.status(400).json({
+          success: false,
+          message: `Cannot confirm order - Credit limit exceeded by ₹${(salesOrder.creditOverlimit.overlimitAmount || 0).toLocaleString()}. Super Admin approval required.`
+        });
+      }
+
+      // Skip live check if order was already approved by Super Admin
+      const alreadyApproved = salesOrder.creditOverlimit &&
+                              salesOrder.creditOverlimit.isOverlimit &&
+                              salesOrder.creditOverlimit.approvedBy;
+
+      if (!alreadyApproved) {
+        // Live credit limit check in case it was never flagged
+        const dealerForCheck = await Dealer.findById(salesOrder.dealer);
+        if (dealerForCheck && dealerForCheck.creditLimit && dealerForCheck.creditLimit > 0) {
+          const currentOutstanding = await getDealerCreditOutstanding(salesOrder.dealer, salesOrder._id);
+          const orderAmount = req.body.totalAmount || salesOrder.totalAmount;
+          const newOutstanding = currentOutstanding + orderAmount;
+
+          if (newOutstanding > dealerForCheck.creditLimit) {
+            const overlimitAmount = newOutstanding - dealerForCheck.creditLimit;
+            await SalesOrder.findByIdAndUpdate(salesOrder._id, {
+              creditOverlimit: {
+                isOverlimit: true,
+                creditLimit: dealerForCheck.creditLimit,
+                currentOutstanding,
+                orderAmount,
+                newOutstanding,
+                overlimitAmount,
+                requiresApproval: true
+              }
+            });
+            return res.status(400).json({
+              success: false,
+              message: `Cannot confirm order - Credit limit exceeded by ₹${overlimitAmount.toLocaleString()}. Super Admin approval required.`,
+              creditOverlimit: { isOverlimit: true, overlimitAmount, creditLimit: dealerForCheck.creditLimit }
+            });
+          }
+        }
+      }
+    }
 
     // If status is being changed, handle stock management
     if (newStatus && newStatus !== originalStatus) {
@@ -2611,13 +2722,9 @@ async function createSingleSalesOrder(orderData, userId) {
       totalOrderAmount: totalAmount
     });
     
-    // Get dealer's current outstanding balance from ledger
-    const DealerLedger = (await import("../models/DealerLedger.js")).default;
-    const lastLedgerEntry = await DealerLedger.findOne({ dealer: dealer })
-      .sort({ createdAt: -1 });
-    
-    const currentOutstanding = lastLedgerEntry ? lastLedgerEntry.runningBalance : 0;
-    const newOutstanding = currentOutstanding + inStockTotalAmount; // Use in-stock amount only
+    // Get dealer's current outstanding balance (correct calculation)
+    const currentOutstanding = await getDealerCreditOutstanding(dealer);
+    const newOutstanding = currentOutstanding + inStockTotalAmount;
     
     console.log(`💳 Credit Limit Check (Single Order):`, {
       creditLimit: dealerData.creditLimit,

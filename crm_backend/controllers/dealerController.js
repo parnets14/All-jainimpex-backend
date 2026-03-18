@@ -725,9 +725,7 @@ export const getDealerCompleteInfo = async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Import models
-    const DealerLedger = (await import("../models/DealerLedger.js")).default;
-    const SalesOrder = (await import("../models/SalesOrder.js")).default;
+    // Import models (DiscountMapping not imported at top level)
     const DiscountMapping = (await import("../models/DiscountMapping.js")).default;
     
     // 1. Get dealer basic info
@@ -758,18 +756,44 @@ export const getDealerCompleteInfo = async (req, res) => {
     // Adjust outstanding by subtracting allocated payments
     currentOutstanding = currentOutstanding - totalAllocatedPayments;
     
+    // Calculate confirmed orders amount (orders confirmed but not yet invoiced)
+    // These are orders in Confirmed/Processing/In Transit status that don't have an invoice yet
+    const confirmedOrders = await SalesOrder.find({
+      dealer: id,
+      status: { $in: ['Confirmed', 'Processing', 'In Transit'] }
+    }).lean();
+    
+    // Check which confirmed orders already have invoices (to avoid double counting)
+    const invoicedOrderIds = await DealerInvoice.distinct('salesOrder', {
+      dealer: id,
+      salesOrder: { $ne: null },
+      status: { $nin: ['Cancelled', 'Rejected'] }
+    });
+    const invoicedOrderIdStrings = invoicedOrderIds.map(id => id.toString());
+    
+    // Sum up confirmed orders that are NOT yet invoiced
+    const confirmedOrdersAmount = confirmedOrders.reduce((sum, order) => {
+      const isInvoiced = invoicedOrderIdStrings.includes(order._id.toString());
+      return isInvoiced ? sum : sum + (order.totalAmount || 0);
+    }, 0);
+    
+    // Total credit used = actual ledger outstanding + confirmed-but-not-invoiced orders
+    const totalCreditUsed = currentOutstanding + confirmedOrdersAmount;
+    
     console.log(`📊 Dealer ${dealer.name} Outstanding Calculation:`);
     console.log(`   Ledger Balance: ₹${(currentOutstanding + totalAllocatedPayments).toLocaleString()}`);
     console.log(`   Payment Allocations: ₹${totalAllocatedPayments.toLocaleString()}`);
-    console.log(`   Final Outstanding: ₹${currentOutstanding.toLocaleString()}`);
+    console.log(`   Invoice Outstanding: ₹${currentOutstanding.toLocaleString()}`);
+    console.log(`   Confirmed Orders (not invoiced): ₹${confirmedOrdersAmount.toLocaleString()} (${confirmedOrders.filter(o => !invoicedOrderIdStrings.includes(o._id.toString())).length} orders)`);
+    console.log(`   Total Credit Used: ₹${totalCreditUsed.toLocaleString()}`);
     
-    const availableCredit = Math.max(0, dealer.creditLimit - currentOutstanding);
+    const availableCredit = Math.max(0, dealer.creditLimit - totalCreditUsed);
     const utilizationPercent = dealer.creditLimit > 0 
-      ? Math.round((currentOutstanding / dealer.creditLimit) * 100) 
+      ? Math.round((totalCreditUsed / dealer.creditLimit) * 100) 
       : 0;
     
     let creditStatusType = 'good';
-    if (utilizationPercent > 90 || currentOutstanding > dealer.creditLimit) {
+    if (utilizationPercent > 90 || totalCreditUsed > dealer.creditLimit) {
       creditStatusType = 'exceeded';
     } else if (utilizationPercent > 70) {
       creditStatusType = 'warning';
@@ -866,7 +890,7 @@ export const getDealerCompleteInfo = async (req, res) => {
       paymentStatusType = 'overdue';
       canCreateOrder = false;
       blockReason = `Payment overdue: ₹${overdueAmount.toLocaleString()}. Please collect payment before creating new orders.`;
-    } else if (currentOutstanding > dealer.creditLimit) {
+    } else if (totalCreditUsed > dealer.creditLimit) {
       // WARNING: Credit limit exceeded but no overdue payment
       // Allow creating Pending orders that require admin approval
       paymentStatusType = 'exceeded';
@@ -904,6 +928,8 @@ export const getDealerCompleteInfo = async (req, res) => {
       creditStatus: {
         creditLimit: dealer.creditLimit,
         currentOutstanding: Math.round(currentOutstanding),
+        confirmedOrdersAmount: Math.round(confirmedOrdersAmount),
+        totalCreditUsed: Math.round(totalCreditUsed),
         availableCredit: Math.round(availableCredit),
         utilizationPercent,
         status: creditStatusType
@@ -921,6 +947,8 @@ export const getDealerCompleteInfo = async (req, res) => {
       } : null,
       paymentStatus: {
         totalOutstanding: Math.round(currentOutstanding),
+        confirmedOrdersAmount: Math.round(confirmedOrdersAmount),
+        totalCreditUsed: Math.round(totalCreditUsed),
         overdueAmount: Math.round(overdueAmount),
         lastPaymentDate: lastPaymentDate,
         lastPaymentAmount: lastPaymentAmount,

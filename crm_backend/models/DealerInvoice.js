@@ -179,6 +179,10 @@ const dealerInvoiceSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  pendingAmount: {
+    type: Number,
+    default: null // Calculated as totalAmount - paidAmount; null means not yet set
+  },
   paymentDate: Date,
   
   // Soft Delete Fields

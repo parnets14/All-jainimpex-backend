@@ -9,10 +9,6 @@ import { generateAllocationNumber } from '../services/voucherNumberService.js';
  */
 export const createPaymentAllocation = async (req, res) => {
   try {
-    console.log('📥 Creating payment allocation...');
-    console.log('Request body:', JSON.stringify(req.body, null, 2));
-    console.log('User:', req.user?._id);
-    
     const {
       voucherId,
       allocations

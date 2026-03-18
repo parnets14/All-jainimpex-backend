@@ -75,12 +75,6 @@ const calculateGRNAvailableQuantity = async (productId, warehouseId) => {
     // Step 3: Calculate GRN Available = GRN IN - Delivered OUT
     const grnAvailableQty = Math.max(0, grnInQty - deliveredQty);
 
-    console.log(`🔍 [GRN_AVAILABLE] Product ${productId} in warehouse ${warehouseId}:`, {
-      grnInQty,
-      deliveredQty,
-      grnAvailableQty
-    });
-
     return grnAvailableQty;
   } catch (error) {
     console.error(`Error calculating GRN available quantity for product ${productId} in warehouse ${warehouseId}:`, error);
@@ -91,15 +85,11 @@ const calculateGRNAvailableQuantity = async (productId, warehouseId) => {
 // Utility function to recalculate all stock balances
 export const recalculateStockBalances = async (req, res) => {
   try {
-    console.log('🔍 [STOCK_RECALC] Starting stock balance recalculation...');
-    
     // Import StockMovementService
     const StockMovementService = (await import('../services/stockMovementService.js')).default;
     
     // Recalculate all balances
     await StockMovementService.recalculateBalances();
-    
-    console.log('🔍 [STOCK_RECALC] Stock balance recalculation completed');
     
     res.json({
       success: true,
@@ -134,19 +124,6 @@ export const getStock = async (req, res) => {
     const limitNum = parseInt(limit);
     const skip = (pageNum - 1) * limitNum;
 
-    console.log(`🔍 [STOCK_DEBUG] Getting stock with filters:`, { 
-      search, 
-      warehouseId, 
-      lowStockOnly, 
-      brandId, 
-      categoryId, 
-      subcategoryId, 
-      extendedSubcategoryId, 
-      level2Id, 
-      page: pageNum, 
-      limit: limitNum 
-    });
-
     // Build product query with search and hierarchical filters
     const productQuery = {};
     
@@ -162,29 +139,24 @@ export const getStock = async (req, res) => {
     // Add hierarchical filters
     if (brandId) {
       productQuery.brand = brandId;
-      console.log(`🔍 [STOCK_DEBUG] Filtering by brandId: ${brandId}`);
     }
     
     if (categoryId) {
       productQuery.category = categoryId;
-      console.log(`🔍 [STOCK_DEBUG] Filtering by categoryId: ${categoryId}`);
     }
     
     if (subcategoryId) {
       productQuery.subcategory = subcategoryId;
-      console.log(`🔍 [STOCK_DEBUG] Filtering by subcategoryId: ${subcategoryId}`);
     }
     
     if (extendedSubcategoryId) {
       // Level 1 extended subcategories are stored in subcategory1 field
       productQuery.subcategory1 = extendedSubcategoryId;
-      console.log(`🔍 [STOCK_DEBUG] Filtering by extendedSubcategoryId (subcategory1): ${extendedSubcategoryId}`);
     }
     
     if (level2Id) {
       // Level 2 extended subcategories are stored in subcategory2 field
       productQuery.subcategory2 = level2Id;
-      console.log(`🔍 [STOCK_DEBUG] Filtering by level2Id (subcategory2): ${level2Id}`);
     }
 
     // Get total count for pagination
@@ -196,8 +168,6 @@ export const getStock = async (req, res) => {
       .limit(limitNum)
       .lean(); // Use lean() for better performance
 
-    console.log(`🔍 [STOCK_DEBUG] Found ${products.length} products (page ${pageNum} of ${Math.ceil(totalProducts / limitNum)})`);
-    
     // Process products in parallel for better performance
     const stockPromises = products.map(async (product) => {
       // Get all warehouses that have this product (from GRNs OR stock movements)
@@ -210,22 +180,17 @@ export const getStock = async (req, res) => {
       const stockMovements = await StockMovement.find({ productId: product._id })
         .lean();
 
-      console.log(`🔍 [STOCK_DEBUG] Product ${product.productCode}: Found ${grns.length} GRNs and ${stockMovements.length} stock movements`);
-
       // Group by warehouse
       const warehouseStock = {};
 
       // First, process GRNs (existing logic)
       grns.forEach(grn => {
         if (!grn.warehouseId) {
-          console.log(`⚠️ [STOCK_DEBUG] GRN ${grn.grnNo} has no warehouseId`);
           return;
         }
         
         const warehouseId = grn.warehouseId._id.toString();
         const warehouseName = grn.warehouseId.name;
-        
-        console.log(`🔍 [STOCK_DEBUG] Processing GRN ${grn.grnNo} for warehouse: ${warehouseName} (${warehouseId})`);
         
         if (!warehouseStock[warehouseId]) {
           warehouseStock[warehouseId] = {
@@ -245,7 +210,6 @@ export const getStock = async (req, res) => {
         
         // Check if items exist and are valid
         if (!grn.items || !Array.isArray(grn.items) || grn.items.length === 0) {
-          console.log(`⚠️ [STOCK_DEBUG] GRN ${grn.grnNo} has no valid items array`);
           return;
         }
         
@@ -255,13 +219,6 @@ export const getStock = async (req, res) => {
           const targetProductId = product._id.toString();
           
           if (itemProductId === targetProductId) {
-            console.log(`✅ [STOCK_DEBUG] Match found! Processing item for ${product.productCode}:`, {
-              acceptedQuantity: item.acceptedQuantity,
-              damageQuantity: item.damageQuantity,
-              unitPrice: item.unitPrice,
-              totalPrice: item.totalPrice
-            });
-            
             warehouseStock[warehouseId].totalQty += item.acceptedQuantity || 0;
             // REMOVED: warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
             // Damaged quantity will be calculated from stock movements (source of truth)
@@ -332,7 +289,6 @@ export const getStock = async (req, res) => {
             hasGRN: false,
             hasMovements: true
           };
-          console.log(`🔍 [STOCK_DEBUG] Added warehouse ${warehouseMovement.warehouseName} for product ${product.productCode} (movements only)`);
         } else {
           warehouseStock[warehouseId].hasMovements = true;
         }
@@ -340,14 +296,11 @@ export const getStock = async (req, res) => {
 
       grns.forEach(grn => {
         if (!grn.warehouseId) {
-          console.log(`⚠️ [STOCK_DEBUG] GRN ${grn.grnNo} has no warehouseId`);
           return;
         }
         
         const warehouseId = grn.warehouseId._id.toString();
         const warehouseName = grn.warehouseId.name;
-        
-        console.log(`🔍 [STOCK_DEBUG] Processing GRN ${grn.grnNo} for warehouse: ${warehouseName} (${warehouseId})`);
         
         if (!warehouseStock[warehouseId]) {
           warehouseStock[warehouseId] = {
@@ -365,7 +318,6 @@ export const getStock = async (req, res) => {
         
         // Check if items exist and are valid
         if (!grn.items || !Array.isArray(grn.items) || grn.items.length === 0) {
-          console.log(`⚠️ [STOCK_DEBUG] GRN ${grn.grnNo} has no valid items array`);
           return;
         }
         
@@ -375,13 +327,6 @@ export const getStock = async (req, res) => {
           const targetProductId = product._id.toString();
           
           if (itemProductId === targetProductId) {
-            console.log(`✅ [STOCK_DEBUG] Match found! Processing item for ${product.productCode}:`, {
-              acceptedQuantity: item.acceptedQuantity,
-              damageQuantity: item.damageQuantity,
-              unitPrice: item.unitPrice,
-              totalPrice: item.totalPrice
-            });
-            
             warehouseStock[warehouseId].totalQty += item.acceptedQuantity || 0;
             // REMOVED: warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
             // Damaged quantity will be calculated from stock movements (source of truth)
@@ -407,13 +352,10 @@ export const getStock = async (req, res) => {
       for (const warehouseId of Object.keys(warehouseStock)) {
         try {
           const currentStock = await StockMovementService.getCurrentStock(product._id, warehouseId);
-          console.log(`🔍 [STOCK_DEBUG] Current stock from movements for ${product.productCode} in warehouse ${warehouseId}: ${currentStock}`);
           
           // OPTIMIZED: Calculate blocked stock using aggregation
           // Only count movements with "Stock Blocked" and "Stock Unblocked" remarks
-          console.log(`🔍 [STOCK_DEBUG] Calculating blocked qty for product ${product._id} in warehouse ${warehouseId}`);
-          console.log(`🔍 [STOCK_DEBUG] Warehouse ID type: ${typeof warehouseId}, value: ${warehouseId}`);
-          
+          // Only count movements with "Stock Blocked" and "Stock Unblocked" remarks
           const blockedResult = await StockMovement.aggregate([
             {
               $match: {
@@ -431,8 +373,6 @@ export const getStock = async (req, res) => {
             }
           ]);
           
-          console.log(`🔍 [STOCK_DEBUG] Blocked aggregation result:`, JSON.stringify(blockedResult));
-          
           let blockedQty = 0;
           blockedResult.forEach(result => {
             if (result._id === 'OUT') {
@@ -444,17 +384,11 @@ export const getStock = async (req, res) => {
           
           blockedQty = Math.max(0, blockedQty); // Ensure blocked quantity is not negative
           
-          console.log(`🔍 [STOCK_DEBUG] Blocked quantity for ${product.productCode} in warehouse ${warehouseId}: ${blockedQty}`);
-          
           // FIXED: Calculate damaged quantity from stock movements (source of truth)
           const damagedQty = await calculateDamagedQuantity(product._id, warehouseId);
-          console.log(`🔍 [STOCK_DEBUG] Damaged quantity for ${product.productCode} in warehouse ${warehouseId}: ${damagedQty}`);
-          
           // NEW: Calculate GRN Available Quantity (GRN IN - Only Delivered OUT)
           // This shows physical stock from GRN minus only delivered orders
           const grnAvailableQty = await calculateGRNAvailableQuantity(product._id, warehouseId);
-          console.log(`🔍 [STOCK_DEBUG] GRN Available quantity for ${product.productCode} in warehouse ${warehouseId}: ${grnAvailableQty}`);
-          
           // Update the warehouse stock with current stock from movements
           warehouseStock[warehouseId].currentStock = currentStock;
           warehouseStock[warehouseId].blockedQty = blockedQty;
@@ -469,8 +403,6 @@ export const getStock = async (req, res) => {
       }
 
       // Create separate stock entries for each warehouse
-      console.log(`🔍 [STOCK_DEBUG] Creating ${Object.keys(warehouseStock).length} warehouse entries for product ${product.productCode}`);
-      
       const warehouseEntries = [];
       
       // If product has stock in warehouses, create entries for each
@@ -493,13 +425,6 @@ export const getStock = async (req, res) => {
           const currentStock = warehouse.currentStock !== undefined ? warehouse.currentStock : warehouse.totalQty;
           const netStock = currentStock; // Net stock = current stock (blocking already applied)
 
-          console.log(`🔍 [STOCK_DEBUG] Final stock calculation for ${product.productCode} in ${warehouse.warehouseName}:`, {
-            currentStock,
-            damagedQty: warehouse.damagedQty,
-            blockedQty,
-            netStock
-          });
-
           // Skip if lowStockOnly is true and stock is not low
           if (lowStockOnly && (!product.minStockLevel || netStock > product.minStockLevel)) {
             return;
@@ -512,27 +437,25 @@ export const getStock = async (req, res) => {
             itemName: product.itemName,
             description: product.description,
             supplier: Array.from(warehouse.suppliers).join(', '),
-            supplierId: product.supplier, // Add supplier ID from product
+            supplierId: product.supplier,
             warehouse: warehouse.warehouseName,
             warehouseId: warehouse.warehouseId,
             basePrice: averageUnitPrice,
             gst: averageGST,
-            totalPrice: currentStock * averageUnitPrice, // Calculate based on current stock
-            totalQty: currentStock, // FIXED: Show current stock, not cumulative GRN receipts
+            totalPrice: currentStock * averageUnitPrice,
+            totalQty: currentStock,
             damagedQty: warehouse.damagedQty,
             blockedQty: blockedQty,
-            grnAvailableQty: warehouse.grnAvailableQty || 0, // NEW: GRN-based available quantity
+            grnAvailableQty: warehouse.grnAvailableQty || 0,
             netStock,
             minStockLevel: product.minStockLevel
           };
           
-          console.log(`🔍 [STOCK_DEBUG] Adding stock entry for ${product.productCode} in warehouse ${warehouse.warehouseName}:`, stockEntry);
           warehouseEntries.push(stockEntry);
         });
       } else {
         // NEW: If product has NO stock in any warehouse, still show it with zero stock
         // This ensures ALL products from Product Master are visible
-        console.log(`🔍 [STOCK_DEBUG] Product ${product.productCode} has no stock - creating zero stock entry`);
         
         // If warehouse filter is specified, create entry for that warehouse only
         // Otherwise, create a single entry showing the product exists but has no stock
@@ -593,8 +516,6 @@ export const getStock = async (req, res) => {
     const allStockEntries = await Promise.all(stockPromises);
     const stockData = allStockEntries.flat().filter(entry => entry); // Flatten and remove nulls
 
-    console.log(`🔍 [STOCK_DEBUG] Final stock data: ${stockData.length} total entries for ${products.length} products`);
-
     res.json({
       success: true,
       data: stockData,
@@ -621,16 +542,12 @@ export const getStockHistory = async (req, res) => {
     const { productId } = req.params;
     const { page = 1, limit = 10, warehouseId } = req.query;
 
-    console.log(`🔍 [STOCK_HISTORY_DEBUG] Getting stock history for product: ${productId} at ${new Date().toISOString()}`);
-
     // Use StockMovementService to get stock history
     const result = await StockMovementService.getStockHistory(productId, {
       page,
       limit,
       warehouseId
     });
-
-    console.log(`🔍 [STOCK_HISTORY_DEBUG] Found ${result.movements.length} movements for product ${productId}`);
 
     res.json({
       success: true,
@@ -663,8 +580,6 @@ export const createStockTransfer = async (req, res) => {
       notes,
       status = 'pending'
     } = req.body;
-
-    console.log(`🔍 [STOCK_TRANSFER] Creating transfer from ${fromWarehouse} to ${toWarehouse}`);
 
     // Validate stock availability before transfer
     for (const item of items) {
