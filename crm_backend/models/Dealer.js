@@ -37,7 +37,6 @@ const dealerSchema = new mongoose.Schema(
     },
     address: {
       type: String,
-      required: [true, "Address is required"],
       trim: true,
     },
     // Google Places location data

@@ -1,5 +1,6 @@
 import StockMovement from '../models/Stock.js';
 import GRN from '../models/GRN.js';
+import SalesOrder from '../models/SalesOrder.js';
 
 class StockMovementService {
   /**
@@ -164,6 +165,33 @@ class StockMovementService {
         .limit(limitNum);
       
       const totalRecords = await StockMovement.countDocuments(query);
+
+      // Enrich SALE movements with dealer name
+      const saleOrderNumbers = [...new Set(
+        movements
+          .filter(m => m.referenceType === 'SALE' && m.referenceNo)
+          .map(m => m.referenceNo)
+      )];
+
+      let dealerByOrderNumber = {};
+      if (saleOrderNumbers.length > 0) {
+        const orders = await SalesOrder.find(
+          { orderNumber: { $in: saleOrderNumbers } },
+          'orderNumber dealer dealerName'
+        ).populate('dealer', 'name');
+        orders.forEach(o => {
+          dealerByOrderNumber[o.orderNumber] =
+            o.dealer?.name || o.dealerName || null;
+        });
+      }
+
+      const enrichedMovements = movements.map(m => {
+        const obj = m.toObject();
+        if (m.referenceType === 'SALE' && m.referenceNo) {
+          obj.dealerName = dealerByOrderNumber[m.referenceNo] || null;
+        }
+        return obj;
+      });
       
       console.log(`🔍 [STOCK_MOVEMENT_SERVICE] Found ${movements.length} movements for product ${productId}`);
       console.log(`🔍 [STOCK_MOVEMENT_SERVICE] Total records for this product: ${totalRecords}`);
@@ -183,7 +211,7 @@ class StockMovementService {
       });
       
       return {
-        movements,
+        movements: enrichedMovements,
         pagination: {
           currentPage: pageNum,
           totalPages: Math.ceil(totalRecords / limitNum),

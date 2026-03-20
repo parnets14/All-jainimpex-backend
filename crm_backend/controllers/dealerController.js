@@ -194,7 +194,7 @@ export const createDealer = async (req, res) => {
       !name ||
       !contactPerson ||
       !phone ||
-      !address ||
+      (!address && !altAddress) ||
       !dealerType ||
       !dealerCategory ||
       !regionId ||
@@ -228,7 +228,7 @@ export const createDealer = async (req, res) => {
       contactPerson: contactPerson.trim(),
       phone: phone.trim(),
       email: email ? email.trim().toLowerCase() : "",
-      address: address.trim(),
+      address: (address || altAddress || '').trim(),
       location: location || null,
       altAddress: altAddress ? altAddress.trim() : "",
       dealerType,
@@ -261,19 +261,7 @@ export const createDealer = async (req, res) => {
       createdBy: req.user._id,
     };
 
-    console.log("Creating dealer with data:", {
-      code: dealerData.code,
-      name: dealerData.name,
-      dealerType: dealerData.dealerType,
-    });
-
     const dealer = await Dealer.create(dealerData);
-
-    console.log("Dealer created successfully:", {
-      id: dealer._id,
-      code: dealer.code,
-      name: dealer.name,
-    });
 
     // Update route dealer count if route is assigned
     if (routeId) {
@@ -380,7 +368,17 @@ export const updateDealer = async (req, res) => {
     if (phone !== undefined) updateData.phone = phone.trim();
     if (email !== undefined)
       updateData.email = email ? email.trim().toLowerCase() : "";
-    if (address !== undefined) updateData.address = address.trim();
+    if (address !== undefined || altAddress !== undefined) {
+      const newAddress = address !== undefined ? address : existingDealer.address;
+      const newAlt = altAddress !== undefined ? altAddress : existingDealer.altAddress;
+      if (!newAddress && !newAlt) {
+        return res.status(400).json({
+          success: false,
+          message: "At least one address (Primary or Alternate) is required",
+        });
+      }
+      if (address !== undefined) updateData.address = (address || newAlt || '').trim();
+    }
     if (location !== undefined) updateData.location = location;
     if (altAddress !== undefined)
       updateData.altAddress = altAddress ? altAddress.trim() : "";
@@ -419,8 +417,6 @@ export const updateDealer = async (req, res) => {
     // Documents are handled separately via upload endpoint
     // Remove document fields from update data to avoid casting errors
     if (isActive !== undefined) updateData.isActive = isActive;
-
-    console.log("Updating dealer with data:", updateData);
 
     // Track old route ID for count update
     const oldRouteId = existingDealer.routeId;
