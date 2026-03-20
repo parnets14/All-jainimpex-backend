@@ -40,7 +40,7 @@ const getDealerCreditOutstanding = async (dealerId, excludeOrderId = null) => {
   const confirmedOrders = await SalesOrder.find({
     dealer: dealerId,
     status: { $in: ['Confirmed', 'Processing', 'In Transit'] }
-  }).lean();
+  }).populate('products.product', 'brand category subcategory').lean();
 
   const invoicedOrderIds = await DealerInvoice.distinct('salesOrder', {
     dealer: dealerId,
@@ -49,10 +49,41 @@ const getDealerCreditOutstanding = async (dealerId, excludeOrderId = null) => {
   });
   const invoicedSet = new Set(invoicedOrderIds.map(id => id.toString()));
 
+  // Fetch dealer extra discounts once for matching
+  const dealerData = await Dealer.findById(dealerId).select('extraDiscounts').lean();
+  const extraDiscounts = (dealerData?.extraDiscounts || []).filter(d => d.isActive !== false);
+
+  // Helper: get dealer extra discount % for a product
+  const getDealerExtraDiscountPct = (productDoc) => {
+    if (!productDoc || !extraDiscounts.length) return 0;
+    const productId = productDoc._id?.toString();
+    const brandId = productDoc.brand?.toString();
+    const categoryId = productDoc.category?.toString();
+    const subcategoryId = productDoc.subcategory?.toString();
+    for (const ed of extraDiscounts) {
+      const targetId = ed.targetId?.toString();
+      if (ed.targetType === 'product' && targetId === productId) return ed.discountPercentage || 0;
+      if (ed.targetType === 'brand' && targetId === brandId) return ed.discountPercentage || 0;
+      if (ed.targetType === 'category' && targetId === categoryId) return ed.discountPercentage || 0;
+      if (ed.targetType === 'subcategory' && targetId === subcategoryId) return ed.discountPercentage || 0;
+    }
+    return 0;
+  };
+
   const confirmedAmount = confirmedOrders.reduce((sum, order) => {
     if (invoicedSet.has(order._id.toString())) return sum;
     if (excludeOrderId && order._id.toString() === excludeOrderId.toString()) return sum;
-    return sum + (order.totalAmount || 0);
+    // Compute discounted total: direct discount (stored) + dealer extra discount
+    const orderTotal = (order.products || []).reduce((s, p) => {
+      const gross = p.quantity * p.unitPrice;
+      const directDiscount = p.discountAmount || 0;
+      const extraPct = getDealerExtraDiscountPct(p.product);
+      const extraDiscount = (gross * extraPct) / 100;
+      const base = gross - directDiscount - extraDiscount;
+      const gst = (base * (p.gst || 0)) / 100;
+      return s + base + gst;
+    }, 0);
+    return sum + orderTotal;
   }, 0);
 
   return invoiceOutstanding + confirmedAmount;
@@ -426,17 +457,34 @@ export const createSalesOrder = async (req, res) => {
       
       const unitPrice = item.unitPrice || product.rateSlabs[0]?.rate || 0;
       const gst = item.gst || product.gst || 0;
-      const baseAmount = item.quantity * unitPrice;
+      // Use direct discount + dealer extra discount for credit limit calculation
+      const directDiscountAmt = item.discountAmount || 0;
+      const extraPct = (dealerData.extraDiscounts || [])
+        .filter(d => d.isActive !== false)
+        .reduce((pct, ed) => {
+          if (pct > 0) return pct; // already found one
+          const targetId = ed.targetId?.toString();
+          if (ed.targetType === 'product' && targetId === product._id.toString()) return ed.discountPercentage || 0;
+          if (ed.targetType === 'brand' && targetId === product.brand?.toString()) return ed.discountPercentage || 0;
+          if (ed.targetType === 'category' && targetId === product.category?.toString()) return ed.discountPercentage || 0;
+          if (ed.targetType === 'subcategory' && targetId === product.subcategory?.toString()) return ed.discountPercentage || 0;
+          return 0;
+        }, 0);
+      const gross = item.quantity * unitPrice;
+      const extraDiscountAmt = (gross * extraPct) / 100;
+      const baseAmount = gross - directDiscountAmt - extraDiscountAmt;
       const gstAmount = (baseAmount * gst) / 100;
       
       tempValidatedProducts.push({
         quantity: item.quantity,
         unitPrice: unitPrice,
-        gstAmount: gstAmount
+        gstAmount: gstAmount,
+        discountAmount: directDiscountAmt + extraDiscountAmt,
+        effectiveBaseAmount: baseAmount
       });
     }
     
-    const orderGrossAmount = tempValidatedProducts.reduce((sum, p) => sum + (p.quantity * p.unitPrice), 0);
+    const orderGrossAmount = tempValidatedProducts.reduce((sum, p) => sum + p.effectiveBaseAmount, 0);
     const orderTotalGst = tempValidatedProducts.reduce((sum, p) => sum + p.gstAmount, 0);
     const orderTotalAmount = orderGrossAmount + orderTotalGst;
 
@@ -524,9 +572,11 @@ export const createSalesOrder = async (req, res) => {
       // Calculate product details
       const unitPrice = item.unitPrice || product.rateSlabs[0]?.rate || 0;
       const gst = item.gst || product.gst || 0;
+      const discountAmt = item.discountAmount || 0;
       const baseAmount = item.quantity * unitPrice;
-      const gstAmount = (baseAmount * gst) / 100;
-      const totalPrice = baseAmount + gstAmount;
+      const discountedBase = baseAmount - discountAmt;
+      const gstAmount = (discountedBase * gst) / 100;
+      const totalPrice = discountedBase + gstAmount;
 
       // Build product object
       validatedProducts.push({
@@ -541,14 +591,20 @@ export const createSalesOrder = async (req, res) => {
         totalPrice: totalPrice,
         salesType: product.salesType || 'Regular Sale', // Add salesType from product
         warehouse: item.warehouse === "No Stock" ? null : item.warehouse, // Set to null if "No Stock"
-        warehouseName: item.warehouse === "No Stock" ? "No Stock" : item.warehouseName
+        warehouseName: item.warehouse === "No Stock" ? "No Stock" : item.warehouseName,
+        discountPercentage: item.discountPercentage || 0,
+        discountAmount: discountAmt,
+        discountType: item.discountType || null,
+        selectedDiscountLevel: item.selectedDiscountLevel || null,
+        appliedDiscount: item.appliedDiscount || null
       });
     }
 
     // Calculate order totals
     const grossAmount = validatedProducts.reduce((sum, product) => sum + (product.quantity * product.unitPrice), 0);
     const totalGst = validatedProducts.reduce((sum, product) => sum + product.gstAmount, 0);
-    const totalAmount = grossAmount + totalGst;
+    const discountAmount = validatedProducts.reduce((sum, product) => sum + (product.discountAmount || 0), 0);
+    const totalAmount = grossAmount + totalGst - discountAmount;
 
     // Calculate due date
     let dueDate = null;
@@ -621,6 +677,7 @@ export const createSalesOrder = async (req, res) => {
       dueDate,
       grossAmount,
       totalGst,
+      discountAmount,
       totalAmount,
       type,
       salesType: salesType || 'Regular Sale',
@@ -1563,14 +1620,14 @@ export const updateSalesOrder = async (req, res) => {
       // Compare new products with existing products to detect actual changes
       let productsActuallyChanged = false;
 
-      // If order is already approved by Super Admin, skip credit re-check entirely
+      // If order is already approved by Super Admin, still re-check if amount increased
       const orderAlreadyApproved = salesOrder.creditOverlimit &&
                                    salesOrder.creditOverlimit.isOverlimit &&
                                    salesOrder.creditOverlimit.approvedBy;
 
       if (orderAlreadyApproved) {
-        console.log("   ✅ Order already approved by Super Admin - skipping credit limit re-check");
-      } else {
+        console.log("   ℹ️ Order was previously approved - will still re-check if amount increased");
+      }
       
       // Check if number of products changed
       if (req.body.products.length !== salesOrder.products.length) {
@@ -1601,6 +1658,12 @@ export const updateSalesOrder = async (req, res) => {
           if (Math.abs(Number(newProduct.unitPrice) - Number(oldProduct.unitPrice)) > 0.001) {
             productsActuallyChanged = true;
             console.log(`   ✓ Unit price changed at index ${i}: ${oldProduct.unitPrice} → ${newProduct.unitPrice}`);
+            break;
+          }
+          
+          if (Math.abs(Number(newProduct.discountAmount || 0) - Number(oldProduct.discountAmount || 0)) > 0.001) {
+            productsActuallyChanged = true;
+            console.log(`   ✓ Discount changed at index ${i}`);
             break;
           }
         }
@@ -1639,17 +1702,34 @@ export const updateSalesOrder = async (req, res) => {
           
           const unitPrice = item.unitPrice || product.rateSlabs[0]?.rate || 0;
           const gst = item.gst || product.gst || 0;
-          const baseAmount = item.quantity * unitPrice;
+          // Use direct discount + dealer extra discount for credit limit calculation
+          const directDiscountAmt = item.discountAmount || 0;
+          const extraPct = (dealerData.extraDiscounts || [])
+            .filter(d => d.isActive !== false)
+            .reduce((pct, ed) => {
+              if (pct > 0) return pct;
+              const targetId = ed.targetId?.toString();
+              if (ed.targetType === 'product' && targetId === product._id.toString()) return ed.discountPercentage || 0;
+              if (ed.targetType === 'brand' && targetId === product.brand?.toString()) return ed.discountPercentage || 0;
+              if (ed.targetType === 'category' && targetId === product.category?.toString()) return ed.discountPercentage || 0;
+              if (ed.targetType === 'subcategory' && targetId === product.subcategory?.toString()) return ed.discountPercentage || 0;
+              return 0;
+            }, 0);
+          const gross = item.quantity * unitPrice;
+          const extraDiscountAmt = (gross * extraPct) / 100;
+          const baseAmount = gross - directDiscountAmt - extraDiscountAmt;
           const gstAmount = (baseAmount * gst) / 100;
           
           updatedValidatedProducts.push({
             quantity: item.quantity,
             unitPrice: unitPrice,
-            gstAmount: gstAmount
+            gstAmount: gstAmount,
+            discountAmount: directDiscountAmt + extraDiscountAmt,
+            effectiveBaseAmount: baseAmount
           });
         }
-        
-        const newGrossAmount = updatedValidatedProducts.reduce((sum, p) => sum + (p.quantity * p.unitPrice), 0);
+
+        const newGrossAmount = updatedValidatedProducts.reduce((sum, p) => sum + p.effectiveBaseAmount, 0);
         const newTotalGst = updatedValidatedProducts.reduce((sum, p) => sum + p.gstAmount, 0);
         const newTotalAmount = newGrossAmount + newTotalGst;
         const originalOrderAmount = salesOrder.totalAmount || 0;
@@ -1754,7 +1834,6 @@ export const updateSalesOrder = async (req, res) => {
           }
         }
       }
-      } // end !orderAlreadyApproved
     }
 
     // Store original status before update
@@ -1763,20 +1842,23 @@ export const updateSalesOrder = async (req, res) => {
 
     // CRITICAL: Credit limit check when status is being changed to Confirmed
     if (newStatus === "Confirmed" && originalStatus !== "Confirmed") {
-      // Block if already flagged as overlimit and not approved
-      if (salesOrder.creditOverlimit &&
-          salesOrder.creditOverlimit.isOverlimit &&
-          !salesOrder.creditOverlimit.approvedBy) {
+      // Check both the saved order AND any updated creditOverlimit from this request
+      const effectiveCreditOverlimit = req.body.creditOverlimit || salesOrder.creditOverlimit;
+      
+      // Block if flagged as overlimit and not approved (including freshly reset approvals)
+      if (effectiveCreditOverlimit &&
+          effectiveCreditOverlimit.isOverlimit &&
+          !effectiveCreditOverlimit.approvedBy) {
         return res.status(400).json({
           success: false,
-          message: `Cannot confirm order - Credit limit exceeded by ₹${(salesOrder.creditOverlimit.overlimitAmount || 0).toLocaleString()}. Super Admin approval required.`
+          message: `Cannot confirm order - Credit limit exceeded by ₹${(effectiveCreditOverlimit.overlimitAmount || 0).toLocaleString()}. Super Admin approval required.`
         });
       }
 
       // Skip live check if order was already approved by Super Admin
-      const alreadyApproved = salesOrder.creditOverlimit &&
-                              salesOrder.creditOverlimit.isOverlimit &&
-                              salesOrder.creditOverlimit.approvedBy;
+      const alreadyApproved = effectiveCreditOverlimit &&
+                              effectiveCreditOverlimit.isOverlimit &&
+                              effectiveCreditOverlimit.approvedBy;
 
       if (!alreadyApproved) {
         // Live credit limit check in case it was never flagged
@@ -1949,6 +2031,47 @@ export const updateSalesOrder = async (req, res) => {
     }
 
     // Update the sales order
+    // Preserve isOutOfStock from existing order if not explicitly set in request
+    if (req.body.isOutOfStock === undefined || req.body.isOutOfStock === null) {
+      req.body.isOutOfStock = salesOrder.isOutOfStock;
+    }
+    // If order was originally out-of-stock, keep it that way unless explicitly cleared
+    if (salesOrder.isOutOfStock && req.body.isOutOfStock === false) {
+      // Only allow clearing isOutOfStock if all products now have a real warehouse
+      const allProductsHaveWarehouse = (req.body.products || salesOrder.products).every(
+        p => p.warehouse && p.warehouse !== 'No Stock'
+      );
+      if (!allProductsHaveWarehouse) {
+        req.body.isOutOfStock = true;
+      }
+    }
+
+    // Recalculate product amounts with discounts (findByIdAndUpdate bypasses pre-save hook)
+    if (req.body.products) {
+      let recalcGross = 0;
+      let recalcGst = 0;
+      let recalcDiscount = 0;
+
+      req.body.products = req.body.products.map(p => {
+        const baseAmount = p.quantity * p.unitPrice;
+        const discAmt = p.discountAmount || 0;
+        const discountedBase = baseAmount - discAmt;
+        const gstAmt = (discountedBase * (p.gst || 0)) / 100;
+        const totalPrice = discountedBase + gstAmt;
+
+        recalcGross += baseAmount;
+        recalcGst += gstAmt;
+        recalcDiscount += discAmt;
+
+        return { ...p, gstAmount: gstAmt, totalPrice };
+      });
+
+      req.body.grossAmount = recalcGross;
+      req.body.totalGst = recalcGst;
+      req.body.discountAmount = recalcDiscount;
+      req.body.totalAmount = recalcGross + recalcGst - recalcDiscount;
+    }
+
     const updatedOrder = await SalesOrder.findByIdAndUpdate(
       id,
       req.body,
@@ -2678,9 +2801,11 @@ async function createSingleSalesOrder(orderData, userId) {
     // Calculate product details
     const unitPrice = item.unitPrice || product.rateSlabs[0]?.rate || 0;
     const gst = item.gst || product.gst || 0;
+    const discountAmt = item.discountAmount || 0;
     const baseAmount = item.quantity * unitPrice;
-    const gstAmount = (baseAmount * gst) / 100;
-    const totalPrice = baseAmount + gstAmount;
+    const discountedBase = baseAmount - discountAmt;
+    const gstAmount = (discountedBase * gst) / 100;
+    const totalPrice = discountedBase + gstAmount;
 
     // Build product object
     validatedProducts.push({
@@ -2698,7 +2823,7 @@ async function createSingleSalesOrder(orderData, userId) {
       warehouseName: item.warehouse === "No Stock" ? "No Stock" : item.warehouseName,
       // Copy discount fields if present
       discountPercentage: item.discountPercentage || 0,
-      discountAmount: item.discountAmount || 0,
+      discountAmount: discountAmt,
       discountType: item.discountType || null,
       selectedDiscountLevel: item.selectedDiscountLevel || null,
       appliedDiscount: item.appliedDiscount || null
@@ -3750,5 +3875,65 @@ export const autoRefreshAllStockStatus = async (req, res) => {
       message: 'Error refreshing stock status',
       error: error.message
     });
+  }
+};
+
+// @desc    Migrate/fix all existing orders to recalculate discount-aware totals
+// @route   POST /api/sales-orders/migrate-discount-totals
+// @access  Private (Super Admin)
+export const migrateDiscountTotals = async (req, res) => {
+  try {
+    const orders = await SalesOrder.find({}).lean();
+    let fixed = 0;
+    let skipped = 0;
+
+    for (const order of orders) {
+      if (!order.products || order.products.length === 0) { skipped++; continue; }
+
+      let gross = 0, totalGst = 0, totalDiscount = 0;
+      const updatedProducts = order.products.map(p => {
+        const baseAmount = p.quantity * p.unitPrice;
+        const discAmt = p.discountAmount || 0;
+        const discountedBase = baseAmount - discAmt;
+        const gstAmt = (discountedBase * (p.gst || 0)) / 100;
+        const totalPrice = discountedBase + gstAmt;
+        gross += baseAmount;
+        totalGst += gstAmt;
+        totalDiscount += discAmt;
+        return { ...p, gstAmount: gstAmt, totalPrice };
+      });
+
+      const correctTotal = gross - totalDiscount + totalGst;
+
+      // Only update if something actually changed
+      const needsUpdate =
+        Math.abs((order.discountAmount || 0) - totalDiscount) > 0.01 ||
+        Math.abs((order.totalGst || 0) - totalGst) > 0.01 ||
+        Math.abs((order.totalAmount || 0) - correctTotal) > 0.01;
+
+      if (!needsUpdate) { skipped++; continue; }
+
+      await SalesOrder.findByIdAndUpdate(order._id, {
+        $set: {
+          grossAmount: gross,
+          discountAmount: totalDiscount,
+          totalGst,
+          totalAmount: correctTotal,
+          products: updatedProducts
+        }
+      });
+      fixed++;
+    }
+
+    res.json({
+      success: true,
+      message: `Migration complete: ${fixed} orders fixed, ${skipped} skipped (already correct or empty)`,
+      fixed,
+      skipped,
+      total: orders.length
+    });
+  } catch (error) {
+    console.error('Migrate Discount Totals Error:', error);
+    res.status(500).json({ success: false, message: 'Migration failed', error: error.message });
   }
 };

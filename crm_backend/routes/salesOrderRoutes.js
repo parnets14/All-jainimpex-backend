@@ -25,7 +25,8 @@ import {
   refreshOrderStockStatus,
   refreshOrderStockStatusByOrderNumber,
   migrateOrderStockStatus,
-  autoRefreshAllStockStatus
+  autoRefreshAllStockStatus,
+  migrateDiscountTotals
 } from "../controllers/salesOrderController.js";
 import { protect } from "../middleware/authMiddleware.js";
 import { logActivity } from "../middleware/activityLogMiddleware.js";
@@ -117,5 +118,9 @@ router.route("/migrate-stock-status")
 // Manually trigger auto-refresh of stock status for all waiting/partial orders
 router.route("/auto-refresh-stock-status")
   .post(logActivity("Sales Order Dashboard", "Manually triggered stock status auto-refresh", "UPDATE"), autoRefreshAllStockStatus);
+
+// Migrate/fix all existing orders to recalculate discount-aware totals
+router.route("/migrate-discount-totals")
+  .post(logActivity("Sales Order Dashboard", "Migrated discount totals for all orders", "UPDATE"), migrateDiscountTotals);
 
 export default router;

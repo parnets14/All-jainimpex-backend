@@ -309,10 +309,13 @@ const salesOrderSchema = new mongoose.Schema({
 // Pre-save middleware to calculate product amounts first, then order totals
 salesOrderSchema.pre("save", function(next) {
   // STEP 1: Calculate product-level amounts first
+  // IMPORTANT: Respect existing discountAmount on each product
   this.products.forEach(product => {
     const baseAmount = product.quantity * product.unitPrice;
-    product.gstAmount = (baseAmount * product.gst) / 100;
-    product.totalPrice = baseAmount + product.gstAmount;
+    const discAmt = product.discountAmount || 0;
+    const discountedBase = baseAmount - discAmt;
+    product.gstAmount = (discountedBase * product.gst) / 100;
+    product.totalPrice = discountedBase + product.gstAmount;
   });
 
   // STEP 2: Calculate due date
@@ -329,6 +332,11 @@ salesOrderSchema.pre("save", function(next) {
 
   this.totalGst = this.products.reduce((sum, product) => {
     return sum + product.gstAmount;
+  }, 0);
+
+  // Order-level discountAmount = sum of all product discounts
+  this.discountAmount = this.products.reduce((sum, product) => {
+    return sum + (product.discountAmount || 0);
   }, 0);
 
   this.totalAmount = this.grossAmount + this.totalGst - this.discountAmount;
