@@ -792,7 +792,48 @@ export const deleteProduct = async (req, res) => {
       });
     }
 
-    await Product.findByIdAndDelete(req.params.id);
+    const productId = req.params.id;
+
+    // 1. Check if stock exists for this product
+    const Stock = (await import("../models/Stock.js")).default;
+    const stockEntry = await Stock.findOne({ product: productId, quantity: { $gt: 0 } }).lean();
+    if (stockEntry) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete "${product.itemName}" — stock of ${stockEntry.quantity} units exists in warehouse. Clear stock before deleting.`,
+      });
+    }
+
+    // 2. Check if used in any Sales Order
+    const SalesOrder = (await import("../models/SalesOrder.js")).default;
+    const salesOrderCount = await SalesOrder.countDocuments({ "products.product": productId });
+    if (salesOrderCount > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete "${product.itemName}" — it is used in ${salesOrderCount} sales order(s). Deletion is not allowed.`,
+      });
+    }
+
+    // 3. Check if used in any GRN / Purchase Order
+    const grnCount = await GRN.countDocuments({ "items.product": productId });
+    if (grnCount > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete "${product.itemName}" — it is used in ${grnCount} GRN/purchase order(s). Deletion is not allowed.`,
+      });
+    }
+
+    // 4. Check if used in any Dealer Invoice
+    const DealerInvoice = (await import("../models/DealerInvoice.js")).default;
+    const invoiceCount = await DealerInvoice.countDocuments({ "items.product": productId });
+    if (invoiceCount > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete "${product.itemName}" — it is used in ${invoiceCount} invoice(s). Deletion is not allowed.`,
+      });
+    }
+
+    await Product.findByIdAndDelete(productId);
 
     res.json({
       success: true,
