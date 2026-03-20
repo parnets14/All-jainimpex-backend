@@ -501,6 +501,14 @@ app.use("/public", express.static(join(__dirname, "public")));
     console.error('❌ Failed to initialize scheduled pricing cron job:', error);
   }
 
+  // Initialize stock status auto-refresh cron job (every 3 hours)
+  try {
+    const scheduleStockStatusRefresh = (await import('./cron/stockStatusRefresh.js')).default;
+    scheduleStockStatusRefresh();
+  } catch (error) {
+    console.error('❌ Failed to initialize stock status refresh cron job:', error);
+  }
+
   // Start server
   const PORT = process.env.PORT || 5000;
   app.listen(PORT, '0.0.0.0', () => {

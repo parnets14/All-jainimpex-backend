@@ -111,6 +111,7 @@ export const getSalesOrders = async (req, res) => {
       endDate,
       type,
       stockArrived,
+      hideDelivered,
       // Advanced filters
       dateRange,
       expired,
@@ -126,6 +127,11 @@ export const getSalesOrders = async (req, res) => {
     // Build query object
     const query = {};
 
+    // Exclude Delivered orders by default unless explicitly requested
+    if (hideDelivered === 'true') {
+      query.status = { $ne: 'Delivered' };
+    }
+
     // Search functionality
     if (search) {
       query.$or = [
@@ -133,6 +139,7 @@ export const getSalesOrders = async (req, res) => {
         { dealerName: { $regex: search, $options: "i" } },
         { "products.productName": { $regex: search, $options: "i" } }
       ];
+
     }
 
     // Filter by status
@@ -3631,6 +3638,116 @@ export const refreshOrderStockStatusByOrderNumber = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error refreshing order stock status',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Migrate/fix orderStockStatus for all existing orders that have 'unknown' overallStatus
+// @route   POST /api/sales-orders/migrate-stock-status
+// @access  Private (Admin only)
+export const migrateOrderStockStatus = async (req, res) => {
+  try {
+    // Find all orders where overallStatus is 'unknown' or orderStockStatus is missing
+    const orders = await SalesOrder.find({
+      $or: [
+        { 'orderStockStatus.overallStatus': 'unknown' },
+        { 'orderStockStatus.overallStatus': { $exists: false } },
+        { orderStockStatus: { $exists: false } }
+      ]
+    });
+
+    let updated = 0;
+    let skipped = 0;
+
+    for (const order of orders) {
+      const products = order.products || [];
+      const total = products.length;
+
+      let overallStatus;
+      let availableCount = 0;
+      let waitingCount = 0;
+      let partialCount = 0;
+
+      // Cancelled/Rejected: mark as ready (no stock tracking needed)
+      if (['Cancelled', 'Rejected'].includes(order.status)) {
+        overallStatus = 'ready';
+        availableCount = total;
+      } else if (order.status === 'Delivered') {
+        overallStatus = 'ready';
+        availableCount = total;
+      } else {
+        // Compute from product-level stockStatus
+        const unknownProducts = products.filter(p => !p.stockStatus || p.stockStatus === 'unknown');
+
+        if (unknownProducts.length === total) {
+          // All unknown — infer from order flags
+          if (order.isOutOfStock) {
+            overallStatus = 'waiting';
+            waitingCount = total;
+          } else {
+            // Confirmed/Processing/In Transit without explicit tracking = stock was available
+            overallStatus = 'ready';
+            availableCount = total;
+          }
+        } else {
+          availableCount = products.filter(p => p.stockStatus === 'available').length;
+          waitingCount = products.filter(p => p.stockStatus === 'waiting').length;
+          partialCount = products.filter(p => p.stockStatus === 'partial').length;
+
+          if (availableCount === total) overallStatus = 'ready';
+          else if (waitingCount === total) overallStatus = 'waiting';
+          else if (availableCount > 0 || partialCount > 0) overallStatus = 'partial';
+          else overallStatus = 'waiting';
+        }
+      }
+
+      order.orderStockStatus = {
+        totalProducts: total,
+        availableProducts: availableCount,
+        partialProducts: partialCount,
+        waitingProducts: waitingCount,
+        overallStatus,
+        lastChecked: new Date()
+      };
+
+      await order.save();
+      updated++;
+    }
+
+    res.json({
+      success: true,
+      message: `Migration complete: ${updated} orders updated, ${skipped} skipped`,
+      updated,
+      skipped
+    });
+  } catch (error) {
+    console.error('Migrate Order Stock Status Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error migrating order stock status',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Manually trigger stock status refresh for all waiting/partial orders
+// @route   POST /api/sales-orders/auto-refresh-stock-status
+// @access  Private
+export const autoRefreshAllStockStatus = async (req, res) => {
+  try {
+    const { runStockStatusRefresh } = await import('../cron/stockStatusRefresh.js');
+    const result = await runStockStatusRefresh();
+    res.json({
+      success: true,
+      message: `Stock status refreshed: ${result.updated} orders updated`,
+      ...result
+    });
+  } catch (error) {
+    console.error('Auto Refresh Stock Status Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error refreshing stock status',
       error: error.message
     });
   }

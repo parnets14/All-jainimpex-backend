@@ -23,7 +23,9 @@ import {
   autoExpireOrders,
   getOrderStockStatus,
   refreshOrderStockStatus,
-  refreshOrderStockStatusByOrderNumber
+  refreshOrderStockStatusByOrderNumber,
+  migrateOrderStockStatus,
+  autoRefreshAllStockStatus
 } from "../controllers/salesOrderController.js";
 import { protect } from "../middleware/authMiddleware.js";
 import { logActivity } from "../middleware/activityLogMiddleware.js";
@@ -107,5 +109,13 @@ router.route("/check-stock-availability")
 // Auto-expire orders
 router.route("/auto-expire")
   .post(logActivity("Sales Order Dashboard", "Auto-expired orders past deadline", "UPDATE"), autoExpireOrders);
+
+// Migrate/fix stock status for all existing orders
+router.route("/migrate-stock-status")
+  .post(logActivity("Sales Order Dashboard", "Migrated order stock status", "UPDATE"), migrateOrderStockStatus);
+
+// Manually trigger auto-refresh of stock status for all waiting/partial orders
+router.route("/auto-refresh-stock-status")
+  .post(logActivity("Sales Order Dashboard", "Manually triggered stock status auto-refresh", "UPDATE"), autoRefreshAllStockStatus);
 
 export default router;
