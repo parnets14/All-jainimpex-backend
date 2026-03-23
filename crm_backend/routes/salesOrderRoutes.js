@@ -26,7 +26,9 @@ import {
   refreshOrderStockStatusByOrderNumber,
   migrateOrderStockStatus,
   autoRefreshAllStockStatus,
-  migrateDiscountTotals
+  migrateDiscountTotals,
+  getDispatchDeviations,
+  partialDispatch
 } from "../controllers/salesOrderController.js";
 import { protect } from "../middleware/authMiddleware.js";
 import { logActivity } from "../middleware/activityLogMiddleware.js";
@@ -122,5 +124,13 @@ router.route("/auto-refresh-stock-status")
 // Migrate/fix all existing orders to recalculate discount-aware totals
 router.route("/migrate-discount-totals")
   .post(logActivity("Sales Order Dashboard", "Migrated discount totals for all orders", "UPDATE"), migrateDiscountTotals);
+
+// Dispatch deviations report
+router.route("/dispatch-deviations")
+  .get(logActivity("Deviation Report", "Viewed dispatch deviations", "READ"), getDispatchDeviations);
+
+// Partial dispatch — reduce qty, unblock stock, create new SO or deviation
+router.route("/:id/partial-dispatch")
+  .patch(logActivity("Sales Order Dashboard", "Partial dispatch quantity reduction", "UPDATE"), partialDispatch);
 
 export default router;

@@ -274,6 +274,20 @@ const salesOrderSchema = new mongoose.Schema({
     approvedAt: Date,
     approvalNotes: String
   },
+  // Partial dispatch deviations
+  deviations: [{
+    productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product" },
+    productName: String,
+    originalQty: Number,
+    dispatchedQty: Number,
+    reducedQty: Number,
+    reason: String,
+    createdAt: { type: Date, default: Date.now },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    newOrderCreated: { type: Boolean, default: false },
+    newOrderNumber: String
+  }],
+
   // Order-level stock status summary
   orderStockStatus: {
     totalProducts: {

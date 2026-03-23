@@ -308,11 +308,21 @@ export const getSalesOrders = async (req, res) => {
     const total = await SalesOrder.countDocuments(query);
 
     // Calculate additional analytics for each order
+    // Bulk-lookup which orders have invoices (one query instead of N)
+    const DealerInvoice = (await import("../models/DealerInvoice.js")).default;
+    const orderIds = salesOrders.map(o => o._id);
+    const invoicedOrderIds = await DealerInvoice.distinct('salesOrder', {
+      salesOrder: { $in: orderIds },
+      status: { $nin: ['Cancelled', 'Rejected'] }
+    });
+    const invoicedSet = new Set(invoicedOrderIds.map(id => id.toString()));
+
     const ordersWithAnalytics = salesOrders.map(order => {
       const totalItems = order.products ? order.products.reduce((sum, product) => sum + (product.quantity || 0), 0) : 0;
       return {
         ...order,
         totalItems,
+        hasInvoice: invoicedSet.has(order._id.toString()),
         isOverdue: order.dueDate && new Date(order.dueDate) < new Date() && order.status !== "Delivered" && order.status !== "Cancelled"
       };
     });
@@ -572,8 +582,13 @@ export const createSalesOrder = async (req, res) => {
       // Calculate product details
       const unitPrice = item.unitPrice || product.rateSlabs[0]?.rate || 0;
       const gst = item.gst || product.gst || 0;
-      const discountAmt = item.discountAmount || 0;
       const baseAmount = item.quantity * unitPrice;
+      // Guard: discountAmount must never exceed baseAmount (prevents negative totals)
+      const rawDiscountAmt = item.discountAmount || 0;
+      const discountAmt = Math.min(rawDiscountAmt, baseAmount);
+      if (rawDiscountAmt > baseAmount) {
+        console.warn(`⚠️ discountAmount (${rawDiscountAmt}) exceeded baseAmount (${baseAmount}) for product ${product.itemName} — capped to baseAmount`);
+      }
       const discountedBase = baseAmount - discountAmt;
       const gstAmount = (discountedBase * gst) / 100;
       const totalPrice = discountedBase + gstAmount;
@@ -2054,7 +2069,9 @@ export const updateSalesOrder = async (req, res) => {
 
       req.body.products = req.body.products.map(p => {
         const baseAmount = p.quantity * p.unitPrice;
-        const discAmt = p.discountAmount || 0;
+        // Guard: discountAmount must never exceed baseAmount
+        const rawDiscAmt = p.discountAmount || 0;
+        const discAmt = Math.min(rawDiscAmt, baseAmount);
         const discountedBase = baseAmount - discAmt;
         const gstAmt = (discountedBase * (p.gst || 0)) / 100;
         const totalPrice = discountedBase + gstAmt;
@@ -2801,8 +2818,13 @@ async function createSingleSalesOrder(orderData, userId) {
     // Calculate product details
     const unitPrice = item.unitPrice || product.rateSlabs[0]?.rate || 0;
     const gst = item.gst || product.gst || 0;
-    const discountAmt = item.discountAmount || 0;
     const baseAmount = item.quantity * unitPrice;
+    // Guard: discountAmount must never exceed baseAmount
+    const rawDiscountAmt = item.discountAmount || 0;
+    const discountAmt = Math.min(rawDiscountAmt, baseAmount);
+    if (rawDiscountAmt > baseAmount) {
+      console.warn(`⚠️ discountAmount (${rawDiscountAmt}) exceeded baseAmount (${baseAmount}) for product ${product.itemName} — capped`);
+    }
     const discountedBase = baseAmount - discountAmt;
     const gstAmount = (discountedBase * gst) / 100;
     const totalPrice = discountedBase + gstAmount;
@@ -3881,6 +3903,254 @@ export const autoRefreshAllStockStatus = async (req, res) => {
 // @desc    Migrate/fix all existing orders to recalculate discount-aware totals
 // @route   POST /api/sales-orders/migrate-discount-totals
 // @access  Private (Super Admin)
+// @desc    Partial dispatch — reduce confirmed order qty, unblock stock, optionally create new SO or deviation
+// @route   PATCH /api/sales-orders/:id/partial-dispatch
+// @access  Private
+export const partialDispatch = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { products, action } = req.body;
+    // products: [{ productId, newQty, reason }]
+    // action: 'new_order' | 'deviation'
+
+    const salesOrder = await SalesOrder.findById(id);
+    if (!salesOrder) return res.status(404).json({ success: false, message: 'Sales order not found' });
+    if (salesOrder.status !== 'Confirmed') return res.status(400).json({ success: false, message: 'Partial dispatch only allowed for Confirmed orders' });
+
+    // Check no invoice exists
+    const DealerInvoice = (await import("../models/DealerInvoice.js")).default;
+    const existingInvoice = await DealerInvoice.findOne({
+      salesOrder: id,
+      status: { $nin: ['Cancelled', 'Rejected'] }
+    });
+    if (existingInvoice) return res.status(400).json({ success: false, message: 'Cannot do partial dispatch — invoice already created for this order' });
+
+    const StockMovement = (await import("../models/Stock.js")).default;
+    const deviations = [];
+    const remainingProducts = []; // for new order
+
+    for (const update of products) {
+      const orderProduct = salesOrder.products.find(p => p.product.toString() === update.productId.toString());
+      if (!orderProduct) continue;
+
+      const originalQty = orderProduct.quantity;
+      const newQty = parseInt(update.newQty);
+      if (newQty >= originalQty) continue; // no reduction, skip
+      if (newQty < 1) return res.status(400).json({ success: false, message: `Dispatched quantity must be at least 1 for ${orderProduct.productName}` });
+
+      const reducedQty = originalQty - newQty;
+
+      // Unblock the reduced qty from stock
+      if (orderProduct.warehouse) {
+        const latestMovement = await StockMovement.findOne({
+          productId: orderProduct.product,
+          warehouseId: orderProduct.warehouse
+        }).sort({ date: -1, createdAt: -1 });
+
+        const currentBalance = latestMovement ? latestMovement.balance : 0;
+        const newBalance = currentBalance + reducedQty;
+
+        await new StockMovement({
+          productId: orderProduct.product,
+          warehouseId: orderProduct.warehouse,
+          type: 'IN',
+          quantity: reducedQty,
+          balance: newBalance,
+          referenceNo: salesOrder.orderNumber,
+          referenceType: 'SALE',
+          date: new Date(),
+          remarks: `Stock Unblocked - Order ${salesOrder.orderNumber} Partial Dispatch (${originalQty} → ${newQty})`,
+          createdBy: req.user._id
+        }).save();
+      }
+
+      // Update quantity on the order
+      orderProduct.quantity = newQty;
+
+      // Record deviation
+      deviations.push({
+        productId: orderProduct.product,
+        productName: orderProduct.productName,
+        originalQty,
+        dispatchedQty: newQty,
+        reducedQty,
+        reason: update.reason || '',
+        createdAt: new Date(),
+        createdBy: req.user._id,
+        newOrderCreated: action === 'new_order',
+        newOrderNumber: '' // filled after new order created
+      });
+
+      if (action === 'new_order') {
+        remainingProducts.push({
+          ...orderProduct.toObject(),
+          quantity: reducedQty
+        });
+      }
+    }
+
+    if (deviations.length === 0) {
+      return res.status(400).json({ success: false, message: 'No quantity reductions found. All new quantities must be less than original.' });
+    }
+
+    // Push deviations to order
+    salesOrder.deviations.push(...deviations);
+
+    // Recalculate order totals (pre-save hook will do this, but mark modified)
+    salesOrder.markModified('products');
+    await salesOrder.save();
+
+    let newOrder = null;
+    if (action === 'new_order' && remainingProducts.length > 0) {
+      const orderNumber = await generateOrderNumber();
+      newOrder = new SalesOrder({
+        orderNumber,
+        dealer: salesOrder.dealer,
+        dealerName: salesOrder.dealerName,
+        dealerCode: salesOrder.dealerCode,
+        dealerType: salesOrder.dealerType,
+        region: salesOrder.region,
+        pinCode: salesOrder.pinCode,
+        products: remainingProducts.map(p => {
+          // Recalculate discountAmount for the remaining quantity using discount percentage
+          const discPct = p.discountPercentage || 0;
+          const newDiscountAmount = discPct > 0
+            ? parseFloat(((p.quantity * p.unitPrice * discPct) / 100).toFixed(2))
+            : 0;
+          // pre-save hook will recalculate gstAmount and totalPrice from these values
+          return {
+            product: p.product,
+            productCode: p.productCode,
+            productName: p.productName,
+            HSNCode: p.HSNCode,
+            quantity: p.quantity,
+            unitPrice: p.unitPrice,
+            gst: p.gst,
+            gstAmount: 0, // recalculated by pre-save
+            totalPrice: 0, // recalculated by pre-save
+            warehouse: p.warehouse,
+            warehouseName: p.warehouseName,
+            discountPercentage: discPct,
+            discountAmount: newDiscountAmount,
+            discountType: p.discountType || null,
+            appliedDiscount: p.appliedDiscount || null
+          };
+        }),
+        orderDate: salesOrder.orderDate,
+        deliveryDate: salesOrder.deliveryDate,
+        creditDays: salesOrder.creditDays,
+        salesType: salesOrder.salesType,
+        type: salesOrder.type,
+        status: 'Pending',
+        remarks: `Remaining qty from partial dispatch of ${salesOrder.orderNumber}`,
+        grossAmount: 0, totalGst: 0, totalAmount: 0, // recalculated by pre-save
+        createdBy: req.user._id
+      });
+      await newOrder.save();
+
+      // Update deviation records with new order number
+      for (const dev of salesOrder.deviations.slice(-deviations.length)) {
+        dev.newOrderNumber = newOrder.orderNumber;
+      }
+      salesOrder.markModified('deviations');
+      await salesOrder.save();
+    }
+
+    const updatedOrder = await SalesOrder.findById(id)
+      .populate('dealer', 'name code')
+      .populate('products.product')
+      .populate('products.warehouse', 'name')
+      .lean();
+
+    res.json({
+      success: true,
+      message: `Partial dispatch saved. ${deviations.length} product(s) reduced.`,
+      salesOrder: updatedOrder,
+      deviations,
+      newOrder: newOrder ? { orderNumber: newOrder.orderNumber, _id: newOrder._id } : null
+    });
+  } catch (error) {
+    console.error('partialDispatch error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Get all sales orders that have dispatch deviations
+// @route   GET /api/sales-orders/dispatch-deviations
+// @access  Private
+export const getDispatchDeviations = async (req, res) => {
+  try {
+    const {
+      fromDate, toDate, search, dealer,
+      page = 1, limit = 20
+    } = req.query;
+
+    const query = { 'deviations.0': { $exists: true } }; // only orders with at least 1 deviation
+
+    if (dealer) query.dealer = dealer;
+    if (fromDate || toDate) {
+      query.orderDate = {};
+      if (fromDate) query.orderDate.$gte = new Date(fromDate);
+      if (toDate) query.orderDate.$lte = new Date(new Date(toDate).setHours(23, 59, 59, 999));
+    }
+    if (search) {
+      query.$or = [
+        { orderNumber: { $regex: search, $options: 'i' } },
+        { dealerName: { $regex: search, $options: 'i' } },
+        { 'deviations.productName': { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const total = await SalesOrder.countDocuments(query);
+
+    const orders = await SalesOrder.find(query)
+      .select('orderNumber dealerName orderDate status deviations')
+      .sort({ orderDate: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .lean();
+
+    // Flatten: one row per deviation entry
+    const rows = [];
+    for (const order of orders) {
+      for (const dev of order.deviations || []) {
+        rows.push({
+          _id: `${order._id}_${dev._id || dev.productId}`,
+          orderNumber: order.orderNumber,
+          dealerName: order.dealerName,
+          orderDate: order.orderDate,
+          orderStatus: order.status,
+          productName: dev.productName,
+          originalQty: dev.originalQty,
+          dispatchedQty: dev.dispatchedQty,
+          reducedQty: dev.reducedQty,
+          reason: dev.reason,
+          createdAt: dev.createdAt,
+          newOrderCreated: dev.newOrderCreated,
+          newOrderNumber: dev.newOrderNumber
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      data: rows,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / parseInt(limit)),
+        totalCount: total,
+        limit: parseInt(limit),
+        hasNextPage: parseInt(page) < Math.ceil(total / parseInt(limit)),
+        hasPrevPage: parseInt(page) > 1
+      }
+    });
+  } catch (error) {
+    console.error('getDispatchDeviations error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 export const migrateDiscountTotals = async (req, res) => {
   try {
     const orders = await SalesOrder.find({}).lean();
