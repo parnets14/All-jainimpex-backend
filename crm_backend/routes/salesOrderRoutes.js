@@ -67,6 +67,32 @@ router.route("/dealer/:dealerId")
 router.route("/product/:productId/stock")
   .get(logActivity("Sales Order Dashboard", "Viewed product stock for sales", "READ"), getProductStock);
 
+// Dispatch deviations report — MUST be before /:id
+router.route("/dispatch-deviations")
+  .get(logActivity("Deviation Report", "Viewed dispatch deviations", "READ"), getDispatchDeviations);
+
+// NEW: Refresh stock status by order number — MUST be before /:id
+router.route("/refresh-by-order-number/:orderNumber")
+  .post(logActivity("Sales Order Dashboard", "Refreshed order stock status by order number", "UPDATE"), refreshOrderStockStatusByOrderNumber);
+
+// Check stock availability for out-of-stock orders — MUST be before /:id
+router.route("/check-stock-availability")
+  .post(logActivity("Sales Order Dashboard", "Checked stock availability for out-of-stock orders", "UPDATE"), checkStockAvailabilityForOutOfStockOrders);
+
+// Auto-expire orders — MUST be before /:id
+router.route("/auto-expire")
+  .post(logActivity("Sales Order Dashboard", "Auto-expired orders past deadline", "UPDATE"), autoExpireOrders);
+
+// Migrate routes — MUST be before /:id
+router.route("/migrate-stock-status")
+  .post(logActivity("Sales Order Dashboard", "Migrated order stock status", "UPDATE"), migrateOrderStockStatus);
+
+router.route("/auto-refresh-stock-status")
+  .post(logActivity("Sales Order Dashboard", "Manually triggered stock status auto-refresh", "UPDATE"), autoRefreshAllStockStatus);
+
+router.route("/migrate-discount-totals")
+  .post(logActivity("Sales Order Dashboard", "Migrated discount totals for all orders", "UPDATE"), migrateDiscountTotals);
+
 router.route("/:id")
   .get(logActivity("Sales Order Dashboard", "Viewed sales order details", "READ"), getSalesOrder)
   .put(logActivity("Sales Order Dashboard", "Updated sales order", "UPDATE"), updateSalesOrder)
@@ -100,34 +126,6 @@ router.route("/:id/stock-status")
 
 router.route("/:id/refresh-stock-status")
   .post(logActivity("Sales Order Dashboard", "Refreshed order stock status", "UPDATE"), refreshOrderStockStatus);
-
-// NEW: Refresh stock status by order number (easier for manual fixes)
-router.route("/refresh-by-order-number/:orderNumber")
-  .post(logActivity("Sales Order Dashboard", "Refreshed order stock status by order number", "UPDATE"), refreshOrderStockStatusByOrderNumber);
-
-// Check stock availability for out-of-stock orders
-router.route("/check-stock-availability")
-  .post(logActivity("Sales Order Dashboard", "Checked stock availability for out-of-stock orders", "UPDATE"), checkStockAvailabilityForOutOfStockOrders);
-
-// Auto-expire orders
-router.route("/auto-expire")
-  .post(logActivity("Sales Order Dashboard", "Auto-expired orders past deadline", "UPDATE"), autoExpireOrders);
-
-// Migrate/fix stock status for all existing orders
-router.route("/migrate-stock-status")
-  .post(logActivity("Sales Order Dashboard", "Migrated order stock status", "UPDATE"), migrateOrderStockStatus);
-
-// Manually trigger auto-refresh of stock status for all waiting/partial orders
-router.route("/auto-refresh-stock-status")
-  .post(logActivity("Sales Order Dashboard", "Manually triggered stock status auto-refresh", "UPDATE"), autoRefreshAllStockStatus);
-
-// Migrate/fix all existing orders to recalculate discount-aware totals
-router.route("/migrate-discount-totals")
-  .post(logActivity("Sales Order Dashboard", "Migrated discount totals for all orders", "UPDATE"), migrateDiscountTotals);
-
-// Dispatch deviations report
-router.route("/dispatch-deviations")
-  .get(logActivity("Deviation Report", "Viewed dispatch deviations", "READ"), getDispatchDeviations);
 
 // Partial dispatch — reduce qty, unblock stock, create new SO or deviation
 router.route("/:id/partial-dispatch")
