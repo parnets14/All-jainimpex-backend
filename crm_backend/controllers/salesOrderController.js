@@ -3967,6 +3967,12 @@ export const partialDispatch = async (req, res) => {
       // Update quantity on the order
       orderProduct.quantity = newQty;
 
+      // Recalculate discountAmount for the reduced quantity
+      const discPct = orderProduct.discountPercentage || 0;
+      orderProduct.discountAmount = discPct > 0
+        ? parseFloat(((newQty * orderProduct.unitPrice * discPct) / 100).toFixed(2))
+        : 0;
+
       // Record deviation
       deviations.push({
         productId: orderProduct.product,
