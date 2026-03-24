@@ -45,7 +45,8 @@ const getDealerCreditOutstanding = async (dealerId, excludeOrderId = null) => {
   const invoicedOrderIds = await DealerInvoice.distinct('salesOrder', {
     dealer: dealerId,
     salesOrder: { $ne: null },
-    status: { $nin: ['Cancelled', 'Rejected'] }
+    status: { $nin: ['Cancelled', 'Rejected', 'Draft'] },
+    isDraft: { $ne: true }
   });
   const invoicedSet = new Set(invoicedOrderIds.map(id => id.toString()));
 
@@ -313,7 +314,8 @@ export const getSalesOrders = async (req, res) => {
     const orderIds = salesOrders.map(o => o._id);
     const invoicedOrderIds = await DealerInvoice.distinct('salesOrder', {
       salesOrder: { $in: orderIds },
-      status: { $nin: ['Cancelled', 'Rejected'] }
+      status: { $nin: ['Cancelled', 'Rejected', 'Draft'] },
+      isDraft: { $ne: true }
     });
     const invoicedSet = new Set(invoicedOrderIds.map(id => id.toString()));
 
@@ -3917,11 +3919,12 @@ export const partialDispatch = async (req, res) => {
     if (!salesOrder) return res.status(404).json({ success: false, message: 'Sales order not found' });
     if (salesOrder.status !== 'Confirmed') return res.status(400).json({ success: false, message: 'Partial dispatch only allowed for Confirmed orders' });
 
-    // Check no invoice exists
+    // Check no APPROVED invoice exists (draft invoices don't block partial dispatch)
     const DealerInvoice = (await import("../models/DealerInvoice.js")).default;
     const existingInvoice = await DealerInvoice.findOne({
       salesOrder: id,
-      status: { $nin: ['Cancelled', 'Rejected'] }
+      status: { $nin: ['Cancelled', 'Rejected', 'Draft'] },
+      isDraft: { $ne: true }
     });
     if (existingInvoice) return res.status(400).json({ success: false, message: 'Cannot do partial dispatch — invoice already created for this order' });
 
