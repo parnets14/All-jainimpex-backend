@@ -368,7 +368,7 @@ dealerInvoiceSchema.post("save", async function(doc, next) {
 });
 
 // Index for better query performance
-dealerInvoiceSchema.index({ invoiceNumber: 1 });
+// Note: invoiceNumber index is defined on the field itself with sparse:true - no duplicate needed
 dealerInvoiceSchema.index({ dealer: 1 });
 dealerInvoiceSchema.index({ invoiceDate: -1 });
 dealerInvoiceSchema.index({ status: 1 });
