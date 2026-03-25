@@ -858,7 +858,53 @@ export const approveDealerInvoice = async (req, res) => {
     }
     
     console.log(`📋 Approving draft invoice ${invoice._id}...`);
-    
+
+    // ── QUANTITY SYNC CHECK ──────────────────────────────────────────────────
+    // If this invoice is linked to a sales order, verify quantities match.
+    // If the SO was edited (partial dispatch / quantity reduction) after the
+    // draft was created and the user didn't click Sync, block approval.
+    if (invoice.salesOrder) {
+      try {
+        const linkedSO = await SalesOrder.findById(invoice.salesOrder).session(session);
+        if (linkedSO) {
+          const soQtyMap = {};
+          (linkedSO.products || []).forEach(p => {
+            const pid = (p.product?._id || p.product)?.toString();
+            if (pid) soQtyMap[pid] = p.quantity;
+          });
+
+          const mismatches = [];
+          for (const item of invoice.items) {
+            const pid = (item.product?._id || item.product)?.toString();
+            if (pid && soQtyMap[pid] !== undefined && soQtyMap[pid] !== item.quantity) {
+              mismatches.push({
+                productName: item.productName || pid,
+                invoiceQty: item.quantity,
+                salesOrderQty: soQtyMap[pid],
+              });
+            }
+          }
+
+          if (mismatches.length > 0) {
+            await session.abortTransaction();
+            const detail = mismatches
+              .map(m => `• ${m.productName}: invoice has ${m.invoiceQty}, sales order has ${m.salesOrderQty}`)
+              .join('\n');
+            return res.status(400).json({
+              success: false,
+              message: `Cannot approve — invoice quantities don't match the linked sales order (${linkedSO.orderNumber}). Please use the Sync button to update the invoice before approving.`,
+              mismatches,
+              detail,
+            });
+          }
+        }
+      } catch (syncCheckError) {
+        console.error('⚠️ Error during quantity sync check (non-fatal):', syncCheckError);
+        // Don't block approval if the check itself fails — log and continue
+      }
+    }
+    // ── END QUANTITY SYNC CHECK ──────────────────────────────────────────────
+
     // Generate invoice number NOW
     invoice.invoiceNumber = await generateInvoiceNumber();
     invoice.invoiceDate = new Date();
