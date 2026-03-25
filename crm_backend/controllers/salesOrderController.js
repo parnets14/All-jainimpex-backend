@@ -3939,11 +3939,12 @@ export const partialDispatch = async (req, res) => {
       const originalQty = orderProduct.quantity;
       const newQty = parseInt(update.newQty);
       if (newQty >= originalQty) continue; // no reduction, skip
-      if (newQty < 1) return res.status(400).json({ success: false, message: `Dispatched quantity must be at least 1 for ${orderProduct.productName}` });
+      // newQty = 0 means "skip this product entirely — move full qty to new order / deviation"
+      if (newQty < 0) return res.status(400).json({ success: false, message: `Quantity cannot be negative for ${orderProduct.productName}` });
 
       const reducedQty = originalQty - newQty;
 
-      // Unblock the reduced qty from stock
+      // Unblock the reduced qty from stock (for qty=0 this unblocks the full original qty)
       if (orderProduct.warehouse) {
         const latestMovement = await StockMovement.findOne({
           productId: orderProduct.product,
@@ -3962,19 +3963,27 @@ export const partialDispatch = async (req, res) => {
           referenceNo: salesOrder.orderNumber,
           referenceType: 'SALE',
           date: new Date(),
-          remarks: `Stock Unblocked - Order ${salesOrder.orderNumber} Partial Dispatch (${originalQty} → ${newQty})`,
+          remarks: newQty === 0
+            ? `Stock Fully Unblocked - Order ${salesOrder.orderNumber} (product skipped in dispatch)`
+            : `Stock Unblocked - Order ${salesOrder.orderNumber} Partial Dispatch (${originalQty} → ${newQty})`,
           createdBy: req.user._id
         }).save();
       }
 
-      // Update quantity on the order
-      orderProduct.quantity = newQty;
-
-      // Recalculate discountAmount for the reduced quantity
-      const discPct = orderProduct.discountPercentage || 0;
-      orderProduct.discountAmount = discPct > 0
-        ? parseFloat(((newQty * orderProduct.unitPrice * discPct) / 100).toFixed(2))
-        : 0;
+      if (newQty === 0) {
+        // Remove the product from the current order entirely
+        salesOrder.products = salesOrder.products.filter(
+          p => p.product.toString() !== update.productId.toString()
+        );
+      } else {
+        // Update quantity on the order
+        orderProduct.quantity = newQty;
+        // Recalculate discountAmount for the reduced quantity
+        const discPct = orderProduct.discountPercentage || 0;
+        orderProduct.discountAmount = discPct > 0
+          ? parseFloat(((newQty * orderProduct.unitPrice * discPct) / 100).toFixed(2))
+          : 0;
+      }
 
       // Record deviation
       deviations.push({
@@ -3983,7 +3992,7 @@ export const partialDispatch = async (req, res) => {
         originalQty,
         dispatchedQty: newQty,
         reducedQty,
-        reason: update.reason || '',
+        reason: update.reason || (newQty === 0 ? 'Product not available — skipped from dispatch' : ''),
         createdAt: new Date(),
         createdBy: req.user._id,
         newOrderCreated: action === 'new_order',
@@ -4055,6 +4064,21 @@ export const partialDispatch = async (req, res) => {
         grossAmount: 0, totalGst: 0, totalAmount: 0, // recalculated by pre-save
         createdBy: req.user._id
       });
+
+      // Set 15-day auto-expiry for the new pending order
+      const newOrderExpiry = new Date();
+      newOrderExpiry.setDate(newOrderExpiry.getDate() + 15);
+      newOrder.expiryDate = newOrderExpiry;
+      newOrder.expiryReason = 'Automatic 15-day expiry for pending order (partial dispatch remainder)';
+      newOrder.expiryHistory.push({
+        action: 'set',
+        previousDate: null,
+        newDate: newOrderExpiry,
+        reason: `Automatic 15-day expiry set — remaining qty from partial dispatch of ${salesOrder.orderNumber}`,
+        performedBy: req.user._id,
+        performedAt: new Date()
+      });
+
       await newOrder.save();
 
       // Update deviation records with new order number

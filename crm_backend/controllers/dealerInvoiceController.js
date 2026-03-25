@@ -637,6 +637,28 @@ export const createDealerInvoice = async (req, res) => {
           message: "Sales order not found"
         });
       }
+
+      // ── DUPLICATE INVOICE CHECK ──────────────────────────────────────────
+      // Block creation if a non-cancelled invoice already exists for this SO
+      const existingInvoice = await DealerInvoice.findOne({
+        salesOrder: salesOrderId,
+        status: { $nin: ['Cancelled', 'Rejected'] },
+        isDeleted: { $ne: true }
+      });
+
+      if (existingInvoice) {
+        const isDraft = existingInvoice.isDraft || existingInvoice.status === 'Draft';
+        return res.status(400).json({
+          success: false,
+          message: isDraft
+            ? `A draft invoice already exists for sales order ${salesOrder.orderNumber}. Please approve or delete the existing draft before creating a new one.`
+            : `Invoice ${existingInvoice.invoiceNumber} already exists for sales order ${salesOrder.orderNumber}. Cannot create duplicate invoice.`,
+          existingInvoiceId: existingInvoice._id,
+          existingInvoiceNumber: existingInvoice.invoiceNumber || 'DRAFT',
+          isDraft
+        });
+      }
+      // ── END DUPLICATE CHECK ──────────────────────────────────────────────
     }
 
     // DON'T generate invoice number for drafts - will be generated on approval
@@ -876,7 +898,16 @@ export const approveDealerInvoice = async (req, res) => {
           const mismatches = [];
           for (const item of invoice.items) {
             const pid = (item.product?._id || item.product)?.toString();
-            if (pid && soQtyMap[pid] !== undefined && soQtyMap[pid] !== item.quantity) {
+            if (!pid) continue;
+            if (soQtyMap[pid] === undefined) {
+              // Product was removed from SO entirely (partial dispatch with qty=0)
+              mismatches.push({
+                productName: item.productName || pid,
+                invoiceQty: item.quantity,
+                salesOrderQty: 0,
+                removed: true,
+              });
+            } else if (soQtyMap[pid] !== item.quantity) {
               mismatches.push({
                 productName: item.productName || pid,
                 invoiceQty: item.quantity,
