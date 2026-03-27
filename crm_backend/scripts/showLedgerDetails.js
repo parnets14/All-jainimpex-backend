@@ -13,7 +13,7 @@ const __dirname = dirname(__filename);
 dotenv.config({ path: resolve(__dirname, '..', '.env') });
 
 // Connect to MongoDB
-mongoose.connect(process.env.MONGO_URL).then(async () => {
+mongoose.connect(process.env.MONGO_URI).then(async () => {
   console.log('Connected to MongoDB\n');
   
   try {

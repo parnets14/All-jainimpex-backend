@@ -72,7 +72,7 @@ function printObject(label, obj) {
 async function runTest() {
   try {
     // Connect to database
-    const mongoUrl = process.env.MONGO_URL || 'mongodb://localhost:27017/test-payment-allocation';
+    const mongoUrl = process.env.MONGO_URI || 'mongodb://localhost:27017/test-payment-allocation';
     await mongoose.connect(mongoUrl);
     console.log('✅ Connected to database');
 

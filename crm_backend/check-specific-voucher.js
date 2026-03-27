@@ -15,7 +15,7 @@ async function checkSpecificVoucher() {
   try {
     console.log('🔍 Checking voucher RV-2025-26-0002-16...\n');
     
-    await mongoose.connect(process.env.MONGO_URL);
+    await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ Connected to database\n');
     
     // Find the voucher

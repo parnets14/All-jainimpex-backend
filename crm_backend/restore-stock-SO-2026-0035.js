@@ -16,7 +16,7 @@ async function restoreStock() {
   try {
     console.log('🔧 Restoring stock for SO-2026-0035...\n');
     
-    await mongoose.connect(process.env.MONGO_URL);
+    await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ Connected to database\n');
     
     const orderNumber = 'SO-2026-0035';

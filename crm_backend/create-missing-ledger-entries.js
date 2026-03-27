@@ -17,7 +17,7 @@ async function createMissingLedgerEntries() {
   try {
     console.log('🔄 Creating missing ledger entries for existing vouchers...\n');
     
-    await mongoose.connect(process.env.MONGO_URL);
+    await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ Connected to database\n');
     
     // Get all posted vouchers for dealers

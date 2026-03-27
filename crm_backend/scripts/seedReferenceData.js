@@ -14,15 +14,15 @@ dotenv.config({ path: join(__dirname, '..', '.env') });
 import SchemeType from "../models/SchemeType.js";
 import PaymentTerm from "../models/PaymentTerm.js";
 
-console.log("MongoDB URL:", process.env.MONGO_URL ? "Loaded" : "Not loaded");
+console.log("MongoDB URL:", process.env.MONGO_URI ? "Loaded" : "Not loaded");
 
 const seedData = async () => {
   try {
-    if (!process.env.MONGO_URL) {
-      throw new Error("MONGO_URL is not defined in environment variables");
+    if (!process.env.MONGO_URI) {
+      throw new Error("MONGO_URI is not defined in environment variables");
     }
 
-    await mongoose.connect(process.env.MONGO_URL);
+    await mongoose.connect(process.env.MONGO_URI);
     console.log("Connected to MongoDB");
 
     // Clear existing data (optional)

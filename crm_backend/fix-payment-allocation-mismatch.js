@@ -15,7 +15,7 @@ async function fixPaymentAllocationMismatch() {
   try {
     console.log('🔧 Fixing payment allocation mismatch...\n');
     
-    await mongoose.connect(process.env.MONGO_URL);
+    await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ Connected to database\n');
     
     // Find the incorrect payment allocation

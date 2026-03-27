@@ -33,8 +33,8 @@ const created = { dealer: null, salesOrders: [], stockMovements: [] };
 
 // ─── Connect ──────────────────────────────────────────────────────────────────
 async function connect() {
-  const url = process.env.MONGO_URL;
-  if (!url) throw new Error('MONGO_URL not found in .env');
+  const url = process.env.MONGO_URI;
+  if (!url) throw new Error('MONGO_URI not found in .env');
   await mongoose.connect(url);
   console.log(`${C.green}Connected to MongoDB${C.reset}`);
 }

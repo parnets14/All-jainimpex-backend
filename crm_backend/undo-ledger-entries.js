@@ -16,7 +16,7 @@ async function undoLedgerEntries() {
   try {
     console.log('🔄 Undoing ledger entries created by script...\n');
     
-    await mongoose.connect(process.env.MONGO_URL);
+    await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ Connected to database\n');
     
     // Find all ledger entries with description matching "Payment Received - RV-"

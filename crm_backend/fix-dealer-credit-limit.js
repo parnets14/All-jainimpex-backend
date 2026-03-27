@@ -11,7 +11,7 @@ import SalesOrder from './models/SalesOrder.js';
 const fixDealerCreditLimit = async () => {
   try {
     // Connect to MongoDB
-    await mongoose.connect(process.env.MONGO_URL);
+    await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ Connected to MongoDB');
 
     // Find the dealer "shree distributors"

@@ -11,7 +11,7 @@ dotenv.config();
 async function verifyCreditLimitFix() {
   try {
     console.log('🔌 Connecting to MongoDB...');
-    await mongoose.connect(process.env.MONGO_URL || process.env.MONGO_URI);
+    await mongoose.connect(process.env.MONGO_URI || process.env.MONGO_URI);
     console.log('✅ Connected to MongoDB\n');
 
     console.log('═══════════════════════════════════════');

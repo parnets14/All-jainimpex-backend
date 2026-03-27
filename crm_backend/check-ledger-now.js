@@ -15,7 +15,7 @@ async function checkLedgerNow() {
   try {
     console.log('🔍 Checking current ledger state...\n');
     
-    await mongoose.connect(process.env.MONGO_URL);
+    await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ Connected to database\n');
     
     // Find Kiran Kumar dealer - try different fields

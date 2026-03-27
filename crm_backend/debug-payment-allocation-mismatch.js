@@ -21,7 +21,7 @@ async function debugMismatch() {
     console.log('🔍 DEBUGGING PAYMENT ALLOCATION MISMATCH\n');
     console.log('='.repeat(80));
     
-    await mongoose.connect(process.env.MONGO_URL);
+    await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ Connected to database\n');
     
     // Find Kiran Kumar dealer

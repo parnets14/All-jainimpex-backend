@@ -15,7 +15,7 @@ async function testStockRestorationLogic() {
   try {
     console.log('🧪 Testing Stock Restoration Logic...\n');
     
-    await mongoose.connect(process.env.MONGO_URL);
+    await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ Connected to database\n');
     
     // Test Case 1: Order with products array

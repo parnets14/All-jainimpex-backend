@@ -9,7 +9,7 @@ dotenv.config();
 
 const fixOrder44Stock = async () => {
   try {
-    await mongoose.connect(process.env.MONGO_URL);
+    await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ Connected to MongoDB');
 
     // Find order SO-2026-0044

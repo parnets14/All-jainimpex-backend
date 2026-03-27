@@ -15,7 +15,7 @@ async function checkOrder() {
   try {
     console.log('🔍 Checking order SO-2026-0035...\n');
     
-    await mongoose.connect(process.env.MONGO_URL);
+    await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ Connected to database\n');
     
     // Find the order

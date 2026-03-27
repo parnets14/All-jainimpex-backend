@@ -19,7 +19,7 @@ async function checkDealerData() {
   try {
     console.log('🔍 Checking dealer data...\n');
     
-    await mongoose.connect(process.env.MONGO_URL);
+    await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ Connected to database\n');
     
     // Find dealer "Kiran Kumar"

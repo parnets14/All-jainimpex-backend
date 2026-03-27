@@ -15,7 +15,7 @@ async function findAllocationMismatches() {
   try {
     console.log('🔍 Finding allocation mismatches...\n');
     
-    await mongoose.connect(process.env.MONGO_URL);
+    await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ Connected to database\n');
     
     const dealerId = '697c631b88ce4a6086ffee8e';

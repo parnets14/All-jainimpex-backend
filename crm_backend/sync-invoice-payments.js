@@ -17,7 +17,7 @@ async function syncInvoicePayments() {
   try {
     console.log('🔄 Syncing invoice payments from voucher allocations...\n');
     
-    await mongoose.connect(process.env.MONGO_URL);
+    await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ Connected to database\n');
     
     // Get all invoices
