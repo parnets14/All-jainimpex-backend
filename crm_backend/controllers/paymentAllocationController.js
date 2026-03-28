@@ -290,7 +290,8 @@ export const getOutstandingInvoices = async (req, res) => {
       paymentStatus: { $ne: 'Paid' },
       $or: [
         { pendingAmount: { $gt: 0 } },
-        { $and: [{ pendingAmount: { $exists: false } }, { totalAmount: { $gt: 0 } }] }
+        { pendingAmount: null },
+        { pendingAmount: { $exists: false } }
       ]
     }).sort({ invoiceDate: 1 });
     
@@ -300,7 +301,7 @@ export const getOutstandingInvoices = async (req, res) => {
       invoiceDate: invoice.invoiceDate,
       totalAmount: invoice.totalAmount,
       paidAmount: invoice.paidAmount || 0,
-      pendingAmount: invoice.pendingAmount || invoice.totalAmount,
+      pendingAmount: invoice.pendingAmount != null ? invoice.pendingAmount : (invoice.totalAmount - (invoice.paidAmount || 0)),
       paymentStatus: invoice.paymentStatus,
       dueDate: invoice.dueDate
     }));
