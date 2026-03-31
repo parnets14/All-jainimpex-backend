@@ -1,77 +1,56 @@
-// scripts/seedReferenceData.js
-import mongoose from "mongoose";
-import dotenv from "dotenv";
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import dotenv from 'dotenv';
+import connectDB from '../config/db.js';
+import PaymentTerm from '../models/PaymentTerm.js';
+import SchemeType from '../models/SchemeType.js';
 
-// Get the current directory
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+dotenv.config();
 
-// Load environment variables from root directory
-dotenv.config({ path: join(__dirname, '..', '.env') });
+const paymentTerms = [
+  { name: 'Cash on Delivery', code: 'COD', days: 0 },
+  { name: 'Net 15 (15 days)', code: 'NET15', days: 15 },
+  { name: 'Net 30 (30 days)', code: 'NET30', days: 30 },
+  { name: 'Net 45 (45 days)', code: 'NET45', days: 45 },
+  { name: 'Net 60 (60 days)', code: 'NET60', days: 60 },
+  { name: 'Custom', code: 'CUSTOM', days: null },
+];
 
-import SchemeType from "../models/SchemeType.js";
-import PaymentTerm from "../models/PaymentTerm.js";
+const schemeTypes = [
+  { name: 'Early Payment', code: 'EARLY_PAYMENT', description: 'Discount for early payment' },
+  { name: 'Loyalty Reward', code: 'LOYALTY_REWARD', description: 'Reward for loyal suppliers' },
+  { name: 'Quarterly Bonus', code: 'QUARTERLY_BONUS', description: 'Bonus paid quarterly' },
+  { name: 'Volume Discount', code: 'VOLUME_DISCOUNT', description: 'Discount based on purchase volume' },
+];
 
-console.log("MongoDB URL:", process.env.MONGO_URI ? "Loaded" : "Not loaded");
+async function seed() {
+  await connectDB();
 
-const seedData = async () => {
-  try {
-    if (!process.env.MONGO_URI) {
-      throw new Error("MONGO_URI is not defined in environment variables");
+  // Seed Payment Terms
+  for (const pt of paymentTerms) {
+    const exists = await PaymentTerm.findOne({ code: pt.code });
+    if (!exists) {
+      await PaymentTerm.create(pt);
+      console.log(`✅ Payment Term created: ${pt.name}`);
+    } else {
+      console.log(`⏭️  Already exists: ${pt.name}`);
     }
-
-    await mongoose.connect(process.env.MONGO_URI);
-    console.log("Connected to MongoDB");
-
-    // Clear existing data (optional)
-    await SchemeType.deleteMany({});
-    await PaymentTerm.deleteMany({});
-
-    // Seed Scheme Types
-    const schemeTypes = [
-      { name: "Volume Discount", code: "VD" },
-      { name: "Early Payment", code: "EP" },
-      { name: "Quarterly Bonus", code: "QB" },
-      { name: "Loyalty Reward", code: "LR" }
-    ];
-
-    for (const schemeType of schemeTypes) {
-      await SchemeType.create(schemeType);
-      console.log(`Created scheme type: ${schemeType.name}`);
-    }
-    console.log("Scheme types seeded successfully");
-
-    // Seed Payment Terms
-    const paymentTerms = [
-      { name: "Net 15", days: 15, code: "NET15" },
-      { name: "Net 30", days: 30, code: "NET30" },
-      { name: "Net 45", days: 45, code: "NET45" },
-      { name: "COD", days: 0, code: "COD" },
-      { name: "Net 60", days: 60, code: "NET60" },
-      { name: "Custom", days: null, code: "CUSTOM" }
-    ];
-
-    for (const paymentTerm of paymentTerms) {
-      await PaymentTerm.create(paymentTerm);
-      console.log(`Created payment term: ${paymentTerm.name}`);
-    }
-    console.log("Payment terms seeded successfully");
-
-    console.log("All reference data seeded successfully");
-    
-    // Get counts to verify
-    const schemeTypeCount = await SchemeType.countDocuments();
-    const paymentTermCount = await PaymentTerm.countDocuments();
-    console.log(`Total Scheme Types: ${schemeTypeCount}`);
-    console.log(`Total Payment Terms: ${paymentTermCount}`);
-    
-    process.exit(0);
-  } catch (error) {
-    console.error("Error seeding data:", error);
-    process.exit(1);
   }
-};
 
-seedData();
+  // Seed Scheme Types
+  for (const st of schemeTypes) {
+    const exists = await SchemeType.findOne({ code: st.code });
+    if (!exists) {
+      await SchemeType.create(st);
+      console.log(`✅ Scheme Type created: ${st.name}`);
+    } else {
+      console.log(`⏭️  Already exists: ${st.name}`);
+    }
+  }
+
+  console.log('\n✅ Seeding complete.');
+  process.exit(0);
+}
+
+seed().catch(err => {
+  console.error('❌ Error:', err.message);
+  process.exit(1);
+});
