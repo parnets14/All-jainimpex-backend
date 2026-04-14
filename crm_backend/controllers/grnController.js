@@ -1,13 +1,31 @@
-import GRN from '../models/GRN.js';
-import PurchaseOrder from '../models/PurchaseOrder.js';
+import { grnSchema } from '../models/GRN.js';
+import { purchaseOrderSchema } from '../models/PurchaseOrder.js';
 import StockMovementService from '../services/stockMovementService.js';
 import schemeService from '../services/schemeService.js';
-import Counter from '../models/Counter.js';
+import { counterSchema } from '../models/Counter.js';
+import { supplierSchema } from '../models/Supplier.js';
+import { warehouseSchema } from '../models/Warehouse.js';
+import { productSchema } from '../models/Product.js';
+import { userSchema } from '../models/User.js';
 import mongoose from 'mongoose';
 
+// Helper function to get models from company-specific connection
+const getModels = (dbConnection) => {
+  return {
+    GRN: dbConnection.models.GRN || dbConnection.model('GRN', grnSchema),
+    PurchaseOrder: dbConnection.models.PurchaseOrder || dbConnection.model('PurchaseOrder', purchaseOrderSchema),
+    Counter: dbConnection.models.Counter || dbConnection.model('Counter', counterSchema),
+    Supplier: dbConnection.models.Supplier || dbConnection.model('Supplier', supplierSchema),
+    Warehouse: dbConnection.models.Warehouse || dbConnection.model('Warehouse', warehouseSchema),
+    Product: dbConnection.models.Product || dbConnection.model('Product', productSchema),
+    User: dbConnection.models.User || dbConnection.model('User', userSchema),
+  };
+};
+
 // Atomic GRN number generation using Counter model
-const generateGRNNumber = async () => {
+const generateGRNNumber = async (dbConnection) => {
   try {
+    const { Counter } = getModels(dbConnection);
     const today = new Date();
     const year = today.getFullYear();
     const month = String(today.getMonth() + 1).padStart(2, '0');
@@ -48,12 +66,13 @@ const validateGRNQuantities = (items) => {
 };
 
 // Function to check and fulfill pending out-of-stock orders when stock becomes available
-const fulfillPendingOutOfStockOrders = async (grn, session) => {
+const fulfillPendingOutOfStockOrders = async (grn, session, dbConnection) => {
   try {
     console.log(`🔍 Checking for pending out-of-stock orders to fulfill for GRN: ${grn.grnNo}`);
     
-    // Import SalesOrder model
-    const SalesOrder = (await import('../models/SalesOrder.js')).default;
+    // Get SalesOrder model from company-specific connection
+    const { salesOrderSchema } = await import('../models/SalesOrder.js');
+    const SalesOrder = dbConnection.models.SalesOrder || dbConnection.model('SalesOrder', salesOrderSchema);
     
     // Get all pending out-of-stock orders
     const pendingOrders = await SalesOrder.find({
@@ -151,8 +170,11 @@ const fulfillPendingOutOfStockOrders = async (grn, session) => {
 };
 
 export const createGRN = async (req, res) => {
-  // Start MongoDB session for transaction
-  const session = await mongoose.startSession();
+  // Get models from company-specific connection
+  const { GRN, PurchaseOrder } = getModels(req.dbConnection);
+  
+  // Start MongoDB session for transaction from company-specific connection
+  const session = await req.dbConnection.startSession();
   
   try {
     // Start transaction
@@ -243,7 +265,7 @@ export const createGRN = async (req, res) => {
     }
 
     // Generate GRN number using atomic counter
-    const grnNo = await generateGRNNumber();
+    const grnNo = await generateGRNNumber(req.dbConnection);
     console.log('Generated GRN No:', grnNo);
 
     // Determine GRN status based on received quantities
@@ -293,7 +315,7 @@ export const createGRN = async (req, res) => {
     // Create stock movements for this GRN within transaction
     // Create stock movements for this GRN within transaction
     try {
-      await StockMovementService.createStockMovementsFromGRN(grn, false, session);
+      await StockMovementService.createStockMovementsFromGRN(grn, false, session, req.dbConnection);
       console.log(`✅ Stock movements created for GRN: ${grn.grnNo}`);
     } catch (stockError) {
       console.error('Error creating stock movements:', stockError);
@@ -306,7 +328,7 @@ export const createGRN = async (req, res) => {
     
     // Check and fulfill pending out-of-stock orders
     try {
-      await fulfillPendingOutOfStockOrders(grn, session);
+      await fulfillPendingOutOfStockOrders(grn, session, req.dbConnection);
       console.log(`✅ Checked and fulfilled pending out-of-stock orders for GRN: ${grn.grnNo}`);
     } catch (fulfillError) {
       console.error('Error fulfilling pending orders:', fulfillError);
@@ -361,7 +383,8 @@ export const createGRN = async (req, res) => {
         await StockArrivalService.checkWaitingOrdersForStock(
           item.productId,
           warehouseId,
-          item.acceptedQuantity
+          item.acceptedQuantity,
+          req.dbConnection
         );
       }
       console.log(`✅ Checked waiting orders for stock arrival after GRN: ${grn.grnNo}`);
@@ -399,6 +422,9 @@ export const createGRN = async (req, res) => {
 
 export const getGRNs = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { GRN, Supplier, Warehouse, Product, User } = getModels(req.dbConnection);
+    
     const {
       page = 1,
       limit = 10,
@@ -486,6 +512,9 @@ export const getGRNs = async (req, res) => {
 // ... keep other controller functions the same
 export const getGRN = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { GRN } = getModels(req.dbConnection);
+    
     const grn = await GRN.findById(req.params.id)
       .populate('poId')
       .populate('supplierId')
@@ -515,6 +544,9 @@ export const getGRN = async (req, res) => {
 
 export const updateGRN = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { GRN } = getModels(req.dbConnection);
+    
     const { id } = req.params;
     const updateData = req.body;
 
@@ -568,7 +600,7 @@ export const updateGRN = async (req, res) => {
       // Handle stock movements for updated items
       try {
         // Delete existing stock movements for this GRN
-        await StockMovementService.deleteStockMovementsForGRN(id);
+        await StockMovementService.deleteStockMovementsForGRN(id, req.dbConnection);
         console.log(`✅ Deleted existing stock movements for GRN: ${existingGRN.grnNo}`);
 
         // Update the GRN first
@@ -584,7 +616,7 @@ export const updateGRN = async (req, res) => {
           .populate('createdBy', 'name email');
 
         // Create new stock movements for the updated GRN
-        await StockMovementService.createStockMovementsFromGRN(updatedGRN);
+        await StockMovementService.createStockMovementsFromGRN(updatedGRN, false, null, req.dbConnection);
         console.log(`✅ Created new stock movements for updated GRN: ${updatedGRN.grnNo}`);
 
         res.json({
@@ -631,6 +663,9 @@ export const updateGRN = async (req, res) => {
 
 export const deleteGRN = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { GRN } = getModels(req.dbConnection);
+    
     const grn = await GRN.findById(req.params.id);
     
     if (!grn) {
@@ -652,7 +687,7 @@ export const deleteGRN = async (req, res) => {
 
     // Delete associated stock movements first
     try {
-      await StockMovementService.deleteStockMovementsForGRN(req.params.id);
+      await StockMovementService.deleteStockMovementsForGRN(req.params.id, req.dbConnection);
       console.log(`✅ Deleted stock movements for GRN: ${grn.grnNo}`);
     } catch (stockError) {
       console.error('Error deleting stock movements:', stockError);
@@ -677,6 +712,9 @@ export const deleteGRN = async (req, res) => {
 
 export const getGRNStats = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { GRN } = getModels(req.dbConnection);
+    
     const today = new Date();
     const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
     const startOfYear = new Date(today.getFullYear(), 0, 1);
@@ -730,6 +768,9 @@ export const getGRNStats = async (req, res) => {
 
 export const getApprovedPOs = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { PurchaseOrder, GRN } = getModels(req.dbConnection);
+    
     const { search = '' } = req.query;
 
     console.log('Searching approved POs with:', search);

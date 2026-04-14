@@ -147,4 +147,7 @@ extendedSubcategorySchema.statics.getByLevel = function (
   return this.find(query).sort({ name: 1 });
 };
 
+// Export schema for multi-database support
+export { extendedSubcategorySchema };
+
 export default mongoose.model("ExtendedSubcategory", extendedSubcategorySchema);

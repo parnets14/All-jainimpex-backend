@@ -1,5 +1,12 @@
-import BankAccount from '../models/BankAccount.js';
-import CashAccount from '../models/CashAccount.js';
+import { bankAccountSchema } from '../models/BankAccount.js';
+import { cashAccountSchema } from '../models/CashAccount.js';
+
+const getModels = (dbConnection) => {
+  return {
+    BankAccount: dbConnection.models.BankAccount || dbConnection.model('BankAccount', bankAccountSchema),
+    CashAccount: dbConnection.models.CashAccount || dbConnection.model('CashAccount', cashAccountSchema)
+  };
+};
 
 /**
  * Get all bank accounts
@@ -7,6 +14,7 @@ import CashAccount from '../models/CashAccount.js';
  */
 export const getBankAccounts = async (req, res) => {
   try {
+    const { BankAccount } = getModels(req.dbConnection);
     const { isActive } = req.query;
     
     const query = {};
@@ -37,6 +45,7 @@ export const getBankAccounts = async (req, res) => {
  */
 export const getBankAccountById = async (req, res) => {
   try {
+    const { BankAccount } = getModels(req.dbConnection);
     const bankAccount = await BankAccount.findById(req.params.id);
     
     if (!bankAccount) {
@@ -67,6 +76,7 @@ export const getBankAccountById = async (req, res) => {
  */
 export const createBankAccount = async (req, res) => {
   try {
+    const { BankAccount } = getModels(req.dbConnection);
     const {
       accountName,
       accountNumber,
@@ -134,6 +144,7 @@ export const createBankAccount = async (req, res) => {
  */
 export const updateBankAccount = async (req, res) => {
   try {
+    const { BankAccount } = getModels(req.dbConnection);
     const {
       accountName,
       bankName,
@@ -188,6 +199,7 @@ export const updateBankAccount = async (req, res) => {
  */
 export const deleteBankAccount = async (req, res) => {
   try {
+    const { BankAccount } = getModels(req.dbConnection);
     const bankAccount = await BankAccount.findById(req.params.id);
     
     if (!bankAccount) {
@@ -198,7 +210,8 @@ export const deleteBankAccount = async (req, res) => {
     }
     
     // Check if account has transactions
-    const { default: Voucher } = await import('../models/Voucher.js');
+    const { voucherSchema } = await import('../models/Voucher.js');
+    const Voucher = req.dbConnection.models.Voucher || req.dbConnection.model('Voucher', voucherSchema);
     const hasTransactions = await Voucher.findOne({ bankAccount: req.params.id });
     
     if (hasTransactions) {
@@ -231,7 +244,16 @@ export const deleteBankAccount = async (req, res) => {
  */
 export const getCashAccount = async (req, res) => {
   try {
-    const cashAccount = await CashAccount.getCashAccount();
+    const { CashAccount } = getModels(req.dbConnection);
+    
+    // Find or create cash account for this company
+    let cashAccount = await CashAccount.findOne({});
+    if (!cashAccount) {
+      cashAccount = await CashAccount.create({
+        openingBalance: 0,
+        currentBalance: 0
+      });
+    }
     
     res.status(200).json({
       success: true,
@@ -254,9 +276,17 @@ export const getCashAccount = async (req, res) => {
  */
 export const updateCashAccount = async (req, res) => {
   try {
+    const { CashAccount } = getModels(req.dbConnection);
     const { openingBalance, notes } = req.body;
     
-    const cashAccount = await CashAccount.getCashAccount();
+    // Find or create cash account for this company
+    let cashAccount = await CashAccount.findOne({});
+    if (!cashAccount) {
+      cashAccount = await CashAccount.create({
+        openingBalance: 0,
+        currentBalance: 0
+      });
+    }
     
     if (openingBalance !== undefined) {
       const difference = openingBalance - cashAccount.openingBalance;

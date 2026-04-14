@@ -81,4 +81,7 @@ PurchaseWishlistSchema.pre('save', function(next) {
 PurchaseWishlistSchema.index({ createdBy: 1, isActive: 1 });
 PurchaseWishlistSchema.index({ name: 1, createdBy: 1 });
 
+// Export schema for multi-database support
+export { PurchaseWishlistSchema };
+
 export default mongoose.model('PurchaseWishlist', PurchaseWishlistSchema);

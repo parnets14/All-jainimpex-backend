@@ -83,4 +83,7 @@ fixedAssetSchema.pre('save', async function(next) {
 
 const FixedAsset = mongoose.model('FixedAsset', fixedAssetSchema);
 
+// Export schema for multi-database support
+export { fixedAssetSchema };
+
 export default FixedAsset;

@@ -1,15 +1,26 @@
-import DebitNote from "../models/DebitNote.js";
-import SupplierInvoice from "../models/SupplierInvoice.js";
-import Supplier from "../models/Supplier.js";
-import Product from "../models/Product.js";
-import GRN from "../models/GRN.js";
+import { debitNoteSchema } from "../models/DebitNote.js";
+import { supplierInvoiceSchema } from "../models/SupplierInvoice.js";
+import { supplierSchema } from "../models/Supplier.js";
+import { productSchema } from "../models/Product.js";
+import { grnSchema } from "../models/GRN.js";
 import mongoose from "mongoose";
+
+const getModels = (dbConnection) => {
+  return {
+    DebitNote: dbConnection.models.DebitNote || dbConnection.model('DebitNote', debitNoteSchema),
+    SupplierInvoice: dbConnection.models.SupplierInvoice || dbConnection.model('SupplierInvoice', supplierInvoiceSchema),
+    Supplier: dbConnection.models.Supplier || dbConnection.model('Supplier', supplierSchema),
+    Product: dbConnection.models.Product || dbConnection.model('Product', productSchema),
+    GRN: dbConnection.models.GRN || dbConnection.model('GRN', grnSchema)
+  };
+};
 
 // @desc    Get all debit notes
 // @route   GET /api/debit-notes
 // @access  Private
 export const getDebitNotes = async (req, res) => {
   try {
+    const { DebitNote } = getModels(req.dbConnection);
     const {
       page = 1,
       limit = 10,
@@ -93,6 +104,7 @@ export const getDebitNotes = async (req, res) => {
 // @access  Private
 export const getDebitNote = async (req, res) => {
   try {
+    const { DebitNote } = getModels(req.dbConnection);
     const debitNote = await DebitNote.findById(req.params.id)
       .populate("supplier")
       .populate("supplierInvoice")
@@ -128,6 +140,7 @@ export const getDebitNote = async (req, res) => {
 // @access  Private
 export const createDebitNote = async (req, res) => {
   try {
+    const { DebitNote, Supplier, SupplierInvoice } = getModels(req.dbConnection);
     const {
       supplierId,
       supplierInvoiceId,
@@ -205,7 +218,7 @@ export const createDebitNote = async (req, res) => {
       description: description,
       remarks: remarks,
       status: status,
-      createdBy: req.user.id
+      createdBy: req.user._id
     });
 
     console.log("Debit note before save:", {
@@ -262,6 +275,7 @@ export const createDebitNote = async (req, res) => {
 // @access  Private
 export const updateDebitNote = async (req, res) => {
   try {
+    const { DebitNote } = getModels(req.dbConnection);
     const { id } = req.params;
     
     // Find the debit note
@@ -328,6 +342,7 @@ export const updateDebitNote = async (req, res) => {
 // @access  Private
 export const updateDebitNoteStatus = async (req, res) => {
   try {
+    const { DebitNote } = getModels(req.dbConnection);
     const { id } = req.params;
     const { status, rejectionReason } = req.body;
 
@@ -342,10 +357,10 @@ export const updateDebitNoteStatus = async (req, res) => {
     const updateData = { status };
 
     if (status === "Approved") {
-      updateData.approvedBy = req.user.id;
+      updateData.approvedBy = req.user._id;
       updateData.approvedAt = new Date();
     } else if (status === "Rejected") {
-      updateData.rejectedBy = req.user.id;
+      updateData.rejectedBy = req.user._id;
       updateData.rejectedAt = new Date();
       updateData.rejectionReason = rejectionReason;
     }
@@ -383,6 +398,7 @@ export const updateDebitNoteStatus = async (req, res) => {
 // @access  Private
 export const deleteDebitNote = async (req, res) => {
   try {
+    const { DebitNote } = getModels(req.dbConnection);
     const debitNote = await DebitNote.findById(req.params.id);
     if (!debitNote) {
       return res.status(404).json({
@@ -420,6 +436,7 @@ export const deleteDebitNote = async (req, res) => {
 // @access  Private
 export const getDebitNoteStats = async (req, res) => {
   try {
+    const { DebitNote } = getModels(req.dbConnection);
     const { fromDate, toDate, supplier } = req.query;
     
     const query = {};
@@ -489,6 +506,7 @@ export const getDebitNoteStats = async (req, res) => {
 // @access  Private
 export const getAvailableSupplierInvoices = async (req, res) => {
   try {
+    const { SupplierInvoice, DebitNote } = getModels(req.dbConnection);
     const { supplier, excludeDebitNoteId } = req.query;
     
     const query = { 

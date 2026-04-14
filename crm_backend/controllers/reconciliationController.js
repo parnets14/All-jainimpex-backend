@@ -1,15 +1,27 @@
-import PurchaseOrder from "../models/PurchaseOrder.js";
-import SupplierInvoice from "../models/SupplierInvoice.js";
-import GRN from "../models/GRN.js";
-import SupplierPayment from "../models/SupplierPayment.js";
-import SupplierLedger from "../models/SupplierLedger.js";
-import Supplier from "../models/Supplier.js";
+import { purchaseOrderSchema } from "../models/PurchaseOrder.js";
+import { supplierInvoiceSchema } from "../models/SupplierInvoice.js";
+import { grnSchema } from "../models/GRN.js";
+import { supplierPaymentSchema } from "../models/SupplierPayment.js";
+import { supplierLedgerSchema } from "../models/SupplierLedger.js";
+import { supplierSchema } from "../models/Supplier.js";
+
+const getModels = (dbConnection) => {
+  return {
+    PurchaseOrder: dbConnection.models.PurchaseOrder || dbConnection.model('PurchaseOrder', purchaseOrderSchema),
+    SupplierInvoice: dbConnection.models.SupplierInvoice || dbConnection.model('SupplierInvoice', supplierInvoiceSchema),
+    GRN: dbConnection.models.GRN || dbConnection.model('GRN', grnSchema),
+    SupplierPayment: dbConnection.models.SupplierPayment || dbConnection.model('SupplierPayment', supplierPaymentSchema),
+    SupplierLedger: dbConnection.models.SupplierLedger || dbConnection.model('SupplierLedger', supplierLedgerSchema),
+    Supplier: dbConnection.models.Supplier || dbConnection.model('Supplier', supplierSchema)
+  };
+};
 
 // @desc    Get suppliers for reconciliation
 // @route   GET /api/reconciliation/suppliers
 // @access  Private
 export const getSuppliersForReconciliation = async (req, res) => {
   try {
+    const { Supplier } = getModels(req.dbConnection);
     const { search } = req.query;
     
     let query = {};
@@ -44,6 +56,7 @@ export const getSuppliersForReconciliation = async (req, res) => {
 // @access  Private
 export const getPurchaseOrdersForReconciliation = async (req, res) => {
   try {
+    const { PurchaseOrder } = getModels(req.dbConnection);
     const { supplierId, page = 1, limit = 20 } = req.query;
     
     const query = {};
@@ -91,6 +104,7 @@ export const getPurchaseOrdersForReconciliation = async (req, res) => {
 // @access  Private
 export const getGRNsForReconciliation = async (req, res) => {
   try {
+    const { GRN } = getModels(req.dbConnection);
     const { supplierId, poId, page = 1, limit = 20 } = req.query;
     
     const query = {};
@@ -142,6 +156,7 @@ export const getGRNsForReconciliation = async (req, res) => {
 // @access  Private
 export const getSupplierInvoicesForReconciliation = async (req, res) => {
   try {
+    const { SupplierInvoice } = getModels(req.dbConnection);
     const { supplierId, poId, grnId, page = 1, limit = 20 } = req.query;
     
     const query = {};
@@ -196,6 +211,7 @@ export const getSupplierInvoicesForReconciliation = async (req, res) => {
 // @access  Private
 export const getSupplierPaymentsForReconciliation = async (req, res) => {
   try {
+    const { SupplierPayment } = getModels(req.dbConnection);
     const { supplierId, invoiceId, page = 1, limit = 20 } = req.query;
     
     const query = {};
@@ -245,6 +261,7 @@ export const getSupplierPaymentsForReconciliation = async (req, res) => {
 // @access  Private
 export const performAutoReconciliation = async (req, res) => {
   try {
+    const { PurchaseOrder, GRN, SupplierInvoice, SupplierPayment, SupplierLedger, Supplier } = getModels(req.dbConnection);
     const { supplierId, dateRange, page = 1, limit = 10 } = req.body;
 
     if (!supplierId) {
@@ -624,6 +641,7 @@ export const performAutoReconciliation = async (req, res) => {
 // @access  Private
 export const getReconciliationSummary = async (req, res) => {
   try {
+    const { Supplier, PurchaseOrder, GRN, SupplierInvoice, SupplierPayment } = getModels(req.dbConnection);
     const { dateRange } = req.query;
     
     let dateFilter = {};

@@ -1,7 +1,19 @@
-import Category from "../models/Category.js";
-import Subcategory from "../models/Subcategory.js";
-import ExtendedSubcategory from "../models/ExtendedSubcategory.js";
-import Brand from "../models/Brand.js";
+import { categorySchema } from "../models/Category.js";
+import { productSchema } from "../models/Product.js";
+import { subcategorySchema } from "../models/Subcategory.js";
+import { extendedSubcategorySchema } from "../models/ExtendedSubcategory.js";
+import { brandSchema } from "../models/Brand.js";
+
+// Helper function to get models from company-specific connection
+const getModels = (dbConnection) => {
+  return {
+    Category: dbConnection.models.Category || dbConnection.model('Category', categorySchema),
+    Subcategory: dbConnection.models.Subcategory || dbConnection.model('Subcategory', subcategorySchema),
+    ExtendedSubcategory: dbConnection.models.ExtendedSubcategory || dbConnection.model('ExtendedSubcategory', extendedSubcategorySchema),
+    Brand: dbConnection.models.Brand || dbConnection.model('Brand', brandSchema),
+    Product: dbConnection.models.Product || dbConnection.model('Product', productSchema),
+  };
+};
 
 // Helper function for pagination
 const getPaginationOptions = (query) => {
@@ -15,6 +27,9 @@ const getPaginationOptions = (query) => {
 // Get all categories with pagination (optionally filtered by brand)
 export const getCategories = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Category, Brand, Subcategory, ExtendedSubcategory } = getModels(req.dbConnection);
+    
     const { page, limit, skip } = getPaginationOptions(req.query);
     const { search, status, brand } = req.query;
 
@@ -85,6 +100,9 @@ export const getCategories = async (req, res) => {
 // Get categories by brand
 export const getCategoriesByBrand = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Category, Brand, Subcategory, ExtendedSubcategory } = getModels(req.dbConnection);
+    
     const { page, limit, skip } = getPaginationOptions(req.query);
     const { search, status } = req.query;
     const { brandId } = req.params;
@@ -150,6 +168,9 @@ export const getCategoriesByBrand = async (req, res) => {
 // Get single category
 export const getCategory = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Category } = getModels(req.dbConnection);
+    
     const category = await Category.findById(req.params.id)
       .populate("createdBy", "name email")
       .populate("brand", "name");
@@ -177,6 +198,9 @@ export const getCategory = async (req, res) => {
 // Create new category
 export const createCategory = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Category, Brand } = getModels(req.dbConnection);
+    
     const { name, description, brand } = req.body;
 
     if (!brand) {
@@ -238,6 +262,9 @@ export const createCategory = async (req, res) => {
 // Create category under brand (nested route)
 export const createCategoryUnderBrand = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Category, Brand } = getModels(req.dbConnection);
+    
     const { name, description } = req.body;
     const { brandId } = req.params;
 
@@ -293,6 +320,9 @@ export const createCategoryUnderBrand = async (req, res) => {
 // Update category
 export const updateCategory = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Category } = getModels(req.dbConnection);
+    
     const { name, description, status } = req.body;
 
     const category = await Category.findById(req.params.id);
@@ -363,6 +393,9 @@ export const updateCategory = async (req, res) => {
 // Get child counts for a category (to show in delete confirmation)
 export const getCategoryChildCounts = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Category, Subcategory, ExtendedSubcategory } = getModels(req.dbConnection);
+    
     const categoryId = req.params.id;
 
     const category = await Category.findById(categoryId);
@@ -403,6 +436,9 @@ export const getCategoryChildCounts = async (req, res) => {
 // Delete category with cascade option
 export const deleteCategoryWithCascade = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Category, Subcategory, ExtendedSubcategory } = getModels(req.dbConnection);
+    
     const categoryId = req.params.id;
     const { cascade } = req.query; // ?cascade=true for cascade deletion
 
@@ -487,6 +523,9 @@ export const deleteCategoryWithCascade = async (req, res) => {
 // Delete category (keep old function for backward compatibility)
 export const deleteCategory = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Category, Subcategory } = getModels(req.dbConnection);
+    
     const category = await Category.findById(req.params.id);
     if (!category) {
       return res.status(404).json({
@@ -527,6 +566,9 @@ export const deleteCategory = async (req, res) => {
 // Get category statistics
 export const getCategoryStats = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Category, Subcategory, ExtendedSubcategory, Brand } = getModels(req.dbConnection);
+    
     const totalCategories = await Category.countDocuments();
     const activeCategories = await Category.countDocuments({
       status: "active",
@@ -617,6 +659,9 @@ export const getCategoryStats = async (req, res) => {
 // @access  Private
 export const changeCategoryParent = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Category, Brand, Subcategory, ExtendedSubcategory, Product } = getModels(req.dbConnection);
+    
     const { id } = req.params;
     const { newBrandId } = req.body;
 
@@ -676,7 +721,7 @@ export const changeCategoryParent = async (req, res) => {
     });
 
     // Start transaction
-    const session = await Category.startSession();
+    const session = await req.dbConnection.startSession();
     session.startTransaction();
 
     try {
@@ -702,7 +747,7 @@ export const changeCategoryParent = async (req, res) => {
       );
 
       // Update all products using this category
-      const Product = (await import("../models/Product.js")).default;
+
       await Product.updateMany(
         { category: id },
         { brand: newBrandId },
@@ -748,6 +793,9 @@ export const changeCategoryParent = async (req, res) => {
 // @access  Private
 export const getCategoryParentChangePreview = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Category, Subcategory, ExtendedSubcategory, Brand, Product } = getModels(req.dbConnection);
+    
     const { id } = req.params;
     const { newBrandId } = req.query;
 
@@ -791,7 +839,6 @@ export const getCategoryParentChangePreview = async (req, res) => {
       category: id,
     });
 
-    const Product = (await import("../models/Product.js")).default;
     const productCount = await Product.countDocuments({ category: id });
 
     res.json({

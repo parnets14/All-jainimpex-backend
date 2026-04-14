@@ -1,24 +1,47 @@
 // Sales Order Controller - Fixed duplicate function declarations
-import SalesOrder from "../models/SalesOrder.js";
-import Product from "../models/Product.js";
-import Dealer from "../models/Dealer.js";
-import Stock from "../models/Stock.js";
-import User from "../models/User.js";
-import Notification from "../models/Notification.js";
+import { salesOrderSchema } from "../models/SalesOrder.js";
+import { productSchema } from "../models/Product.js";
+import { dealerSchema } from "../models/Dealer.js";
+import { stockMovementSchema } from "../models/Stock.js";
+import { userSchema } from "../models/User.js";
+import { notificationSchema } from "../models/Notification.js";
+import { warehouseSchema } from "../models/Warehouse.js";
+import { regionSchema } from "../models/Region.js";
+import { discountMappingSchema } from "../models/DiscountMapping.js";
+import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
+import { dealerLedgerSchema } from "../models/DealerLedger.js";
+import { paymentAllocationSchema } from "../models/PaymentAllocation.js";
+
+// Helper function to get models from company-specific connection
+const getModels = (dbConnection) => {
+  return {
+    SalesOrder: dbConnection.models.SalesOrder || dbConnection.model('SalesOrder', salesOrderSchema),
+    Product: dbConnection.models.Product || dbConnection.model('Product', productSchema),
+    Dealer: dbConnection.models.Dealer || dbConnection.model('Dealer', dealerSchema),
+    StockMovement: dbConnection.models.StockMovement || dbConnection.model('StockMovement', stockMovementSchema),
+    User: dbConnection.models.User || dbConnection.model('User', userSchema),
+    Notification: dbConnection.models.Notification || dbConnection.model('Notification', notificationSchema),
+    Warehouse: dbConnection.models.Warehouse || dbConnection.model('Warehouse', warehouseSchema),
+    Region: dbConnection.models.Region || dbConnection.model('Region', regionSchema),
+    DiscountMapping: dbConnection.models.DiscountMapping || dbConnection.model('DiscountMapping', discountMappingSchema),
+    DealerInvoice: dbConnection.models.DealerInvoice || dbConnection.model('DealerInvoice', dealerInvoiceSchema),
+    DealerLedger: dbConnection.models.DealerLedger || dbConnection.model('DealerLedger', dealerLedgerSchema),
+    PaymentAllocation: dbConnection.models.PaymentAllocation || dbConnection.model('PaymentAllocation', paymentAllocationSchema),
+  };
+};
 
 /**
  * Calculate the true current credit outstanding for a dealer.
  * Matches the logic in dealerController.getDealerPaymentStatus:
  *   outstanding = (ledger debit - ledger credit) - paymentAllocations + confirmedOrdersNotYetInvoiced
  * 
+ * @param {object} dbConnection - Company-specific database connection
  * @param {string} dealerId
  * @param {string|null} excludeOrderId  - pass a sales order _id to exclude it from confirmed-orders sum (for edit re-check)
  * @returns {Promise<number>}
  */
-const getDealerCreditOutstanding = async (dealerId, excludeOrderId = null) => {
-  const DealerLedger = (await import("../models/DealerLedger.js")).default;
-  const DealerInvoice = (await import("../models/DealerInvoice.js")).default;
-  const PaymentAllocation = (await import("../models/PaymentAllocation.js")).default;
+const getDealerCreditOutstanding = async (dbConnection, dealerId, excludeOrderId = null) => {
+  const { DealerLedger, DealerInvoice, PaymentAllocation, SalesOrder, Dealer } = getModels(dbConnection);
 
   // 1. Ledger balance (invoices - payments)
   const ledgerEntries = await DealerLedger.find({ dealer: dealerId });
@@ -91,8 +114,9 @@ const getDealerCreditOutstanding = async (dealerId, excludeOrderId = null) => {
 };
 
 // Generate unique order number
-const generateOrderNumber = async () => {
+const generateOrderNumber = async (dbConnection) => {
   try {
+    const { SalesOrder } = getModels(dbConnection);
     const currentYear = new Date().getFullYear();
     const prefix = `SO-${currentYear}-`;
     
@@ -132,6 +156,9 @@ const generateOrderNumber = async () => {
 // @access  Private
 export const getSalesOrders = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { SalesOrder, Dealer, Product, User, DealerInvoice } = getModels(req.dbConnection);
+    
     const {
       page = 1,
       limit = 10,
@@ -310,7 +337,6 @@ export const getSalesOrders = async (req, res) => {
 
     // Calculate additional analytics for each order
     // Bulk-lookup which orders have invoices (one query instead of N)
-    const DealerInvoice = (await import("../models/DealerInvoice.js")).default;
     const orderIds = salesOrders.map(o => o._id);
     const invoicedOrderIds = await DealerInvoice.distinct('salesOrder', {
       salesOrder: { $in: orderIds },
@@ -359,6 +385,9 @@ export const getSalesOrders = async (req, res) => {
 // @access  Private
 export const getSalesOrder = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { SalesOrder } = getModels(req.dbConnection);
+    
     const salesOrder = await SalesOrder.findById(req.params.id)
       .populate("dealer", "name code contactPerson phone email address dealerType gstNumber panNumber")
       .populate("region", "name")
@@ -394,6 +423,9 @@ export const getSalesOrder = async (req, res) => {
 // @access  Private
 export const createSalesOrder = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { SalesOrder, Product, Dealer, StockMovement, User, Notification, Warehouse } = getModels(req.dbConnection);
+    
     console.log("Received request body:", req.body);
     
     const {
@@ -413,7 +445,7 @@ export const createSalesOrder = async (req, res) => {
     } = req.body;
 
     // Generate unique order number
-    const orderNumber = await generateOrderNumber();
+    const orderNumber = await generateOrderNumber(req.dbConnection);
     console.log("Generated order number:", orderNumber);
 
     // Validate dealer exists
@@ -508,7 +540,7 @@ export const createSalesOrder = async (req, res) => {
 
     // CREDIT LIMIT CHECK: If dealer has a credit limit and order exceeds it, force Pending status
     if (dealerData.creditLimit && dealerData.creditLimit > 0) {
-      const currentOutstanding = await getDealerCreditOutstanding(dealerData._id);
+      const currentOutstanding = await getDealerCreditOutstanding(req.dbConnection, dealerData._id);
       const newOutstanding = currentOutstanding + orderTotalAmount;
       
       console.log(`💳 Credit Limit Check (createSalesOrder):`, {
@@ -550,7 +582,6 @@ export const createSalesOrder = async (req, res) => {
 
       // Validate warehouse exists (skip if warehouse is "No Stock" for out-of-stock orders)
       if (item.warehouse && item.warehouse !== "No Stock") {
-        const Warehouse = (await import("../models/Warehouse.js")).default;
         const warehouse = await Warehouse.findById(item.warehouse);
         
         if (!warehouse) {
@@ -563,7 +594,7 @@ export const createSalesOrder = async (req, res) => {
         // For out-of-stock orders, skip stock validation
         if (!isOutOfStock) {
           // For regular orders, validate stock availability
-          const stock = await Stock.findOne({
+          const stock = await StockMovement.findOne({
             productId: item.product,
             warehouseId: item.warehouse
           });
@@ -746,7 +777,6 @@ export const createSalesOrder = async (req, res) => {
         for (const product of salesOrder.products) {
           if (product.warehouse) { // Only process if warehouse is not null
             // Get current balance before creating the movement
-            const StockMovement = (await import("../models/Stock.js")).default;
             const latestMovement = await StockMovement.findOne({
               productId: product.product,
               warehouseId: product.warehouse
@@ -776,7 +806,6 @@ export const createSalesOrder = async (req, res) => {
         for (const product of salesOrder.products) {
           if (product.warehouse) { // Only process if warehouse is not null
             // Get current balance before creating the movement
-            const StockMovement = (await import("../models/Stock.js")).default;
             const latestMovement = await StockMovement.findOne({
               productId: product.product,
               warehouseId: product.warehouse
@@ -869,6 +898,9 @@ export const createSalesOrder = async (req, res) => {
 // @access  Private
 export const updateSalesOrderStatus = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { SalesOrder, Product, StockMovement, Dealer, User, Notification, DealerLedger } = getModels(req.dbConnection);
+    
     const { status, remarks, products } = req.body; // products array with warehouse info
     const { id } = req.params;
 
@@ -953,7 +985,7 @@ export const updateSalesOrderStatus = async (req, res) => {
       if (!alreadyApproved) {
         const dealerData = await Dealer.findById(salesOrder.dealer);
         if (dealerData && dealerData.creditLimit && dealerData.creditLimit > 0) {
-          const currentOutstanding = await getDealerCreditOutstanding(salesOrder.dealer, salesOrder._id);
+          const currentOutstanding = await getDealerCreditOutstanding(req.dbConnection, salesOrder.dealer, salesOrder._id);
           const newOutstanding = currentOutstanding + salesOrder.totalAmount;
           if (newOutstanding > dealerData.creditLimit) {
             const overlimitAmount = newOutstanding - dealerData.creditLimit;
@@ -980,7 +1012,6 @@ export const updateSalesOrderStatus = async (req, res) => {
     // Special handling for Confirmed status (stock allocation) - only for in-stock orders
     if (status === "Confirmed" && !salesOrder.isOutOfStock) {
       // CRITICAL: Verify stock availability for all products BEFORE confirming
-      const StockMovement = (await import("../models/Stock.js")).default;
       const stockShortages = [];
       
       for (const product of salesOrder.products) {
@@ -1062,7 +1093,7 @@ OR wait for stock to arrive and this order will be auto-processed.`,
         for (const product of salesOrder.products) {
           if (product.warehouse) {
             // Get current balance before creating the movement
-            const StockMovement = (await import("../models/Stock.js")).default;
+
             const latestMovement = await StockMovement.findOne({
               productId: product.product,
               warehouseId: product.warehouse
@@ -1093,7 +1124,7 @@ OR wait for stock to arrive and this order will be auto-processed.`,
         for (const product of salesOrder.products) {
           if (product.warehouse) {
             // Get current balance before creating the movement
-            const StockMovement = (await import("../models/Stock.js")).default;
+
             const latestMovement = await StockMovement.findOne({
               productId: product.product,
               warehouseId: product.warehouse
@@ -1159,7 +1190,7 @@ OR wait for stock to arrive and this order will be auto-processed.`,
         console.log("Unblocking stock for cancelled/rejected order");
         
         // ALWAYS check stock movements first (more reliable than products array)
-        const StockMovement = (await import("../models/Stock.js")).default;
+
         
         // Find all OUT movements for this order that haven't been restored
         const outMovements = await StockMovement.find({
@@ -1266,7 +1297,8 @@ OR wait for stock to arrive and this order will be auto-processed.`,
             const checkResult = await StockArrivalService.checkWaitingOrdersForStock(
               outMovement.productId,
               outMovement.warehouseId,
-              req.user._id
+              0,
+              req.dbConnection
             );
             if (checkResult.notifiedOrders > 0) {
               console.log(`✅ Notified ${checkResult.notifiedOrders} waiting orders about stock availability`);
@@ -1321,8 +1353,8 @@ OR wait for stock to arrive and this order will be auto-processed.`,
       try {
         console.log(`💳 Checking for ledger entry to reverse for order ${salesOrder.orderNumber}`);
         
-        const DealerLedger = (await import("../models/DealerLedger.js")).default;
-        const Dealer = (await import("../models/Dealer.js")).default;
+
+
         
         // Check if there's a ledger entry for this order (old orders might have one)
         const existingLedgerEntry = await DealerLedger.findOne({
@@ -1447,6 +1479,9 @@ OR wait for stock to arrive and this order will be auto-processed.`,
 // @access  Private
 export const assignWarehouseToOutOfStockOrder = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { SalesOrder, Product, StockMovement } = getModels(req.dbConnection);
+    
     const { id } = req.params;
     const { products } = req.body; // Array of { productIndex, warehouse, warehouseName }
 
@@ -1480,7 +1515,7 @@ export const assignWarehouseToOutOfStockOrder = async (req, res) => {
 
       if (productUpdate.warehouse) {
         // Check stock availability
-        const stock = await Stock.findOne({
+        const stock = await StockMovement.findOne({
           productId: product.product,
           warehouseId: productUpdate.warehouse
         });
@@ -1545,6 +1580,9 @@ export const assignWarehouseToOutOfStockOrder = async (req, res) => {
 // @access  Private
 export const updateSalesOrder = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { SalesOrder, Product, Dealer, StockMovement, User, Notification, DealerLedger } = getModels(req.dbConnection);
+    
     const { id } = req.params;
     
     // Find the sales order
@@ -1608,7 +1646,7 @@ export const updateSalesOrder = async (req, res) => {
 
         // Validate warehouse stock if warehouse is specified
         if (item.warehouse) {
-          const stock = await Stock.findOne({
+          const stock = await StockMovement.findOne({
             productId: item.product,
             warehouseId: item.warehouse
           });
@@ -1761,7 +1799,7 @@ export const updateSalesOrder = async (req, res) => {
         // Check credit limit if dealer has one set
         if (dealerData.creditLimit && dealerData.creditLimit > 0) {
           // Get correct outstanding: exclude this order itself (it's being edited), then add new amount
-          const baseOutstanding = await getDealerCreditOutstanding(salesOrder.dealer, salesOrder._id);
+          const baseOutstanding = await getDealerCreditOutstanding(req.dbConnection, salesOrder.dealer, salesOrder._id);
           // baseOutstanding already excludes this order, so just add the new total
           const newOutstanding = baseOutstanding + newTotalAmount;
           const adjustedOutstanding = baseOutstanding; // for logging clarity
@@ -1881,7 +1919,7 @@ export const updateSalesOrder = async (req, res) => {
         // Live credit limit check in case it was never flagged
         const dealerForCheck = await Dealer.findById(salesOrder.dealer);
         if (dealerForCheck && dealerForCheck.creditLimit && dealerForCheck.creditLimit > 0) {
-          const currentOutstanding = await getDealerCreditOutstanding(salesOrder.dealer, salesOrder._id);
+          const currentOutstanding = await getDealerCreditOutstanding(req.dbConnection, salesOrder.dealer, salesOrder._id);
           const orderAmount = req.body.totalAmount || salesOrder.totalAmount;
           const newOutstanding = currentOutstanding + orderAmount;
 
@@ -1927,7 +1965,7 @@ export const updateSalesOrder = async (req, res) => {
       // Handle stock management for status changes (reuse logic from updateSalesOrderStatus)
       // For Confirmed status - block stock
       if (newStatus === "Confirmed" && originalStatus !== "Confirmed") {
-        const StockMovement = (await import("../models/Stock.js")).default;
+
         for (const product of req.body.products || salesOrder.products) {
           if (product.warehouse) {
             const latestMovement = await StockMovement.findOne({
@@ -1956,7 +1994,7 @@ export const updateSalesOrder = async (req, res) => {
       }
       // For Delivered status - permanently reduce stock
       else if (newStatus === "Delivered") {
-        const StockMovement = (await import("../models/Stock.js")).default;
+
         for (const product of req.body.products || salesOrder.products) {
           if (product.warehouse) {
             const latestMovement = await StockMovement.findOne({
@@ -2018,7 +2056,7 @@ export const updateSalesOrder = async (req, res) => {
       }
       // For Cancelled/Rejected - restore stock if it was Confirmed
       else if ((newStatus === "Cancelled" || newStatus === "Rejected") && originalStatus === "Confirmed") {
-        const StockMovement = (await import("../models/Stock.js")).default;
+
         for (const product of req.body.products || salesOrder.products) {
           if (product.warehouse) {
             const latestMovement = await StockMovement.findOne({
@@ -2108,7 +2146,7 @@ export const updateSalesOrder = async (req, res) => {
     // If status changed, trigger notification (for any status change)
     if (newStatus && newStatus !== originalStatus) {
       try {
-        const Notification = (await import("../models/Notification.js")).default;
+
         const statusMessages = {
           'Confirmed': `Your order ${updatedOrder.orderNumber} has been confirmed.`,
           'Processing': `Your order ${updatedOrder.orderNumber} is now being processed.`,
@@ -2162,8 +2200,8 @@ export const updateSalesOrder = async (req, res) => {
         try {
           console.log(`💳 Checking for ledger entry to reverse for order ${updatedOrder.orderNumber}`);
           
-          const DealerLedger = (await import("../models/DealerLedger.js")).default;
-          const Dealer = (await import("../models/Dealer.js")).default;
+  
+  
           
           // Check if there's a ledger entry for this order (old orders might have one)
           const existingLedgerEntry = await DealerLedger.findOne({
@@ -2240,6 +2278,9 @@ export const updateSalesOrder = async (req, res) => {
 // @access  Private
 export const deleteSalesOrder = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { SalesOrder } = getModels(req.dbConnection);
+    
     const { id } = req.params;
 
     // Find the sales order
@@ -2281,6 +2322,9 @@ export const deleteSalesOrder = async (req, res) => {
 // @access  Private
 export const getProductStock = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Product, StockMovement } = getModels(req.dbConnection);
+    
     const { productId } = req.params;
     const { warehouse } = req.query;
 
@@ -2300,7 +2344,7 @@ export const getProductStock = async (req, res) => {
     }
 
     // Get stock information
-    const stock = await Stock.find(query)
+    const stock = await StockMovement.find(query)
       .populate("warehouseId", "name code address")
       .sort({ netStock: -1 })
       .lean();
@@ -2350,6 +2394,9 @@ export const getProductStock = async (req, res) => {
 // @access  Private
 export const getSalesOrderStats = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { SalesOrder } = getModels(req.dbConnection);
+    
     const { startDate, endDate, dealer, region, type } = req.query;
 
     // Build match query for filters
@@ -2491,6 +2538,9 @@ export const getSalesOrderStats = async (req, res) => {
 // @access  Private
 export const getSalesOrdersByDealer = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { SalesOrder } = getModels(req.dbConnection);
+    
     const { dealerId } = req.params;
     const { page = 1, limit = 10, status } = req.query;
 
@@ -2576,6 +2626,9 @@ export const getSalesOrdersByDealer = async (req, res) => {
 // @access  Private
 export const getOverdueSalesOrders = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { SalesOrder } = getModels(req.dbConnection);
+    
     const { page = 1, limit = 10 } = req.query;
     const today = new Date();
 
@@ -2633,6 +2686,9 @@ export const getOverdueSalesOrders = async (req, res) => {
 // @access  Private
 export const getPendingQuantities = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { SalesOrder } = getModels(req.dbConnection);
+    
     const { productId, warehouseId } = req.query;
 
     // Build query for out-of-stock orders that are still pending (exclude expired)
@@ -2726,7 +2782,9 @@ export const getPendingQuantities = async (req, res) => {
  * Helper function to create a single sales order
  * Extracted from createSalesOrder for reusability in auto-split logic
  */
-async function createSingleSalesOrder(orderData, userId) {
+async function createSingleSalesOrder(dbConnection, orderData, userId) {
+  const { SalesOrder, Product, Dealer, StockMovement, User, Notification, Warehouse } = getModels(dbConnection);
+  
   const {
     dealer,
     region,
@@ -2751,7 +2809,7 @@ async function createSingleSalesOrder(orderData, userId) {
   } = orderData;
 
   // Generate unique order number
-  const orderNumber = await generateOrderNumber();
+  const orderNumber = await generateOrderNumber(dbConnection);
   console.log("Generated order number:", orderNumber);
 
   // Validate dealer exists
@@ -2792,7 +2850,6 @@ async function createSingleSalesOrder(orderData, userId) {
 
     // Validate warehouse exists (skip if warehouse is "No Stock" for out-of-stock orders)
     if (item.warehouse && item.warehouse !== "No Stock") {
-      const Warehouse = (await import("../models/Warehouse.js")).default;
       const warehouse = await Warehouse.findById(item.warehouse);
       
       if (!warehouse) {
@@ -2802,7 +2859,7 @@ async function createSingleSalesOrder(orderData, userId) {
       // For out-of-stock orders, skip stock validation
       if (!isOutOfStock) {
         // For regular orders, validate stock availability
-        const stock = await Stock.findOne({
+        const stock = await StockMovement.findOne({
           productId: item.product,
           warehouseId: item.warehouse
         });
@@ -2889,7 +2946,7 @@ async function createSingleSalesOrder(orderData, userId) {
     });
     
     // Get dealer's current outstanding balance (correct calculation)
-    const currentOutstanding = await getDealerCreditOutstanding(dealer);
+    const currentOutstanding = await getDealerCreditOutstanding(dbConnection, dealer);
     const newOutstanding = currentOutstanding + inStockTotalAmount;
     
     console.log(`💳 Credit Limit Check (Single Order):`, {
@@ -2989,7 +3046,6 @@ async function createSingleSalesOrder(orderData, userId) {
       console.log("Order created with Confirmed status - blocking stock");
       for (const product of salesOrder.products) {
         if (product.warehouse) {
-          const StockMovement = (await import("../models/Stock.js")).default;
           const latestMovement = await StockMovement.findOne({
             productId: product.product,
             warehouseId: product.warehouse
@@ -3017,7 +3073,6 @@ async function createSingleSalesOrder(orderData, userId) {
       console.log("Order created with Delivered status - permanently reducing stock");
       for (const product of salesOrder.products) {
         if (product.warehouse) {
-          const StockMovement = (await import("../models/Stock.js")).default;
           const latestMovement = await StockMovement.findOne({
             productId: product.product,
             warehouseId: product.warehouse
@@ -3062,6 +3117,9 @@ async function createSingleSalesOrder(orderData, userId) {
  */
 export const createSalesOrderWithAutoSplit = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { SalesOrder, Product, Dealer, StockMovement, User, Notification } = getModels(req.dbConnection);
+    
     console.log("🚀 createSalesOrderWithAutoSplit called");
     console.log("Request body:", JSON.stringify(req.body, null, 2));
     
@@ -3116,7 +3174,7 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
         creditDaysApplied: dealerData.creditDaysRegular || dealerData.creditDays || 30
       };
       
-      const regularOrder = await createSingleSalesOrder(regularOrderData, req.user._id);
+      const regularOrder = await createSingleSalesOrder(req.dbConnection, regularOrderData, req.user._id);
       createdOrders.push(regularOrder);
       console.log("✅ Regular Sales Order created:", regularOrder.orderNumber);
     }
@@ -3133,7 +3191,7 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
         creditDaysApplied: dealerData.creditDaysCD || dealerData.creditDays || 30
       };
       
-      const cdOrder = await createSingleSalesOrder(cdOrderData, req.user._id);
+      const cdOrder = await createSingleSalesOrder(req.dbConnection, cdOrderData, req.user._id);
       createdOrders.push(cdOrder);
       console.log("✅ CD Sales Order created:", cdOrder.orderNumber);
     }
@@ -3199,6 +3257,7 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
 // @access  Private
 export const setOrderExpiry = async (req, res) => {
   try {
+    const { SalesOrder } = getModels(req.dbConnection);
     const { expiryDate, reason } = req.body;
     const { id } = req.params;
 
@@ -3271,6 +3330,7 @@ export const setOrderExpiry = async (req, res) => {
 // @access  Private
 export const extendOrderExpiry = async (req, res) => {
   try {
+    const { SalesOrder } = getModels(req.dbConnection);
     const { newExpiryDate, reason } = req.body;
     const { id } = req.params;
 
@@ -3350,6 +3410,7 @@ export const extendOrderExpiry = async (req, res) => {
 // @access  Private
 export const expireOrderNow = async (req, res) => {
   try {
+    const { SalesOrder } = getModels(req.dbConnection);
     const { reason } = req.body;
     const { id } = req.params;
 
@@ -3405,6 +3466,7 @@ export const expireOrderNow = async (req, res) => {
 // @access  Private
 export const getOrdersExpiringSoon = async (req, res) => {
   try {
+    const { SalesOrder } = getModels(req.dbConnection);
     const { days = 1 } = req.query; // Default to 1 day
 
     const now = new Date();
@@ -3459,6 +3521,7 @@ export const getOrdersExpiringSoon = async (req, res) => {
 // @access  Private
 export const cancelOrderExpiry = async (req, res) => {
   try {
+    const { SalesOrder } = getModels(req.dbConnection);
     const { reason } = req.body;
     const { id } = req.params;
 
@@ -3513,6 +3576,7 @@ export const cancelOrderExpiry = async (req, res) => {
 // @access  Private (Super Admin only)
 export const approveCreditOverlimit = async (req, res) => {
   try {
+    const { SalesOrder } = getModels(req.dbConnection);
     const { approvalNotes } = req.body;
     const { id } = req.params;
 
@@ -3576,6 +3640,7 @@ export const approveCreditOverlimit = async (req, res) => {
 // Check stock availability for out-of-stock orders (called after purchase order received)
 export const checkStockAvailabilityForOutOfStockOrders = async (req, res) => {
   try {
+    const { SalesOrder, StockMovement, Notification } = getModels(req.dbConnection);
     const { productIds, warehouseId } = req.body;
 
     console.log('🔍 Checking stock availability for products:', productIds);
@@ -3600,7 +3665,7 @@ export const checkStockAvailabilityForOutOfStockOrders = async (req, res) => {
 
       // Check each product in the order
       for (const orderProduct of order.products) {
-        const stock = await Stock.findOne({
+        const stock = await StockMovement.findOne({
           productId: orderProduct.product,
           warehouseId: warehouseId
         });
@@ -3665,6 +3730,7 @@ export const checkStockAvailabilityForOutOfStockOrders = async (req, res) => {
 // Auto-expire orders that have passed their expiry date
 export const autoExpireOrders = async (req, res) => {
   try {
+    const { SalesOrder } = getModels(req.dbConnection);
     const now = new Date();
     
     // Find all orders with expiry date in the past that are not yet expired
@@ -3719,7 +3785,7 @@ export const getOrderStockStatus = async (req, res) => {
   try {
     const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
     
-    const result = await StockArrivalService.checkOrderStockStatus(req.params.id);
+    const result = await StockArrivalService.checkOrderStockStatus(req.params.id, req.dbConnection);
     
     res.json(result);
   } catch (error) {
@@ -3739,7 +3805,7 @@ export const refreshOrderStockStatus = async (req, res) => {
   try {
     const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
     
-    const result = await StockArrivalService.checkOrderStockStatus(req.params.id);
+    const result = await StockArrivalService.checkOrderStockStatus(req.params.id, req.dbConnection);
     
     res.json({
       success: true,
@@ -3775,7 +3841,7 @@ export const refreshOrderStockStatusByOrderNumber = async (req, res) => {
     
     const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
     
-    const result = await StockArrivalService.checkOrderStockStatus(order._id);
+    const result = await StockArrivalService.checkOrderStockStatus(order._id, req.dbConnection);
     
     res.json({
       success: true,
@@ -3797,6 +3863,7 @@ export const refreshOrderStockStatusByOrderNumber = async (req, res) => {
 // @access  Private (Admin only)
 export const migrateOrderStockStatus = async (req, res) => {
   try {
+    const { SalesOrder } = getModels(req.dbConnection);
     // Find all orders where overallStatus is 'unknown' or orderStockStatus is missing
     const orders = await SalesOrder.find({
       $or: [
@@ -3910,6 +3977,7 @@ export const autoRefreshAllStockStatus = async (req, res) => {
 // @access  Private
 export const partialDispatch = async (req, res) => {
   try {
+    const { SalesOrder, DealerInvoice, StockMovement } = getModels(req.dbConnection);
     const { id } = req.params;
     const { products, action } = req.body;
     // products: [{ productId, newQty, reason }]
@@ -3920,7 +3988,6 @@ export const partialDispatch = async (req, res) => {
     if (salesOrder.status !== 'Confirmed') return res.status(400).json({ success: false, message: 'Partial dispatch only allowed for Confirmed orders' });
 
     // Check no APPROVED invoice exists (draft invoices don't block partial dispatch)
-    const DealerInvoice = (await import("../models/DealerInvoice.js")).default;
     const existingInvoice = await DealerInvoice.findOne({
       salesOrder: id,
       status: { $nin: ['Cancelled', 'Rejected', 'Draft'] },
@@ -3928,7 +3995,6 @@ export const partialDispatch = async (req, res) => {
     });
     if (existingInvoice) return res.status(400).json({ success: false, message: 'Cannot do partial dispatch — invoice already created for this order' });
 
-    const StockMovement = (await import("../models/Stock.js")).default;
     const deviations = [];
     const remainingProducts = []; // for new order
 
@@ -4113,6 +4179,7 @@ export const partialDispatch = async (req, res) => {
 // @access  Private
 export const getDispatchDeviations = async (req, res) => {
   try {
+    const { SalesOrder } = getModels(req.dbConnection);
     const {
       fromDate, toDate, search, dealer,
       page = 1, limit = 20
@@ -4186,6 +4253,9 @@ export const getDispatchDeviations = async (req, res) => {
 
 export const migrateDiscountTotals = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { SalesOrder } = getModels(req.dbConnection);
+    
     const orders = await SalesOrder.find({}).lean();
     let fixed = 0;
     let skipped = 0;
@@ -4240,3 +4310,5 @@ export const migrateDiscountTotals = async (req, res) => {
     res.status(500).json({ success: false, message: 'Migration failed', error: error.message });
   }
 };
+
+

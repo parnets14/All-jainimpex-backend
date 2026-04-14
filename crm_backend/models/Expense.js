@@ -49,4 +49,7 @@ expenseSchema.index({ date: -1 });
 expenseSchema.index({ type: 1 });
 expenseSchema.index({ status: 1 });
 
+// Export schema for multi-database support
+export { expenseSchema };
+
 export default mongoose.model("Expense", expenseSchema);

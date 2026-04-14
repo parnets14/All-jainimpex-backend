@@ -6,8 +6,12 @@ import {
   updateDealerType,
   deleteDealerType
 } from '../controllers/dealerTypeController.js';
+import { protect } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
+
+// All routes are protected
+router.use(protect);
 
 // Create a new dealer type
 router.post('/', createDealerType);

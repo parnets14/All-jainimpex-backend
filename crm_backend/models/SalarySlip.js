@@ -64,4 +64,7 @@ const salarySlipSchema = new mongoose.Schema({
 // Compound index to ensure only one salary slip per employee per month
 salarySlipSchema.index({ employeeId: 1, month: 1, year: 1 }, { unique: true });
 
+// Export schema for multi-database support
+export { salarySlipSchema };
+
 export default mongoose.model("SalarySlip", salarySlipSchema);

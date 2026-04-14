@@ -223,4 +223,7 @@ purchaseDiscountMappingSchema.virtual('discountSummary').get(function() {
   return summary || 'No discounts configured';
 });
 
+// Export schema for multi-database support
+export { purchaseDiscountMappingSchema };
+
 export default mongoose.model('PurchaseDiscountMapping', purchaseDiscountMappingSchema);

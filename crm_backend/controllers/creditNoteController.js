@@ -1,11 +1,21 @@
-import CreditNote from "../models/CreditNote.js";
-import DealerInvoice from "../models/DealerInvoice.js";
-import Dealer from "../models/Dealer.js";
-import DealerLedger from "../models/DealerLedger.js";
+import { creditNoteSchema } from "../models/CreditNote.js";
+import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
+import { dealerSchema } from "../models/Dealer.js";
+import { dealerLedgerSchema } from "../models/DealerLedger.js";
+
+const getModels = (dbConnection) => {
+  return {
+    CreditNote: dbConnection.models.CreditNote || dbConnection.model('CreditNote', creditNoteSchema),
+    DealerInvoice: dbConnection.models.DealerInvoice || dbConnection.model('DealerInvoice', dealerInvoiceSchema),
+    Dealer: dbConnection.models.Dealer || dbConnection.model('Dealer', dealerSchema),
+    DealerLedger: dbConnection.models.DealerLedger || dbConnection.model('DealerLedger', dealerLedgerSchema)
+  };
+};
 
 // Create Credit Note
 export const createCreditNote = async (req, res) => {
   try {
+    const { CreditNote, DealerInvoice, DealerLedger } = getModels(req.dbConnection);
     const {
       originalInvoiceId,
       creditAmount,
@@ -197,6 +207,7 @@ export const createCreditNote = async (req, res) => {
 // Get All Credit Notes
 export const getAllCreditNotes = async (req, res) => {
   try {
+    const { CreditNote } = getModels(req.dbConnection);
     const {
       page = 1,
       limit = 10,
@@ -285,6 +296,7 @@ export const getAllCreditNotes = async (req, res) => {
 // Get Credit Note by ID
 export const getCreditNoteById = async (req, res) => {
   try {
+    const { CreditNote } = getModels(req.dbConnection);
     const { id } = req.params;
 
     const creditNote = await CreditNote.findById(id)
@@ -318,6 +330,7 @@ export const getCreditNoteById = async (req, res) => {
 // Update Credit Note
 export const updateCreditNote = async (req, res) => {
   try {
+    const { CreditNote } = getModels(req.dbConnection);
     const { id } = req.params;
     const {
       creditAmount,
@@ -343,7 +356,7 @@ export const updateCreditNote = async (req, res) => {
 
     // If status is being changed to Approved or Rejected, set approval info
     if (status && status !== creditNote.status && (status === "Approved" || status === "Rejected")) {
-      creditNote.approvedBy = req.user.id;
+      creditNote.approvedBy = req.user._id;
       creditNote.approvedAt = new Date();
       
       if (status === "Rejected" && rejectionReason) {
@@ -390,6 +403,7 @@ export const updateCreditNote = async (req, res) => {
 // Delete Credit Note
 export const deleteCreditNote = async (req, res) => {
   try {
+    const { CreditNote } = getModels(req.dbConnection);
     const { id } = req.params;
 
     const creditNote = await CreditNote.findById(id);
@@ -428,6 +442,7 @@ export const deleteCreditNote = async (req, res) => {
 // Get Credit Notes for a specific dealer
 export const getCreditNotesByDealer = async (req, res) => {
   try {
+    const { CreditNote } = getModels(req.dbConnection);
     const { dealerId } = req.params;
     const { status } = req.query;
 
@@ -459,6 +474,7 @@ export const getCreditNotesByDealer = async (req, res) => {
 // Get Credit Notes for a specific invoice
 export const getCreditNotesByInvoice = async (req, res) => {
   try {
+    const { CreditNote } = getModels(req.dbConnection);
     const { invoiceId } = req.params;
 
     const creditNotes = await CreditNote.find({ originalInvoice: invoiceId })
@@ -490,6 +506,7 @@ export const getCreditNotesByInvoice = async (req, res) => {
 // Get Credit Note Statistics
 export const getCreditNoteStats = async (req, res) => {
   try {
+    const { CreditNote } = getModels(req.dbConnection);
     const { dealerId, fromDate, toDate } = req.query;
 
     const filter = {};

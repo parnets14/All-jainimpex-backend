@@ -387,4 +387,7 @@ supplierInvoiceSchema.index({ paymentStatus: 1 });
 supplierInvoiceSchema.index({ grn: 1 });
 supplierInvoiceSchema.index({ purchaseOrder: 1 });
 
+// Export schema for multi-database support
+export { supplierInvoiceSchema };
+
 export default mongoose.model("SupplierInvoice", supplierInvoiceSchema);

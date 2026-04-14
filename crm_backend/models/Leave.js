@@ -36,4 +36,7 @@ const leaveSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Export schema for multi-database support
+export { leaveSchema };
+
 export default mongoose.model('Leave', leaveSchema);

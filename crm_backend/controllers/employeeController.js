@@ -1,7 +1,32 @@
-import Employee from "../models/Employee.js";
+import { employeeSchema } from "../models/Employee.js";
 import { uploadSingle, handleUploadErrors } from "../middleware/upload.js";
 import path from "path";
 import fs from "fs";
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    Employee: dbConnection.models.Employee || 
+              dbConnection.model('Employee', employeeSchema)
+  };
+};
+
+// Helper function to generate employee ID
+const generateEmployeeId = async (dbConnection) => {
+  try {
+    const { Employee } = getModels(dbConnection);
+    const lastEmployee = await Employee.findOne().sort({ createdAt: -1 });
+    if (lastEmployee && lastEmployee.empId) {
+      const lastNumber = parseInt(lastEmployee.empId.split('-')[1]);
+      return `EMP-${String(lastNumber + 1).padStart(4, '0')}`;
+    }
+    return 'EMP-0001';
+  } catch (error) {
+    console.error('Error generating employee ID:', error);
+    // Fallback ID
+    return `EMP-${Date.now().toString().slice(-4)}`;
+  }
+};
 
 // Helper function to safely parse numbers
 const safeParseFloat = (value, defaultValue = 0) => {
@@ -45,6 +70,8 @@ const generateFaceEmbedding = async (imagePath) => {
 // Get all employees with pagination and search
 export const getEmployees = async (req, res) => {
   try {
+    const { Employee } = getModels(req.dbConnection);
+    
     const {
       page = 1,
       limit = 10,
@@ -106,6 +133,8 @@ export const getEmployees = async (req, res) => {
 // Get single employee
 export const getEmployee = async (req, res) => {
   try {
+    const { Employee } = getModels(req.dbConnection);
+    
     const employee = await Employee.findById(req.params.id);
 
     if (!employee) {
@@ -131,6 +160,8 @@ export const getEmployee = async (req, res) => {
 // Create new employee with face image
 export const createEmployee = async (req, res) => {
   try {
+    const { Employee } = getModels(req.dbConnection);
+    
     console.log("Request body:", req.body);
     console.log("Request file:", req.file);
 
@@ -189,7 +220,7 @@ export const createEmployee = async (req, res) => {
     }
 
     // Generate employee ID
-    const empId = await Employee.generateEmployeeId();
+    const empId = await generateEmployeeId(req.dbConnection);
 
     // Check if employee with same account number exists
     const existingEmployee = await Employee.findOne({ accountNumber });
@@ -353,6 +384,8 @@ export const createEmployee = async (req, res) => {
 // Update employee with optional face image
 export const updateEmployee = async (req, res) => {
   try {
+    const { Employee } = getModels(req.dbConnection);
+    
     console.log("Update request body:", req.body);
     console.log("Update request file:", req.file);
 
@@ -577,6 +610,8 @@ export const updateEmployee = async (req, res) => {
 // Delete employee
 export const deleteEmployee = async (req, res) => {
   try {
+    const { Employee } = getModels(req.dbConnection);
+    
     const employee = await Employee.findById(req.params.id);
 
     if (!employee) {
@@ -609,6 +644,8 @@ export const deleteEmployee = async (req, res) => {
 // Get employee statistics
 export const getEmployeeStats = async (req, res) => {
   try {
+    const { Employee } = getModels(req.dbConnection);
+    
     const totalEmployees = await Employee.countDocuments();
     const activeEmployees = await Employee.countDocuments({ status: "Active" });
 
@@ -657,6 +694,8 @@ export const getEmployeeStats = async (req, res) => {
 // Update face embedding for existing employee
 export const updateFaceEmbedding = async (req, res) => {
   try {
+    const { Employee } = getModels(req.dbConnection);
+    
     const employee = await Employee.findById(req.params.id);
 
     if (!employee) {
@@ -706,6 +745,8 @@ export const updateFaceEmbedding = async (req, res) => {
 // Serve employee face image
 export const getEmployeeFaceImage = async (req, res) => {
   try {
+    const { Employee } = getModels(req.dbConnection);
+    
     const employee = await Employee.findById(req.params.id);
 
     if (!employee || !employee.faceImage) {

@@ -1,11 +1,28 @@
 // purchaseOrderController.js - Fixed version
-import PurchaseOrder from "../models/PurchaseOrder.js";
-import Product from "../models/Product.js";
-import Supplier from "../models/Supplier.js";
-import Warehouse from "../models/Warehouse.js";
+import { purchaseOrderSchema } from "../models/PurchaseOrder.js";
+import { productSchema } from "../models/Product.js";
+import { supplierSchema } from "../models/Supplier.js";
+import { warehouseSchema } from "../models/Warehouse.js";
+import { dealerPricingSchema } from "../models/DealerPricing.js";
+import { dealerPricingHistorySchema } from "../models/DealerPricingHistory.js";
+import { PurchaseWishlistSchema } from "../models/PurchaseWishlist.js";
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    PurchaseOrder: dbConnection.models.PurchaseOrder || dbConnection.model('PurchaseOrder', purchaseOrderSchema),
+    Product: dbConnection.models.Product || dbConnection.model('Product', productSchema),
+    Supplier: dbConnection.models.Supplier || dbConnection.model('Supplier', supplierSchema),
+    Warehouse: dbConnection.models.Warehouse || dbConnection.model('Warehouse', warehouseSchema),
+    DealerPricing: dbConnection.models.DealerPricing || dbConnection.model('DealerPricing', dealerPricingSchema),
+    DealerPricingHistory: dbConnection.models.DealerPricingHistory || dbConnection.model('DealerPricingHistory', dealerPricingHistorySchema),
+    PurchaseWishlist: dbConnection.models.PurchaseWishlist || dbConnection.model('PurchaseWishlist', PurchaseWishlistSchema),
+  };
+};
 
 // Generate PO Number
-const generatePONumber = async () => {
+const generatePONumber = async (dbConnection) => {
+  const { PurchaseOrder } = getModels(dbConnection);
   const date = new Date();
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -24,6 +41,7 @@ const generatePONumber = async () => {
 
 // Create Purchase Order - FIXED VERSION
 export const createPurchaseOrder = async (req, res) => {
+  const { PurchaseOrder, Product, Supplier, Warehouse } = getModels(req.dbConnection);
   try {
     console.log("📝 [START] Creating purchase order");
 
@@ -124,7 +142,7 @@ export const createPurchaseOrder = async (req, res) => {
     }
 
     // Generate PO number
-    const poNumber = await generatePONumber();
+    const poNumber = await generatePONumber(req.dbConnection);
     console.log("📝 [PO_NUMBER] Generated:", poNumber);
 
     // Ensure user is authenticated (should be guaranteed by protect middleware)
@@ -242,6 +260,7 @@ export const createPurchaseOrder = async (req, res) => {
 // Other controller methods remain the same...
 // purchaseOrderController.js - Update getPurchaseOrders with pagination
 export const getPurchaseOrders = async (req, res) => {
+  const { PurchaseOrder } = getModels(req.dbConnection);
   try {
     console.log("📦 [START] Getting purchase orders");
 
@@ -396,6 +415,7 @@ export const getPurchaseOrders = async (req, res) => {
 
 // Update Purchase Order - FIXED
 export const updatePurchaseOrder = async (req, res) => {
+  const { PurchaseOrder, Product, Supplier, Warehouse } = getModels(req.dbConnection);
   try {
     console.log("🔄 [START] Updating purchase order:", req.params.id);
 
@@ -503,6 +523,7 @@ export const updatePurchaseOrder = async (req, res) => {
 
 // Other methods (getPurchaseOrderById, deletePurchaseOrder, etc.) remain the same
 export const getPurchaseOrderById = async (req, res) => {
+  const { PurchaseOrder } = getModels(req.dbConnection);
   try {
     console.log("🔍 [START] Getting purchase order by ID:", req.params.id);
 
@@ -541,6 +562,7 @@ export const getPurchaseOrderById = async (req, res) => {
 };
 
 export const deletePurchaseOrder = async (req, res) => {
+  const { PurchaseOrder } = getModels(req.dbConnection);
   try {
     console.log("🗑️ [START] Deleting purchase order:", req.params.id);
 
@@ -580,6 +602,7 @@ export const deletePurchaseOrder = async (req, res) => {
 };
 
 export const updatePurchaseOrderStatus = async (req, res) => {
+  const { PurchaseOrder, DealerPricing, DealerPricingHistory, Product, PurchaseWishlist } = getModels(req.dbConnection);
   try {
     const { status } = req.body;
 
@@ -608,10 +631,6 @@ export const updatePurchaseOrderStatus = async (req, res) => {
     if (status === 'Approved' && oldStatus !== 'Approved') {
       try {
         console.log(`🔄 Auto-syncing dealer pricing for approved PO: ${purchaseOrder.poNumber}`);
-        
-        // Import DealerPricing model
-        const { default: DealerPricing } = await import('../models/DealerPricing.js');
-        const { default: DealerPricingHistory } = await import('../models/DealerPricingHistory.js');
         
         // Update pricing for each product in the PO
         for (const line of purchaseOrder.lines) {
@@ -651,7 +670,6 @@ export const updatePurchaseOrderStatus = async (req, res) => {
                 console.log(`✅ Updated pricing for product ${line.productId}: ₹${oldPurchasePrice} → ₹${line.price}`);
               } else {
                 // Create new pricing record if it doesn't exist
-                const { default: Product } = await import('../models/Product.js');
                 const product = await Product.findById(line.productId);
                 
                 if (product) {
@@ -707,9 +725,6 @@ export const updatePurchaseOrderStatus = async (req, res) => {
       try {
         console.log(`🗑️ Auto-removing wishlists used for approved PO: ${purchaseOrder.poNumber}`);
         
-        // Import PurchaseWishlist model
-        const { default: PurchaseWishlist } = await import('../models/PurchaseWishlist.js');
-        
         // Find wishlists that contain the same products as this PO
         const poProductIds = purchaseOrder.lines.map(line => line.productId.toString());
         
@@ -764,6 +779,7 @@ export const updatePurchaseOrderStatus = async (req, res) => {
 };
 
 export const getPurchaseOrderStats = async (req, res) => {
+  const { PurchaseOrder } = getModels(req.dbConnection);
   try {
     const { startDate, endDate } = req.query;
 
@@ -820,6 +836,7 @@ export const getPurchaseOrderStats = async (req, res) => {
 
 // Get Last Purchase Price for a Product
 export const getLastPurchasePrice = async (req, res) => {
+  const { PurchaseOrder } = getModels(req.dbConnection);
   try {
     const { productId } = req.params;
     const { supplierId } = req.query; // Optional: filter by supplier

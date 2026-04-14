@@ -58,5 +58,8 @@ chatMessageSchema.index({ conversation: 1, createdAt: 1 });
 
 const ChatMessage = mongoose.model("ChatMessage", chatMessageSchema);
 
+// Export schema for multi-database support
+export { chatMessageSchema };
+
 export default ChatMessage;
 

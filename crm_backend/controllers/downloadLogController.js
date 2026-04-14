@@ -1,9 +1,20 @@
-import DownloadLog from "../models/DownloadLog.js";
-import User from "../models/User.js";
+import { downloadLogSchema } from "../models/DownloadLog.js";
+import { userSchema } from "../models/User.js";
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    DownloadLog: dbConnection.models.DownloadLog || 
+                 dbConnection.model('DownloadLog', downloadLogSchema),
+    User: dbConnection.models.User || 
+          dbConnection.model('User', userSchema)
+  };
+};
 
 // Get all download logs with filters and pagination
 export const getDownloadLogs = async (req, res) => {
   try {
+    const { DownloadLog } = getModels(req.dbConnection);
     const {
       page = 1,
       limit = 10,
@@ -104,6 +115,7 @@ export const getDownloadLogs = async (req, res) => {
 // Get download log by ID
 export const getDownloadLog = async (req, res) => {
   try {
+    const { DownloadLog } = getModels(req.dbConnection);
     const { id } = req.params;
 
     const downloadLog = await DownloadLog.findById(id).populate(
@@ -134,6 +146,8 @@ export const getDownloadLog = async (req, res) => {
 // Create download log
 export const createDownloadLog = async (req, res) => {
   try {
+    const { DownloadLog } = getModels(req.dbConnection);
+    
     const {
       user,
       username,
@@ -179,6 +193,7 @@ export const createDownloadLog = async (req, res) => {
 // Get download logs statistics
 export const getDownloadLogStats = async (req, res) => {
   try {
+    const { DownloadLog } = getModels(req.dbConnection);
     const { period = "7d" } = req.query;
 
     // Calculate date range based on period
@@ -317,6 +332,7 @@ export const getDownloadLogStats = async (req, res) => {
 // Delete download log
 export const deleteDownloadLog = async (req, res) => {
   try {
+    const { DownloadLog } = getModels(req.dbConnection);
     const { id } = req.params;
 
     const downloadLog = await DownloadLog.findByIdAndDelete(id);
@@ -344,6 +360,7 @@ export const deleteDownloadLog = async (req, res) => {
 // Clean up old download logs (for maintenance)
 export const cleanupOldDownloadLogs = async (req, res) => {
   try {
+    const { DownloadLog } = getModels(req.dbConnection);
     const { daysToKeep = 90 } = req.body;
 
     const cutoffDate = new Date();
@@ -370,6 +387,8 @@ export const cleanupOldDownloadLogs = async (req, res) => {
 // Clear all download logs
 export const clearAllDownloadLogs = async (req, res) => {
   try {
+    const { DownloadLog } = getModels(req.dbConnection);
+    
     const result = await DownloadLog.deleteMany({});
 
     res.json({

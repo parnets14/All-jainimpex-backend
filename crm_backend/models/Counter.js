@@ -23,4 +23,7 @@ counterSchema.statics.getNextSequence = async function(counterId) {
   return counter.sequence;
 };
 
+// Export schema for multi-database support
+export { counterSchema };
+
 export default mongoose.model('Counter', counterSchema);

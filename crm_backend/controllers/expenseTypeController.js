@@ -1,11 +1,20 @@
-import ExpenseType from "../models/ExpenseType.js";
-import Expense from "../models/Expense.js";
+import { expenseTypeSchema } from "../models/ExpenseType.js";
+import { expenseSchema } from "../models/Expense.js";
 import asyncHandler from "express-async-handler";
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    ExpenseType: dbConnection.models.ExpenseType || dbConnection.model('ExpenseType', expenseTypeSchema),
+    Expense: dbConnection.models.Expense || dbConnection.model('Expense', expenseSchema)
+  };
+};
 
 // @desc    Create new expense type
 // @route   POST /api/expense-types
 // @access  Private
 export const createExpenseType = asyncHandler(async (req, res) => {
+  const { ExpenseType } = getModels(req.dbConnection);
   const { name, description } = req.body;
 
   const expenseTypeExists = await ExpenseType.findOne({ name });
@@ -30,6 +39,7 @@ export const createExpenseType = asyncHandler(async (req, res) => {
 // @route   GET /api/expense-types
 // @access  Private
 export const getExpenseTypes = asyncHandler(async (req, res) => {
+  const { ExpenseType } = getModels(req.dbConnection);
   const { page = 1, limit = 10, search = "" } = req.query;
 
   const query = {
@@ -62,6 +72,7 @@ export const getExpenseTypes = asyncHandler(async (req, res) => {
 // @route   PUT /api/expense-types/:id
 // @access  Private
 export const updateExpenseType = asyncHandler(async (req, res) => {
+  const { ExpenseType } = getModels(req.dbConnection);
   const { name, description, isActive } = req.body;
 
   let expenseType = await ExpenseType.findById(req.params.id);
@@ -98,6 +109,7 @@ export const updateExpenseType = asyncHandler(async (req, res) => {
 // @route   DELETE /api/expense-types/:id
 // @access  Private
 export const deleteExpenseType = asyncHandler(async (req, res) => {
+  const { ExpenseType, Expense } = getModels(req.dbConnection);
   const expenseType = await ExpenseType.findById(req.params.id);
   if (!expenseType) {
     res.status(404);

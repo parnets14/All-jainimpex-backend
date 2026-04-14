@@ -1,6 +1,13 @@
 // controllers/attendanceController.js
-import Attendance from '../models/Attendance.js';
-import Employee from '../models/Employee.js';
+import { attendanceSchema } from '../models/Attendance.js';
+import { employeeSchema } from '../models/Employee.js';
+
+const getModels = (dbConnection) => {
+  return {
+    Attendance: dbConnection.models.Attendance || dbConnection.model('Attendance', attendanceSchema),
+    Employee: dbConnection.models.Employee || dbConnection.model('Employee', employeeSchema)
+  };
+};
 
 // Helper function to get start and end of day
 const getDayRange = (date) => {
@@ -16,6 +23,7 @@ const getDayRange = (date) => {
 // Punch in
 export const punchIn = async (req, res) => {
   try {
+    const { Attendance, Employee } = getModels(req.dbConnection);
     const { employeeId, location, coordinates, image } = req.body;
     const today = new Date();
     const { start, end } = getDayRange(today);
@@ -88,6 +96,7 @@ export const punchIn = async (req, res) => {
 // Punch out
 export const punchOut = async (req, res) => {
   try {
+    const { Attendance } = getModels(req.dbConnection);
     const { employeeId, location, coordinates, image } = req.body;
     const today = new Date();
     const { start, end } = getDayRange(today);
@@ -138,6 +147,7 @@ export const punchOut = async (req, res) => {
 // Get attendance records with pagination and filters
 export const getAttendance = async (req, res) => {
   try {
+    const { Attendance, Employee } = getModels(req.dbConnection);
     const {
       page = 1,
       limit = 10,
@@ -204,6 +214,7 @@ export const getAttendance = async (req, res) => {
 // Get today's attendance status for an employee
 export const getTodayAttendance = async (req, res) => {
   try {
+    const { Attendance } = getModels(req.dbConnection);
     const { employeeId } = req.params;
     const today = new Date();
     const { start, end } = getDayRange(today);
@@ -229,6 +240,7 @@ export const getTodayAttendance = async (req, res) => {
 // Get attendance summary
 export const getAttendanceSummary = async (req, res) => {
   try {
+    const { Attendance, Employee } = getModels(req.dbConnection);
     const { month, year, department } = req.query;
     
     const startDate = new Date(year, month - 1, 1);
@@ -297,6 +309,7 @@ export const getAttendanceSummary = async (req, res) => {
 // Update attendance (admin only)
 export const updateAttendance = async (req, res) => {
   try {
+    const { Attendance } = getModels(req.dbConnection);
     const { id } = req.params;
     const updateData = req.body;
 
@@ -330,6 +343,7 @@ export const updateAttendance = async (req, res) => {
 // Delete attendance (admin only)
 export const deleteAttendance = async (req, res) => {
   try {
+    const { Attendance } = getModels(req.dbConnection);
     const { id } = req.params;
 
     const attendance = await Attendance.findByIdAndDelete(id);

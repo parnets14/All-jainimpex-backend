@@ -167,4 +167,7 @@ dealerPricingScheduleSchema.statics.applyScheduledChanges = async function() {
   }
 };
 
+// Export schema for multi-database support
+export { dealerPricingScheduleSchema };
+
 export default mongoose.model('DealerPricingSchedule', dealerPricingScheduleSchema);

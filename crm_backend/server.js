@@ -6,6 +6,7 @@ import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import connectDB from "./config/db.js";
+import { initializeAllConnections } from "./config/multiDatabase.js"; // Add multi-database support
 import authRoutes from "./routes/authRoutes.js";
 import userRoutes from "./routes/userRoutes.js"; // Add this import
 import dealertypeRoutes from "./routes/dealertypeRoutes.js";
@@ -153,7 +154,18 @@ if (useCluster && cluster.isPrimary) {
   console.log(`🚀 Running in single process mode (PID: ${process.pid})`);
   const app = express();
 
-  // Connect to MongoDB (each worker connects)
+  // Initialize multi-company database connections
+  console.log('\n🔌 Initializing multi-company database connections...');
+  initializeAllConnections()
+    .then(() => {
+      console.log('✅ All company databases connected successfully\n');
+    })
+    .catch((error) => {
+      console.error('❌ Failed to initialize company databases:', error);
+      // Continue anyway - connections will be created on-demand
+    });
+
+  // Also connect to legacy single database for backward compatibility
   connectDB();
 
   // Create uploads directory if it doesn't exist
@@ -227,6 +239,16 @@ app.use(generalLimiter);
 // Optional: Logging middleware
 app.use((req, res, next) => {
   console.log(`[Worker ${process.pid}] ${req.method} ${req.url}`);
+  next();
+});
+
+// Debug middleware for auth routes
+app.use('/api/auth', (req, res, next) => {
+  console.log('🔍 Auth Route Debug:');
+  console.log('   Method:', req.method);
+  console.log('   URL:', req.url);
+  console.log('   Content-Type:', req.get('Content-Type'));
+  console.log('   Body:', JSON.stringify(req.body, null, 2));
   next();
 });
 

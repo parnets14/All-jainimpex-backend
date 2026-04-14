@@ -1,18 +1,38 @@
-import Product from "../models/Product.js";
-import Category from "../models/Category.js";
-import Subcategory from "../models/Subcategory.js";
-import ExtendedSubcategory from "../models/ExtendedSubcategory.js";
-import Brand from "../models/Brand.js";
-import GRN from "../models/GRN.js";
-import StockMovement from "../models/Stock.js";
+import { productSchema } from "../models/Product.js";
+import { categorySchema } from "../models/Category.js";
+import { subcategorySchema } from "../models/Subcategory.js";
+import { extendedSubcategorySchema } from "../models/ExtendedSubcategory.js";
+import { brandSchema } from "../models/Brand.js";
+import { grnSchema } from "../models/GRN.js";
+import { stockMovementSchema } from "../models/Stock.js";
+import { salesOrderSchema } from "../models/SalesOrder.js";
+import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
 import StockMovementService from "../services/stockMovementService.js";
 import mongoose from "mongoose";
+
+// Helper function to get models from company-specific connection
+const getModels = (dbConnection) => {
+  return {
+    Product: dbConnection.models.Product || dbConnection.model('Product', productSchema),
+    Category: dbConnection.models.Category || dbConnection.model('Category', categorySchema),
+    Subcategory: dbConnection.models.Subcategory || dbConnection.model('Subcategory', subcategorySchema),
+    ExtendedSubcategory: dbConnection.models.ExtendedSubcategory || dbConnection.model('ExtendedSubcategory', extendedSubcategorySchema),
+    Brand: dbConnection.models.Brand || dbConnection.model('Brand', brandSchema),
+    GRN: dbConnection.models.GRN || dbConnection.model('GRN', grnSchema),
+    StockMovement: dbConnection.models.StockMovement || dbConnection.model('StockMovement', stockMovementSchema),
+    SalesOrder: dbConnection.models.SalesOrder || dbConnection.model('SalesOrder', salesOrderSchema),
+    DealerInvoice: dbConnection.models.DealerInvoice || dbConnection.model('DealerInvoice', dealerInvoiceSchema),
+  };
+};
 
 // @desc    Get all products
 // @route   GET /api/products
 // @access  Private
 export const getProducts = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Product, Category, Subcategory, ExtendedSubcategory, Brand, StockMovement } = getModels(req.dbConnection);
+    
     const {
       page = 1,
       limit = 10,
@@ -308,9 +328,14 @@ export const getProducts = async (req, res) => {
 
 // @desc    Get single product
 // @route   GET /api/products/:id
+// @desc    Get single product
+// @route   GET /api/products/:id
 // @access  Private
 export const getProduct = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Product } = getModels(req.dbConnection);
+    
     const product = await Product.findById(req.params.id)
       .populate("category", "name description")
       .populate("subcategory", "name description")
@@ -353,6 +378,9 @@ export const getProduct = async (req, res) => {
 // @access  Private
 export const createProduct = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Product, Category, Subcategory, ExtendedSubcategory, Brand } = getModels(req.dbConnection);
+    
     const {
       productCode,
       HSNCode,
@@ -549,6 +577,9 @@ export const createProduct = async (req, res) => {
 // @access  Private
 export const updateProduct = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Product, Category, Subcategory, Brand } = getModels(req.dbConnection);
+    
     const {
       productCode,
       HSNCode,
@@ -783,6 +814,9 @@ export const uploadProductImage = async (req, res) => {
 // @access  Private
 export const deleteProduct = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Product, GRN, SalesOrder, DealerInvoice, StockMovement } = getModels(req.dbConnection);
+    
     const product = await Product.findById(req.params.id);
 
     if (!product) {
@@ -794,18 +828,19 @@ export const deleteProduct = async (req, res) => {
 
     const productId = req.params.id;
 
-    // 1. Check if stock exists for this product
-    const Stock = (await import("../models/Stock.js")).default;
-    const stockEntry = await Stock.findOne({ product: productId, quantity: { $gt: 0 } }).lean();
+    // 1. Check if stock exists for this product (using StockMovement)
+    const stockEntry = await StockMovement.findOne({ 
+      productId: productId, 
+      balance: { $gt: 0 } 
+    }).lean();
     if (stockEntry) {
       return res.status(400).json({
         success: false,
-        message: `Cannot delete "${product.itemName}" — stock of ${stockEntry.quantity} units exists in warehouse. Clear stock before deleting.`,
+        message: `Cannot delete "${product.itemName}" — stock of ${stockEntry.balance} units exists in warehouse. Clear stock before deleting.`,
       });
     }
 
     // 2. Check if used in any Sales Order
-    const SalesOrder = (await import("../models/SalesOrder.js")).default;
     const salesOrderCount = await SalesOrder.countDocuments({ "products.product": productId });
     if (salesOrderCount > 0) {
       return res.status(400).json({
@@ -824,7 +859,6 @@ export const deleteProduct = async (req, res) => {
     }
 
     // 4. Check if used in any Dealer Invoice
-    const DealerInvoice = (await import("../models/DealerInvoice.js")).default;
     const invoiceCount = await DealerInvoice.countDocuments({ "items.product": productId });
     if (invoiceCount > 0) {
       return res.status(400).json({
@@ -859,6 +893,9 @@ export const deleteProduct = async (req, res) => {
 // @access  Private
 export const getProductStats = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Product, GRN } = getModels(req.dbConnection);
+    
     const totalProducts = await Product.countDocuments();
     const activeProducts = await Product.countDocuments({ status: "active" });
     const inactiveProducts = await Product.countDocuments({
@@ -1000,6 +1037,9 @@ export const getProductStats = async (req, res) => {
 // @access  Private
 export const exportProductsToPDF = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Product } = getModels(req.dbConnection);
+    
     const { search, category, subcategory, brand, status } = req.query;
 
     const filter = {};
@@ -1121,6 +1161,9 @@ export const exportProductsToPDF = async (req, res) => {
 // @access  Private
 export const exportProductsToExcel = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Product } = getModels(req.dbConnection);
+    
     const { search, category, subcategory, brand, status } = req.query;
 
     const filter = {};
@@ -1248,6 +1291,9 @@ export const exportProductsToExcel = async (req, res) => {
 // @access  Private
 export const getProductsByCategoryHierarchy = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Product } = getModels(req.dbConnection);
+    
     const products = await Product.find({
       categoryHierarchy: req.params.categoryHierarchyId,
     })
@@ -1273,6 +1319,9 @@ export const getProductsByCategoryHierarchy = async (req, res) => {
 // @access  Private
 export const getProductsByBrand = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Product } = getModels(req.dbConnection);
+    
     const products = await Product.find({ brand: req.params.brandId })
       .populate("categoryHierarchy", "name level")
       .populate("brand", "name")

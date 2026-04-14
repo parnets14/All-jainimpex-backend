@@ -1,16 +1,37 @@
-import PurchaseDiscountMapping from '../models/PurchaseDiscountMapping.js';
-import Product from '../models/Product.js';
-import Supplier from '../models/Supplier.js';
-import Brand from '../models/Brand.js';
-import Category from '../models/Category.js';
-import Subcategory from '../models/Subcategory.js';
-import ExtendedSubcategory from '../models/ExtendedSubcategory.js';
+import { purchaseDiscountMappingSchema } from '../models/PurchaseDiscountMapping.js';
+import { productSchema } from '../models/Product.js';
+import { supplierSchema } from '../models/Supplier.js';
+import { brandSchema } from '../models/Brand.js';
+import { categorySchema } from '../models/Category.js';
+import { subcategorySchema } from '../models/Subcategory.js';
+import { extendedSubcategorySchema } from '../models/ExtendedSubcategory.js';
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    PurchaseDiscountMapping: dbConnection.models.PurchaseDiscountMapping || 
+                             dbConnection.model('PurchaseDiscountMapping', purchaseDiscountMappingSchema),
+    Product: dbConnection.models.Product || 
+             dbConnection.model('Product', productSchema),
+    Supplier: dbConnection.models.Supplier || 
+              dbConnection.model('Supplier', supplierSchema),
+    Brand: dbConnection.models.Brand || 
+           dbConnection.model('Brand', brandSchema),
+    Category: dbConnection.models.Category || 
+              dbConnection.model('Category', categorySchema),
+    Subcategory: dbConnection.models.Subcategory || 
+                 dbConnection.model('Subcategory', subcategorySchema),
+    ExtendedSubcategory: dbConnection.models.ExtendedSubcategory || 
+                         dbConnection.model('ExtendedSubcategory', extendedSubcategorySchema)
+  };
+};
 
 // @desc    Get all purchase discount mappings
 // @route   GET /api/purchase-discounts
 // @access  Private
 export const getPurchaseDiscounts = async (req, res) => {
   try {
+    const { PurchaseDiscountMapping } = getModels(req.dbConnection);
     const { 
       page = 1, 
       limit = 10, 
@@ -62,11 +83,28 @@ export const getPurchaseDiscounts = async (req, res) => {
 
     const total = await PurchaseDiscountMapping.countDocuments(query);
 
-    // Add mappingType field to each discount for frontend compatibility
-    const discountsWithMappingType = discounts.map(discount => ({
-      ...discount.toObject(),
-      mappingType: 'purchase'
-    }));
+    // Add mappingType and targetType fields to each discount for frontend compatibility
+    const discountsWithMappingType = discounts.map(discount => {
+      const discountObj = discount.toObject();
+      
+      // Determine target type based on populated fields
+      let targetType = '-';
+      if (discountObj.extendedSubcategory) {
+        targetType = 'extendedSubcategory';
+      } else if (discountObj.subcategory) {
+        targetType = 'subcategory';
+      } else if (discountObj.category) {
+        targetType = 'category';
+      } else if (discountObj.brand) {
+        targetType = 'brand';
+      }
+      
+      return {
+        ...discountObj,
+        mappingType: 'purchase',
+        targetType
+      };
+    });
 
     res.json({
       success: true,
@@ -94,6 +132,8 @@ export const getPurchaseDiscounts = async (req, res) => {
 // @access  Private
 export const getPurchaseDiscount = async (req, res) => {
   try {
+    const { PurchaseDiscountMapping } = getModels(req.dbConnection);
+    
     const discount = await PurchaseDiscountMapping.findById(req.params.id)
       .populate('brand', 'name')
       .populate('category', 'name')
@@ -110,10 +150,25 @@ export const getPurchaseDiscount = async (req, res) => {
       });
     }
 
-    // Add mappingType field for frontend compatibility
+    // Add mappingType and targetType fields for frontend compatibility
+    const discountObj = discount.toObject();
+    
+    // Determine target type based on populated fields
+    let targetType = '-';
+    if (discountObj.extendedSubcategory) {
+      targetType = 'extendedSubcategory';
+    } else if (discountObj.subcategory) {
+      targetType = 'subcategory';
+    } else if (discountObj.category) {
+      targetType = 'category';
+    } else if (discountObj.brand) {
+      targetType = 'brand';
+    }
+    
     const discountWithMappingType = {
-      ...discount.toObject(),
-      mappingType: 'purchase'
+      ...discountObj,
+      mappingType: 'purchase',
+      targetType
     };
 
     res.json({
@@ -135,6 +190,8 @@ export const getPurchaseDiscount = async (req, res) => {
 // @access  Private
 export const createPurchaseDiscount = async (req, res) => {
   try {
+    const { PurchaseDiscountMapping } = getModels(req.dbConnection);
+    
     const {
       discountName,
       description,
@@ -216,6 +273,8 @@ export const createPurchaseDiscount = async (req, res) => {
 // @access  Private
 export const updatePurchaseDiscount = async (req, res) => {
   try {
+    const { PurchaseDiscountMapping } = getModels(req.dbConnection);
+    
     const {
       discountName,
       description,
@@ -301,6 +360,8 @@ export const updatePurchaseDiscount = async (req, res) => {
 // @access  Private
 export const deletePurchaseDiscount = async (req, res) => {
   try {
+    const { PurchaseDiscountMapping } = getModels(req.dbConnection);
+    
     const discount = await PurchaseDiscountMapping.findById(req.params.id);
 
     if (!discount) {
@@ -331,6 +392,8 @@ export const deletePurchaseDiscount = async (req, res) => {
 // @access  Private
 export const getApplicableDiscounts = async (req, res) => {
   try {
+    const { PurchaseDiscountMapping } = getModels(req.dbConnection);
+    
     const { productId, supplierId } = req.params;
 
     const discounts = await PurchaseDiscountMapping.findApplicableDiscounts(productId, supplierId);
@@ -354,6 +417,8 @@ export const getApplicableDiscounts = async (req, res) => {
 // @access  Private
 export const getFilterOptions = async (req, res) => {
   try {
+    const { Brand, Category, Subcategory, Supplier } = getModels(req.dbConnection);
+    
     const [brands, categories, subcategories, suppliers] = await Promise.all([
       Brand.find({ isActive: true }).select('name').sort({ name: 1 }),
       Category.find({ isActive: true }).select('name').sort({ name: 1 }),
@@ -385,6 +450,8 @@ export const getFilterOptions = async (req, res) => {
 // @access  Private (Super Admin only)
 export const approvePurchaseDiscount = async (req, res) => {
   try {
+    const { PurchaseDiscountMapping } = getModels(req.dbConnection);
+    
     const { action, approvalRemarks } = req.body;
 
     // Check if user is super admin

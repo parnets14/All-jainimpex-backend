@@ -57,4 +57,7 @@ journalVoucherSchema.pre('save', async function (next) {
   next();
 });
 
+// Export schema for multi-database support
+export { journalVoucherSchema };
+
 export default mongoose.model('JournalVoucher', journalVoucherSchema);

@@ -162,4 +162,7 @@ stockAdjustmentSchema.pre('save', async function(next) {
   }
 });
 
+// Export schema for multi-database support
+export { stockAdjustmentSchema };
+
 export default mongoose.model('StockAdjustment', stockAdjustmentSchema);

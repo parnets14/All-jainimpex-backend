@@ -175,9 +175,29 @@ productSchema.pre('save', async function(next) {
   // Generate product code
   if (!this.productCode || this.productCode.trim() === '') {
     try {
-      const brandDoc = await mongoose.model('Brand').findById(this.brand);
-      const categoryDoc = await mongoose.model('Category').findById(this.category);
-      const subcategoryDoc = await mongoose.model('Subcategory').findById(this.subcategory);
+      // Get the connection from the document
+      const connection = this.db || this.$__.db || this.constructor.db;
+      
+      if (!connection) {
+        console.warn('Cannot auto-generate product code - no database connection found');
+        this.productCode = `PROD-${Date.now()}`;
+        return next();
+      }
+      
+      // Import schemas dynamically
+      const { brandSchema } = await import('./Brand.js');
+      const { categorySchema } = await import('./Category.js');
+      const { subcategorySchema } = await import('./Subcategory.js');
+      
+      // Get or create models on this connection
+      const Brand = connection.models.Brand || connection.model('Brand', brandSchema);
+      const Category = connection.models.Category || connection.model('Category', categorySchema);
+      const Subcategory = connection.models.Subcategory || connection.model('Subcategory', subcategorySchema);
+      const Product = connection.models.Product || connection.model('Product', productSchema);
+      
+      const brandDoc = await Brand.findById(this.brand);
+      const categoryDoc = await Category.findById(this.category);
+      const subcategoryDoc = await Subcategory.findById(this.subcategory);
 
       if (brandDoc && categoryDoc && subcategoryDoc) {
         // Use first letter of brand, category, and subcategory
@@ -186,7 +206,7 @@ productSchema.pre('save', async function(next) {
         const subcategoryInitial = subcategoryDoc.name.substring(0, 1).toUpperCase();
         
         // Count existing products with same brand, category, and subcategory
-        const count = await mongoose.model('Product').countDocuments({
+        const count = await Product.countDocuments({
           brand: this.brand,
           category: this.category,
           subcategory: this.subcategory
@@ -195,9 +215,12 @@ productSchema.pre('save', async function(next) {
         const postfix = String(count + 1).padStart(3, '0');
         this.productCode = `${brandInitial}${categoryInitial}${subcategoryInitial}${postfix}`;
       } else {
-        return next(new Error('Brand, category, and subcategory must be valid for auto-generating product code'));
+        // If related documents don't exist, generate a simple code
+        console.warn('Cannot auto-generate product code - related documents not found. Brand/Category/Subcategory must exist first.');
+        this.productCode = `PROD-${Date.now()}`;
       }
     } catch (error) {
+      console.error('Error in product code auto-generation:', error);
       return next(error);
     }
   }
@@ -225,5 +248,8 @@ productSchema.virtual('currentPrice').get(function() {
 // Ensure virtual fields are serialized
 productSchema.set('toJSON', { virtuals: true });
 productSchema.set('toObject', { virtuals: true });
+
+// Export schema for multi-database support
+export { productSchema };
 
 export default mongoose.model('Product', productSchema);

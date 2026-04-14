@@ -51,4 +51,7 @@ const stockMovementSchema = new mongoose.Schema({
 
 const stockMovement = mongoose.model('StockMovement', stockMovementSchema);
 
+// Export schema for multi-database support
+export { stockMovementSchema };
+
 export default stockMovement;

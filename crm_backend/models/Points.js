@@ -107,4 +107,8 @@ pointsSchema.index({ type: 1, date: -1 });
 pointsSchema.index({ brand: 1, category: 1, subcategory: 1 });
 
 const Points = mongoose.model("Points", pointsSchema);
+
+// Export schema for multi-database support
+export { pointsSchema };
+
 export default Points;

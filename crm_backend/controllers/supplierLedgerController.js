@@ -1,11 +1,21 @@
-import SupplierLedger from "../models/SupplierLedger.js";
-import Supplier from "../models/Supplier.js";
-import SupplierInvoice from "../models/SupplierInvoice.js";
-import DebitNote from "../models/DebitNote.js";
+import { supplierLedgerSchema } from "../models/SupplierLedger.js";
+import { supplierSchema } from "../models/Supplier.js";
+import { supplierInvoiceSchema } from "../models/SupplierInvoice.js";
+import { debitNoteSchema } from "../models/DebitNote.js";
+
+const getModels = (dbConnection) => {
+  return {
+    SupplierLedger: dbConnection.models.SupplierLedger || dbConnection.model('SupplierLedger', supplierLedgerSchema),
+    Supplier: dbConnection.models.Supplier || dbConnection.model('Supplier', supplierSchema),
+    SupplierInvoice: dbConnection.models.SupplierInvoice || dbConnection.model('SupplierInvoice', supplierInvoiceSchema),
+    DebitNote: dbConnection.models.DebitNote || dbConnection.model('DebitNote', debitNoteSchema)
+  };
+};
 
 // Create Supplier Ledger Entry
 export const createSupplierLedgerEntry = async (req, res) => {
   try {
+    const { SupplierLedger, Supplier, SupplierInvoice, DebitNote } = getModels(req.dbConnection);
     const {
       supplierId,
       transactionType,
@@ -154,6 +164,7 @@ export const createSupplierLedgerEntry = async (req, res) => {
 // Get All Supplier Ledger Entries
 export const getAllSupplierLedgerEntries = async (req, res) => {
   try {
+    const { SupplierLedger } = getModels(req.dbConnection);
     const {
       supplierId,
       transactionType,
@@ -219,6 +230,7 @@ export const getAllSupplierLedgerEntries = async (req, res) => {
 // Get Supplier Ledger by Supplier ID
 export const getSupplierLedgerBySupplier = async (req, res) => {
   try {
+    const { SupplierLedger, Supplier } = getModels(req.dbConnection);
     const { supplierId } = req.params;
     const { 
       startDate, 
@@ -342,6 +354,7 @@ export const getSupplierLedgerBySupplier = async (req, res) => {
 // Update Supplier Ledger Entry
 export const updateSupplierLedgerEntry = async (req, res) => {
   try {
+    const { SupplierLedger } = getModels(req.dbConnection);
     const { id } = req.params;
     const updateData = req.body;
 
@@ -381,6 +394,7 @@ export const updateSupplierLedgerEntry = async (req, res) => {
 // Delete Supplier Ledger Entry
 export const deleteSupplierLedgerEntry = async (req, res) => {
   try {
+    const { SupplierLedger } = getModels(req.dbConnection);
     const { id } = req.params;
 
     const ledgerEntry = await SupplierLedger.findByIdAndDelete(id);
@@ -410,6 +424,7 @@ export const deleteSupplierLedgerEntry = async (req, res) => {
 // Get Supplier Ledger Summary
 export const getSupplierLedgerSummary = async (req, res) => {
   try {
+    const { SupplierLedger } = getModels(req.dbConnection);
     const { supplierId } = req.params;
 
     const entries = await SupplierLedger.find({ supplier: supplierId })

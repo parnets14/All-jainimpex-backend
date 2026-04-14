@@ -45,7 +45,8 @@
 
 
 import { verifyToken } from '../utils/jwtUtils.js';
-import User from '../models/User.js';
+import { getCompanyConnection } from '../config/multiDatabase.js';
+import { userSchema } from '../models/User.js';
 
 export const protect = async (req, res, next) => {
   try {
@@ -82,7 +83,7 @@ export const protect = async (req, res, next) => {
       });
     }
 
-    // Verify token
+    // Verify token (now includes company)
     let decoded;
     try {
       decoded = verifyToken(token);
@@ -93,6 +94,12 @@ export const protect = async (req, res, next) => {
         message: 'Not authorized to access this route. Invalid or expired token.'
       });
     }
+    
+    // Get company-specific database connection
+    const dbConnection = getCompanyConnection(decoded.company);
+    
+    // Get User model from company-specific database
+    const User = dbConnection.models.User || dbConnection.model('User', userSchema);
     
     // Get user from token
     const user = await User.findById(decoded.userId).select('-password');
@@ -114,8 +121,15 @@ export const protect = async (req, res, next) => {
       });
     }
 
-    req.user = user;
+    // Attach user, token, company, and database connection to request
+    req.user = {
+      ...user.toObject(),
+      company: decoded.company // Ensure company is in user object
+    };
     req.token = token;
+    req.company = decoded.company;
+    req.dbConnection = dbConnection;
+    
     next();
   } catch (error) {
     console.error('❌ Auth middleware error:', error.message, error.stack);

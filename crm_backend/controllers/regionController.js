@@ -1,9 +1,17 @@
-import Region from '../models/Region.js';
+import { regionSchema } from '../models/Region.js';
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    Region: dbConnection.models.Region || dbConnection.model('Region', regionSchema)
+  };
+};
 
 // @desc    Get all regions with pagination
 // @route   GET /api/regions
 // @access  Private
 export const getRegions = async (req, res) => {
+  const { Region } = getModels(req.dbConnection);
   try {
     const {
       page = 1,
@@ -77,6 +85,7 @@ export const getRegions = async (req, res) => {
 // @route   GET /api/regions/:id
 // @access  Private
 export const getRegion = async (req, res) => {
+  const { Region } = getModels(req.dbConnection);
   try {
     const region = await Region.findById(req.params.id)
       .populate('createdBy', 'name email');
@@ -111,6 +120,7 @@ export const getRegion = async (req, res) => {
 // @route   POST /api/regions
 // @access  Private
 export const createRegion = async (req, res) => {
+  const { Region } = getModels(req.dbConnection);
   try {
     const { name, description, code, status } = req.body;
 
@@ -172,6 +182,7 @@ export const createRegion = async (req, res) => {
 // @route   PUT /api/regions/:id
 // @access  Private
 export const updateRegion = async (req, res) => {
+  const { Region } = getModels(req.dbConnection);
   try {
     const { name, description, code, status } = req.body;
 
@@ -252,6 +263,7 @@ export const updateRegion = async (req, res) => {
 // @route   DELETE /api/regions/:id
 // @access  Private
 export const deleteRegion = async (req, res) => {
+  const { Region } = getModels(req.dbConnection);
   try {
     const region = await Region.findById(req.params.id);
 
@@ -296,6 +308,7 @@ export const deleteRegion = async (req, res) => {
 // @route   GET /api/regions/stats
 // @access  Private
 export const getRegionStats = async (req, res) => {
+  const { Region } = getModels(req.dbConnection);
   try {
     const totalRegions = await Region.countDocuments();
     const activeRegions = await Region.countDocuments({ status: 'active' });

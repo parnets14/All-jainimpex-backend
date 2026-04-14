@@ -76,4 +76,7 @@ warehouseSchema.methods.hasCapacity = function(requiredArea) {
 
 const Warehouse = mongoose.model("Warehouse", warehouseSchema);
 
+// Export schema for multi-database support
+export { warehouseSchema };
+
 export default Warehouse;

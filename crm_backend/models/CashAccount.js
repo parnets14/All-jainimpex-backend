@@ -42,4 +42,7 @@ cashAccountSchema.statics.getCashAccount = async function() {
 
 const CashAccount = mongoose.model('CashAccount', cashAccountSchema);
 
+// Export schema for multi-database support
+export { cashAccountSchema };
+
 export default CashAccount;

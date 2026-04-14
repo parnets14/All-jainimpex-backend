@@ -47,4 +47,7 @@ subcategorySchema.index({ name: "text", description: "text" });
 // Index for brand-based filtering
 subcategorySchema.index({ brand: 1 });
 
+// Export schema for multi-database support
+export { subcategorySchema };
+
 export default mongoose.model("Subcategory", subcategorySchema);

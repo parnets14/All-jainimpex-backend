@@ -1,10 +1,17 @@
-import Claim from "../models/Claim.js";
+import { claimSchema } from "../models/Claim.js";
 import asyncHandler from "express-async-handler";
+
+const getModels = (dbConnection) => {
+  return {
+    Claim: dbConnection.models.Claim || dbConnection.model('Claim', claimSchema)
+  };
+};
 
 // @desc    Create new claim
 // @route   POST /api/claims
 // @access  Private
 export const createClaim = asyncHandler(async (req, res) => {
+  const { Claim } = getModels(req.dbConnection);
   const { type, amount, person, description } = req.body;
 
   const claim = await Claim.create({
@@ -40,6 +47,7 @@ export const createClaim = asyncHandler(async (req, res) => {
 // @route   GET /api/claims
 // @access  Private
 export const getClaims = asyncHandler(async (req, res) => {
+  const { Claim } = getModels(req.dbConnection);
   const {
     page = 1,
     limit = 10,
@@ -134,6 +142,7 @@ export const getClaims = asyncHandler(async (req, res) => {
 // @route   GET /api/claims/:id
 // @access  Private
 export const getClaim = asyncHandler(async (req, res) => {
+  const { Claim } = getModels(req.dbConnection);
   const claim = await Claim.findById(req.params.id)
     .populate("type", "name maxAmount description")
     .populate("createdBy", "name email")
@@ -154,6 +163,7 @@ export const getClaim = asyncHandler(async (req, res) => {
 // @route   PUT /api/claims/:id/approve
 // @access  Private
 export const approveClaim = asyncHandler(async (req, res) => {
+  const { Claim } = getModels(req.dbConnection);
   const { status, approvedAmount, remarks } = req.body;
 
   const claim = await Claim.findById(req.params.id);
@@ -195,6 +205,7 @@ export const approveClaim = asyncHandler(async (req, res) => {
 // @route   PUT /api/claims/:id/payment
 // @access  Private
 export const updateClaimPayment = asyncHandler(async (req, res) => {
+  const { Claim } = getModels(req.dbConnection);
   const { paymentStatus, transactionNo, paymentRemarks } = req.body;
 
   const claim = await Claim.findById(req.params.id);
@@ -240,6 +251,7 @@ export const updateClaimPayment = asyncHandler(async (req, res) => {
 // @route   DELETE /api/claims/:id
 // @access  Private
 export const deleteClaim = asyncHandler(async (req, res) => {
+  const { Claim } = getModels(req.dbConnection);
   const claim = await Claim.findById(req.params.id);
   if (!claim) {
     res.status(404);
@@ -263,6 +275,7 @@ export const deleteClaim = asyncHandler(async (req, res) => {
 // @route   GET /api/claims/stats/summary
 // @access  Private
 export const getClaimStats = asyncHandler(async (req, res) => {
+  const { Claim } = getModels(req.dbConnection);
   const { startDate, endDate } = req.query;
 
   const matchStage = {};

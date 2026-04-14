@@ -77,4 +77,7 @@ productRecommendationSchema.index({ product: 1 });
 productRecommendationSchema.index({ priority: -1 });
 productRecommendationSchema.index({ validUntil: 1 });
 
+// Export schema for multi-database support
+export { productRecommendationSchema };
+
 export default mongoose.model('ProductRecommendation', productRecommendationSchema);

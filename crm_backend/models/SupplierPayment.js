@@ -186,4 +186,7 @@ supplierPaymentSchema.index({ status: 1 });
 
 const SupplierPayment = mongoose.model("SupplierPayment", supplierPaymentSchema);
 
+// Export schema for multi-database support
+export { supplierPaymentSchema };
+
 export default SupplierPayment;

@@ -1,12 +1,23 @@
-import Notification from '../models/Notification.js';
-import Dealer from '../models/Dealer.js';
+import { notificationSchema } from '../models/Notification.js';
+import { dealerSchema } from '../models/Dealer.js';
 import { protect } from '../middleware/authMiddleware.js';
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    Notification: dbConnection.models.Notification || 
+                  dbConnection.model('Notification', notificationSchema),
+    Dealer: dbConnection.models.Dealer || 
+            dbConnection.model('Dealer', dealerSchema)
+  };
+};
 
 // @desc    Create notification for a dealer
 // @route   POST /api/notifications
 // @access  Private (Admin/Staff)
 export const createNotification = async (req, res) => {
   try {
+    const { Notification, Dealer } = getModels(req.dbConnection);
     const { dealer, dealerId, type, title, message, orderId, orderNumber, status, priority, metadata, data } = req.body;
 
     // Use dealerId if provided, otherwise use dealer
@@ -68,6 +79,7 @@ export const createNotification = async (req, res) => {
 // @access  Private (Admin/Staff)
 export const createDealerNotification = async (req, res) => {
   try {
+    const { Notification, Dealer } = getModels(req.dbConnection);
     const { dealerId } = req.params;
     const { type, title, message, orderId, orderNumber, status, priority, metadata, data } = req.body;
 

@@ -1,8 +1,17 @@
-import JournalVoucher from '../models/JournalVoucher.js';
+import { journalVoucherSchema } from '../models/JournalVoucher.js';
 import { getFinancialYear } from '../services/voucherNumberService.js';
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    JournalVoucher: dbConnection.models.JournalVoucher || 
+                    dbConnection.model('JournalVoucher', journalVoucherSchema)
+  };
+};
 
 export const createJournalVoucher = async (req, res) => {
   try {
+    const { JournalVoucher } = getModels(req.dbConnection);
     const { voucherDate, voucherType, entries, narration } = req.body;
 
     if (!voucherDate || !entries || entries.length < 2) {
@@ -40,6 +49,7 @@ export const createJournalVoucher = async (req, res) => {
 
 export const getJournalVouchers = async (req, res) => {
   try {
+    const { JournalVoucher } = getModels(req.dbConnection);
     const { page = 1, limit = 20, voucherType, startDate, endDate, search } = req.query;
     const query = {};
 
@@ -83,6 +93,7 @@ export const getJournalVouchers = async (req, res) => {
 
 export const getJournalVoucherById = async (req, res) => {
   try {
+    const { JournalVoucher } = getModels(req.dbConnection);
     const voucher = await JournalVoucher.findById(req.params.id).populate('createdBy', 'name email');
     if (!voucher) return res.status(404).json({ success: false, message: 'Voucher not found' });
     res.json({ success: true, voucher });
@@ -93,6 +104,7 @@ export const getJournalVoucherById = async (req, res) => {
 
 export const cancelJournalVoucher = async (req, res) => {
   try {
+    const { JournalVoucher } = getModels(req.dbConnection);
     const { cancelReason } = req.body;
     if (!cancelReason) return res.status(400).json({ success: false, message: 'Cancel reason is required' });
 

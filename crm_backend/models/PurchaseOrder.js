@@ -210,4 +210,7 @@ purchaseOrderSchema.pre('save', function(next) {
   }
 });
 
+// Export schema for multi-database support
+export { purchaseOrderSchema };
+
 export default mongoose.model('PurchaseOrder', purchaseOrderSchema);

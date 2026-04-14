@@ -227,4 +227,7 @@ voucherSchema.pre('save', function(next) {
 
 const Voucher = mongoose.model('Voucher', voucherSchema);
 
+// Export schema for multi-database support
+export { voucherSchema };
+
 export default Voucher;

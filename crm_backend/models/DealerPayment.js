@@ -240,5 +240,8 @@ dealerPaymentSchema.index({ source: 1 });
 
 const DealerPayment = mongoose.model("DealerPayment", dealerPaymentSchema);
 
+// Export schema for multi-database support
+export { dealerPaymentSchema };
+
 export default DealerPayment;
 

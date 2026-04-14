@@ -48,4 +48,7 @@ regionSchema.pre('save', function(next) {
   next();
 });
 
+// Export schema for multi-database support
+export { regionSchema };
+
 export default mongoose.model('Region', regionSchema);

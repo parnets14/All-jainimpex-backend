@@ -247,6 +247,9 @@ chequeSchema.statics.getStats = async function (filters = {}) {
   }
 };
 
+// Export schema for multi-database support
+export { chequeSchema };
+
 export default mongoose.model("Cheque", chequeSchema);
 
 

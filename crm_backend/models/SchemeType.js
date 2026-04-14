@@ -27,4 +27,8 @@ const schemeTypeSchema = new mongoose.Schema({
 });
 
 const SchemeType = mongoose.model('SchemeType', schemeTypeSchema);
+
+// Export schema for multi-database support
+export { schemeTypeSchema };
+
 export default SchemeType;

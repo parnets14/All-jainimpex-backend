@@ -86,4 +86,7 @@ routeSchema.index({ salesExecutive: 1 });
 routeSchema.index({ isActive: 1 });
 routeSchema.index({ createdAt: -1 });
 
+// Export schema for multi-database support
+export { routeSchema };
+
 export default mongoose.model('Route', routeSchema);

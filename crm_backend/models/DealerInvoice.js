@@ -375,4 +375,7 @@ dealerInvoiceSchema.index({ status: 1 });
 dealerInvoiceSchema.index({ paymentStatus: 1 });
 dealerInvoiceSchema.index({ salesOrder: 1 });
 
+// Export schema for multi-database support
+export { dealerInvoiceSchema };
+
 export default mongoose.model("DealerInvoice", dealerInvoiceSchema);

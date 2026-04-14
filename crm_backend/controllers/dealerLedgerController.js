@@ -1,15 +1,34 @@
-import DealerLedger from "../models/DealerLedger.js";
-import Dealer from "../models/Dealer.js";
-import DealerInvoice from "../models/DealerInvoice.js";
-import CreditNote from "../models/CreditNote.js";
-import Voucher from "../models/Voucher.js";
-import PaymentAllocation from "../models/PaymentAllocation.js";
+import { dealerLedgerSchema } from "../models/DealerLedger.js";
+import { dealerSchema } from "../models/Dealer.js";
+import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
+import { creditNoteSchema } from "../models/CreditNote.js";
+import { voucherSchema } from "../models/Voucher.js";
+import { paymentAllocationSchema } from "../models/PaymentAllocation.js";
 import nodemailer from "nodemailer";
 import PDFDocument from "pdfkit";
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    DealerLedger: dbConnection.models.DealerLedger || 
+                  dbConnection.model('DealerLedger', dealerLedgerSchema),
+    Dealer: dbConnection.models.Dealer || 
+            dbConnection.model('Dealer', dealerSchema),
+    DealerInvoice: dbConnection.models.DealerInvoice || 
+                   dbConnection.model('DealerInvoice', dealerInvoiceSchema),
+    CreditNote: dbConnection.models.CreditNote || 
+                dbConnection.model('CreditNote', creditNoteSchema),
+    Voucher: dbConnection.models.Voucher || 
+             dbConnection.model('Voucher', voucherSchema),
+    PaymentAllocation: dbConnection.models.PaymentAllocation || 
+                       dbConnection.model('PaymentAllocation', paymentAllocationSchema)
+  };
+};
 
 // Create Dealer Ledger Entry
 export const createDealerLedgerEntry = async (req, res) => {
   try {
+    const { DealerLedger, Dealer, DealerInvoice, CreditNote } = getModels(req.dbConnection);
     const {
       dealerId,
       transactionType,
@@ -199,6 +218,7 @@ export const createDealerLedgerEntry = async (req, res) => {
 // Get All Dealer Ledger Entries
 export const getAllDealerLedgerEntries = async (req, res) => {
   try {
+    const { DealerLedger } = getModels(req.dbConnection);
     const {
       dealerId,
       transactionType,
@@ -267,6 +287,7 @@ export const getAllDealerLedgerEntries = async (req, res) => {
 // Get Dealer Ledger by Dealer ID (Enhanced with Voucher Integration)
 export const getDealerLedgerByDealer = async (req, res) => {
   try {
+    const { DealerLedger, Dealer, Voucher, PaymentAllocation } = getModels(req.dbConnection);
     const { dealerId } = req.params;
     const { 
       startDate, 
@@ -487,6 +508,7 @@ export const getDealerLedgerByDealer = async (req, res) => {
 // Get Single Dealer Ledger Entry
 export const getDealerLedgerEntry = async (req, res) => {
   try {
+    const { DealerLedger } = getModels(req.dbConnection);
     const { id } = req.params;
 
     const entry = await DealerLedger.findById(id)
@@ -520,6 +542,7 @@ export const getDealerLedgerEntry = async (req, res) => {
 // Update Dealer Ledger Entry
 export const updateDealerLedgerEntry = async (req, res) => {
   try {
+    const { DealerLedger } = getModels(req.dbConnection);
     const { id } = req.params;
     const updateData = req.body;
 
@@ -565,6 +588,7 @@ export const updateDealerLedgerEntry = async (req, res) => {
 // Delete Dealer Ledger Entry
 export const deleteDealerLedgerEntry = async (req, res) => {
   try {
+    const { DealerLedger } = getModels(req.dbConnection);
     const { id } = req.params;
 
     const entry = await DealerLedger.findByIdAndDelete(id);
@@ -594,6 +618,7 @@ export const deleteDealerLedgerEntry = async (req, res) => {
 // Get Dealer Ledger Summary/Statistics
 export const getDealerLedgerStats = async (req, res) => {
   try {
+    const { DealerLedger } = getModels(req.dbConnection);
     const { dealerId, startDate, endDate } = req.query;
 
     // Build filter
@@ -682,6 +707,7 @@ export const getDealerLedgerStats = async (req, res) => {
 // Auto-create ledger entries from invoices and credit notes
 export const syncLedgerEntries = async (req, res) => {
   try {
+    const { DealerLedger, Dealer, DealerInvoice, CreditNote } = getModels(req.dbConnection);
     const { dealerId } = req.params;
 
     // Get all invoices for the dealer that don't have ledger entries (exclude drafts and cancelled)
@@ -767,6 +793,7 @@ export const syncLedgerEntries = async (req, res) => {
 // @access  Private
 export const sendDealerLedgerEmail = async (req, res) => {
   try {
+    const { DealerLedger, Dealer } = getModels(req.dbConnection);
     const { dealerId } = req.params;
     const { startDate, endDate, emailTo, subject, message } = req.body;
 
@@ -985,6 +1012,7 @@ export const sendDealerLedgerEmail = async (req, res) => {
  */
 export const getCombinedDealerLedger = async (req, res) => {
   try {
+    const { DealerLedger, Dealer, DealerInvoice, Voucher, PaymentAllocation } = getModels(req.dbConnection);
     const { dealerId } = req.params;
     const { 
       startDate, 

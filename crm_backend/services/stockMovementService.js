@@ -1,6 +1,14 @@
-import StockMovement from '../models/Stock.js';
-import GRN from '../models/GRN.js';
-import SalesOrder from '../models/SalesOrder.js';
+import { stockMovementSchema } from '../models/Stock.js';
+import { grnSchema } from '../models/GRN.js';
+import { salesOrderSchema } from '../models/SalesOrder.js';
+
+const getModels = (dbConnection) => {
+  return {
+    StockMovement: dbConnection.models.StockMovement || dbConnection.model('StockMovement', stockMovementSchema),
+    GRN: dbConnection.models.GRN || dbConnection.model('GRN', grnSchema),
+    SalesOrder: dbConnection.models.SalesOrder || dbConnection.model('SalesOrder', salesOrderSchema)
+  };
+};
 
 class StockMovementService {
   /**
@@ -8,10 +16,13 @@ class StockMovementService {
    * @param {Object} grn - The GRN document
    * @param {Boolean} isMigration - Whether this is a migration operation
    * @param {Object} session - MongoDB session for transactions
+   * @param {Object} dbConnection - Database connection for multi-database support
    */
-  static async createStockMovementsFromGRN(grn, isMigration = false, session = null) {
+  static async createStockMovementsFromGRN(grn, isMigration = false, session = null, dbConnection = null) {
     try {
       console.log(`🔍 [STOCK_MOVEMENT_SERVICE] Creating stock movements for GRN: ${grn.grnNo}`);
+      
+      const { StockMovement } = dbConnection ? getModels(dbConnection) : { StockMovement: (await import('../models/Stock.js')).default };
       
       const movements = [];
       
@@ -23,7 +34,7 @@ class StockMovementService {
             // During migration, use a simple balance calculation
             balance = item.acceptedQuantity; // Will be recalculated later
           } else {
-            balance = await this.calculateRunningBalance(item.productId, grn.warehouseId, item.acceptedQuantity, session);
+            balance = await this.calculateRunningBalance(item.productId, grn.warehouseId, item.acceptedQuantity, session, dbConnection);
           }
           
           const inMovement = new StockMovement({
@@ -68,13 +79,17 @@ class StockMovementService {
   /**
    * Delete stock movements for a specific GRN
    * @param {String} grnId - GRN ID
+   * @param {Object} dbConnection - Database connection for multi-database support
    */
-  static async deleteStockMovementsForGRN(grnId) {
+  static async deleteStockMovementsForGRN(grnId, dbConnection = null) {
     try {
       console.log(`🔍 [STOCK_MOVEMENT_SERVICE] Deleting stock movements for GRN: ${grnId}`);
       
       // Get the GRN to find its GRN number
-      const GRN = (await import('../models/GRN.js')).default;
+      const { GRN, StockMovement } = dbConnection ? getModels(dbConnection) : { 
+        GRN: (await import('../models/GRN.js')).default,
+        StockMovement: (await import('../models/Stock.js')).default
+      };
       const grn = await GRN.findById(grnId);
       
       if (!grn) {
@@ -103,10 +118,12 @@ class StockMovementService {
    * @param {String} warehouseId - Warehouse ID
    * @param {Number} additionalQuantity - Additional quantity to add/subtract
    * @param {Object} session - MongoDB session for transactions
+   * @param {Object} dbConnection - Database connection for multi-database support
    * @returns {Number} - New running balance
    */
-  static async calculateRunningBalance(productId, warehouseId, additionalQuantity = 0, session = null) {
+  static async calculateRunningBalance(productId, warehouseId, additionalQuantity = 0, session = null, dbConnection = null) {
     try {
+      const { StockMovement } = dbConnection ? getModels(dbConnection) : { StockMovement: (await import('../models/Stock.js')).default };
       // Get the latest balance for this product in this warehouse
       const query = { productId, warehouseId };
       const latestMovement = session 
@@ -129,10 +146,15 @@ class StockMovementService {
    * Get stock movement history for a product
    * @param {String} productId - Product ID
    * @param {Object} options - Query options
+   * @param {Object} dbConnection - Database connection for multi-database support
    * @returns {Array} - Array of stock movements
    */
-  static async getStockHistory(productId, options = {}) {
+  static async getStockHistory(productId, options = {}, dbConnection = null) {
     try {
+      const { StockMovement, SalesOrder } = dbConnection ? getModels(dbConnection) : { 
+        StockMovement: (await import('../models/Stock.js')).default,
+        SalesOrder: (await import('../models/SalesOrder.js')).default
+      };
       const {
         page = 1,
         limit = 10,
@@ -231,10 +253,12 @@ class StockMovementService {
    * Get current stock level for a product in a warehouse
    * @param {String} productId - Product ID
    * @param {String} warehouseId - Warehouse ID
+   * @param {Object} dbConnection - Database connection for multi-database support
    * @returns {Number} - Current stock level
    */
-  static async getCurrentStock(productId, warehouseId) {
+  static async getCurrentStock(productId, warehouseId, dbConnection = null) {
     try {
+      const { StockMovement } = dbConnection ? getModels(dbConnection) : { StockMovement: (await import('../models/Stock.js')).default };
       const latestMovement = await StockMovement.findOne({
         productId,
         warehouseId
@@ -249,9 +273,11 @@ class StockMovementService {
   
   /**
    * Recalculate balances for all stock movements
+   * @param {Object} dbConnection - Database connection for multi-database support
    */
-  static async recalculateBalances() {
+  static async recalculateBalances(dbConnection = null) {
     try {
+      const { StockMovement } = dbConnection ? getModels(dbConnection) : { StockMovement: (await import('../models/Stock.js')).default };
       console.log('🔍 [STOCK_MOVEMENT_SERVICE] Starting balance recalculation...');
       
       // Get all unique product-warehouse combinations
@@ -304,11 +330,13 @@ class StockMovementService {
    * @param {String} productId - Product ID
    * @param {String} warehouseId - Warehouse ID
    * @param {Number} requiredQuantity - Required quantity
+   * @param {Object} dbConnection - Database connection for multi-database support
    * @returns {Object} - Validation result with available stock
    */
-  static async validateStockAvailability(productId, warehouseId, requiredQuantity) {
+  static async validateStockAvailability(productId, warehouseId, requiredQuantity, dbConnection = null) {
     try {
-      const currentStock = await this.getCurrentStock(productId, warehouseId);
+      const { StockMovement } = dbConnection ? getModels(dbConnection) : { StockMovement: (await import('../models/Stock.js')).default };
+      const currentStock = await this.getCurrentStock(productId, warehouseId, dbConnection);
       
       // Calculate blocked stock
       const blockedResult = await StockMovement.aggregate([
@@ -356,13 +384,15 @@ class StockMovementService {
 
   /**
    * Debug function to check what GRNs exist for a product
+   * @param {String} productId - Product ID
+   * @param {Object} dbConnection - Database connection for multi-database support
    */
-  static async debugProductGRNs(productId) {
+  static async debugProductGRNs(productId, dbConnection = null) {
     try {
       console.log(`🔍 [DEBUG] Checking GRNs for product: ${productId}`);
       
       // Import GRN model
-      const GRN = (await import('../models/GRN.js')).default;
+      const { GRN } = dbConnection ? getModels(dbConnection) : { GRN: (await import('../models/GRN.js')).default };
       
       const grns = await GRN.find({ 'items.productId': productId })
         .populate('items.productId', 'productCode itemName')
@@ -395,9 +425,14 @@ class StockMovementService {
   /**
    * Migrate existing GRN data to stock movements
    * This is a one-time migration function
+   * @param {Object} dbConnection - Database connection for multi-database support
    */
-  static async migrateExistingGRNData() {
+  static async migrateExistingGRNData(dbConnection = null) {
     try {
+      const { StockMovement, GRN } = dbConnection ? getModels(dbConnection) : { 
+        StockMovement: (await import('../models/Stock.js')).default,
+        GRN: (await import('../models/GRN.js')).default
+      };
       console.log('🔍 [STOCK_MOVEMENT_SERVICE] Starting migration of existing GRN data...');
       
       // Clear existing stock movements

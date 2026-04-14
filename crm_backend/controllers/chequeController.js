@@ -1,5 +1,12 @@
-import Cheque from "../models/Cheque.js";
-import Dealer from "../models/Dealer.js";
+import { chequeSchema } from "../models/Cheque.js";
+import { dealerSchema } from "../models/Dealer.js";
+
+const getModels = (dbConnection) => {
+  return {
+    Cheque: dbConnection.models.Cheque || dbConnection.model('Cheque', chequeSchema),
+    Dealer: dbConnection.models.Dealer || dbConnection.model('Dealer', dealerSchema)
+  };
+};
 
 // Helper function to safely parse numbers
 const safeParseInt = (value, defaultValue = 1) => {
@@ -10,6 +17,7 @@ const safeParseInt = (value, defaultValue = 1) => {
 // Get all cheques with pagination and search
 export const getCheques = async (req, res) => {
   try {
+    const { Cheque, Dealer } = getModels(req.dbConnection);
     const {
       page = 1,
       limit = 10,
@@ -127,6 +135,7 @@ export const getCheques = async (req, res) => {
 // Get single cheque
 export const getCheque = async (req, res) => {
   try {
+    const { Cheque } = getModels(req.dbConnection);
     const { id } = req.params;
 
     const cheque = await Cheque.findOne({ _id: id, isDeleted: false })
@@ -168,6 +177,7 @@ export const getCheque = async (req, res) => {
 // Create new cheque
 export const createCheque = async (req, res) => {
   try {
+    const { Cheque, Dealer } = getModels(req.dbConnection);
     const {
       chequeNo,
       amount,
@@ -217,7 +227,7 @@ export const createCheque = async (req, res) => {
       bankAccountNo,
       dealerId,
       remarks,
-      createdBy: req.user.id,
+      createdBy: req.user._id,
     });
 
     await cheque.save();
@@ -250,6 +260,7 @@ export const createCheque = async (req, res) => {
 // Update cheque
 export const updateCheque = async (req, res) => {
   try {
+    const { Cheque, Dealer } = getModels(req.dbConnection);
     const { id } = req.params;
     const updateData = req.body;
 
@@ -290,7 +301,7 @@ export const updateCheque = async (req, res) => {
 
     // Update cheque
     Object.assign(cheque, updateData);
-    cheque.updatedBy = req.user.id;
+    cheque.updatedBy = req.user._id;
 
     // Convert date string to Date object if provided
     if (updateData.date) {
@@ -337,6 +348,7 @@ export const updateCheque = async (req, res) => {
 // Delete cheque (soft delete)
 export const deleteCheque = async (req, res) => {
   try {
+    const { Cheque } = getModels(req.dbConnection);
     const { id } = req.params;
 
     const cheque = await Cheque.findOne({ _id: id, isDeleted: false });
@@ -349,7 +361,7 @@ export const deleteCheque = async (req, res) => {
 
     // Soft delete
     cheque.isDeleted = true;
-    cheque.updatedBy = req.user.id;
+    cheque.updatedBy = req.user._id;
     await cheque.save();
 
     res.json({
@@ -368,6 +380,7 @@ export const deleteCheque = async (req, res) => {
 // Update cheque status
 export const updateChequeStatus = async (req, res) => {
   try {
+    const { Cheque } = getModels(req.dbConnection);
     const { id } = req.params;
     const { status, remarks, bounceReason } = req.body;
 
@@ -389,7 +402,7 @@ export const updateChequeStatus = async (req, res) => {
 
     // Update status and related fields
     cheque.status = status;
-    cheque.updatedBy = req.user.id;
+    cheque.updatedBy = req.user._id;
 
     if (remarks) {
       cheque.remarks = remarks;
@@ -418,6 +431,7 @@ export const updateChequeStatus = async (req, res) => {
 // Get cheques by dealer
 export const getChequesByDealer = async (req, res) => {
   try {
+    const { Cheque } = getModels(req.dbConnection);
     const { dealerId } = req.params;
     const { page = 1, limit = 10, status, sortBy = "date", sortOrder = "desc" } = req.query;
 
@@ -466,6 +480,7 @@ export const getChequesByDealer = async (req, res) => {
 // Get cheques by status
 export const getChequesByStatus = async (req, res) => {
   try {
+    const { Cheque, Dealer } = getModels(req.dbConnection);
     const { status } = req.params;
     const { page = 1, limit = 10, dealer, sortBy = "date", sortOrder = "desc" } = req.query;
 
@@ -517,6 +532,7 @@ export const getChequesByStatus = async (req, res) => {
 // Get cheque statistics
 export const getChequeStats = async (req, res) => {
   try {
+    const { Cheque } = getModels(req.dbConnection);
     const { dealerId, status, startDate, endDate } = req.query;
 
     const filters = {};
@@ -527,7 +543,31 @@ export const getChequeStats = async (req, res) => {
       filters.endDate = endDate;
     }
 
-    const stats = await Cheque.getStats(filters);
+    // Get stats using model static method if available, otherwise calculate manually
+    let stats;
+    if (typeof Cheque.getStats === 'function') {
+      stats = await Cheque.getStats(filters);
+    } else {
+      // Manual calculation
+      const matchFilter = { isDeleted: false };
+      if (dealerId) matchFilter.dealerId = dealerId;
+      if (status) matchFilter.status = status;
+      if (startDate && endDate) {
+        matchFilter.date = { $gte: new Date(startDate), $lte: new Date(endDate) };
+      }
+      
+      const result = await Cheque.aggregate([
+        { $match: matchFilter },
+        {
+          $group: {
+            _id: null,
+            totalCheques: { $sum: 1 },
+            totalAmount: { $sum: "$amount" }
+          }
+        }
+      ]);
+      stats = result[0] || { totalCheques: 0, totalAmount: 0 };
+    }
 
     // Get status counts
     const statusCounts = await Cheque.aggregate([
@@ -568,6 +608,7 @@ export const getChequeStats = async (req, res) => {
 // Generate cheque report
 export const getChequeReport = async (req, res) => {
   try {
+    const { Cheque } = getModels(req.dbConnection);
     const {
       startDate,
       endDate,
@@ -599,12 +640,28 @@ export const getChequeReport = async (req, res) => {
       .sort({ date: -1 })
       .select("-__v");
 
-    const stats = await Cheque.getStats({
-      startDate,
-      endDate,
-      status,
-      dealerId,
-    });
+    // Get stats using model static method if available
+    let stats;
+    if (typeof Cheque.getStats === 'function') {
+      stats = await Cheque.getStats({
+        startDate,
+        endDate,
+        status,
+        dealerId,
+      });
+    } else {
+      const result = await Cheque.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: null,
+            totalCheques: { $sum: 1 },
+            totalAmount: { $sum: "$amount" }
+          }
+        }
+      ]);
+      stats = result[0] || { totalCheques: 0, totalAmount: 0 };
+    }
 
     if (format === "csv") {
       // Generate CSV report

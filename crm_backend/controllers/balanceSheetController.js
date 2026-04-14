@@ -1,18 +1,38 @@
-import BankAccount from '../models/BankAccount.js';
-import CashAccount from '../models/CashAccount.js';
-import DealerLedger from '../models/DealerLedger.js';
-import SupplierLedger from '../models/SupplierLedger.js';
-import StockMovement from '../models/Stock.js';
-import GRN from '../models/GRN.js';
-import Expense from '../models/Expense.js';
-import Cheque from '../models/Cheque.js';
-import Capital from '../models/Capital.js';
-import Loan from '../models/Loan.js';
-import FixedAsset from '../models/FixedAsset.js';
-import DealerInvoice from '../models/DealerInvoice.js';
-import SupplierInvoice from '../models/SupplierInvoice.js';
-import JournalVoucher from '../models/JournalVoucher.js';
-import AccountMaster from '../models/AccountMaster.js';
+import { bankAccountSchema } from '../models/BankAccount.js';
+import { cashAccountSchema } from '../models/CashAccount.js';
+import { dealerLedgerSchema } from '../models/DealerLedger.js';
+import { supplierLedgerSchema } from '../models/SupplierLedger.js';
+import { stockMovementSchema } from '../models/Stock.js';
+import { grnSchema } from '../models/GRN.js';
+import { expenseSchema } from '../models/Expense.js';
+import { chequeSchema } from '../models/Cheque.js';
+import { capitalSchema } from '../models/Capital.js';
+import { loanSchema } from '../models/Loan.js';
+import { fixedAssetSchema } from '../models/FixedAsset.js';
+import { dealerInvoiceSchema } from '../models/DealerInvoice.js';
+import { supplierInvoiceSchema } from '../models/SupplierInvoice.js';
+import { journalVoucherSchema } from '../models/JournalVoucher.js';
+import { accountMasterSchema } from '../models/AccountMaster.js';
+
+const getModels = (dbConnection) => {
+  return {
+    BankAccount: dbConnection.models.BankAccount || dbConnection.model('BankAccount', bankAccountSchema),
+    CashAccount: dbConnection.models.CashAccount || dbConnection.model('CashAccount', cashAccountSchema),
+    DealerLedger: dbConnection.models.DealerLedger || dbConnection.model('DealerLedger', dealerLedgerSchema),
+    SupplierLedger: dbConnection.models.SupplierLedger || dbConnection.model('SupplierLedger', supplierLedgerSchema),
+    StockMovement: dbConnection.models.StockMovement || dbConnection.model('StockMovement', stockMovementSchema),
+    GRN: dbConnection.models.GRN || dbConnection.model('GRN', grnSchema),
+    Expense: dbConnection.models.Expense || dbConnection.model('Expense', expenseSchema),
+    Cheque: dbConnection.models.Cheque || dbConnection.model('Cheque', chequeSchema),
+    Capital: dbConnection.models.Capital || dbConnection.model('Capital', capitalSchema),
+    Loan: dbConnection.models.Loan || dbConnection.model('Loan', loanSchema),
+    FixedAsset: dbConnection.models.FixedAsset || dbConnection.model('FixedAsset', fixedAssetSchema),
+    DealerInvoice: dbConnection.models.DealerInvoice || dbConnection.model('DealerInvoice', dealerInvoiceSchema),
+    SupplierInvoice: dbConnection.models.SupplierInvoice || dbConnection.model('SupplierInvoice', supplierInvoiceSchema),
+    JournalVoucher: dbConnection.models.JournalVoucher || dbConnection.model('JournalVoucher', journalVoucherSchema),
+    AccountMaster: dbConnection.models.AccountMaster || dbConnection.model('AccountMaster', accountMasterSchema)
+  };
+};
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -22,7 +42,8 @@ const pct = (val, total) => (total > 0 ? ((val / total) * 100).toFixed(2) : '0.0
  * Weighted-average purchase cost per product from all GRNs up to reportDate.
  * Returns Map<productId_string, avgCost>
  */
-async function buildWeightedAvgCost(reportDate) {
+async function buildWeightedAvgCost(reportDate, dbConnection) {
+  const { GRN } = getModels(dbConnection);
   const grns = await GRN.find({
     grnDate: { $lte: reportDate },
     status: { $nin: ['Cancelled'] }
@@ -49,7 +70,8 @@ async function buildWeightedAvgCost(reportDate) {
  * Aggregate journal voucher entries by accountGroup up to reportDate.
  * Returns { [accountGroup]: { debit, credit } }
  */
-async function aggregateJournalEntries(reportDate) {
+async function aggregateJournalEntries(reportDate, dbConnection) {
+  const { JournalVoucher } = getModels(dbConnection);
   const vouchers = await JournalVoucher.find({
     voucherDate: { $lte: reportDate },
     status: 'Posted'
@@ -71,6 +93,9 @@ async function aggregateJournalEntries(reportDate) {
 
 export const generateBalanceSheet = async (req, res) => {
   try {
+    const models = getModels(req.dbConnection);
+    const { CashAccount, BankAccount, DealerLedger, SupplierLedger, StockMovement, 
+            SupplierInvoice, DealerInvoice, Expense, Cheque, Capital, Loan, FixedAsset, AccountMaster } = models;
     const { asOfDate, financialYear } = req.query;
     const reportDate = asOfDate ? new Date(asOfDate) : new Date();
 
@@ -105,7 +130,7 @@ export const generateBalanceSheet = async (req, res) => {
     const advanceToSuppliers = advSupAgg[0]?.total || 0;
 
     // ── 4. INVENTORY — weighted average cost from GRNs ────────────────────────
-    const avgCostMap = await buildWeightedAvgCost(reportDate);
+    const avgCostMap = await buildWeightedAvgCost(reportDate, req.dbConnection);
 
     const stockAgg = await StockMovement.aggregate([
       { $match: { date: { $lte: reportDate } } },
@@ -136,7 +161,7 @@ export const generateBalanceSheet = async (req, res) => {
     const gstInputCredit = gstInputAgg[0]?.totalGst || 0;
 
     // ── 6. JOURNAL VOUCHER ADJUSTMENTS ────────────────────────────────────────
-    const jvGroups = await aggregateJournalEntries(reportDate);
+    const jvGroups = await aggregateJournalEntries(reportDate, req.dbConnection);
 
     // Journal entries that affect current assets (Dr = increase asset)
     const jvCurrentAssets = (jvGroups['Current Assets']?.debit || 0) - (jvGroups['Current Assets']?.credit || 0);

@@ -1,40 +1,23 @@
 // controllers/supplierController.js
-import Supplier from "../models/Supplier.js";
-import SchemeType from "../models/SchemeType.js";
-import PaymentTerm from "../models/PaymentTerm.js";
+import { supplierSchema } from "../models/Supplier.js";
+import { schemeTypeSchema } from "../models/SchemeType.js";
+import { paymentTermSchema } from "../models/PaymentTerm.js";
 
-// Generate supplier code
-const generateSupplierCode = async (companyName) => {
-  if (!companyName) return "";
-  
-  const words = companyName.split(' ');
-  let initials = '';
-  
-  if (words.length === 1) {
-    initials = words[0].substring(0, 2).toUpperCase();
-  } else {
-    initials = words.map(word => word[0]).join('').toUpperCase();
-    if (initials.length > 2) {
-      initials = initials.substring(0, 2);
-    }
-  }
-  
-  // Find the next sequential number
-  const existingCodes = await Supplier.find({ code: new RegExp(`^${initials}\\d+$`) })
-    .select('code')
-    .lean();
-  
-  let nextNum = 1;
-  while (existingCodes.some(supplier => supplier.code === `${initials}${nextNum.toString().padStart(3, '0')}`)) {
-    nextNum++;
-  }
-  
-  return `${initials}${nextNum.toString().padStart(3, '0')}`;
+// Helper function to get models from company-specific connection
+const getModels = (dbConnection) => {
+  return {
+    Supplier: dbConnection.models.Supplier || dbConnection.model('Supplier', supplierSchema),
+    SchemeType: dbConnection.models.SchemeType || dbConnection.model('SchemeType', schemeTypeSchema),
+    PaymentTerm: dbConnection.models.PaymentTerm || dbConnection.model('PaymentTerm', paymentTermSchema),
+  };
 };
 
 // Get all suppliers with filters
 export const getSuppliers = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Supplier } = getModels(req.dbConnection);
+    
     const {
       search,
       status,
@@ -106,6 +89,9 @@ export const getSuppliers = async (req, res) => {
 // Get supplier by ID
 export const getSupplierById = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Supplier } = getModels(req.dbConnection);
+    
     const supplier = await Supplier.findById(req.params.id)
       .populate('schemeTypeId', 'name code')
       .populate('paymentTermId', 'name days code');
@@ -134,6 +120,9 @@ export const getSupplierById = async (req, res) => {
 // Create new supplier
 export const createSupplier = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Supplier, SchemeType, PaymentTerm } = getModels(req.dbConnection);
+    
     const {
       name,
       companyName,
@@ -154,9 +143,6 @@ export const createSupplier = async (req, res) => {
       extraDiscounts = []
     } = req.body;
 
-    // Generate supplier code
-    const code = await generateSupplierCode(companyName);
-
     // Check if supplier with same GSTIN already exists (if GSTIN provided)
     if (gstin) {
       const existingSupplier = await Supplier.findOne({ gstin });
@@ -168,8 +154,8 @@ export const createSupplier = async (req, res) => {
       }
     }
 
+    // Create supplier without code - let pre-save hook auto-generate it
     const supplier = new Supplier({
-      code,
       name,
       companyName,
       gstin,
@@ -222,6 +208,9 @@ export const createSupplier = async (req, res) => {
 // Update supplier
 export const updateSupplier = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Supplier } = getModels(req.dbConnection);
+    
     const {
       name,
       companyName,
@@ -315,6 +304,9 @@ export const updateSupplier = async (req, res) => {
 // Delete supplier
 export const deleteSupplier = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Supplier } = getModels(req.dbConnection);
+    
     const supplier = await Supplier.findById(req.params.id);
 
     if (!supplier) {
@@ -343,6 +335,9 @@ export const deleteSupplier = async (req, res) => {
 // Get supplier dashboard stats
 export const getSupplierStats = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Supplier } = getModels(req.dbConnection);
+    
     const total = await Supplier.countDocuments();
     const active = await Supplier.countDocuments({ isActive: true });
     const inactive = await Supplier.countDocuments({ isActive: false });

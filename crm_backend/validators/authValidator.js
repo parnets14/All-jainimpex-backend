@@ -47,6 +47,14 @@ export const loginSchema = Joi.object({
     .required()
     .messages({
       'any.required': 'Password is required'
+    }),
+  
+  company: Joi.string()
+    .required()
+    .valid('jain-impex', 'ridhi', 'shree-jain-impex')
+    .messages({
+      'any.required': 'Company identifier is required',
+      'any.only': 'Invalid company identifier'
     })
 });
 

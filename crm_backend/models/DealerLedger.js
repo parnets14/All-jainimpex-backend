@@ -222,6 +222,9 @@ dealerLedgerSchema.virtual('paymentStatus').get(function() {
   return 'Pending';
 });
 
+// Export schema for multi-database support
+export { dealerLedgerSchema };
+
 export default mongoose.model("DealerLedger", dealerLedgerSchema);
 
 

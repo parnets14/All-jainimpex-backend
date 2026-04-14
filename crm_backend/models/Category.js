@@ -39,4 +39,7 @@ categorySchema.index({ name: 1, brand: 1 }, { unique: true });
 // Add text search index
 categorySchema.index({ name: "text", description: "text" });
 
+// Export schema for multi-database support
+export { categorySchema };
+
 export default mongoose.model("Category", categorySchema);

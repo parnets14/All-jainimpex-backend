@@ -1,16 +1,30 @@
 import mongoose from 'mongoose';
-import StockMovement from '../models/Stock.js';
-import Product from '../models/Product.js';
-import GRN from '../models/GRN.js';
-import Supplier from '../models/Supplier.js';
-import Warehouse from '../models/Warehouse.js';
+import { stockMovementSchema } from '../models/Stock.js';
+import { productSchema } from '../models/Product.js';
+import { grnSchema } from '../models/GRN.js';
+import { supplierSchema } from '../models/Supplier.js';
+import { warehouseSchema } from '../models/Warehouse.js';
+import { salesOrderSchema } from '../models/SalesOrder.js';
 import StockMovementService from '../services/stockMovementService.js';
+
+// Helper function to get models from company-specific connection
+const getModels = (dbConnection) => {
+  return {
+    StockMovement: dbConnection.models.StockMovement || dbConnection.model('StockMovement', stockMovementSchema),
+    Product: dbConnection.models.Product || dbConnection.model('Product', productSchema),
+    GRN: dbConnection.models.GRN || dbConnection.model('GRN', grnSchema),
+    Supplier: dbConnection.models.Supplier || dbConnection.model('Supplier', supplierSchema),
+    Warehouse: dbConnection.models.Warehouse || dbConnection.model('Warehouse', warehouseSchema),
+    SalesOrder: dbConnection.models.SalesOrder || dbConnection.model('SalesOrder', salesOrderSchema),
+  };
+};
 
 // Helper function to calculate damaged quantity from GRN data
 // Damaged quantity is part of received quantity but never enters usable stock
 // It's stored in GRN for record-keeping and display purposes only
-const calculateDamagedQuantity = async (productId, warehouseId) => {
+const calculateDamagedQuantity = async (dbConnection, productId, warehouseId) => {
   try {
+    const { GRN } = getModels(dbConnection);
     // Get damaged quantity from GRN records
     const grns = await GRN.find({
       'items.productId': productId,
@@ -36,8 +50,9 @@ const calculateDamagedQuantity = async (productId, warehouseId) => {
 // NEW: Calculate GRN Available Quantity
 // This shows: GRN IN quantity - Only Delivered OUT quantity
 // Does NOT deduct Confirmed/Blocked orders - only actual delivered orders
-const calculateGRNAvailableQuantity = async (productId, warehouseId) => {
+const calculateGRNAvailableQuantity = async (dbConnection, productId, warehouseId) => {
   try {
+    const { GRN, SalesOrder } = getModels(dbConnection);
     // Step 1: Get total GRN IN quantity (accepted quantity from all GRNs)
     const grns = await GRN.find({
       'items.productId': productId,
@@ -55,7 +70,6 @@ const calculateGRNAvailableQuantity = async (productId, warehouseId) => {
 
     // Step 2: Get only DELIVERED sales order quantities (not Confirmed/Blocked)
     // We need to find sales orders with "Delivered" status and sum their quantities
-    const SalesOrder = (await import('../models/SalesOrder.js')).default;
     const deliveredOrders = await SalesOrder.find({
       'products.product': productId,
       'products.warehouse': new mongoose.Types.ObjectId(warehouseId),
@@ -89,7 +103,7 @@ export const recalculateStockBalances = async (req, res) => {
     const StockMovementService = (await import('../services/stockMovementService.js')).default;
     
     // Recalculate all balances
-    await StockMovementService.recalculateBalances();
+    await StockMovementService.recalculateBalances(req.dbConnection);
     
     res.json({
       success: true,
@@ -107,6 +121,9 @@ export const recalculateStockBalances = async (req, res) => {
 
 export const getStock = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { StockMovement, Product, Warehouse, GRN } = getModels(req.dbConnection);
+    
     const {
       page = 1,
       limit = 10,
@@ -351,7 +368,7 @@ export const getStock = async (req, res) => {
       // Now get current stock levels from stock movements for each warehouse
       for (const warehouseId of Object.keys(warehouseStock)) {
         try {
-          const currentStock = await StockMovementService.getCurrentStock(product._id, warehouseId);
+          const currentStock = await StockMovementService.getCurrentStock(product._id, warehouseId, req.dbConnection);
           
           // OPTIMIZED: Calculate blocked stock using aggregation
           // Only count movements with "Stock Blocked" and "Stock Unblocked" remarks
@@ -385,10 +402,10 @@ export const getStock = async (req, res) => {
           blockedQty = Math.max(0, blockedQty); // Ensure blocked quantity is not negative
           
           // FIXED: Calculate damaged quantity from stock movements (source of truth)
-          const damagedQty = await calculateDamagedQuantity(product._id, warehouseId);
+          const damagedQty = await calculateDamagedQuantity(req.dbConnection, product._id, warehouseId);
           // NEW: Calculate GRN Available Quantity (GRN IN - Only Delivered OUT)
           // This shows physical stock from GRN minus only delivered orders
-          const grnAvailableQty = await calculateGRNAvailableQuantity(product._id, warehouseId);
+          const grnAvailableQty = await calculateGRNAvailableQuantity(req.dbConnection, product._id, warehouseId);
           // Update the warehouse stock with current stock from movements
           warehouseStock[warehouseId].currentStock = currentStock;
           warehouseStock[warehouseId].blockedQty = blockedQty;
@@ -539,6 +556,9 @@ export const getStock = async (req, res) => {
 
 export const getStockHistory = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { StockMovement } = getModels(req.dbConnection);
+    
     const { productId } = req.params;
     const { page = 1, limit = 10, warehouseId } = req.query;
 
@@ -547,7 +567,7 @@ export const getStockHistory = async (req, res) => {
       page,
       limit,
       warehouseId
-    });
+    }, req.dbConnection);
 
     res.json({
       success: true,
@@ -566,7 +586,7 @@ export const getStockHistory = async (req, res) => {
 // Stock Transfer Functions
 export const createStockTransfer = async (req, res) => {
   // Start a MongoDB session for transaction support
-  const session = await StockMovement.startSession();
+  const session = await req.dbConnection.startSession();
   
   try {
     // Start transaction
@@ -586,7 +606,8 @@ export const createStockTransfer = async (req, res) => {
       const validation = await StockMovementService.validateStockAvailability(
         item.productId, 
         fromWarehouse, 
-        item.quantity
+        item.quantity,
+        req.dbConnection
       );
       
       if (!validation.isAvailable) {
@@ -609,7 +630,9 @@ export const createStockTransfer = async (req, res) => {
       const outBalance = await StockMovementService.calculateRunningBalance(
         item.productId, 
         fromWarehouse, 
-        -item.quantity
+        -item.quantity,
+        null,
+        req.dbConnection
       );
       
       // OUT movement from source warehouse
@@ -630,7 +653,9 @@ export const createStockTransfer = async (req, res) => {
       const inBalance = await StockMovementService.calculateRunningBalance(
         item.productId, 
         toWarehouse, 
-        item.quantity
+        item.quantity,
+        null,
+        req.dbConnection
       );
 
       // IN movement to destination warehouse
@@ -682,6 +707,9 @@ export const createStockTransfer = async (req, res) => {
 
 export const getStockTransfers = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { StockMovement } = getModels(req.dbConnection);
+    
     const { page = 1, limit = 10, status } = req.query;
 
     // Get all transfer movements grouped by reference number
@@ -768,7 +796,7 @@ export const getStockTransfers = async (req, res) => {
 
 export const getWarehouses = async (req, res) => {
   try {
-    const Warehouse = (await import('../models/Warehouse.js')).default;
+    const { Warehouse } = getModels(req.dbConnection);
     const { search, status } = req.query;
     
     // Build query
@@ -1028,6 +1056,7 @@ export const testGRNStructure = async (req, res) => {
 // Debug endpoint to test stock calculation for specific product
 export const debugStockCalculation = async (req, res) => {
   try {
+    const { Product, GRN } = getModels(req.dbConnection);
     const { productId } = req.params;
     console.log(`🔍 [DEBUG_STOCK] Testing stock calculation for product: ${productId}`);
 
@@ -1113,7 +1142,7 @@ export const debugStockCalculation = async (req, res) => {
 
     // Calculate damaged quantity from stock movements for each warehouse
     for (const warehouseId of Object.keys(warehouseStock)) {
-      const damagedQty = await calculateDamagedQuantity(product._id, warehouseId);
+      const damagedQty = await calculateDamagedQuantity(req.dbConnection, product._id, warehouseId);
       warehouseStock[warehouseId].damagedQty = damagedQty;
     }
 
@@ -1175,7 +1204,7 @@ export const debugStockMovements = async (req, res) => {
     .sort({ date: 1, createdAt: 1 });
     
     // Get current stock from service
-    const currentStock = await StockMovementService.getCurrentStock(productId, warehouseId);
+    const currentStock = await StockMovementService.getCurrentStock(productId, warehouseId, req.dbConnection);
     
     // Get GRN data for this product-warehouse
     const grns = await GRN.find({
@@ -1227,7 +1256,7 @@ export const debugStockMovements = async (req, res) => {
 // Debug endpoint to check warehouse data structure
 export const debugWarehouses = async (req, res) => {
   try {
-    const Warehouse = (await import('../models/Warehouse.js')).default;
+    const { Warehouse } = getModels(req.dbConnection);
     const warehouses = await Warehouse.find({}).select('name address');
     
     res.json({
@@ -1325,6 +1354,9 @@ export const debugTransfers = async (req, res) => {
 
 export const getStockAlerts = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Product, StockMovement, Warehouse, GRN } = getModels(req.dbConnection);
+    
     const { page = 1, limit = 10 } = req.query;
 
     // Get all products with their current stock
@@ -1363,7 +1395,7 @@ export const getStockAlerts = async (req, res) => {
 
       // Calculate damaged quantity from stock movements for each warehouse
       for (const warehouseId of Object.keys(warehouseStock)) {
-        const damagedQty = await calculateDamagedQuantity(product._id, warehouseId);
+        const damagedQty = await calculateDamagedQuantity(req.dbConnection, product._id, warehouseId);
         warehouseStock[warehouseId].damagedQty = damagedQty;
       }
 

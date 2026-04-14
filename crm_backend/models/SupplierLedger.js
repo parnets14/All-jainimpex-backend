@@ -185,4 +185,7 @@ supplierLedgerSchema.index({ status: 1 });
 
 const SupplierLedger = mongoose.model("SupplierLedger", supplierLedgerSchema);
 
+// Export schema for multi-database support
+export { supplierLedgerSchema };
+
 export default SupplierLedger;

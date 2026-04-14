@@ -1,8 +1,17 @@
-import Route from "../models/Route.js";
-import Dealer from "../models/Dealer.js";
+import { routeSchema } from "../models/Route.js";
+import { dealerSchema } from "../models/Dealer.js";
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    Route: dbConnection.models.Route || dbConnection.model('Route', routeSchema),
+    Dealer: dbConnection.models.Dealer || dbConnection.model('Dealer', dealerSchema)
+  };
+};
 
 // Get all routes
 export const getRoutes = async (req, res) => {
+  const { Route } = getModels(req.dbConnection);
   try {
     const routes = await Route.find()
       .populate("salesExecutive", "name email")
@@ -25,6 +34,7 @@ export const getRoutes = async (req, res) => {
 
 // Get single route by ID
 export const getRouteById = async (req, res) => {
+  const { Route, Dealer } = getModels(req.dbConnection);
   try {
     const route = await Route.findById(req.params.id)
       .populate("salesExecutive", "name email")
@@ -60,6 +70,7 @@ export const getRouteById = async (req, res) => {
 
 // Create new route
 export const createRoute = async (req, res) => {
+  const { Route } = getModels(req.dbConnection);
   try {
     const {
       name,
@@ -111,6 +122,7 @@ export const createRoute = async (req, res) => {
 
 // Update route
 export const updateRoute = async (req, res) => {
+  const { Route } = getModels(req.dbConnection);
   try {
     const {
       name,
@@ -169,6 +181,7 @@ export const updateRoute = async (req, res) => {
 
 // Delete route
 export const deleteRoute = async (req, res) => {
+  const { Route, Dealer } = getModels(req.dbConnection);
   try {
     const route = await Route.findById(req.params.id);
 
@@ -206,7 +219,8 @@ export const deleteRoute = async (req, res) => {
 };
 
 // Update dealer count for a route
-export const updateRouteDealerCount = async (routeId) => {
+export const updateRouteDealerCount = async (routeId, dbConnection) => {
+  const { Route, Dealer } = getModels(dbConnection);
   try {
     const dealerCount = await Dealer.countDocuments({ route: routeId });
     await Route.findByIdAndUpdate(routeId, { totalDealers: dealerCount });

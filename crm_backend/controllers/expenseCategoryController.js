@@ -1,7 +1,15 @@
-import ExpenseCategory from "../models/ExpenseCategory.js";
+import { expenseCategorySchema } from "../models/ExpenseCategory.js";
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    ExpenseCategory: dbConnection.models.ExpenseCategory || dbConnection.model('ExpenseCategory', expenseCategorySchema)
+  };
+};
 
 // Get all categories with pagination (limit = 10)
 export const getAllCategories = async (req, res) => {
+  const { ExpenseCategory } = getModels(req.dbConnection);
   try {
     const page = parseInt(req.query.page, 10) || 1; // default page = 1
     const limit = 10; // fixed limit
@@ -37,6 +45,7 @@ export const getAllCategories = async (req, res) => {
 
 // Create category
 export const createCategory = async (req, res) => {
+  const { ExpenseCategory } = getModels(req.dbConnection);
   const { name, description } = req.body;
   if (!name?.trim()) return res.status(400).json({ message: "Name is required" });
 
@@ -54,6 +63,7 @@ export const createCategory = async (req, res) => {
 
 // Update category
 export const updateCategory = async (req, res) => {
+  const { ExpenseCategory } = getModels(req.dbConnection);
   const { id } = req.params;
   const { name, description } = req.body;
 
@@ -74,6 +84,7 @@ export const updateCategory = async (req, res) => {
 
 // Delete category
 export const deleteCategory = async (req, res) => {
+  const { ExpenseCategory } = getModels(req.dbConnection);
   const { id } = req.params;
   try {
     const category = await ExpenseCategory.findById(id);

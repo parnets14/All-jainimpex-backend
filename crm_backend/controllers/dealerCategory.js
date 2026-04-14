@@ -1,7 +1,15 @@
-import DealerCategory from "../models/DealerCategory.js";
+import { dealerCategorySchema } from "../models/DealerCategory.js";
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    DealerCategory: dbConnection.models.DealerCategory || dbConnection.model('DealerCategory', dealerCategorySchema)
+  };
+};
 
 // Create a new dealer category
 export const createDealerCategory = async (req, res) => {
+  const { DealerCategory } = getModels(req.dbConnection);
   try {
     const { name, description } = req.body;
 
@@ -32,6 +40,7 @@ export const createDealerCategory = async (req, res) => {
 
 // Get all dealer categories with pagination
 export const getAllDealerCategories = async (req, res) => {
+  const { DealerCategory } = getModels(req.dbConnection);
   try {
     const { search, page = 1, limit = 10 } = req.query;
 
@@ -85,6 +94,7 @@ export const getAllDealerCategories = async (req, res) => {
 
 // Get single dealer category by ID
 export const getDealerCategoryById = async (req, res) => {
+  const { DealerCategory } = getModels(req.dbConnection);
   try {
     const dealerCategory = await DealerCategory.findById(req.params.id);
     if (!dealerCategory)
@@ -97,6 +107,7 @@ export const getDealerCategoryById = async (req, res) => {
 
 // Update dealer category
 export const updateDealerCategory = async (req, res) => {
+  const { DealerCategory } = getModels(req.dbConnection);
   try {
     const { name, description } = req.body;
     const { id } = req.params;
@@ -134,6 +145,7 @@ export const updateDealerCategory = async (req, res) => {
 
 // Delete dealer category
 export const deleteDealerCategory = async (req, res) => {
+  const { DealerCategory } = getModels(req.dbConnection);
   try {
     const dealerCategory = await DealerCategory.findByIdAndDelete(req.params.id);
     if (!dealerCategory)

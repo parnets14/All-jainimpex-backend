@@ -1,4 +1,10 @@
-import AccountMaster from '../models/AccountMaster.js';
+import { accountMasterSchema } from '../models/AccountMaster.js';
+
+const getModels = (dbConnection) => {
+  return {
+    AccountMaster: dbConnection.models.AccountMaster || dbConnection.model('AccountMaster', accountMasterSchema)
+  };
+};
 
 // Default accounts to seed on first load
 const DEFAULT_ACCOUNTS = [
@@ -17,7 +23,8 @@ const DEFAULT_ACCOUNTS = [
   { accountName: 'Loan Account',       accountGroup: 'Loans & Liabilities', accountType: 'Liability', openingBalanceType: 'Cr', isSystem: true },
 ];
 
-export const seedDefaultAccounts = async (userId) => {
+export const seedDefaultAccounts = async (dbConnection, userId) => {
+  const { AccountMaster } = getModels(dbConnection);
   for (const acc of DEFAULT_ACCOUNTS) {
     const exists = await AccountMaster.findOne({ accountName: acc.accountName });
     if (!exists) {
@@ -28,9 +35,11 @@ export const seedDefaultAccounts = async (userId) => {
 
 export const getAccounts = async (req, res) => {
   try {
+    const { AccountMaster } = getModels(req.dbConnection);
+    
     // Seed defaults if none exist
     const count = await AccountMaster.countDocuments();
-    if (count === 0) await seedDefaultAccounts(req.user._id);
+    if (count === 0) await seedDefaultAccounts(req.dbConnection, req.user._id);
 
     const { group, type, search, isActive } = req.query;
     const query = {};
@@ -51,6 +60,7 @@ export const getAccounts = async (req, res) => {
 
 export const createAccount = async (req, res) => {
   try {
+    const { AccountMaster } = getModels(req.dbConnection);
     const { accountName, accountGroup, accountType, openingBalance, openingBalanceType, description } = req.body;
 
     if (!accountName || !accountGroup || !accountType) {
@@ -76,6 +86,7 @@ export const createAccount = async (req, res) => {
 
 export const updateAccount = async (req, res) => {
   try {
+    const { AccountMaster } = getModels(req.dbConnection);
     const account = await AccountMaster.findById(req.params.id);
     if (!account) return res.status(404).json({ success: false, message: 'Account not found' });
 
@@ -106,6 +117,7 @@ export const updateAccount = async (req, res) => {
 
 export const deleteAccount = async (req, res) => {
   try {
+    const { AccountMaster } = getModels(req.dbConnection);
     const account = await AccountMaster.findById(req.params.id);
     if (!account) return res.status(404).json({ success: false, message: 'Account not found' });
     if (account.isSystem) return res.status(400).json({ success: false, message: 'System accounts cannot be deleted' });

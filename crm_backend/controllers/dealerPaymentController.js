@@ -1,13 +1,24 @@
-import DealerPayment from "../models/DealerPayment.js";
-import DealerLedger from "../models/DealerLedger.js";
-import DealerInvoice from "../models/DealerInvoice.js";
-import Dealer from "../models/Dealer.js";
+import { dealerPaymentSchema } from "../models/DealerPayment.js";
+import { dealerLedgerSchema } from "../models/DealerLedger.js";
+import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
+import { dealerSchema } from "../models/Dealer.js";
 import mongoose from "mongoose";
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    DealerPayment: dbConnection.models.DealerPayment || dbConnection.model('DealerPayment', dealerPaymentSchema),
+    DealerLedger: dbConnection.models.DealerLedger || dbConnection.model('DealerLedger', dealerLedgerSchema),
+    DealerInvoice: dbConnection.models.DealerInvoice || dbConnection.model('DealerInvoice', dealerInvoiceSchema),
+    Dealer: dbConnection.models.Dealer || dbConnection.model('Dealer', dealerSchema)
+  };
+};
 
 // @desc    Get all dealer payments
 // @route   GET /api/dealer-payments
 // @access  Private
 export const getDealerPayments = async (req, res) => {
+  const { DealerPayment, Dealer } = getModels(req.dbConnection);
   try {
     const {
       page = 1,
@@ -136,6 +147,7 @@ export const getDealerPayments = async (req, res) => {
 // @route   GET /api/dealer-payments/:id
 // @access  Private
 export const getDealerPayment = async (req, res) => {
+  const { DealerPayment } = getModels(req.dbConnection);
   try {
     const payment = await DealerPayment.findById(req.params.id)
       .populate("dealer", "name code companyName gst phone email address")
@@ -169,6 +181,7 @@ export const getDealerPayment = async (req, res) => {
 // @route   POST /api/dealer-payments
 // @access  Private
 export const createDealerPayment = async (req, res) => {
+  const { DealerPayment, DealerInvoice } = getModels(req.dbConnection);
   try {
     const {
       dealerInvoiceId,
@@ -257,7 +270,7 @@ export const createDealerPayment = async (req, res) => {
 
     // If payment is from App (auto-approved), update invoice and ledger immediately
     if (source === "App" && payment.status === "Approved") {
-      await updateInvoiceAndLedger(payment, invoice, req.user._id);
+      await updateInvoiceAndLedger(payment, invoice, req.user._id, req.dbConnection);
     }
 
     // Populate the created payment
@@ -285,6 +298,7 @@ export const createDealerPayment = async (req, res) => {
 // @route   PUT /api/dealer-payments/:id/status
 // @access  Private
 export const updateDealerPaymentStatus = async (req, res) => {
+  const { DealerPayment, DealerInvoice } = getModels(req.dbConnection);
   try {
     const { status, rejectionReason } = req.body;
     const paymentId = req.params.id;
@@ -313,7 +327,7 @@ export const updateDealerPaymentStatus = async (req, res) => {
         .populate("dealer", "name code");
       
       if (invoice) {
-        await updateInvoiceAndLedger(payment, invoice, req.user._id);
+        await updateInvoiceAndLedger(payment, invoice, req.user._id, req.dbConnection);
       }
     } else if (status === "Rejected") {
       payment.rejectedBy = req.user._id;
@@ -347,7 +361,8 @@ export const updateDealerPaymentStatus = async (req, res) => {
 };
 
 // Helper function to update invoice and create ledger entry
-async function updateInvoiceAndLedger(payment, invoice, userId) {
+async function updateInvoiceAndLedger(payment, invoice, userId, dbConnection) {
+  const { DealerLedger } = getModels(dbConnection);
   try {
     // Calculate new paid amount
     const paidAmount = (invoice.paidAmount || 0) + payment.paymentAmount;
@@ -420,6 +435,7 @@ async function updateInvoiceAndLedger(payment, invoice, userId) {
 // @route   GET /api/dealer-payments/available-invoices
 // @access  Private
 export const getAvailableInvoicesForPayment = async (req, res) => {
+  const { DealerInvoice } = getModels(req.dbConnection);
   try {
     const { dealer, page = 1, limit = 50, search } = req.query;
     
@@ -509,6 +525,7 @@ export const getAvailableInvoicesForPayment = async (req, res) => {
 // @route   GET /api/dealer-payments/stats
 // @access  Private
 export const getDealerPaymentStats = async (req, res) => {
+  const { DealerPayment } = getModels(req.dbConnection);
   try {
     const stats = await DealerPayment.aggregate([
       {
@@ -571,6 +588,7 @@ export const getDealerPaymentStats = async (req, res) => {
 // @route   DELETE /api/dealer-payments/:id
 // @access  Private
 export const deleteDealerPayment = async (req, res) => {
+  const { DealerPayment } = getModels(req.dbConnection);
   try {
     const payment = await DealerPayment.findById(req.params.id);
     
@@ -610,6 +628,7 @@ export const deleteDealerPayment = async (req, res) => {
 // @route   POST /api/dealer-payments/advance
 // @access  Private
 export const recordAdvancePayment = async (req, res) => {
+  const { DealerPayment, Dealer } = getModels(req.dbConnection);
   try {
     const {
       dealerId,
@@ -692,7 +711,7 @@ export const recordAdvancePayment = async (req, res) => {
 
     // If payment is from App (auto-approved), update dealer and ledger immediately
     if (source === "App" && payment.status === "Approved") {
-      await processAdvancePayment(payment, dealer, req.user._id);
+      await processAdvancePayment(payment, dealer, req.user._id, req.dbConnection);
     }
 
     // Populate the created payment
@@ -716,7 +735,8 @@ export const recordAdvancePayment = async (req, res) => {
 };
 
 // Helper function to process advance payment (update dealer and create ledger entry)
-async function processAdvancePayment(payment, dealer, userId) {
+async function processAdvancePayment(payment, dealer, userId, dbConnection) {
+  const { Dealer, DealerLedger } = getModels(dbConnection);
   try {
     // Update dealer's advance balance
     await Dealer.findByIdAndUpdate(dealer._id, {
@@ -779,6 +799,7 @@ async function processAdvancePayment(payment, dealer, userId) {
 // @route   POST /api/dealer-payments/adjust-advance
 // @access  Private
 export const adjustAdvanceAgainstInvoice = async (req, res) => {
+  const { DealerInvoice, DealerPayment, Dealer, DealerLedger } = getModels(req.dbConnection);
   try {
     const { invoiceId, advancePaymentId, adjustmentAmount } = req.body;
 
@@ -925,6 +946,7 @@ export const adjustAdvanceAgainstInvoice = async (req, res) => {
 // @route   GET /api/dealers/:id/advance-balance
 // @access  Private
 export const getDealerAdvanceBalance = async (req, res) => {
+  const { Dealer, DealerPayment } = getModels(req.dbConnection);
   try {
     const dealer = await Dealer.findById(req.params.id)
       .select('name code advanceBalance advancePayments')

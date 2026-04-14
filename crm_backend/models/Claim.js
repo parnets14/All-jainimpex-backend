@@ -77,4 +77,7 @@ claimSchema.index({ status: 1 });
 claimSchema.index({ paymentStatus: 1 });
 claimSchema.index({ createdAt: -1 });
 
+// Export schema for multi-database support
+export { claimSchema };
+
 export default mongoose.model("Claim", claimSchema);

@@ -26,4 +26,7 @@ const expenseTypeSchema = new mongoose.Schema({
 
 expenseTypeSchema.index({ name: 1 }, { unique: true });
 
+// Export schema for multi-database support
+export { expenseTypeSchema };
+
 export default mongoose.model("ExpenseType", expenseTypeSchema);

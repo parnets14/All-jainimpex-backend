@@ -27,4 +27,8 @@ const paymentTermSchema = new mongoose.Schema({
 });
 
 const PaymentTerm = mongoose.model('PaymentTerm', paymentTermSchema);
+
+// Export schema for multi-database support
+export { paymentTermSchema };
+
 export default PaymentTerm;

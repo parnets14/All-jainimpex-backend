@@ -187,4 +187,7 @@ creditNoteSchema.index({ creditNoteDate: 1 });
 creditNoteSchema.index({ status: 1 });
 creditNoteSchema.index({ creditNoteNumber: 1 });
 
+// Export schema for multi-database support
+export { creditNoteSchema };
+
 export default mongoose.model("CreditNote", creditNoteSchema);

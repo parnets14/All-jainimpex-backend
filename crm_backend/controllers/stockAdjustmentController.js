@@ -1,18 +1,29 @@
-import StockAdjustment from '../models/StockAdjustment.js';
-import Product from '../models/Product.js';
-import Warehouse from '../models/Warehouse.js';
+import { stockAdjustmentSchema } from '../models/StockAdjustment.js';
+import { productSchema } from '../models/Product.js';
+import { warehouseSchema } from '../models/Warehouse.js';
 import StockMovementService from '../services/stockMovementService.js';
-import StockMovement from '../models/Stock.js';
+import { stockMovementSchema } from '../models/Stock.js';
 import mongoose from 'mongoose';
+
+const getModels = (dbConnection) => {
+  return {
+    StockAdjustment: dbConnection.models.StockAdjustment || dbConnection.model('StockAdjustment', stockAdjustmentSchema),
+    Product: dbConnection.models.Product || dbConnection.model('Product', productSchema),
+    Warehouse: dbConnection.models.Warehouse || dbConnection.model('Warehouse', warehouseSchema),
+    StockMovement: dbConnection.models.StockMovement || dbConnection.model('StockMovement', stockMovementSchema)
+  };
+};
 
 // Create Stock Adjustment
 export const createStockAdjustment = async (req, res) => {
   // Start MongoDB session for transaction
-  const session = await mongoose.startSession();
+  const session = await req.dbConnection.startSession();
   
   try {
     // Start transaction
     await session.startTransaction();
+    
+    const { StockAdjustment, Product, Warehouse, StockMovement } = getModels(req.dbConnection);
     
     const {
       warehouseId,
@@ -57,7 +68,7 @@ export const createStockAdjustment = async (req, res) => {
       }
 
       // Get current stock level for this product in this warehouse
-      const currentStock = await StockMovementService.getCurrentStock(item.productId, warehouseId);
+      const currentStock = await StockMovementService.getCurrentStock(item.productId, warehouseId, req.dbConnection);
       
       // For REMOVE adjustments, check if sufficient stock is available
       if (adjustmentType === 'REMOVE' && currentStock < item.quantity) {
@@ -104,7 +115,8 @@ export const createStockAdjustment = async (req, res) => {
         item.productId, 
         warehouseId, 
         balanceChange, 
-        session
+        session,
+        req.dbConnection
       );
 
       const stockMovement = new StockMovement({
@@ -143,7 +155,8 @@ export const createStockAdjustment = async (req, res) => {
           await StockArrivalService.checkWaitingOrdersForStock(
             item.productId,
             warehouseId,
-            item.quantity
+            item.quantity,
+            req.dbConnection
           );
         }
       }
@@ -181,6 +194,7 @@ export const createStockAdjustment = async (req, res) => {
 // Get Stock Adjustments with pagination and search
 export const getStockAdjustments = async (req, res) => {
   try {
+    const { StockAdjustment } = getModels(req.dbConnection);
     const {
       page = 1,
       limit = 10,
@@ -269,6 +283,7 @@ export const getStockAdjustments = async (req, res) => {
 // Get Single Stock Adjustment
 export const getStockAdjustment = async (req, res) => {
   try {
+    const { StockAdjustment } = getModels(req.dbConnection);
     const { id } = req.params;
 
     const adjustment = await StockAdjustment.findById(id)
@@ -302,6 +317,7 @@ export const getStockAdjustment = async (req, res) => {
 // Get Stock Adjustments for a specific product
 export const getProductStockAdjustments = async (req, res) => {
   try {
+    const { StockAdjustment } = getModels(req.dbConnection);
     const { productId } = req.params;
     const {
       page = 1,
@@ -376,6 +392,7 @@ export const getProductStockAdjustments = async (req, res) => {
 // Get Stock Adjustment Statistics
 export const getStockAdjustmentStats = async (req, res) => {
   try {
+    const { StockAdjustment } = getModels(req.dbConnection);
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const startOfYear = new Date(now.getFullYear(), 0, 1);
@@ -469,11 +486,12 @@ export const getStockAdjustmentStats = async (req, res) => {
 
 // Delete Stock Adjustment (Admin only)
 export const deleteStockAdjustment = async (req, res) => {
-  const session = await mongoose.startSession();
+  const session = await req.dbConnection.startSession();
   
   try {
     await session.startTransaction();
     
+    const { StockAdjustment, StockMovement } = getModels(req.dbConnection);
     const { id } = req.params;
 
     // Check if user has permission to delete

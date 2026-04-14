@@ -1,10 +1,19 @@
-import Collection from '../SalesExecutiveAppBackend/models/Collection.js';
-import Dealer from '../models/Dealer.js';
-import User from '../models/User.js';
+import { collectionSchema } from '../SalesExecutiveAppBackend/models/Collection.js';
+import { dealerSchema } from '../models/Dealer.js';
+import { userSchema } from '../models/User.js';
+
+const getModels = (dbConnection) => {
+  return {
+    Collection: dbConnection.models.Collection || dbConnection.model('Collection', collectionSchema),
+    Dealer: dbConnection.models.Dealer || dbConnection.model('Dealer', dealerSchema),
+    User: dbConnection.models.User || dbConnection.model('User', userSchema)
+  };
+};
 
 // Get all collections (Admin)
 export const getAllCollections = async (req, res) => {
   try {
+    const { Collection } = getModels(req.dbConnection);
     const {
       status,
       salesExecutive,
@@ -87,6 +96,7 @@ export const getAllCollections = async (req, res) => {
 // Get collection by ID (Admin)
 export const getCollectionByIdAdmin = async (req, res) => {
   try {
+    const { Collection } = getModels(req.dbConnection);
     const { id } = req.params;
 
     console.log('📄 Fetching collection details (Admin):', id);
@@ -124,6 +134,7 @@ export const getCollectionByIdAdmin = async (req, res) => {
 // Approve collection (Admin)
 export const approveCollection = async (req, res) => {
   try {
+    const { Collection } = getModels(req.dbConnection);
     const { id } = req.params;
     const user = req.user;
 
@@ -175,6 +186,7 @@ export const approveCollection = async (req, res) => {
 // Reject collection (Admin)
 export const rejectCollection = async (req, res) => {
   try {
+    const { Collection } = getModels(req.dbConnection);
     const { id } = req.params;
     const { reason } = req.body;
     const user = req.user;
@@ -235,6 +247,7 @@ export const rejectCollection = async (req, res) => {
 // Get collection statistics (Admin)
 export const getCollectionStats = async (req, res) => {
   try {
+    const { Collection } = getModels(req.dbConnection);
     const { startDate, endDate } = req.query;
 
     console.log('📊 Fetching collection statistics');

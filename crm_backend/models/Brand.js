@@ -32,4 +32,7 @@ const brandSchema = new mongoose.Schema(
 // Add text search index
 brandSchema.index({ name: "text", description: "text" });
 
+// Export schema for multi-database support
+export { brandSchema };
+
 export default mongoose.model("Brand", brandSchema);

@@ -1,10 +1,23 @@
-import ProductRecommendation from '../models/ProductRecommendation.js';
-import Dealer from '../models/Dealer.js';
-import Product from '../models/Product.js';
+import { productRecommendationSchema } from '../models/ProductRecommendation.js';
+import { dealerSchema } from '../models/Dealer.js';
+import { productSchema } from '../models/Product.js';
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    ProductRecommendation: dbConnection.models.ProductRecommendation || 
+                           dbConnection.model('ProductRecommendation', productRecommendationSchema),
+    Dealer: dbConnection.models.Dealer || 
+            dbConnection.model('Dealer', dealerSchema),
+    Product: dbConnection.models.Product || 
+             dbConnection.model('Product', productSchema)
+  };
+};
 
 // Get all recommendations
 export const getAllRecommendations = async (req, res) => {
   try {
+    const { ProductRecommendation } = getModels(req.dbConnection);
     const { dealerId, status, page = 1, limit = 50 } = req.query;
     
     const filter = {};
@@ -45,6 +58,7 @@ export const getAllRecommendations = async (req, res) => {
 // Create recommendation
 export const createRecommendation = async (req, res) => {
   try {
+    const { ProductRecommendation, Dealer, Product } = getModels(req.dbConnection);
     const { dealerId, productId, reason, priority, suggestedAction, validUntil, notes } = req.body;
     
     // Validate dealer and product
@@ -102,6 +116,7 @@ export const createRecommendation = async (req, res) => {
 // Update recommendation
 export const updateRecommendation = async (req, res) => {
   try {
+    const { ProductRecommendation } = getModels(req.dbConnection);
     const { id } = req.params;
     const updates = req.body;
     
@@ -138,6 +153,7 @@ export const updateRecommendation = async (req, res) => {
 // Delete recommendation
 export const deleteRecommendation = async (req, res) => {
   try {
+    const { ProductRecommendation } = getModels(req.dbConnection);
     const { id } = req.params;
     
     const recommendation = await ProductRecommendation.findByIdAndDelete(id);
@@ -166,6 +182,7 @@ export const deleteRecommendation = async (req, res) => {
 // Mark as completed
 export const markAsCompleted = async (req, res) => {
   try {
+    const { ProductRecommendation } = getModels(req.dbConnection);
     const { id } = req.params;
     
     const recommendation = await ProductRecommendation.findByIdAndUpdate(
@@ -203,6 +220,7 @@ export const markAsCompleted = async (req, res) => {
 // Dismiss recommendation
 export const dismissRecommendation = async (req, res) => {
   try {
+    const { ProductRecommendation } = getModels(req.dbConnection);
     const { id } = req.params;
     
     const recommendation = await ProductRecommendation.findByIdAndUpdate(

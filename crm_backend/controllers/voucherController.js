@@ -1,9 +1,9 @@
-import Voucher from '../models/Voucher.js';
-import BankAccount from '../models/BankAccount.js';
-import CashAccount from '../models/CashAccount.js';
-import DealerInvoice from '../models/DealerInvoice.js';
-import DealerLedger from '../models/DealerLedger.js';
-import PaymentAllocation from '../models/PaymentAllocation.js';
+import { voucherSchema } from '../models/Voucher.js';
+import { bankAccountSchema } from '../models/BankAccount.js';
+import { cashAccountSchema } from '../models/CashAccount.js';
+import { dealerInvoiceSchema } from '../models/DealerInvoice.js';
+import { dealerLedgerSchema } from '../models/DealerLedger.js';
+import { paymentAllocationSchema } from '../models/PaymentAllocation.js';
 import { generateVoucherNumber, getFinancialYear } from '../services/voucherNumberService.js';
 import { 
   splitCashPayment, 
@@ -12,12 +12,32 @@ import {
   validateCashTransaction 
 } from '../services/cashSplittingService.js';
 
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    Voucher: dbConnection.models.Voucher || 
+             dbConnection.model('Voucher', voucherSchema),
+    BankAccount: dbConnection.models.BankAccount || 
+                 dbConnection.model('BankAccount', bankAccountSchema),
+    CashAccount: dbConnection.models.CashAccount || 
+                 dbConnection.model('CashAccount', cashAccountSchema),
+    DealerInvoice: dbConnection.models.DealerInvoice || 
+                   dbConnection.model('DealerInvoice', dealerInvoiceSchema),
+    DealerLedger: dbConnection.models.DealerLedger || 
+                  dbConnection.model('DealerLedger', dealerLedgerSchema),
+    PaymentAllocation: dbConnection.models.PaymentAllocation || 
+                       dbConnection.model('PaymentAllocation', paymentAllocationSchema)
+  };
+};
+
 /**
  * Create Receipt Voucher
  * POST /api/vouchers/receipt
  */
 export const createReceiptVoucher = async (req, res) => {
   try {
+    const { Voucher, BankAccount, CashAccount, DealerInvoice, DealerLedger, PaymentAllocation } = getModels(req.dbConnection);
+    
     console.log('=== CREATE RECEIPT VOUCHER ===');
     console.log('Request body:', JSON.stringify(req.body, null, 2));
     console.log('User:', req.user ? req.user._id : 'NO USER');
@@ -252,6 +272,7 @@ export const createReceiptVoucher = async (req, res) => {
  */
 export const createPaymentVoucher = async (req, res) => {
   try {
+    const { Voucher, BankAccount, CashAccount, DealerInvoice, DealerLedger, PaymentAllocation } = getModels(req.dbConnection);
     const {
       voucherDate,
       partyType,
@@ -399,6 +420,7 @@ export const createPaymentVoucher = async (req, res) => {
  */
 export const createContraVoucher = async (req, res) => {
   try {
+    const { Voucher, BankAccount, CashAccount } = getModels(req.dbConnection);
     const {
       voucherDate,
       fromAccountType,
@@ -526,6 +548,7 @@ export const createContraVoucher = async (req, res) => {
  */
 export const getVouchers = async (req, res) => {
   try {
+    const { Voucher } = getModels(req.dbConnection);
     const {
       voucherType,
       partyId,
@@ -618,6 +641,7 @@ export const getVouchers = async (req, res) => {
  */
 export const getVoucherById = async (req, res) => {
   try {
+    const { Voucher } = getModels(req.dbConnection);
     const voucher = await Voucher.findById(req.params.id)
       .populate('partyId')
       .populate('bankAccount')
@@ -676,6 +700,7 @@ export const getVoucherById = async (req, res) => {
  */
 export const cancelVoucher = async (req, res) => {
   try {
+    const { Voucher, BankAccount, CashAccount, DealerLedger, PaymentAllocation } = getModels(req.dbConnection);
     const { cancelReason } = req.body;
     
     if (!cancelReason) {
@@ -775,6 +800,7 @@ export const getCashSplitPreview = async (req, res) => {
  */
 export const getUnadjustedVouchers = async (req, res) => {
   try {
+    const { Voucher } = getModels(req.dbConnection);
     const { partyId, voucherType = 'Receipt' } = req.query;
     
     const query = {
@@ -814,6 +840,7 @@ export const getUnadjustedVouchers = async (req, res) => {
  */
 export const getBalances = async (req, res) => {
   try {
+    const { CashAccount, BankAccount } = getModels(req.dbConnection);
     // Get cash balance
     const cashAccount = await CashAccount.getCashAccount();
     const cashBalance = cashAccount ? cashAccount.currentBalance : 0;

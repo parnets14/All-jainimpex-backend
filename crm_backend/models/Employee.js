@@ -559,4 +559,7 @@ employeeSchema.methods.updateFaceEmbedding = function(embedding) {
   return this.save();
 };
 
+// Export schema for multi-database support
+export { employeeSchema };
+
 export default mongoose.model('Employee', employeeSchema);

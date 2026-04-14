@@ -1,11 +1,19 @@
-import ClaimType from "../models/ClaimType.js";
-import Claim from "../models/Claim.js";
+import { claimTypeSchema } from "../models/ClaimType.js";
+import { claimSchema } from "../models/Claim.js";
 import asyncHandler from "express-async-handler";
+
+const getModels = (dbConnection) => {
+  return {
+    ClaimType: dbConnection.models.ClaimType || dbConnection.model('ClaimType', claimTypeSchema),
+    Claim: dbConnection.models.Claim || dbConnection.model('Claim', claimSchema)
+  };
+};
 
 // @desc    Create new claim type
 // @route   POST /api/claim-types
 // @access  Private
 export const createClaimType = asyncHandler(async (req, res) => {
+  const { ClaimType } = getModels(req.dbConnection);
   const { name, description, maxAmount } = req.body;
 
   const claimTypeExists = await ClaimType.findOne({ name });
@@ -31,6 +39,7 @@ export const createClaimType = asyncHandler(async (req, res) => {
 // @route   GET /api/claim-types
 // @access  Private
 export const getClaimTypes = asyncHandler(async (req, res) => {
+  const { ClaimType } = getModels(req.dbConnection);
   const { page = 1, limit = 10, search = "" } = req.query;
 
   const query = {
@@ -63,6 +72,7 @@ export const getClaimTypes = asyncHandler(async (req, res) => {
 // @route   PUT /api/claim-types/:id
 // @access  Private
 export const updateClaimType = asyncHandler(async (req, res) => {
+  const { ClaimType } = getModels(req.dbConnection);
   const { name, description, maxAmount, isActive } = req.body;
 
   let claimType = await ClaimType.findById(req.params.id);
@@ -100,6 +110,7 @@ export const updateClaimType = asyncHandler(async (req, res) => {
 // @route   DELETE /api/claim-types/:id
 // @access  Private
 export const deleteClaimType = asyncHandler(async (req, res) => {
+  const { ClaimType, Claim } = getModels(req.dbConnection);
   const claimType = await ClaimType.findById(req.params.id);
   if (!claimType) {
     res.status(404);

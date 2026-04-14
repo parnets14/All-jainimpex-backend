@@ -1,11 +1,20 @@
-import Warehouse from "../models/Warehouse.js";
-import Region from "../models/Region.js";
+import { warehouseSchema } from "../models/Warehouse.js";
+import { regionSchema } from "../models/Region.js";
+
+// Helper function to get models from company-specific connection
+const getModels = (dbConnection) => {
+  return {
+    Warehouse: dbConnection.models.Warehouse || dbConnection.model('Warehouse', warehouseSchema),
+    Region: dbConnection.models.Region || dbConnection.model('Region', regionSchema),
+  };
+};
 
 // @desc    Get all warehouses
 // @route   GET /api/warehouses
 // @access  Private
 export const getWarehouses = async (req, res) => {
   try {
+    const { Warehouse } = getModels(req.dbConnection);
     const {
       page = 1,
       limit = 10,
@@ -86,6 +95,7 @@ export const getWarehouses = async (req, res) => {
 // @access  Private
 export const getWarehouse = async (req, res) => {
   try {
+    const { Warehouse } = getModels(req.dbConnection);
     const warehouse = await Warehouse.findById(req.params.id)
       .populate("region", "name code")
       .populate("createdBy", "name email");
@@ -123,6 +133,7 @@ export const getWarehouse = async (req, res) => {
 // @access  Private
 export const createWarehouse = async (req, res) => {
   try {
+    const { Warehouse, Region } = getModels(req.dbConnection);
     const {
       code,
       name,
@@ -230,6 +241,7 @@ export const createWarehouse = async (req, res) => {
 // @access  Private
 export const updateWarehouse = async (req, res) => {
   try {
+    const { Warehouse, Region } = getModels(req.dbConnection);
     const {
       name,
       region,
@@ -324,6 +336,7 @@ export const updateWarehouse = async (req, res) => {
 // @access  Private
 export const deleteWarehouse = async (req, res) => {
   try {
+    const { Warehouse } = getModels(req.dbConnection);
     const warehouse = await Warehouse.findById(req.params.id);
 
     if (!warehouse) {
@@ -356,6 +369,7 @@ export const deleteWarehouse = async (req, res) => {
 // @access  Private
 export const getWarehouseStats = async (req, res) => {
   try {
+    const { Warehouse, Region } = getModels(req.dbConnection);
     const totalWarehouses = await Warehouse.countDocuments({ isActive: true });
     
     const statusStats = await Warehouse.aggregate([
@@ -412,6 +426,7 @@ export const getWarehouseStats = async (req, res) => {
 // @access  Private
 export const getWarehousesByRegion = async (req, res) => {
   try {
+    const { Warehouse } = getModels(req.dbConnection);
     const warehouses = await Warehouse.find({
       region: req.params.regionId,
       isActive: true

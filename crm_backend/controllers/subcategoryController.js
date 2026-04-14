@@ -1,5 +1,19 @@
-import Subcategory from "../models/Subcategory.js";
-import ExtendedSubcategory from "../models/ExtendedSubcategory.js";
+import { subcategorySchema } from "../models/Subcategory.js";
+import { extendedSubcategorySchema } from "../models/ExtendedSubcategory.js";
+import { categorySchema } from "../models/Category.js";
+import { brandSchema } from "../models/Brand.js";
+import { productSchema } from "../models/Product.js";
+
+// Helper function to get models from company-specific connection
+const getModels = (dbConnection) => {
+  return {
+    Subcategory: dbConnection.models.Subcategory || dbConnection.model('Subcategory', subcategorySchema),
+    ExtendedSubcategory: dbConnection.models.ExtendedSubcategory || dbConnection.model('ExtendedSubcategory', extendedSubcategorySchema),
+    Category: dbConnection.models.Category || dbConnection.model('Category', categorySchema),
+    Brand: dbConnection.models.Brand || dbConnection.model('Brand', brandSchema),
+    Product: dbConnection.models.Product || dbConnection.model('Product', productSchema),
+  };
+};
 
 // Helper function for pagination
 const getPaginationOptions = (query) => {
@@ -13,6 +27,9 @@ const getPaginationOptions = (query) => {
 // Get subcategories by category with pagination
 export const getSubcategoriesByCategory = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Subcategory, ExtendedSubcategory } = getModels(req.dbConnection);
+    
     const { page, limit, skip } = getPaginationOptions(req.query);
     const { search, status } = req.query;
     const { categoryId } = req.params;
@@ -76,6 +93,9 @@ export const getSubcategoriesByCategory = async (req, res) => {
 // Get subcategories by brand and category (nested route)
 export const getSubcategoriesByBrandAndCategory = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Subcategory, ExtendedSubcategory } = getModels(req.dbConnection);
+    
     const { page, limit, skip } = getPaginationOptions(req.query);
     const { search, status } = req.query;
     const { brandId, categoryId } = req.params;
@@ -140,6 +160,9 @@ export const getSubcategoriesByBrandAndCategory = async (req, res) => {
 // Get all subcategories with pagination
 export const getSubcategories = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Subcategory, ExtendedSubcategory } = getModels(req.dbConnection);
+    
     const { page, limit, skip } = getPaginationOptions(req.query);
     const { search, status, brand, category } = req.query;
 
@@ -190,6 +213,9 @@ export const getSubcategories = async (req, res) => {
 // Create new subcategory
 export const createSubcategory = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Subcategory } = getModels(req.dbConnection);
+    
     const { name, description, brand, category } = req.body;
 
     if (!brand) {
@@ -263,6 +289,7 @@ export const createSubcategory = async (req, res) => {
 // Create subcategory under brand's category (nested route)
 export const createSubcategoryUnderBrandCategory = async (req, res) => {
   try {
+    const { Subcategory } = getModels(req.dbConnection);
     const { name, description } = req.body;
     const { brandId, categoryId } = req.params;
 
@@ -323,6 +350,9 @@ export const createSubcategoryUnderBrandCategory = async (req, res) => {
 // Update subcategory
 export const updateSubcategory = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Subcategory } = getModels(req.dbConnection);
+    
     const { name, description, status } = req.body;
 
     const subcategory = await Subcategory.findById(req.params.id);
@@ -394,6 +424,9 @@ export const updateSubcategory = async (req, res) => {
 // Delete subcategory
 export const deleteSubcategory = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Subcategory, ExtendedSubcategory } = getModels(req.dbConnection);
+    
     const subcategory = await Subcategory.findById(req.params.id);
     if (!subcategory) {
       return res.status(404).json({
@@ -435,6 +468,7 @@ export const deleteSubcategory = async (req, res) => {
 // @access  Private
 export const changeSubcategoryParent = async (req, res) => {
   try {
+    const { Subcategory, Category, Brand, Product } = getModels(req.dbConnection);
     const { id } = req.params;
     const { newCategoryId, newBrandId } = req.body;
 
@@ -467,9 +501,6 @@ export const changeSubcategoryParent = async (req, res) => {
     }
 
     // Verify new category and brand exist
-    const Category = (await import("../models/Category.js")).default;
-    const Brand = (await import("../models/Brand.js")).default;
-
     const newCategory = await Category.findById(newCategoryId);
     if (!newCategory) {
       return res.status(404).json({
@@ -513,7 +544,7 @@ export const changeSubcategoryParent = async (req, res) => {
     });
 
     // Start transaction
-    const session = await Subcategory.startSession();
+    const session = await req.dbConnection.startSession();
     session.startTransaction();
 
     try {
@@ -536,7 +567,6 @@ export const changeSubcategoryParent = async (req, res) => {
       );
 
       // Update all products using this subcategory
-      const Product = (await import("../models/Product.js")).default;
       await Product.updateMany(
         { subcategory: id },
         {
@@ -656,6 +686,7 @@ async function updateExtendedChildrenRecursively(
 // @access  Private
 export const getSubcategoryParentChangePreview = async (req, res) => {
   try {
+    const { Subcategory, Category, Brand, Product, ExtendedSubcategory } = getModels(req.dbConnection);
     const { id } = req.params;
     const { newCategoryId, newBrandId } = req.query;
 
@@ -678,8 +709,6 @@ export const getSubcategoryParentChangePreview = async (req, res) => {
     }
 
     // Verify new category and brand exist
-    const Category = (await import("../models/Category.js")).default;
-    const Brand = (await import("../models/Brand.js")).default;
 
     const newCategory = await Category.findById(newCategoryId);
     if (!newCategory) {
@@ -718,7 +747,6 @@ export const getSubcategoryParentChangePreview = async (req, res) => {
       subcategory: id,
     });
 
-    const Product = (await import("../models/Product.js")).default;
     const productCount = await Product.countDocuments({ subcategory: id });
 
     res.json({

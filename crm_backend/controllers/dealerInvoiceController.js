@@ -1,21 +1,45 @@
 import mongoose from 'mongoose';
-import DealerInvoice from "../models/DealerInvoice.js";
-import SalesOrder from "../models/SalesOrder.js";
-import Dealer from "../models/Dealer.js";
-import Product from "../models/Product.js";
-import DiscountMapping from "../models/DiscountMapping.js";
-import Points from "../models/Points.js";
-import Stock from "../models/Stock.js";
-import StockMovement from "../models/Stock.js"; // StockMovement is exported from Stock.js
-import DealerLedger from "../models/DealerLedger.js";
-import Notification from "../models/Notification.js";
-import PaymentAllocation from "../models/PaymentAllocation.js";
-import DealerPayment from "../models/DealerPayment.js";
-import Voucher from "../models/Voucher.js";
+import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
+import { salesOrderSchema } from "../models/SalesOrder.js";
+import { dealerSchema } from "../models/Dealer.js";
+import { productSchema } from "../models/Product.js";
+import { discountMappingSchema } from "../models/DiscountMapping.js";
+import { pointsSchema } from "../models/Points.js";
+import { stockMovementSchema } from "../models/Stock.js";
+import { dealerLedgerSchema } from "../models/DealerLedger.js";
+import { notificationSchema } from "../models/Notification.js";
+import { paymentAllocationSchema } from "../models/PaymentAllocation.js";
+import { dealerPaymentSchema } from "../models/DealerPayment.js";
+import { voucherSchema } from "../models/Voucher.js";
+import { userSchema } from "../models/User.js";
+import { regionSchema } from "../models/Region.js";
+import { warehouseSchema } from "../models/Warehouse.js";
+
+// Helper function to get models from company-specific connection
+const getModels = (dbConnection) => {
+  return {
+    DealerInvoice: dbConnection.models.DealerInvoice || dbConnection.model('DealerInvoice', dealerInvoiceSchema),
+    SalesOrder: dbConnection.models.SalesOrder || dbConnection.model('SalesOrder', salesOrderSchema),
+    Dealer: dbConnection.models.Dealer || dbConnection.model('Dealer', dealerSchema),
+    Product: dbConnection.models.Product || dbConnection.model('Product', productSchema),
+    DiscountMapping: dbConnection.models.DiscountMapping || dbConnection.model('DiscountMapping', discountMappingSchema),
+    Points: dbConnection.models.Points || dbConnection.model('Points', pointsSchema),
+    StockMovement: dbConnection.models.StockMovement || dbConnection.model('StockMovement', stockMovementSchema),
+    DealerLedger: dbConnection.models.DealerLedger || dbConnection.model('DealerLedger', dealerLedgerSchema),
+    Notification: dbConnection.models.Notification || dbConnection.model('Notification', notificationSchema),
+    PaymentAllocation: dbConnection.models.PaymentAllocation || dbConnection.model('PaymentAllocation', paymentAllocationSchema),
+    DealerPayment: dbConnection.models.DealerPayment || dbConnection.model('DealerPayment', dealerPaymentSchema),
+    Voucher: dbConnection.models.Voucher || dbConnection.model('Voucher', voucherSchema),
+    User: dbConnection.models.User || dbConnection.model('User', userSchema),
+    Region: dbConnection.models.Region || dbConnection.model('Region', regionSchema),
+    Warehouse: dbConnection.models.Warehouse || dbConnection.model('Warehouse', warehouseSchema),
+  };
+};
 
 // Generate unique invoice number
-const generateInvoiceNumber = async () => {
+const generateInvoiceNumber = async (dbConnection) => {
   try {
+    const { DealerInvoice } = getModels(dbConnection);
     const currentYear = new Date().getFullYear();
     const prefix = `INV-${currentYear}-`;
     
@@ -53,6 +77,9 @@ const generateInvoiceNumber = async () => {
 // @access  Private
 export const getDealerInvoices = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { DealerInvoice, Dealer, SalesOrder, PaymentAllocation, DealerPayment } = getModels(req.dbConnection);
+    
     const {
       page = 1,
       limit = 10,
@@ -200,6 +227,9 @@ export const getDealerInvoices = async (req, res) => {
 // @access  Private
 export const getDealerInvoice = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { DealerInvoice } = getModels(req.dbConnection);
+    
     const invoice = await DealerInvoice.findById(req.params.id)
       .populate("dealer", "name code dealerType contactPerson phone email address gst pan")
       .populate("region", "name")
@@ -235,6 +265,9 @@ export const getDealerInvoice = async (req, res) => {
 // @access  Private
 export const getDealerSalesOrders = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { SalesOrder } = getModels(req.dbConnection);
+    
     const { dealerId } = req.params;
     const { status = "Delivered" } = req.query;
 
@@ -267,6 +300,9 @@ export const getDealerSalesOrders = async (req, res) => {
 // @access  Private
 export const calculateDiscountsAndPoints = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Dealer, Product, DiscountMapping } = getModels(req.dbConnection);
+    
     const { items, dealerId } = req.body;
 
     if (!items || !Array.isArray(items)) {
@@ -374,6 +410,9 @@ export const calculateDiscountsAndPoints = async (req, res) => {
 // @access  Private
 export const createDealerInvoice = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { DealerInvoice, Dealer, Product, SalesOrder, Stock, StockMovement, DealerLedger, Points, Notification, DiscountMapping } = getModels(req.dbConnection);
+    
     console.log("Creating dealer invoice with data:", {
       dealerId: req.body.dealerId,
       itemsCount: req.body.items?.length,
@@ -476,7 +515,8 @@ export const createDealerInvoice = async (req, res) => {
         const applicableDiscounts = await DiscountMapping.findApplicableDiscounts(
           item.product,
           'sales',
-          dealer.dealerType
+          dealer.dealerType,
+          req.dbConnection // Pass the company-specific connection
         );
         
         console.log(`  📊 Found ${applicableDiscounts.length} applicable discounts`);
@@ -687,7 +727,7 @@ export const createDealerInvoice = async (req, res) => {
       totalGst: totalGst || 0,
       totalAmount: totalAmount || 0,
       totalPoints: totalPoints || 0,
-      createdBy: req.user.id
+      createdBy: req.user._id
     };
 
     // Add customer information if provided
@@ -744,7 +784,7 @@ export const createDealerInvoice = async (req, res) => {
         dueDate: invoice.dueDate,
         pointsEarned: invoice.totalPoints || 0,
         schemeAmount: invoice.totalDiscount || 0,
-        createdBy: req.user.id
+        createdBy: req.user._id
       });
       
       await ledgerEntry.save();
@@ -856,9 +896,12 @@ export const createDealerInvoice = async (req, res) => {
 // @route   PUT /api/dealer-invoices/:id/approve
 // @access  Private
 export const approveDealerInvoice = async (req, res) => {
-  const session = await mongoose.startSession();
+  const session = await req.dbConnection.startSession();
   
   try {
+    // Get models from company-specific connection
+    const { DealerInvoice, Dealer, Product, SalesOrder, Stock, StockMovement, DealerLedger, Points, Notification } = getModels(req.dbConnection);
+    
     await session.startTransaction();
     
     const invoice = await DealerInvoice.findById(req.params.id).session(session);
@@ -937,7 +980,7 @@ export const approveDealerInvoice = async (req, res) => {
     // ── END QUANTITY SYNC CHECK ──────────────────────────────────────────────
 
     // Generate invoice number NOW
-    invoice.invoiceNumber = await generateInvoiceNumber();
+    invoice.invoiceNumber = await generateInvoiceNumber(req.dbConnection);
     invoice.invoiceDate = new Date();
     invoice.status = "Approved";
     invoice.isDraft = false;
@@ -1229,6 +1272,9 @@ export const approveDealerInvoice = async (req, res) => {
 // @access  Private
 export const updateDealerInvoice = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { DealerInvoice, Dealer, Product } = getModels(req.dbConnection);
+    
     const { id } = req.params;
     const updateData = req.body;
 
@@ -1274,6 +1320,9 @@ export const updateDealerInvoice = async (req, res) => {
 // @access  Private
 export const updateInvoiceStatus = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { DealerInvoice } = getModels(req.dbConnection);
+    
     const { id } = req.params;
     const { status, remarks } = req.body;
 
@@ -1287,7 +1336,7 @@ export const updateInvoiceStatus = async (req, res) => {
     const updateData = { status };
     
     if (status === "Approved") {
-      updateData.approvedBy = req.user.id;
+      updateData.approvedBy = req.user._id;
       updateData.approvedAt = new Date();
     }
 
@@ -1332,6 +1381,9 @@ export const updateInvoiceStatus = async (req, res) => {
 // @access  Private
 export const approveInvoice = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { DealerInvoice } = getModels(req.dbConnection);
+    
     const { id } = req.params;
 
     const invoice = await DealerInvoice.findById(id);
@@ -1353,7 +1405,7 @@ export const approveInvoice = async (req, res) => {
 
     // Update invoice to approved status
     invoice.status = "Approved";
-    invoice.approvedBy = req.user.id;
+    invoice.approvedBy = req.user._id;
     invoice.approvedAt = new Date();
     await invoice.save();
 
@@ -1385,9 +1437,12 @@ export const approveInvoice = async (req, res) => {
 // @route   DELETE /api/dealer-invoices/:id
 // @access  Private
 export const deleteDealerInvoice = async (req, res) => {
-  const session = await mongoose.startSession();
+  const session = await req.dbConnection.startSession();
   
   try {
+    // Get models from company-specific connection
+    const { DealerInvoice, DealerLedger, PaymentAllocation, DealerPayment, Voucher, StockMovement, Points, SalesOrder } = getModels(req.dbConnection);
+    
     await session.startTransaction();
     
     const { reason } = req.body;
@@ -1602,6 +1657,9 @@ export const deleteDealerInvoice = async (req, res) => {
 // @access  Private
 export const getInvoiceStats = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { DealerInvoice } = getModels(req.dbConnection);
+    
     const { startDate, endDate, dealerId } = req.query;
 
     // Build filter object

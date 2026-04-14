@@ -1,5 +1,17 @@
-import SalesOrder from '../models/SalesOrder.js';
+import { salesOrderSchema } from '../models/SalesOrder.js';
+import { stockMovementSchema } from '../models/Stock.js';
 import StockMovementService from './stockMovementService.js';
+
+// Helper function to get models from company-specific connection
+const getModels = (dbConnection) => {
+  if (!dbConnection) {
+    throw new Error('dbConnection is required for StockArrivalService');
+  }
+  return {
+    SalesOrder: dbConnection.models.SalesOrder || dbConnection.model('SalesOrder', salesOrderSchema),
+    StockMovement: dbConnection.models.StockMovement || dbConnection.model('StockMovement', stockMovementSchema),
+  };
+};
 
 class StockArrivalService {
   /**
@@ -8,16 +20,19 @@ class StockArrivalService {
    * @param {String} productId - Product ID
    * @param {String} warehouseId - Warehouse ID
    * @param {Number} arrivedQuantity - Quantity that just arrived (optional, for logging)
+   * @param {Object} dbConnection - Database connection for multi-database support
    */
-  static async checkWaitingOrdersForStock(productId, warehouseId, arrivedQuantity = 0) {
+  static async checkWaitingOrdersForStock(productId, warehouseId, arrivedQuantity = 0, dbConnection = null) {
     try {
       console.log(`📦 [STOCK_ARRIVAL] Checking waiting orders for product ${productId} in warehouse ${warehouseId}`);
       if (arrivedQuantity > 0) {
         console.log(`   Arrived quantity: ${arrivedQuantity} units`);
       }
       
+      const { SalesOrder } = getModels(dbConnection);
+      
       // Get current stock from movements
-      const currentStock = await StockMovementService.getCurrentStock(productId, warehouseId);
+      const currentStock = await StockMovementService.getCurrentStock(productId, warehouseId, dbConnection);
       console.log(`   Current stock: ${currentStock} units`);
       
       // Find all orders waiting for this product in this warehouse
@@ -45,7 +60,7 @@ class StockArrivalService {
       let ordersPartial = 0;
       
       for (const order of waitingOrders) {
-        const updateResult = await this.updateOrderStockStatus(order, productId, warehouseId, currentStock);
+        const updateResult = await this.updateOrderStockStatus(order, productId, warehouseId, currentStock, dbConnection);
         
         if (updateResult.updated) {
           ordersUpdated++;
@@ -74,9 +89,10 @@ class StockArrivalService {
    * @param {String} productId - Product ID that stock arrived for
    * @param {String} warehouseId - Warehouse ID
    * @param {Number} currentStock - Current available stock
+   * @param {Object} dbConnection - Database connection for multi-database support
    * @returns {Object} - Update result
    */
-  static async updateOrderStockStatus(order, productId, warehouseId, currentStock) {
+  static async updateOrderStockStatus(order, productId, warehouseId, currentStock, dbConnection = null) {
     try {
       let orderUpdated = false;
       let availableCount = 0;
@@ -84,8 +100,7 @@ class StockArrivalService {
       let waitingCount = 0;
       let totalCount = 0;
       
-      // Import Stock model
-      const Stock = (await import('../models/Stock.js')).default;
+      const { StockMovement } = getModels(dbConnection);
       
       // Update stock status for each product in the order
       for (const product of order.products) {
@@ -110,11 +125,7 @@ class StockArrivalService {
           stockAvailable = currentStock;
         } else {
           // Query current stock for other products to ensure accuracy
-          const stockRecord = await Stock.findOne({
-            productId: product.product,
-            warehouseId: product.warehouse
-          });
-          stockAvailable = stockRecord ? (stockRecord.netStock || stockRecord.quantity || 0) : 0;
+          stockAvailable = await StockMovementService.getCurrentStock(product.product, product.warehouse, dbConnection);
         }
         
         // Calculate available quantity for this product
@@ -188,10 +199,13 @@ class StockArrivalService {
    * Check all products in an order for stock availability
    * Useful for manual refresh or when order is first created
    * @param {String} orderId - Sales Order ID
+   * @param {Object} dbConnection - Database connection for multi-database support
    * @returns {Object} - Stock status summary
    */
-  static async checkOrderStockStatus(orderId) {
+  static async checkOrderStockStatus(orderId, dbConnection = null) {
     try {
+      const { SalesOrder } = getModels(dbConnection);
+      
       const order = await SalesOrder.findById(orderId);
       
       if (!order) {
@@ -221,7 +235,8 @@ class StockArrivalService {
           // Get current stock for this product
           const currentStock = await StockMovementService.getCurrentStock(
             product.product,
-            product.warehouse
+            product.warehouse,
+            dbConnection
           );
           
           // Update product stock status

@@ -16,4 +16,7 @@ const dealerCategorySchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Export schema for multi-database support
+export { dealerCategorySchema };
+
 export default mongoose.model("DealerCategory", dealerCategorySchema);

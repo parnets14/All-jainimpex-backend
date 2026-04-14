@@ -57,6 +57,9 @@ activityLogSchema.index({ timestamp: -1 });
 
 const ActivityLog = mongoose.model("ActivityLog", activityLogSchema);
 
+// Export schema for multi-database support
+export { activityLogSchema };
+
 export default ActivityLog;
 
 

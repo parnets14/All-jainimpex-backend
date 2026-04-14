@@ -1,15 +1,34 @@
-import DiscountMapping from '../models/DiscountMapping.js';
-import Product from '../models/Product.js';
-import Category from '../models/Category.js';
-import Subcategory from '../models/Subcategory.js';
-import Brand from '../models/Brand.js';
-import ExtendedSubcategory from '../models/ExtendedSubcategory.js';
+import { discountMappingSchema } from '../models/DiscountMapping.js';
+import { productSchema } from '../models/Product.js';
+import { categorySchema } from '../models/Category.js';
+import { subcategorySchema } from '../models/Subcategory.js';
+import { brandSchema } from '../models/Brand.js';
+import { extendedSubcategorySchema } from '../models/ExtendedSubcategory.js';
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    DiscountMapping: dbConnection.models.DiscountMapping || 
+                     dbConnection.model('DiscountMapping', discountMappingSchema),
+    Product: dbConnection.models.Product || 
+             dbConnection.model('Product', productSchema),
+    Category: dbConnection.models.Category || 
+              dbConnection.model('Category', categorySchema),
+    Subcategory: dbConnection.models.Subcategory || 
+                 dbConnection.model('Subcategory', subcategorySchema),
+    Brand: dbConnection.models.Brand || 
+           dbConnection.model('Brand', brandSchema),
+    ExtendedSubcategory: dbConnection.models.ExtendedSubcategory || 
+                         dbConnection.model('ExtendedSubcategory', extendedSubcategorySchema)
+  };
+};
 
 // @desc    Get all discount mappings
 // @route   GET /api/discount-mappings
 // @access  Private
 export const getDiscountMappings = async (req, res) => {
   try {
+    const { DiscountMapping } = getModels(req.dbConnection);
     const {
       page = 1,
       limit = 10,
@@ -93,6 +112,8 @@ export const getDiscountMappings = async (req, res) => {
 // @access  Private
 export const getDiscountMapping = async (req, res) => {
   try {
+    const { DiscountMapping } = getModels(req.dbConnection);
+    
     const discountMapping = await DiscountMapping.findById(req.params.id)
       .populate('product', 'itemName productCode HSNCode')
       .populate('brand', 'name')
@@ -128,6 +149,8 @@ export const getDiscountMapping = async (req, res) => {
 // @access  Private
 export const createDiscountMapping = async (req, res) => {
   try {
+    const { DiscountMapping, Product, Brand, Category, Subcategory, ExtendedSubcategory } = getModels(req.dbConnection);
+    
     const {
       discountName,
       discountType,
@@ -324,7 +347,7 @@ export const createDiscountMapping = async (req, res) => {
       priority: priority || 0,
       remarks,
       internalNotes,
-      createdBy: req.user.id,
+      createdBy: req.user._id,
       // Auto-populate complete hierarchy
       ...hierarchyData
     };
@@ -393,6 +416,7 @@ export const createDiscountMapping = async (req, res) => {
 // @access  Private
 export const updateDiscountMapping = async (req, res) => {
   try {
+    const { DiscountMapping, Product, Brand, Category, Subcategory, ExtendedSubcategory } = getModels(req.dbConnection);
     const { id } = req.params;
     const updateData = { ...req.body };
 
@@ -506,6 +530,7 @@ export const updateDiscountMapping = async (req, res) => {
 // @access  Private
 export const updateDiscountMappingStatus = async (req, res) => {
   try {
+    const { DiscountMapping } = getModels(req.dbConnection);
     const { id } = req.params;
     const { status, rejectionReason } = req.body;
 
@@ -535,7 +560,7 @@ export const updateDiscountMappingStatus = async (req, res) => {
     const updateData = { status };
 
     if (status === 'Approved') {
-      updateData.approvedBy = req.user.id;
+      updateData.approvedBy = req.user._id;
       updateData.approvedAt = new Date();
     } else if (status === 'Rejected') {
       if (!rejectionReason) {
@@ -587,6 +612,8 @@ export const updateDiscountMappingStatus = async (req, res) => {
 // @access  Private
 export const deleteDiscountMapping = async (req, res) => {
   try {
+    const { DiscountMapping } = getModels(req.dbConnection);
+    
     const discountMapping = await DiscountMapping.findById(req.params.id);
 
     if (!discountMapping) {
@@ -631,6 +658,7 @@ export const deleteDiscountMapping = async (req, res) => {
 // @access  Private
 export const getApplicableDiscounts = async (req, res) => {
   try {
+    const { DiscountMapping, Product } = getModels(req.dbConnection);
     const { productId } = req.params;
     const { mappingType = 'sales', dealerType } = req.query;
 
@@ -643,11 +671,12 @@ export const getApplicableDiscounts = async (req, res) => {
       });
     }
 
-    // Get applicable discounts using the model's static method
+    // Get applicable discounts using the model's static method with dbConnection
     const applicableDiscounts = await DiscountMapping.findApplicableDiscounts(
       productId,
       mappingType,
-      dealerType
+      dealerType,
+      req.dbConnection // Pass the company-specific connection
     );
 
     res.json({
@@ -674,6 +703,8 @@ export const getApplicableDiscounts = async (req, res) => {
 // @access  Private
 export const calculateDiscount = async (req, res) => {
   try {
+    const { DiscountMapping, Product } = getModels(req.dbConnection);
+    
     const {
       productId,
       quantity,
@@ -690,11 +721,12 @@ export const calculateDiscount = async (req, res) => {
       });
     }
 
-    // Get applicable discounts
+    // Get applicable discounts with dbConnection
     const applicableDiscounts = await DiscountMapping.findApplicableDiscounts(
       productId,
       mappingType,
-      dealerType
+      dealerType,
+      req.dbConnection // Pass the company-specific connection
     );
 
     if (applicableDiscounts.length === 0) {
@@ -772,6 +804,7 @@ export const calculateDiscount = async (req, res) => {
 // @access  Private
 export const getDiscountStats = async (req, res) => {
   try {
+    const { DiscountMapping } = getModels(req.dbConnection);
     const { startDate, endDate } = req.query;
 
     // Build filter for date range
@@ -856,6 +889,8 @@ export const getDiscountStats = async (req, res) => {
 // @access  Private
 export const fixMissingLevels = async (req, res) => {
   try {
+    const { DiscountMapping } = getModels(req.dbConnection);
+    
     console.log('🔧 Starting fix for discounts with missing levels...');
     
     const fixedCount = await DiscountMapping.fixDiscountsWithMissingLevels();
@@ -879,6 +914,8 @@ export const fixMissingLevels = async (req, res) => {
 // @access  Private
 export const expireDiscounts = async (req, res) => {
   try {
+    const { DiscountMapping } = getModels(req.dbConnection);
+    
     console.log('🕒 Starting automatic discount expiration...');
     
     const expiredCount = await DiscountMapping.expireDiscounts();
@@ -902,6 +939,7 @@ export const expireDiscounts = async (req, res) => {
 // @access  Private
 export const expireIndividualDiscount = async (req, res) => {
   try {
+    const { DiscountMapping } = getModels(req.dbConnection);
     const { id } = req.params;
     
     const discount = await DiscountMapping.findById(id);
@@ -949,6 +987,8 @@ export const expireIndividualDiscount = async (req, res) => {
 // @access  Private
 export const expireAllApprovedDiscounts = async (req, res) => {
   try {
+    const { DiscountMapping } = getModels(req.dbConnection);
+    
     // Check if user is super admin
     const userRole = req.user?.role?.toLowerCase().replace(/\s+/g, '_');
     const isSuperAdmin = userRole === 'super_admin';

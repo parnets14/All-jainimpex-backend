@@ -1,9 +1,20 @@
-import PurchaseWishlist from '../models/PurchaseWishlist.js';
-import Product from '../models/Product.js';
+import { PurchaseWishlistSchema } from '../models/PurchaseWishlist.js';
+import { productSchema } from '../models/Product.js';
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    PurchaseWishlist: dbConnection.models.PurchaseWishlist || 
+                      dbConnection.model('PurchaseWishlist', PurchaseWishlistSchema),
+    Product: dbConnection.models.Product || 
+             dbConnection.model('Product', productSchema)
+  };
+};
 
 // Get all purchase wishlists for the current user
 const getPurchaseWishlists = async (req, res) => {
   try {
+    const { PurchaseWishlist } = getModels(req.dbConnection);
     const { page = 1, limit = 50, search } = req.query;
     const userId = req.user._id;
 
@@ -68,6 +79,7 @@ const getPurchaseWishlists = async (req, res) => {
 // Get a specific purchase wishlist
 const getPurchaseWishlist = async (req, res) => {
   try {
+    const { PurchaseWishlist } = getModels(req.dbConnection);
     const { id } = req.params;
     const userId = req.user._id;
 
@@ -116,6 +128,7 @@ const getPurchaseWishlist = async (req, res) => {
 // Create a new purchase wishlist
 const createPurchaseWishlist = async (req, res) => {
   try {
+    const { PurchaseWishlist, Product } = getModels(req.dbConnection);
     const { name, description, items = [], tags = [] } = req.body;
     const userId = req.user._id;
 
@@ -211,6 +224,7 @@ const createPurchaseWishlist = async (req, res) => {
 // Update a purchase wishlist
 const updatePurchaseWishlist = async (req, res) => {
   try {
+    const { PurchaseWishlist } = getModels(req.dbConnection);
     const { id } = req.params;
     const { name, description, tags } = req.body;
     const userId = req.user._id;
@@ -279,6 +293,7 @@ const updatePurchaseWishlist = async (req, res) => {
 // Delete a purchase wishlist (soft delete)
 const deletePurchaseWishlist = async (req, res) => {
   try {
+    const { PurchaseWishlist } = getModels(req.dbConnection);
     const { id } = req.params;
     const userId = req.user._id;
 
@@ -315,6 +330,7 @@ const deletePurchaseWishlist = async (req, res) => {
 // Add items to wishlist
 const addItemsToWishlist = async (req, res) => {
   try {
+    const { PurchaseWishlist, Product } = getModels(req.dbConnection);
     const { id } = req.params;
     const { items } = req.body;
     const userId = req.user._id;
@@ -409,6 +425,7 @@ const addItemsToWishlist = async (req, res) => {
 // Remove item from wishlist
 const removeItemFromWishlist = async (req, res) => {
   try {
+    const { PurchaseWishlist, Product } = getModels(req.dbConnection);
     const { id, itemId } = req.params;
     const userId = req.user._id;
 
@@ -471,6 +488,7 @@ const removeItemFromWishlist = async (req, res) => {
 // Update wishlist item
 const updateWishlistItem = async (req, res) => {
   try {
+    const { PurchaseWishlist, Product } = getModels(req.dbConnection);
     const { id, itemId } = req.params;
     const { requestedQuantity, notes, priority } = req.body;
     const userId = req.user._id;

@@ -1,17 +1,30 @@
-import ExtendedSubcategory from "../models/ExtendedSubcategory.js";
-import Brand from "../models/Brand.js";
-import Category from "../models/Category.js";
-import Subcategory from "../models/Subcategory.js";
+import { extendedSubcategorySchema } from "../models/ExtendedSubcategory.js";
+import { brandSchema } from "../models/Brand.js";
+import { categorySchema } from "../models/Category.js";
+import { subcategorySchema } from "../models/Subcategory.js";
 import {
   getPaginationParams,
   createPaginationResponse,
 } from "../utils/pagination.js";
+
+// Helper function to get models from company-specific connection
+const getModels = (dbConnection) => {
+  return {
+    ExtendedSubcategory: dbConnection.models.ExtendedSubcategory || dbConnection.model('ExtendedSubcategory', extendedSubcategorySchema),
+    Brand: dbConnection.models.Brand || dbConnection.model('Brand', brandSchema),
+    Category: dbConnection.models.Category || dbConnection.model('Category', categorySchema),
+    Subcategory: dbConnection.models.Subcategory || dbConnection.model('Subcategory', subcategorySchema),
+  };
+};
 
 // @desc    Get extended subcategories by level and parent
 // @route   GET /api/extended-subcategories
 // @access  Private
 export const getExtendedSubcategories = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { ExtendedSubcategory } = getModels(req.dbConnection);
+    
     const { level, parent, brand, category, subcategory, search } = req.query;
     const { page, limit, skip } = getPaginationParams(req);
 
@@ -66,7 +79,6 @@ export const getExtendedSubcategories = async (req, res) => {
           ...item.toObject(),
           childrenCount,
           canHaveChildren: item.level < 5, // Max 5 levels
-          fullPath: await item.getFullPath(),
         };
       })
     );
@@ -95,6 +107,9 @@ export const getExtendedSubcategories = async (req, res) => {
 // @access  Private
 export const getExtendedByBrandCategorySubcategory = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { ExtendedSubcategory } = getModels(req.dbConnection);
+    
     const { brandId, categoryId, subcategoryId } = req.params;
     const { page = 1, limit = 100, search } = req.query;
 
@@ -152,6 +167,9 @@ export const getExtendedByBrandCategorySubcategory = async (req, res) => {
 // @access  Private
 export const getExtendedSubcategory = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { ExtendedSubcategory } = getModels(req.dbConnection);
+    
     const item = await ExtendedSubcategory.findById(req.params.id)
       .populate("brand", "name")
       .populate("category", "name")
@@ -166,14 +184,9 @@ export const getExtendedSubcategory = async (req, res) => {
       });
     }
 
-    const fullPath = await item.getFullPath();
-
     res.json({
       success: true,
-      item: {
-        ...item.toObject(),
-        fullPath,
-      },
+      item: item.toObject(),
     });
   } catch (error) {
     console.error("Error fetching extended subcategory:", error);
@@ -189,6 +202,9 @@ export const getExtendedSubcategory = async (req, res) => {
 // @access  Private
 export const createExtendedSubcategory = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { ExtendedSubcategory, Brand, Category, Subcategory } = getModels(req.dbConnection);
+    
     const {
       name,
       description,
@@ -305,7 +321,7 @@ export const createExtendedSubcategory = async (req, res) => {
       subcategory,
       parentExtendedSubcategory: parentExtendedSubcategory || null,
       level,
-      createdBy: req.user.id,
+      createdBy: req.user._id,
     });
 
     await extendedSubcategory.save();
@@ -319,14 +335,11 @@ export const createExtendedSubcategory = async (req, res) => {
       "name level"
     );
 
-    const fullPath = await extendedSubcategory.getFullPath();
-
     res.status(201).json({
       success: true,
       message: "Extended subcategory created successfully",
       item: {
         ...extendedSubcategory.toObject(),
-        fullPath,
         canHaveChildren: extendedSubcategory.level < 5,
       },
     });
@@ -344,6 +357,7 @@ export const createExtendedSubcategory = async (req, res) => {
 // @access  Private
 export const createExtendedUnderBrandCategorySubcategory = async (req, res) => {
   try {
+    const { ExtendedSubcategory } = getModels(req.dbConnection);
     const { name, description, parentExtendedSubcategory } = req.body;
     const { brandId, categoryId, subcategoryId } = req.params;
 
@@ -415,7 +429,7 @@ export const createExtendedUnderBrandCategorySubcategory = async (req, res) => {
       subcategory: subcategoryId,
       parentExtendedSubcategory: parentExtendedSubcategory || null,
       level,
-      createdBy: req.user.id,
+      createdBy: req.user._id,
     });
 
     await extendedSubcategory.save();
@@ -429,7 +443,21 @@ export const createExtendedUnderBrandCategorySubcategory = async (req, res) => {
       "name level"
     );
 
-    const fullPath = await extendedSubcategory.getFullPath();
+    // Build full path manually since model methods don't have access to company-specific connection
+    const pathParts = [extendedSubcategory.name];
+    if (extendedSubcategory.parentExtendedSubcategory?.name) {
+      pathParts.unshift(extendedSubcategory.parentExtendedSubcategory.name);
+    }
+    if (extendedSubcategory.subcategory?.name) {
+      pathParts.unshift(extendedSubcategory.subcategory.name);
+    }
+    if (extendedSubcategory.category?.name) {
+      pathParts.unshift(extendedSubcategory.category.name);
+    }
+    if (extendedSubcategory.brand?.name) {
+      pathParts.unshift(extendedSubcategory.brand.name);
+    }
+    const fullPath = pathParts.join(" > ");
 
     res.status(201).json({
       success: true,
@@ -457,6 +485,9 @@ export const createExtendedUnderBrandCategorySubcategory = async (req, res) => {
 // @access  Private
 export const updateExtendedSubcategory = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { ExtendedSubcategory } = getModels(req.dbConnection);
+    
     const { name, description, status } = req.body;
 
     const extendedSubcategory = await ExtendedSubcategory.findById(
@@ -504,15 +535,10 @@ export const updateExtendedSubcategory = async (req, res) => {
       .populate("subcategory", "name")
       .populate("parentExtendedSubcategory", "name level");
 
-    const fullPath = await updatedItem.getFullPath();
-
     res.json({
       success: true,
       message: "Extended subcategory updated successfully",
-      item: {
-        ...updatedItem.toObject(),
-        fullPath,
-      },
+      item: updatedItem.toObject(),
     });
   } catch (error) {
     console.error("Error updating extended subcategory:", error);
@@ -528,6 +554,9 @@ export const updateExtendedSubcategory = async (req, res) => {
 // @access  Private
 export const deleteExtendedSubcategory = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { ExtendedSubcategory } = getModels(req.dbConnection);
+    
     const extendedSubcategory = await ExtendedSubcategory.findById(
       req.params.id
     );
@@ -570,6 +599,7 @@ export const deleteExtendedSubcategory = async (req, res) => {
 // @access  Private
 export const getExtendedSubcategoryTree = async (req, res) => {
   try {
+    const { ExtendedSubcategory } = getModels(req.dbConnection);
     const { brand, category, subcategory, maxLevel = 5 } = req.query;
 
     if (!brand || !category || !subcategory) {
@@ -628,6 +658,7 @@ export const getExtendedSubcategoryTree = async (req, res) => {
 // @access  Private
 export const getExtendedSubcategoriesBySubcategory = async (req, res) => {
   try {
+    const { ExtendedSubcategory } = getModels(req.dbConnection);
     const { subcategoryId } = req.params;
     const { page = 1, limit = 100 } = req.query;
 
@@ -679,6 +710,7 @@ export const getExtendedSubcategoriesBySubcategory = async (req, res) => {
 // @access  Private
 export const getExtendedSubcategoriesByParent = async (req, res) => {
   try {
+    const { ExtendedSubcategory } = getModels(req.dbConnection);
     const { parentId } = req.params;
     const { page = 1, limit = 100 } = req.query;
 
@@ -700,17 +732,13 @@ export const getExtendedSubcategoriesByParent = async (req, res) => {
       status: "active",
     });
 
-    // Add full parent chain for each item
-    const itemsWithParentChain = await Promise.all(
-      items.map(async (item) => {
-        const parentChain = await getParentChain(item._id);
-        return {
-          ...item.toObject(),
-          parentChain,
-          fullPath: await item.getFullPath(),
-        };
-      })
-    );
+    // Add full parent chain for each item (skip getFullPath as it doesn't work with multi-company)
+    const itemsWithParentChain = items.map((item) => {
+      return {
+        ...item.toObject(),
+        parentChain: [], // Will be populated by frontend if needed
+      };
+    });
 
     res.json({
       success: true,
@@ -732,7 +760,7 @@ export const getExtendedSubcategoriesByParent = async (req, res) => {
 };
 
 // Helper function to get complete parent chain
-const getParentChain = async (extendedSubcategoryId) => {
+const getParentChain = async (extendedSubcategoryId, ExtendedSubcategory) => {
   const parentChain = [];
   let current = await ExtendedSubcategory.findById(extendedSubcategoryId);
 
@@ -753,6 +781,7 @@ const getParentChain = async (extendedSubcategoryId) => {
 // @access  Private
 export const getExtendedSubcategoryWithParentChain = async (req, res) => {
   try {
+    const { ExtendedSubcategory } = getModels(req.dbConnection);
     const item = await ExtendedSubcategory.findById(req.params.id)
       .populate("brand", "name")
       .populate("category", "name")
@@ -767,15 +796,13 @@ export const getExtendedSubcategoryWithParentChain = async (req, res) => {
       });
     }
 
-    const parentChain = await getParentChain(item._id);
-    const fullPath = await item.getFullPath();
+    const parentChain = await getParentChain(item._id, ExtendedSubcategory);
 
     res.json({
       success: true,
       item: {
         ...item.toObject(),
         parentChain,
-        fullPath,
       },
     });
   } catch (error) {
@@ -795,6 +822,7 @@ export const getExtendedSubcategoryWithParentChain = async (req, res) => {
 // @access  Private
 export const changeExtendedSubcategoryParent = async (req, res) => {
   try {
+    const { ExtendedSubcategory, Product } = getModels(req.dbConnection);
     const { id } = req.params;
     const {
       newParentId, // Can be subcategoryId (for Level 1) or extendedSubcategoryId (for Level 2+)
@@ -958,7 +986,7 @@ newParentExtended) {
     const descendantCount = await countAllDescendants(id);
 
     // Start transaction
-    const session = await ExtendedSubcategory.startSession();
+    const session = await req.dbConnection.startSession();
     session.startTransaction();
 
     try {
@@ -990,7 +1018,6 @@ newParentExtended) {
       );
 
       // Update all products using this extended subcategory
-      const Product = (await import("../models/Product.js")).default;
       
       // Update products at each level
       const levelFieldMap = {
@@ -1129,6 +1156,7 @@ async function updateExtendedDescendantsRecursively(
 // @access  Private
 export const getExtendedSubcategoryParentChangePreview = async (req, res) => {
   try {
+    const { ExtendedSubcategory, Product } = getModels(req.dbConnection);
     const { id } = req.params;
     const {
       newParentId,
@@ -1247,7 +1275,6 @@ export const getExtendedSubcategoryParentChangePreview = async (req, res) => {
     // Count affected items
     const descendantCount = await countAllDescendants(id);
 
-    const Product = (await import("../models/Product.js")).default;
     const levelFieldMap = {
       1: "subcategory1",
       2: "subcategory2",

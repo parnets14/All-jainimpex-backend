@@ -1,13 +1,28 @@
-import Points from "../models/Points.js";
-import Category from "../models/Category.js";
-import Subcategory from "../models/Subcategory.js";
-import Brand from "../models/Brand.js";
+import { pointsSchema } from "../models/Points.js";
+import { categorySchema } from "../models/Category.js";
+import { subcategorySchema } from "../models/Subcategory.js";
+import { brandSchema } from "../models/Brand.js";
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    Points: dbConnection.models.Points || 
+            dbConnection.model('Points', pointsSchema),
+    Category: dbConnection.models.Category || 
+              dbConnection.model('Category', categorySchema),
+    Subcategory: dbConnection.models.Subcategory || 
+                 dbConnection.model('Subcategory', subcategorySchema),
+    Brand: dbConnection.models.Brand || 
+           dbConnection.model('Brand', brandSchema)
+  };
+};
 
 // @desc    Add purchase/sale points
 // @route   POST /api/points
 // @access  Private
 const addPoints = async (req, res) => {
   try {
+    const { Points, Brand } = getModels(req.dbConnection);
     const {
       type,
       brand,
@@ -96,6 +111,7 @@ const addPoints = async (req, res) => {
 // @access  Private
 const getPoints = async (req, res) => {
   try {
+    const { Points } = getModels(req.dbConnection);
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
@@ -165,6 +181,7 @@ const getPoints = async (req, res) => {
 // @access  Private
 const getPointsStats = async (req, res) => {
   try {
+    const { Points } = getModels(req.dbConnection);
     const { type, startDate, endDate } = req.query;
 
     let matchStage = {};
@@ -246,6 +263,7 @@ const getPointsStats = async (req, res) => {
 // @access  Private
 const getPointsByBrand = async (req, res) => {
   try {
+    const { Points, Brand } = getModels(req.dbConnection);
     const { brandId } = req.params;
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
@@ -321,6 +339,7 @@ const getPointsByBrand = async (req, res) => {
 // @access  Private
 const updatePoints = async (req, res) => {
   try {
+    const { Points, Brand } = getModels(req.dbConnection);
     const { id } = req.params;
     const {
       type,
@@ -426,6 +445,7 @@ const updatePoints = async (req, res) => {
 // @access  Private
 const deletePoints = async (req, res) => {
   try {
+    const { Points } = getModels(req.dbConnection);
     const points = await Points.findById(req.params.id);
 
     if (!points) {

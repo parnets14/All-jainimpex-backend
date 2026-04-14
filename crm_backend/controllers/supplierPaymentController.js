@@ -1,14 +1,24 @@
-import SupplierPayment from "../models/SupplierPayment.js";
-import SupplierLedger from "../models/SupplierLedger.js";
-import SupplierInvoice from "../models/SupplierInvoice.js";
-import Supplier from "../models/Supplier.js";
+import { supplierPaymentSchema } from "../models/SupplierPayment.js";
+import { supplierLedgerSchema } from "../models/SupplierLedger.js";
+import { supplierInvoiceSchema } from "../models/SupplierInvoice.js";
+import { supplierSchema } from "../models/Supplier.js";
 import mongoose from "mongoose";
+
+const getModels = (dbConnection) => {
+  return {
+    SupplierPayment: dbConnection.models.SupplierPayment || dbConnection.model('SupplierPayment', supplierPaymentSchema),
+    SupplierLedger: dbConnection.models.SupplierLedger || dbConnection.model('SupplierLedger', supplierLedgerSchema),
+    SupplierInvoice: dbConnection.models.SupplierInvoice || dbConnection.model('SupplierInvoice', supplierInvoiceSchema),
+    Supplier: dbConnection.models.Supplier || dbConnection.model('Supplier', supplierSchema)
+  };
+};
 
 // @desc    Get all supplier payments
 // @route   GET /api/supplier-payments
 // @access  Private
 export const getSupplierPayments = async (req, res) => {
   try {
+    const { SupplierPayment, Supplier } = getModels(req.dbConnection);
     const {
       page = 1,
       limit = 10,
@@ -27,8 +37,8 @@ export const getSupplierPayments = async (req, res) => {
     let searchQuery = {};
     if (search) {
       // First, try to find suppliers that match the search term
-      const Supplier = mongoose.model('Supplier');
-      const matchingSuppliers = await Supplier.find({
+      const { Supplier: SupplierModel } = getModels(req.dbConnection);
+      const matchingSuppliers = await SupplierModel.find({
         $or: [
           { name: { $regex: search, $options: "i" } },
           { code: { $regex: search, $options: "i" } },
@@ -126,6 +136,7 @@ export const getSupplierPayments = async (req, res) => {
 // @access  Private
 export const getSupplierPayment = async (req, res) => {
   try {
+    const { SupplierPayment } = getModels(req.dbConnection);
     const payment = await SupplierPayment.findById(req.params.id)
       .populate("supplier", "name code companyName gstin phone email address")
       .populate("supplierInvoice", "invoiceNumber totalAmount paymentStatus invoiceDate dueDate")
@@ -159,6 +170,7 @@ export const getSupplierPayment = async (req, res) => {
 // @access  Private
 export const createSupplierPayment = async (req, res) => {
   try {
+    const { SupplierPayment, SupplierInvoice } = getModels(req.dbConnection);
     const {
       supplierInvoiceId,
       paymentAmount,
@@ -289,6 +301,7 @@ export const createSupplierPayment = async (req, res) => {
 // @access  Private
 export const updateSupplierPaymentStatus = async (req, res) => {
   try {
+    const { SupplierPayment, SupplierInvoice, SupplierLedger } = getModels(req.dbConnection);
     const { status, rejectionReason } = req.body;
     const paymentId = req.params.id;
 
@@ -401,6 +414,7 @@ export const updateSupplierPaymentStatus = async (req, res) => {
 // @access  Private
 export const getAvailableInvoicesForPayment = async (req, res) => {
   try {
+    const { SupplierInvoice } = getModels(req.dbConnection);
     const { supplier } = req.query;
     
     const query = { 
@@ -443,6 +457,7 @@ export const getAvailableInvoicesForPayment = async (req, res) => {
 // @access  Private
 export const getSupplierPaymentStats = async (req, res) => {
   try {
+    const { SupplierPayment } = getModels(req.dbConnection);
     const stats = await SupplierPayment.aggregate([
       {
         $group: {
@@ -497,6 +512,7 @@ export const getSupplierPaymentStats = async (req, res) => {
 // @access  Private
 export const deleteSupplierPayment = async (req, res) => {
   try {
+    const { SupplierPayment } = getModels(req.dbConnection);
     const payment = await SupplierPayment.findById(req.params.id);
     
     if (!payment) {

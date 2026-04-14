@@ -1,7 +1,15 @@
 // controllers/schemeTypeController.js
-import SchemeType from "../models/SchemeType.js";
+import { schemeTypeSchema } from "../models/SchemeType.js";
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    SchemeType: dbConnection.models.SchemeType || dbConnection.model('SchemeType', schemeTypeSchema)
+  };
+};
 
 export const getSchemeTypes = async (req, res) => {
+  const { SchemeType } = getModels(req.dbConnection);
   try {
     const schemeTypes = await SchemeType.find({ isActive: true }).sort({ name: 1 });
     
@@ -20,6 +28,7 @@ export const getSchemeTypes = async (req, res) => {
 };
 
 export const createSchemeType = async (req, res) => {
+  const { SchemeType } = getModels(req.dbConnection);
   try {
     const { name, code, description } = req.body;
 

@@ -1,9 +1,17 @@
-import ActivityLog from "../models/ActivityLog.js";
-import User from "../models/User.js";
+import { activityLogSchema } from "../models/ActivityLog.js";
+import { userSchema } from "../models/User.js";
+
+const getModels = (dbConnection) => {
+  return {
+    ActivityLog: dbConnection.models.ActivityLog || dbConnection.model('ActivityLog', activityLogSchema),
+    User: dbConnection.models.User || dbConnection.model('User', userSchema)
+  };
+};
 
 // Get all activity logs with filters and pagination
 export const getActivityLogs = async (req, res) => {
   try {
+    const { ActivityLog } = getModels(req.dbConnection);
     const {
       page = 1,
       limit = 10,
@@ -99,6 +107,7 @@ export const getActivityLogs = async (req, res) => {
 // Get activity log by ID
 export const getActivityLog = async (req, res) => {
   try {
+    const { ActivityLog } = getModels(req.dbConnection);
     const { id } = req.params;
 
     const activityLog = await ActivityLog.findById(id).populate(
@@ -129,6 +138,7 @@ export const getActivityLog = async (req, res) => {
 // Create activity log
 export const createActivityLog = async (req, res) => {
   try {
+    const { ActivityLog } = getModels(req.dbConnection);
     const {
       user,
       username,
@@ -170,6 +180,7 @@ export const createActivityLog = async (req, res) => {
 // Get activity logs statistics
 export const getActivityLogStats = async (req, res) => {
   try {
+    const { ActivityLog } = getModels(req.dbConnection);
     const { period = "7d" } = req.query;
 
     // Calculate date range based on period
@@ -305,6 +316,7 @@ export const getActivityLogStats = async (req, res) => {
 // Delete activity log
 export const deleteActivityLog = async (req, res) => {
   try {
+    const { ActivityLog } = getModels(req.dbConnection);
     const { id } = req.params;
 
     const activityLog = await ActivityLog.findByIdAndDelete(id);
@@ -332,6 +344,7 @@ export const deleteActivityLog = async (req, res) => {
 // Clean up old activity logs (for maintenance)
 export const cleanupOldLogs = async (req, res) => {
   try {
+    const { ActivityLog } = getModels(req.dbConnection);
     const { daysToKeep = 90 } = req.body;
 
     const cutoffDate = new Date();

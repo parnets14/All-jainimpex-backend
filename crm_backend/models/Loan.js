@@ -85,4 +85,7 @@ const loanSchema = new mongoose.Schema({
 
 const Loan = mongoose.model('Loan', loanSchema);
 
+// Export schema for multi-database support
+export { loanSchema };
+
 export default Loan;

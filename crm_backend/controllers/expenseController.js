@@ -1,10 +1,18 @@
-import Expense from "../models/Expense.js";
+import { expenseSchema } from "../models/Expense.js";
 import asyncHandler from "express-async-handler";
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    Expense: dbConnection.models.Expense || dbConnection.model('Expense', expenseSchema)
+  };
+};
 
 // @desc    Create new expense
 // @route   POST /api/expenses
 // @access  Private
 export const createExpense = asyncHandler(async (req, res) => {
+  const { Expense } = getModels(req.dbConnection);
   const { date, type, amount, person, description } = req.body;
 
   const expense = await Expense.create({
@@ -39,6 +47,7 @@ export const createExpense = asyncHandler(async (req, res) => {
 // @route   GET /api/expenses
 // @access  Private
 export const getExpenses = asyncHandler(async (req, res) => {
+  const { Expense } = getModels(req.dbConnection);
   const {
     page = 1,
     limit = 10,
@@ -105,6 +114,7 @@ export const getExpenses = asyncHandler(async (req, res) => {
 // @route   GET /api/expenses/:id
 // @access  Private
 export const getExpense = asyncHandler(async (req, res) => {
+  const { Expense } = getModels(req.dbConnection);
   const expense = await Expense.findById(req.params.id)
     .populate("type", "name description")
     .populate("createdBy", "name email");
@@ -124,6 +134,7 @@ export const getExpense = asyncHandler(async (req, res) => {
 // @route   PUT /api/expenses/:id
 // @access  Private
 export const updateExpense = asyncHandler(async (req, res) => {
+  const { Expense } = getModels(req.dbConnection);
   const { date, type, amount, person, description } = req.body;
 
   let expense = await Expense.findById(req.params.id);
@@ -167,6 +178,7 @@ export const updateExpense = asyncHandler(async (req, res) => {
 // @route   DELETE /api/expenses/:id
 // @access  Private
 export const deleteExpense = asyncHandler(async (req, res) => {
+  const { Expense } = getModels(req.dbConnection);
   const expense = await Expense.findById(req.params.id);
   if (!expense) {
     res.status(404);
@@ -185,6 +197,7 @@ export const deleteExpense = asyncHandler(async (req, res) => {
 // @route   GET /api/expenses/stats/summary
 // @access  Private
 export const getExpenseStats = asyncHandler(async (req, res) => {
+  const { Expense } = getModels(req.dbConnection);
   const { startDate, endDate } = req.query;
 
   const matchStage = {};

@@ -77,4 +77,7 @@ bankAccountSchema.pre('save', async function(next) {
 
 const BankAccount = mongoose.model('BankAccount', bankAccountSchema);
 
+// Export schema for multi-database support
+export { bankAccountSchema };
+
 export default BankAccount;

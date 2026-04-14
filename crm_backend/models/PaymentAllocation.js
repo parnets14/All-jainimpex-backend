@@ -96,4 +96,7 @@ paymentAllocationSchema.index({ 'allocations.invoiceId': 1 });
 
 const PaymentAllocation = mongoose.model('PaymentAllocation', paymentAllocationSchema);
 
+// Export schema for multi-database support
+export { paymentAllocationSchema };
+
 export default PaymentAllocation;

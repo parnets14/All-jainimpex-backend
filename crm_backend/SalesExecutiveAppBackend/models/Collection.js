@@ -98,4 +98,7 @@ collectionSchema.index({ collectedBy: 1 });
 collectionSchema.index({ collectionDate: -1 });
 collectionSchema.index({ status: 1 });
 
+// Export schema for multi-database support
+export { collectionSchema };
+
 export default mongoose.model('Collection', collectionSchema);

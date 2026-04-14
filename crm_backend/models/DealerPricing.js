@@ -517,5 +517,8 @@ dealerPricingSchema.statics.syncAllPurchasePricesFromInvoices = async function()
 // Prevent duplicate pricing entries for same product (when active)
 dealerPricingSchema.index({ product: 1, isActive: 1 }, { unique: true, partialFilterExpression: { isActive: true } });
 
+// Export schema for multi-database support
+export { dealerPricingSchema };
+
 export default mongoose.model('DealerPricing', dealerPricingSchema);
 

@@ -98,4 +98,7 @@ dealerPricingHistorySchema.statics.getProductPriceHistory = async function(produ
   }
 };
 
+// Export schema for multi-database support
+export { dealerPricingHistorySchema };
+
 export default mongoose.model('DealerPricingHistory', dealerPricingHistorySchema);

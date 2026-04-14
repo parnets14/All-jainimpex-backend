@@ -107,4 +107,7 @@ const grnSchema = new mongoose.Schema({
 // Note: GRN number is generated in the controller, not here
 // This ensures better control and prevents race conditions
 
+// Export schema for multi-database support
+export { grnSchema };
+
 export default mongoose.model('GRN', grnSchema);

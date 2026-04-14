@@ -1,16 +1,28 @@
-import SupplierInvoice from "../models/SupplierInvoice.js";
-import SupplierLedger from "../models/SupplierLedger.js";
-import GRN from "../models/GRN.js";
-import Supplier from "../models/Supplier.js";
-import Product from "../models/Product.js";
-import PurchaseOrder from "../models/PurchaseOrder.js";
+import { supplierInvoiceSchema } from "../models/SupplierInvoice.js";
+import { supplierLedgerSchema } from "../models/SupplierLedger.js";
+import { grnSchema } from "../models/GRN.js";
+import { supplierSchema } from "../models/Supplier.js";
+import { productSchema } from "../models/Product.js";
+import { purchaseOrderSchema } from "../models/PurchaseOrder.js";
 import mongoose from "mongoose";
+
+const getModels = (dbConnection) => {
+  return {
+    SupplierInvoice: dbConnection.models.SupplierInvoice || dbConnection.model('SupplierInvoice', supplierInvoiceSchema),
+    SupplierLedger: dbConnection.models.SupplierLedger || dbConnection.model('SupplierLedger', supplierLedgerSchema),
+    GRN: dbConnection.models.GRN || dbConnection.model('GRN', grnSchema),
+    Supplier: dbConnection.models.Supplier || dbConnection.model('Supplier', supplierSchema),
+    Product: dbConnection.models.Product || dbConnection.model('Product', productSchema),
+    PurchaseOrder: dbConnection.models.PurchaseOrder || dbConnection.model('PurchaseOrder', purchaseOrderSchema)
+  };
+};
 
 // @desc    Get all supplier invoices
 // @route   GET /api/supplier-invoices
 // @access  Private
 export const getSupplierInvoices = async (req, res) => {
   try {
+    const { SupplierInvoice } = getModels(req.dbConnection);
     const {
       page = 1,
       limit = 10,
@@ -99,6 +111,7 @@ export const getSupplierInvoices = async (req, res) => {
 // @access  Private
 export const getSupplierInvoice = async (req, res) => {
   try {
+    const { SupplierInvoice } = getModels(req.dbConnection);
     const supplierInvoice = await SupplierInvoice.findById(req.params.id)
       .populate("supplier")
       .populate("grn")
@@ -134,6 +147,7 @@ export const getSupplierInvoice = async (req, res) => {
 // @access  Private
 export const createSupplierInvoice = async (req, res) => {
   try {
+    const { GRN, Supplier, Product, SupplierInvoice, SupplierLedger } = getModels(req.dbConnection);
     console.log("Received request body:", req.body);
     
     const {
@@ -412,6 +426,7 @@ export const createSupplierInvoice = async (req, res) => {
 // @access  Private
 export const updateSupplierInvoice = async (req, res) => {
   try {
+    const { SupplierInvoice } = getModels(req.dbConnection);
     const { id } = req.params;
     
     // Find the supplier invoice
@@ -496,6 +511,7 @@ export const updateSupplierInvoice = async (req, res) => {
 // @access  Private
 export const updateSupplierInvoiceStatus = async (req, res) => {
   try {
+    const { SupplierInvoice } = getModels(req.dbConnection);
     const { status, remarks } = req.body;
     const { id } = req.params;
 
@@ -567,6 +583,7 @@ export const updateSupplierInvoiceStatus = async (req, res) => {
 // @access  Private
 export const deleteSupplierInvoice = async (req, res) => {
   try {
+    const { SupplierInvoice, GRN } = getModels(req.dbConnection);
     const { id } = req.params;
 
     // Find the supplier invoice
@@ -619,6 +636,7 @@ export const deleteSupplierInvoice = async (req, res) => {
 // @access  Private
 export const getAvailableGRNs = async (req, res) => {
   try {
+    const { GRN, SupplierInvoice } = getModels(req.dbConnection);
     const { supplier } = req.query;
 
     console.log('🔍 === GET AVAILABLE GRNs DEBUG ===');
@@ -698,6 +716,7 @@ export const getAvailableGRNs = async (req, res) => {
 // @access  Private
 export const getSupplierInvoiceStats = async (req, res) => {
   try {
+    const { SupplierInvoice } = getModels(req.dbConnection);
     const { startDate, endDate, supplier, status } = req.query;
 
     // Build match query for filters

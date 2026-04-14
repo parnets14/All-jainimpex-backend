@@ -408,4 +408,7 @@ salesOrderSchema.post("save", async function(doc, next) {
   next();
 });
 
+// Export schema for multi-database support
+export { salesOrderSchema };
+
 export default mongoose.model("SalesOrder", salesOrderSchema);

@@ -180,4 +180,7 @@ userSchema.methods.updateLastLogin = async function() {
   await this.save();
 };
 
+// Export the schema for multi-database support
+export { userSchema };
+
 export default mongoose.model('User', userSchema);

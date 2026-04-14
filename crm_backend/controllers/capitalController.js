@@ -1,8 +1,15 @@
-import Capital from '../models/Capital.js';
+import { capitalSchema } from '../models/Capital.js';
+
+const getModels = (dbConnection) => {
+  return {
+    Capital: dbConnection.models.Capital || dbConnection.model('Capital', capitalSchema)
+  };
+};
 
 // Get all capital accounts
 export const getAllCapitals = async (req, res) => {
   try {
+    const { Capital } = getModels(req.dbConnection);
     const { financialYear } = req.query;
     const query = financialYear ? { financialYear } : {};
     
@@ -25,6 +32,7 @@ export const getAllCapitals = async (req, res) => {
 // Create capital account
 export const createCapital = async (req, res) => {
   try {
+    const { Capital } = getModels(req.dbConnection);
     const capitalData = {
       ...req.body,
       createdBy: req.user._id
@@ -50,6 +58,7 @@ export const createCapital = async (req, res) => {
 // Update capital account
 export const updateCapital = async (req, res) => {
   try {
+    const { Capital } = getModels(req.dbConnection);
     const { id } = req.params;
     
     const capital = await Capital.findByIdAndUpdate(
@@ -83,6 +92,7 @@ export const updateCapital = async (req, res) => {
 // Delete capital account
 export const deleteCapital = async (req, res) => {
   try {
+    const { Capital } = getModels(req.dbConnection);
     const { id } = req.params;
     
     const capital = await Capital.findByIdAndDelete(id);

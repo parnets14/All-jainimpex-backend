@@ -1,13 +1,35 @@
-import Dealer from "../models/Dealer.js";
-import Brand from "../models/Brand.js";
-import Category from "../models/Category.js";
-import Subcategory from "../models/Subcategory.js";
-import ExtendedSubcategory from "../models/ExtendedSubcategory.js";
-import DealerLedger from "../models/DealerLedger.js";
-import PaymentAllocation from "../models/PaymentAllocation.js";
-import Route from "../models/Route.js";
-import DealerInvoice from "../models/DealerInvoice.js";
-import SalesOrder from "../models/SalesOrder.js";
+import { dealerSchema } from "../models/Dealer.js";
+import { brandSchema } from "../models/Brand.js";
+import { categorySchema } from "../models/Category.js";
+import { subcategorySchema } from "../models/Subcategory.js";
+import { extendedSubcategorySchema } from "../models/ExtendedSubcategory.js";
+import { dealerLedgerSchema } from "../models/DealerLedger.js";
+import { paymentAllocationSchema } from "../models/PaymentAllocation.js";
+import { routeSchema } from "../models/Route.js";
+import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
+import { salesOrderSchema } from "../models/SalesOrder.js";
+import { regionSchema } from "../models/Region.js";
+import { dealerCategorySchema } from "../models/DealerCategory.js";
+import { productSchema } from "../models/Product.js";
+
+// Helper function to get models from company-specific connection
+const getModels = (dbConnection) => {
+  return {
+    Dealer: dbConnection.models.Dealer || dbConnection.model('Dealer', dealerSchema),
+    Brand: dbConnection.models.Brand || dbConnection.model('Brand', brandSchema),
+    Category: dbConnection.models.Category || dbConnection.model('Category', categorySchema),
+    Subcategory: dbConnection.models.Subcategory || dbConnection.model('Subcategory', subcategorySchema),
+    ExtendedSubcategory: dbConnection.models.ExtendedSubcategory || dbConnection.model('ExtendedSubcategory', extendedSubcategorySchema),
+    DealerLedger: dbConnection.models.DealerLedger || dbConnection.model('DealerLedger', dealerLedgerSchema),
+    PaymentAllocation: dbConnection.models.PaymentAllocation || dbConnection.model('PaymentAllocation', paymentAllocationSchema),
+    Route: dbConnection.models.Route || dbConnection.model('Route', routeSchema),
+    DealerInvoice: dbConnection.models.DealerInvoice || dbConnection.model('DealerInvoice', dealerInvoiceSchema),
+    SalesOrder: dbConnection.models.SalesOrder || dbConnection.model('SalesOrder', salesOrderSchema),
+    Region: dbConnection.models.Region || dbConnection.model('Region', regionSchema),
+    DealerCategory: dbConnection.models.DealerCategory || dbConnection.model('DealerCategory', dealerCategorySchema),
+    Product: dbConnection.models.Product || dbConnection.model('Product', productSchema),
+  };
+};
 
 // Helper function to safely parse numbers
 const safeParseInt = (value, defaultValue = 1) => {
@@ -16,9 +38,10 @@ const safeParseInt = (value, defaultValue = 1) => {
 };
 
 // Helper function to update route dealer count
-const updateRouteDealerCount = async (routeId) => {
+const updateRouteDealerCount = async (dbConnection, routeId) => {
   if (!routeId) return;
   try {
+    const { Dealer, Route } = getModels(dbConnection);
     const dealerCount = await Dealer.countDocuments({ routeId });
     await Route.findByIdAndUpdate(routeId, { totalDealers: dealerCount });
   } catch (error) {
@@ -29,6 +52,9 @@ const updateRouteDealerCount = async (routeId) => {
 // Get all dealers with pagination and search
 export const getDealers = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Dealer } = getModels(req.dbConnection);
+    
     const {
       page = 1,
       limit = 10,
@@ -127,6 +153,9 @@ export const getDealers = async (req, res) => {
 // Get single dealer
 export const getDealer = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Dealer } = getModels(req.dbConnection);
+    
     const dealer = await Dealer.findById(req.params.id)
       .populate('regionId', 'name code')
       .populate('salesExecutiveId', 'name empId email')
@@ -159,6 +188,9 @@ export const getDealer = async (req, res) => {
 // Create new dealer
 export const createDealer = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Dealer } = getModels(req.dbConnection);
+    
     const {
       name,
       contactPerson,
@@ -265,7 +297,7 @@ export const createDealer = async (req, res) => {
 
     // Update route dealer count if route is assigned
     if (routeId) {
-      await updateRouteDealerCount(routeId);
+      await updateRouteDealerCount(req.dbConnection, routeId);
     }
 
     res.status(201).json({
@@ -303,6 +335,9 @@ export const createDealer = async (req, res) => {
 // Update dealer
 export const updateDealer = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Dealer } = getModels(req.dbConnection);
+    
     const { id } = req.params;
     const {
       name,
@@ -436,8 +471,8 @@ export const updateDealer = async (req, res) => {
 
     // Update route dealer counts if route changed
     if (String(oldRouteId) !== String(newRouteId)) {
-      if (oldRouteId) await updateRouteDealerCount(oldRouteId);
-      if (newRouteId) await updateRouteDealerCount(newRouteId);
+      if (oldRouteId) await updateRouteDealerCount(req.dbConnection, oldRouteId);
+      if (newRouteId) await updateRouteDealerCount(req.dbConnection, newRouteId);
     }
 
     res.json({
@@ -466,6 +501,9 @@ export const updateDealer = async (req, res) => {
 // Delete dealer
 export const deleteDealer = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Dealer } = getModels(req.dbConnection);
+    
     const dealer = await Dealer.findById(req.params.id);
 
     if (!dealer) {
@@ -482,7 +520,7 @@ export const deleteDealer = async (req, res) => {
 
     // Update route dealer count if dealer was assigned to a route
     if (routeId) {
-      await updateRouteDealerCount(routeId);
+      await updateRouteDealerCount(req.dbConnection, routeId);
     }
 
     res.json({
@@ -501,6 +539,9 @@ export const deleteDealer = async (req, res) => {
 // Get dealer statistics
 export const getDealerStats = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Dealer } = getModels(req.dbConnection);
+    
     const totalDealers = await Dealer.countDocuments();
     const activeDealers = await Dealer.countDocuments({ isActive: true });
 
@@ -719,10 +760,14 @@ export const uploadDealerDocuments = async (req, res) => {
 // Get complete dealer information for Sales Order Dashboard
 export const getDealerCompleteInfo = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Dealer, DealerLedger, DealerInvoice, SalesOrder, PaymentAllocation } = getModels(req.dbConnection);
+    
     const { id } = req.params;
     
-    // Import models (DiscountMapping not imported at top level)
-    const DiscountMapping = (await import("../models/DiscountMapping.js")).default;
+    // Import DiscountMapping schema and create model
+    const { discountMappingSchema } = await import("../models/DiscountMapping.js");
+    const DiscountMapping = req.dbConnection.models.DiscountMapping || req.dbConnection.model('DiscountMapping', discountMappingSchema);
     
     // 1. Get dealer basic info
     const dealer = await Dealer.findById(id);
@@ -988,6 +1033,9 @@ export const getDealerAccessibleProducts = async (req, res) => {
   console.log("🚀 Request query:", req.query);
   
   try {
+    // Get models from company-specific connection
+    const { Dealer, Brand, Category, Subcategory, ExtendedSubcategory, Product } = getModels(req.dbConnection);
+    
     const { id: dealerId } = req.params;
     console.log("🔍 getDealerAccessibleProducts called with dealerId:", dealerId);
     
@@ -1033,8 +1081,7 @@ export const getDealerAccessibleProducts = async (req, res) => {
     console.log("  - Allowed Subcategories:", dealer.allowedSubcategories?.length || 0);
     console.log("  - Allowed Extended:", dealer.allowedExtendedSubcategories?.length || 0);
 
-    // Import Product model and permission utility
-    const Product = (await import("../models/Product.js")).default;
+    // Import permission utility
     const { calculateProductFilter } = await import("../utils/dealerProductPermissions.js");
 
     // Use smart hierarchical filtering
@@ -1229,6 +1276,9 @@ export const getDealerAccessibleProducts = async (req, res) => {
 // Get dealer's allowed hierarchy options for filtering
 export const getDealerHierarchyOptions = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Dealer, Brand, Category, Subcategory, ExtendedSubcategory } = getModels(req.dbConnection);
+    
     const { id: dealerId } = req.params;
 
     // Get dealer with hierarchy permissions
@@ -1280,6 +1330,9 @@ export const getDealerHierarchyOptions = async (req, res) => {
 // Get dealer outstanding balance
 export const getDealerOutstanding = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Dealer, DealerLedger, PaymentAllocation } = getModels(req.dbConnection);
+    
     const { id } = req.params;
 
     // Get dealer
@@ -1396,6 +1449,9 @@ export const getDealerOutstanding = async (req, res) => {
 // Get dealer credit limit approval history (last 30 days)
 export const getDealerCreditApprovalHistory = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Dealer, DealerInvoice, DealerLedger, SalesOrder } = getModels(req.dbConnection);
+    
     const { id } = req.params;
 
     // Get dealer

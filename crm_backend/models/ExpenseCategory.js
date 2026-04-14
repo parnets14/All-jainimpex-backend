@@ -21,4 +21,7 @@ const ExpenseCategory = mongoose.model(
   expenseCategorySchema
 );
 
+// Export schema for multi-database support
+export { expenseCategorySchema };
+
 export default ExpenseCategory;

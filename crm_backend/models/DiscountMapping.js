@@ -296,10 +296,26 @@ discountMappingSchema.pre('save', function(next) {
 });
 
 // Static method to find applicable discounts for a product
-discountMappingSchema.statics.findApplicableDiscounts = async function(productId, mappingType = 'sales', dealerType = null) {
+discountMappingSchema.statics.findApplicableDiscounts = async function(productId, mappingType = 'sales', dealerType = null, dbConnection = null) {
   try {
     // Get product with full hierarchy
-    const Product = mongoose.model('Product');
+    // Use the connection from the model instance if dbConnection not provided
+    const connection = dbConnection || this.db;
+    
+    // Import and register all necessary schemas on the connection
+    const { productSchema } = await import('./Product.js');
+    const { brandSchema } = await import('./Brand.js');
+    const { categorySchema } = await import('./Category.js');
+    const { subcategorySchema } = await import('./Subcategory.js');
+    const { extendedSubcategorySchema } = await import('./ExtendedSubcategory.js');
+    
+    // Register models on the connection if not already registered
+    const Product = connection.models.Product || connection.model('Product', productSchema);
+    const Brand = connection.models.Brand || connection.model('Brand', brandSchema);
+    const Category = connection.models.Category || connection.model('Category', categorySchema);
+    const Subcategory = connection.models.Subcategory || connection.model('Subcategory', subcategorySchema);
+    const ExtendedSubcategory = connection.models.ExtendedSubcategory || connection.model('ExtendedSubcategory', extendedSubcategorySchema);
+    
     const product = await Product.findById(productId)
       .populate('category')
       .populate('subcategory')
@@ -541,5 +557,8 @@ discountMappingSchema.statics.expireDiscounts = async function() {
 // Ensure virtual fields are serialized
 discountMappingSchema.set('toJSON', { virtuals: true });
 discountMappingSchema.set('toObject', { virtuals: true });
+
+// Export schema for multi-database support
+export { discountMappingSchema };
 
 export default mongoose.model('DiscountMapping', discountMappingSchema);

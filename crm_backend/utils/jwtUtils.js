@@ -4,14 +4,19 @@ import jwt from 'jsonwebtoken';
 const JWT_SECRET = process.env.JWT_SECRET || 'your-fallback-secret-key-for-development-only';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '30d'; // 30 days for persistent login
 
-export const generateToken = (userId) => {
+export const generateToken = (userId, company) => {
   if (!JWT_SECRET) {
     throw new Error('JWT_SECRET is not defined');
+  }
+
+  if (!company) {
+    throw new Error('Company identifier is required for token generation');
   }
 
   return jwt.sign(
     { 
       userId,
+      company, // Include company in token
       timestamp: Date.now()
     },
     JWT_SECRET,
@@ -34,11 +39,15 @@ export const verifyToken = (token) => {
     
     const decoded = jwt.verify(token, JWT_SECRET);
     
-    console.log('🔐 Token decoded successfully, userId:', decoded.userId);
+    console.log('🔐 Token decoded successfully, userId:', decoded.userId, 'company:', decoded.company);
     
     // Additional validation
     if (!decoded.userId) {
-      throw new Error('Invalid token payload');
+      throw new Error('Invalid token payload: missing userId');
+    }
+
+    if (!decoded.company) {
+      throw new Error('Invalid token payload: missing company');
     }
 
     return decoded;

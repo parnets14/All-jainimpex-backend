@@ -27,4 +27,7 @@ const accountMasterSchema = new mongoose.Schema({
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
+// Export schema for multi-database support
+export { accountMasterSchema };
+
 export default mongoose.model('AccountMaster', accountMasterSchema);

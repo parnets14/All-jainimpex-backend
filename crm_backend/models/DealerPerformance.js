@@ -219,4 +219,7 @@ dealerPerformanceSchema.pre('save', function(next) {
   next();
 });
 
+// Export schema for multi-database support
+export { dealerPerformanceSchema };
+
 export default mongoose.model("DealerPerformance", dealerPerformanceSchema);

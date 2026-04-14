@@ -62,4 +62,7 @@ attendanceSchema.pre('save', function(next) {
   next();
 });
 
+// Export schema for multi-database support
+export { attendanceSchema };
+
 export default mongoose.model('Attendance', attendanceSchema);

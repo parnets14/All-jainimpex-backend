@@ -48,4 +48,7 @@ const capitalSchema = new mongoose.Schema({
 
 const Capital = mongoose.model('Capital', capitalSchema);
 
+// Export schema for multi-database support
+export { capitalSchema };
+
 export default Capital;

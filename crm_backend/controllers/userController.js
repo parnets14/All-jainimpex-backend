@@ -1,11 +1,21 @@
 // controllers/userController.js
-import User from '../models/User.js';
+import { userSchema } from '../models/User.js';
 import { AVAILABLE_PERMISSIONS, AVAILABLE_REGIONS, ROLE_PERMISSIONS } from '../config/permissions.js';
 import { generatePDF } from '../utils/pdfGenerator.js';
+
+// Helper function to get models from company-specific connection
+const getModels = (dbConnection) => {
+  return {
+    User: dbConnection.models.User || dbConnection.model('User', userSchema),
+  };
+};
 
 // Get all users (Super admin only)
 export const getUsers = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { User } = getModels(req.dbConnection);
+    
     const { page = 1, limit = 10, search = '', status, role, startDate, endDate } = req.query;
     
     // Build filter object
@@ -68,6 +78,9 @@ export const getUsers = async (req, res) => {
 // Get single user
 export const getUserById = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { User } = getModels(req.dbConnection);
+    
     const user = await User.findById(req.params.id).select('-password').lean();
     
     if (!user) {
@@ -99,6 +112,9 @@ export const getUserById = async (req, res) => {
 // Create new user (Super admin only)
 export const createUser = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { User } = getModels(req.dbConnection);
+    
     const {
       name,
       username,
@@ -170,6 +186,9 @@ export const createUser = async (req, res) => {
 // Update user
 export const updateUser = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { User } = getModels(req.dbConnection);
+    
     const {
       name,
       username,
@@ -265,6 +284,9 @@ export const updateUser = async (req, res) => {
 // Update user permissions
 export const updateUserPermissions = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { User } = getModels(req.dbConnection);
+    
     const { permissions, assignedRegions } = req.body;
 
     const updatedUser = await User.findByIdAndUpdate(
@@ -300,6 +322,9 @@ export const updateUserPermissions = async (req, res) => {
 // Delete user
 export const deleteUser = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { User } = getModels(req.dbConnection);
+    
     const user = await User.findById(req.params.id);
     
     if (!user) {
@@ -345,6 +370,9 @@ export const getPermissionsConfig = (req, res) => {
 // Change user status
 export const updateUserStatus = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { User } = getModels(req.dbConnection);
+    
     const { status } = req.body;
 
     const updatedUser = await User.findByIdAndUpdate(
@@ -377,6 +405,9 @@ export const updateUserStatus = async (req, res) => {
 // Export users to PDF
 export const exportUsersToPDF = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { User } = getModels(req.dbConnection);
+    
     console.log('Export users PDF request:', req.query);
     console.log('Current user:', req.user);
     

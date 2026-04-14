@@ -1,7 +1,17 @@
-import Brand from "../models/Brand.js";
-import Category from "../models/Category.js";
-import Subcategory from "../models/Subcategory.js";
-import ExtendedSubcategory from "../models/ExtendedSubcategory.js";
+import { brandSchema } from "../models/Brand.js";
+import { categorySchema } from "../models/Category.js";
+import { subcategorySchema } from "../models/Subcategory.js";
+import { extendedSubcategorySchema } from "../models/ExtendedSubcategory.js";
+
+// Helper function to get models from company-specific connection
+const getModels = (dbConnection) => {
+  return {
+    Brand: dbConnection.models.Brand || dbConnection.model('Brand', brandSchema),
+    Category: dbConnection.models.Category || dbConnection.model('Category', categorySchema),
+    Subcategory: dbConnection.models.Subcategory || dbConnection.model('Subcategory', subcategorySchema),
+    ExtendedSubcategory: dbConnection.models.ExtendedSubcategory || dbConnection.model('ExtendedSubcategory', extendedSubcategorySchema),
+  };
+};
 
 // Helper function for pagination
 const getPaginationOptions = (query) => {
@@ -15,6 +25,9 @@ const getPaginationOptions = (query) => {
 // Get all brands with pagination
 export const getBrands = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Brand, Category, Subcategory, ExtendedSubcategory } = getModels(req.dbConnection);
+    
     const { page, limit, skip } = getPaginationOptions(req.query);
     const { search, status } = req.query;
 
@@ -83,6 +96,9 @@ export const getBrands = async (req, res) => {
 // Get single brand
 export const getBrand = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Brand, Category, Subcategory, ExtendedSubcategory } = getModels(req.dbConnection);
+    
     const brand = await Brand.findById(req.params.id).populate(
       "createdBy",
       "name email"
@@ -125,6 +141,9 @@ export const getBrand = async (req, res) => {
 // Create new brand
 export const createBrand = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Brand } = getModels(req.dbConnection);
+    
     const { name, description } = req.body;
 
     // Check if brand already exists
@@ -177,6 +196,9 @@ export const createBrand = async (req, res) => {
 // Update brand
 export const updateBrand = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Brand } = getModels(req.dbConnection);
+    
     const { name, description, status } = req.body;
 
     const brand = await Brand.findById(req.params.id);
@@ -242,6 +264,9 @@ export const updateBrand = async (req, res) => {
 // Delete brand (with cascade option)
 export const deleteBrand = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Brand, Category, Subcategory, ExtendedSubcategory } = getModels(req.dbConnection);
+    
     const { cascade } = req.query;
     const brand = await Brand.findById(req.params.id);
 
@@ -329,6 +354,9 @@ export const deleteBrand = async (req, res) => {
 // Get brand statistics
 export const getBrandStats = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Brand, Category, Subcategory } = getModels(req.dbConnection);
+    
     const totalBrands = await Brand.countDocuments();
     const activeBrands = await Brand.countDocuments({ status: "active" });
 
@@ -395,6 +423,9 @@ export const getBrandStats = async (req, res) => {
 // Get child counts for a brand (for delete confirmation)
 export const getBrandChildCounts = async (req, res) => {
   try {
+    // Get models from company-specific connection
+    const { Brand, Category, Subcategory, ExtendedSubcategory } = getModels(req.dbConnection);
+    
     const brandId = req.params.id;
 
     const brand = await Brand.findById(brandId);

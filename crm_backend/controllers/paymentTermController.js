@@ -1,8 +1,15 @@
 // controllers/paymentTermController.js
-import PaymentTerm from "../models/PaymentTerm.js";
+import { paymentTermSchema } from "../models/PaymentTerm.js";
+
+const getModels = (dbConnection) => {
+  return {
+    PaymentTerm: dbConnection.models.PaymentTerm || dbConnection.model('PaymentTerm', paymentTermSchema)
+  };
+};
 
 export const getPaymentTerms = async (req, res) => {
   try {
+    const { PaymentTerm } = getModels(req.dbConnection);
     const paymentTerms = await PaymentTerm.find({ isActive: true }).sort({ days: 1 });
     
     res.json({
@@ -21,6 +28,7 @@ export const getPaymentTerms = async (req, res) => {
 
 export const createPaymentTerm = async (req, res) => {
   try {
+    const { PaymentTerm } = getModels(req.dbConnection);
     const { name, days, code } = req.body;
 
     const paymentTerm = new PaymentTerm({

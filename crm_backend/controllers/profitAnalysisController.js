@@ -1,13 +1,28 @@
-import DealerInvoice from "../models/DealerInvoice.js";
-import SupplierInvoice from "../models/SupplierInvoice.js";
-import Dealer from "../models/Dealer.js";
-import Supplier from "../models/Supplier.js";
+import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
+import { supplierInvoiceSchema } from "../models/SupplierInvoice.js";
+import { dealerSchema } from "../models/Dealer.js";
+import { supplierSchema } from "../models/Supplier.js";
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    DealerInvoice: dbConnection.models.DealerInvoice || 
+                   dbConnection.model('DealerInvoice', dealerInvoiceSchema),
+    SupplierInvoice: dbConnection.models.SupplierInvoice || 
+                     dbConnection.model('SupplierInvoice', supplierInvoiceSchema),
+    Dealer: dbConnection.models.Dealer || 
+            dbConnection.model('Dealer', dealerSchema),
+    Supplier: dbConnection.models.Supplier || 
+              dbConnection.model('Supplier', supplierSchema)
+  };
+};
 
 // @desc    Get bill-wise profit analysis
 // @route   GET /api/profit-analysis/bills
 // @access  Private
 export const getBillWiseProfitAnalysis = async (req, res) => {
   try {
+    const { DealerInvoice, SupplierInvoice, Dealer, Supplier } = getModels(req.dbConnection);
     const {
       page = 1,
       limit = 10,

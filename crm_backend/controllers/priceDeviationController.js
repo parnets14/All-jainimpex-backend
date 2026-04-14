@@ -1,14 +1,38 @@
-import SalesOrder from "../models/SalesOrder.js";
-import PurchaseOrder from "../models/PurchaseOrder.js";
-import DealerInvoice from "../models/DealerInvoice.js";
-import SupplierInvoice from "../models/SupplierInvoice.js";
-import Product from "../models/Product.js";
-import Dealer from "../models/Dealer.js";
-import Supplier from "../models/Supplier.js";
+import { salesOrderSchema } from "../models/SalesOrder.js";
+import { purchaseOrderSchema } from "../models/PurchaseOrder.js";
+import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
+import { supplierInvoiceSchema } from "../models/SupplierInvoice.js";
+import { productSchema } from "../models/Product.js";
+import { dealerSchema } from "../models/Dealer.js";
+import { supplierSchema } from "../models/Supplier.js";
+import { grnSchema } from "../models/GRN.js";
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    SalesOrder: dbConnection.models.SalesOrder || 
+                dbConnection.model('SalesOrder', salesOrderSchema),
+    PurchaseOrder: dbConnection.models.PurchaseOrder || 
+                   dbConnection.model('PurchaseOrder', purchaseOrderSchema),
+    DealerInvoice: dbConnection.models.DealerInvoice || 
+                   dbConnection.model('DealerInvoice', dealerInvoiceSchema),
+    SupplierInvoice: dbConnection.models.SupplierInvoice || 
+                     dbConnection.model('SupplierInvoice', supplierInvoiceSchema),
+    Product: dbConnection.models.Product || 
+             dbConnection.model('Product', productSchema),
+    Dealer: dbConnection.models.Dealer || 
+            dbConnection.model('Dealer', dealerSchema),
+    Supplier: dbConnection.models.Supplier || 
+              dbConnection.model('Supplier', supplierSchema),
+    GRN: dbConnection.models.GRN || 
+         dbConnection.model('GRN', grnSchema)
+  };
+};
 
 // Test endpoint to check database connection
 export const testConnection = async (req, res) => {
   try {
+    const { PurchaseOrder, SalesOrder, Product } = getModels(req.dbConnection);
     console.log('🔍 [TEST] Testing database connection');
     
     // Test PurchaseOrder count
@@ -45,6 +69,7 @@ export const testConnection = async (req, res) => {
 // Price Deviation Report
 export const getPriceDeviationReport = async (req, res) => {
   try {
+    const { SalesOrder, DealerInvoice, PurchaseOrder, SupplierInvoice, Product, Dealer, Supplier } = getModels(req.dbConnection);
     console.log('🔍 [PRICE_DEVIATION] Starting price deviation report');
     const { 
       type = 'sales', 
@@ -195,6 +220,7 @@ export const getPriceDeviationReport = async (req, res) => {
 // Credit Deviation Report
 export const getCreditDeviationReport = async (req, res) => {
   try {
+    const { SalesOrder, DealerInvoice, Dealer, SupplierInvoice, Supplier } = getModels(req.dbConnection);
     const { 
       type = 'sales', 
       fromDate, 
@@ -333,6 +359,7 @@ export const getCreditDeviationReport = async (req, res) => {
 // Payment Deviation Report
 export const getPaymentDeviationReport = async (req, res) => {
   try {
+    const { SalesOrder, DealerInvoice, Dealer, SupplierInvoice, Supplier } = getModels(req.dbConnection);
     const { 
       type = 'sales', 
       fromDate, 
@@ -496,6 +523,7 @@ export const getPaymentDeviationReport = async (req, res) => {
 // Discount Deviation Report
 export const getDiscountDeviationReport = async (req, res) => {
   try {
+    const { SalesOrder, DealerInvoice, Product, Dealer } = getModels(req.dbConnection);
     const { 
       type = 'sales', 
       fromDate, 
@@ -627,6 +655,7 @@ export const getDiscountDeviationReport = async (req, res) => {
 // Enhanced Price Deviation Report - Purchase Side (Product Master Price vs Invoice Price)
 export const getEnhancedPurchasePriceDeviation = async (req, res) => {
   try {
+    const { SupplierInvoice, Product, Supplier } = getModels(req.dbConnection);
     console.log('🔍 [ENHANCED_PRICE_DEVIATION] Starting enhanced purchase price deviation report');
     const { 
       fromDate, 
@@ -791,6 +820,7 @@ export const getEnhancedPurchasePriceDeviation = async (req, res) => {
 // Quantity Deviation Report - Purchase Side (PO vs GRN)
 export const getQuantityDeviationReport = async (req, res) => {
   try {
+    const { PurchaseOrder, Product, Supplier, GRN } = getModels(req.dbConnection);
     console.log('🔍 [QUANTITY_DEVIATION] Starting quantity deviation report');
     const { 
       fromDate, 
@@ -805,8 +835,6 @@ export const getQuantityDeviationReport = async (req, res) => {
       deviationRange,
       product
     } = req.query;
-    
-    const GRN = (await import('../models/GRN.js')).default;
     
     let matchQuery = {};
     
@@ -962,6 +990,7 @@ export const getQuantityDeviationReport = async (req, res) => {
 // Enhanced Discount Deviation Report - Purchase Side (PO Floating Discount vs Invoice Floating Discount)
 export const getEnhancedPurchaseDiscountDeviation = async (req, res) => {
   try {
+    const { PurchaseOrder, SupplierInvoice, Product, Supplier } = getModels(req.dbConnection);
     console.log('🔍 [ENHANCED_DISCOUNT_DEVIATION] Starting enhanced purchase discount deviation report');
     const { 
       fromDate, 

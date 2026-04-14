@@ -318,4 +318,7 @@ dealerSchema.index({ regionId: 1 });
 dealerSchema.index({ isActive: 1 });
 dealerSchema.index({ createdAt: -1 });
 
+// Export schema for multi-database support
+export { dealerSchema };
+
 export default mongoose.model("Dealer", dealerSchema);

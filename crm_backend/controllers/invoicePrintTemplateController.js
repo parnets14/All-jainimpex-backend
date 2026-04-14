@@ -1,8 +1,17 @@
-import InvoicePrintTemplate from '../models/InvoicePrintTemplate.js';
+import { invoicePrintTemplateSchema } from '../models/InvoicePrintTemplate.js';
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    InvoicePrintTemplate: dbConnection.models.InvoicePrintTemplate || 
+                          dbConnection.model('InvoicePrintTemplate', invoicePrintTemplateSchema)
+  };
+};
 
 // Get all templates (user's own + global)
 export const getTemplates = async (req, res) => {
   try {
+    const { InvoicePrintTemplate } = getModels(req.dbConnection);
     const userId = req.user._id;
     
     const templates = await InvoicePrintTemplate.find({
@@ -31,6 +40,7 @@ export const getTemplates = async (req, res) => {
 // Get single template
 export const getTemplate = async (req, res) => {
   try {
+    const { InvoicePrintTemplate } = getModels(req.dbConnection);
     const { id } = req.params;
     const userId = req.user._id;
     
@@ -66,6 +76,7 @@ export const getTemplate = async (req, res) => {
 // Create new template
 export const createTemplate = async (req, res) => {
   try {
+    const { InvoicePrintTemplate } = getModels(req.dbConnection);
     const { name, description, settings, isDefault } = req.body;
     const userId = req.user._id;
     
@@ -107,6 +118,7 @@ export const createTemplate = async (req, res) => {
 // Update template
 export const updateTemplate = async (req, res) => {
   try {
+    const { InvoicePrintTemplate } = getModels(req.dbConnection);
     const { id } = req.params;
     const { name, description, settings, isDefault } = req.body;
     const userId = req.user._id;
@@ -157,6 +169,7 @@ export const updateTemplate = async (req, res) => {
 // Delete template
 export const deleteTemplate = async (req, res) => {
   try {
+    const { InvoicePrintTemplate } = getModels(req.dbConnection);
     const { id } = req.params;
     const userId = req.user._id;
     
@@ -191,6 +204,7 @@ export const deleteTemplate = async (req, res) => {
 // Get default template for user
 export const getDefaultTemplate = async (req, res) => {
   try {
+    const { InvoicePrintTemplate } = getModels(req.dbConnection);
     const userId = req.user._id;
     
     // First try to find user's default template

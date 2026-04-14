@@ -1,8 +1,16 @@
 // controllers/dealerTypeController.js
-import DealerType from "../models/Dealertype.js";
+import { dealerTypeSchema } from "../models/Dealertype.js";
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    DealerType: dbConnection.models.DealerType || dbConnection.model('DealerType', dealerTypeSchema)
+  };
+};
 
 // Create a new dealer type
 export const createDealerType = async (req, res) => {
+  const { DealerType } = getModels(req.dbConnection);
   try {
     const { name, description } = req.body;
 
@@ -33,6 +41,7 @@ export const createDealerType = async (req, res) => {
 
 // Get all dealer types with pagination
 export const getAllDealerTypes = async (req, res) => {
+  const { DealerType } = getModels(req.dbConnection);
   try {
     const { search, page = 1, limit = 10 } = req.query;
 
@@ -86,6 +95,7 @@ export const getAllDealerTypes = async (req, res) => {
 
 // Get single dealer type by ID
 export const getDealerTypeById = async (req, res) => {
+  const { DealerType } = getModels(req.dbConnection);
   try {
     const dealerType = await DealerType.findById(req.params.id);
     if (!dealerType)
@@ -98,6 +108,7 @@ export const getDealerTypeById = async (req, res) => {
 
 // Update dealer type
 export const updateDealerType = async (req, res) => {
+  const { DealerType } = getModels(req.dbConnection);
   try {
     const { name, description } = req.body;
     const { id } = req.params;
@@ -135,6 +146,7 @@ export const updateDealerType = async (req, res) => {
 
 // Delete dealer type
 export const deleteDealerType = async (req, res) => {
+  const { DealerType } = getModels(req.dbConnection);
   try {
     const dealerType = await DealerType.findByIdAndDelete(req.params.id);
     if (!dealerType)

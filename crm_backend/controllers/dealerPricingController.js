@@ -1,20 +1,47 @@
-import DealerPricing from '../models/DealerPricing.js';
-import DealerPricingSchedule from '../models/DealerPricingSchedule.js';
-import DealerPricingHistory from '../models/DealerPricingHistory.js';
-import Product from '../models/Product.js';
-import Brand from '../models/Brand.js';
-import Category from '../models/Category.js';
-import Subcategory from '../models/Subcategory.js';
-import DiscountMapping from '../models/DiscountMapping.js';
-import PurchaseOrder from '../models/PurchaseOrder.js';
-import SupplierInvoice from '../models/SupplierInvoice.js';
+import { dealerPricingSchema } from '../models/DealerPricing.js';
+import { dealerPricingScheduleSchema } from '../models/DealerPricingSchedule.js';
+import { dealerPricingHistorySchema } from '../models/DealerPricingHistory.js';
+import { productSchema } from '../models/Product.js';
+import { brandSchema } from '../models/Brand.js';
+import { categorySchema } from '../models/Category.js';
+import { subcategorySchema } from '../models/Subcategory.js';
+import { discountMappingSchema } from '../models/DiscountMapping.js';
+import { purchaseOrderSchema } from '../models/PurchaseOrder.js';
+import { supplierInvoiceSchema } from '../models/SupplierInvoice.js';
 import { v4 as uuidv4 } from 'uuid';
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    DealerPricing: dbConnection.models.DealerPricing || 
+                   dbConnection.model('DealerPricing', dealerPricingSchema),
+    DealerPricingSchedule: dbConnection.models.DealerPricingSchedule || 
+                           dbConnection.model('DealerPricingSchedule', dealerPricingScheduleSchema),
+    DealerPricingHistory: dbConnection.models.DealerPricingHistory || 
+                          dbConnection.model('DealerPricingHistory', dealerPricingHistorySchema),
+    Product: dbConnection.models.Product || 
+             dbConnection.model('Product', productSchema),
+    Brand: dbConnection.models.Brand || 
+           dbConnection.model('Brand', brandSchema),
+    Category: dbConnection.models.Category || 
+              dbConnection.model('Category', categorySchema),
+    Subcategory: dbConnection.models.Subcategory || 
+                 dbConnection.model('Subcategory', subcategorySchema),
+    DiscountMapping: dbConnection.models.DiscountMapping || 
+                     dbConnection.model('DiscountMapping', discountMappingSchema),
+    PurchaseOrder: dbConnection.models.PurchaseOrder || 
+                   dbConnection.model('PurchaseOrder', purchaseOrderSchema),
+    SupplierInvoice: dbConnection.models.SupplierInvoice || 
+                     dbConnection.model('SupplierInvoice', supplierInvoiceSchema)
+  };
+};
 
 // @desc    Get all dealer pricing records with enhanced filtering
 // @route   GET /api/dealer-pricing
 // @access  Private
 export const getDealerPricing = async (req, res) => {
   try {
+    const { DealerPricing, Product, DealerPricingSchedule } = getModels(req.dbConnection);
     const { 
       page = 1, 
       limit = 50, 
@@ -196,6 +223,7 @@ export const getDealerPricing = async (req, res) => {
 // @access  Private
 export const getDealerPricingByProduct = async (req, res) => {
   try {
+    const { DealerPricing, Product, DealerPricingSchedule } = getModels(req.dbConnection);
     const { productId } = req.params;
 
     let pricing = await DealerPricing.findOne({ product: productId, isActive: true })
@@ -265,6 +293,7 @@ export const getDealerPricingByProduct = async (req, res) => {
 // @access  Private
 export const createOrUpdateDealerPricing = async (req, res) => {
   try {
+    const { DealerPricing, Product, DealerPricingHistory } = getModels(req.dbConnection);
     const { productId, sellingPrice, purchasePrice, mrp, notes } = req.body;
 
     if (!productId || !sellingPrice) {
@@ -392,6 +421,7 @@ export const createOrUpdateDealerPricing = async (req, res) => {
 // @access  Private
 export const updateDealerPricing = async (req, res) => {
   try {
+    const { DealerPricing, DealerPricingHistory } = getModels(req.dbConnection);
     const { id } = req.params;
     const { sellingPrice, purchasePrice, mrp, notes, isActive } = req.body;
 
@@ -457,6 +487,7 @@ export const updateDealerPricing = async (req, res) => {
 // @access  Private
 export const bulkUpdateDealerPricing = async (req, res) => {
   try {
+    const { DealerPricing, Product, DealerPricingHistory } = getModels(req.dbConnection);
     const { updates } = req.body; // Array of { productId, sellingPrice, purchasePrice }
 
     if (!Array.isArray(updates) || updates.length === 0) {
@@ -557,6 +588,7 @@ export const bulkUpdateDealerPricing = async (req, res) => {
 // @access  Private
 export const syncPurchasePrices = async (req, res) => {
   try {
+    const { DealerPricing, PurchaseOrder, Product } = getModels(req.dbConnection);
     const { productIds } = req.body; // Optional: specific products, or all if not provided
 
     const filter = { isActive: true };
@@ -616,6 +648,7 @@ export const syncPurchasePrices = async (req, res) => {
 // @access  Private
 export const getFilterOptions = async (req, res) => {
   try {
+    const { Brand, Category, Subcategory } = getModels(req.dbConnection);
     // Get unique brands, categories, and subcategories from products that actually have pricing
     const [brands, categories, subcategories] = await Promise.all([
       // Get brands from products (fallback to all brands if isActive field doesn't exist)
@@ -657,6 +690,7 @@ export const getFilterOptions = async (req, res) => {
 // @access  Private
 export const previewBulkChanges = async (req, res) => {
   try {
+    const { DealerPricing, Product } = getModels(req.dbConnection);
     const {
       filters = {},
       changeType, // 'increase_amount', 'decrease_amount', 'increase_percentage', 'decrease_percentage'
@@ -834,6 +868,7 @@ export const previewBulkChanges = async (req, res) => {
 // @access  Private
 export const applyBulkChanges = async (req, res) => {
   try {
+    const { DealerPricing, DealerPricingSchedule, DealerPricingHistory, Product } = getModels(req.dbConnection);
     const {
       productIds,
       changeType,
@@ -1033,6 +1068,7 @@ export const applyBulkChanges = async (req, res) => {
 // @access  Private
 export const getScheduledChanges = async (req, res) => {
   try {
+    const { DealerPricingSchedule } = getModels(req.dbConnection);
     const { 
       page = 1, 
       limit = 50, 
@@ -1103,6 +1139,7 @@ export const getScheduledChanges = async (req, res) => {
 // @access  Private
 export const applyScheduledChanges = async (req, res) => {
   try {
+    const { DealerPricingSchedule } = getModels(req.dbConnection);
     const result = await DealerPricingSchedule.applyScheduledChanges();
     
     res.json({
@@ -1125,6 +1162,7 @@ export const applyScheduledChanges = async (req, res) => {
 // @access  Private
 export const cancelScheduledChange = async (req, res) => {
   try {
+    const { DealerPricingSchedule } = getModels(req.dbConnection);
     const { id } = req.params;
 
     const schedule = await DealerPricingSchedule.findById(id);
@@ -1187,6 +1225,7 @@ export const cancelScheduledChange = async (req, res) => {
 // @access  Private
 export const getPriceHistory = async (req, res) => {
   try {
+    const { DealerPricingHistory } = getModels(req.dbConnection);
     const { productId } = req.params;
     const { limit = 20 } = req.query;
 
@@ -1211,6 +1250,7 @@ export const getPriceHistory = async (req, res) => {
 // @access  Private
 export const getAllPriceHistory = async (req, res) => {
   try {
+    const { DealerPricingHistory } = getModels(req.dbConnection);
     const { 
       page = 1, 
       limit = 50,
@@ -1285,6 +1325,7 @@ export const getAllPriceHistory = async (req, res) => {
 // @access  Private
 export const updateDiscountInfo = async (req, res) => {
   try {
+    const { DealerPricing, DiscountMapping } = getModels(req.dbConnection);
     console.log('🔄 Updating comprehensive discount info (sales + purchase) for all products...');
     
     const updatedCount = await DealerPricing.updateAllDiscountInfo();
@@ -1309,6 +1350,7 @@ export const updateDiscountInfo = async (req, res) => {
 // @access  Private
 export const syncPurchasePricesFromInvoices = async (req, res) => {
   try {
+    const { DealerPricing, SupplierInvoice } = getModels(req.dbConnection);
     console.log('🔄 Syncing purchase prices from supplier invoices...');
     
     const syncedCount = await DealerPricing.syncAllPurchasePricesFromInvoices();
@@ -1333,6 +1375,7 @@ export const syncPurchasePricesFromInvoices = async (req, res) => {
 // @access  Private
 export const getComprehensivePricing = async (req, res) => {
   try {
+    const { DealerPricing, Product, DiscountMapping } = getModels(req.dbConnection);
     const { 
       page = 1, 
       limit = 50, 
@@ -1558,6 +1601,7 @@ export const getComprehensivePricing = async (req, res) => {
 // @access  Private
 export const validateAndSyncAllPricing = async (req, res) => {
   try {
+    const { DealerPricing, Product, PurchaseOrder, DiscountMapping } = getModels(req.dbConnection);
     console.log('🚨 COMPREHENSIVE PRICE VALIDATION AND AUTO-SYNC SYSTEM STARTING...\n');
     
     const results = {
@@ -1817,6 +1861,7 @@ export const validateAndSyncAllPricing = async (req, res) => {
 // @access  Private
 export const getPriceValidationWarnings = async (req, res) => {
   try {
+    const { DealerPricing, Product } = getModels(req.dbConnection);
     const warnings = [];
     
     // Get all products with pricing records
@@ -1960,6 +2005,7 @@ export const getPriceValidationWarnings = async (req, res) => {
 // @access  Private
 export const autoCreateMissingPricingRecords = async (req, res) => {
   try {
+    const { DealerPricing, Product } = getModels(req.dbConnection);
     console.log('🔄 Auto-creating missing pricing records for all products...');
     
     // Get all products with rate slabs
@@ -2067,6 +2113,7 @@ export const autoCreateMissingPricingRecords = async (req, res) => {
 // @access  Private
 export const autoSyncNewProduct = async (req, res) => {
   try {
+    const { DealerPricing, Product, PurchaseOrder, DiscountMapping } = getModels(req.dbConnection);
     const { productId } = req.body;
     
     if (!productId) {

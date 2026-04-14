@@ -1,9 +1,27 @@
-import DealerInvoice from "../models/DealerInvoice.js";
-import SupplierInvoice from "../models/SupplierInvoice.js";
-import Dealer from "../models/Dealer.js";
-import Supplier from "../models/Supplier.js";
-import Category from "../models/Category.js";
-import Product from "../models/Product.js";
+import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
+import { supplierInvoiceSchema } from "../models/SupplierInvoice.js";
+import { dealerSchema } from "../models/Dealer.js";
+import { supplierSchema } from "../models/Supplier.js";
+import { categorySchema } from "../models/Category.js";
+import { productSchema } from "../models/Product.js";
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    DealerInvoice: dbConnection.models.DealerInvoice || 
+                   dbConnection.model('DealerInvoice', dealerInvoiceSchema),
+    SupplierInvoice: dbConnection.models.SupplierInvoice || 
+                     dbConnection.model('SupplierInvoice', supplierInvoiceSchema),
+    Dealer: dbConnection.models.Dealer || 
+            dbConnection.model('Dealer', dealerSchema),
+    Supplier: dbConnection.models.Supplier || 
+              dbConnection.model('Supplier', supplierSchema),
+    Category: dbConnection.models.Category || 
+              dbConnection.model('Category', categorySchema),
+    Product: dbConnection.models.Product || 
+             dbConnection.model('Product', productSchema)
+  };
+};
 
 // Helper to calculate profit metrics for an item
 const calculateItemProfit = (item) => {
@@ -19,6 +37,7 @@ const calculateItemProfit = (item) => {
 // @access  Private
 export const getMarginAnalysisByCategory = async (req, res) => {
   try {
+    const { DealerInvoice, SupplierInvoice, Category } = getModels(req.dbConnection);
     const { 
       dataSource = 'dealer', 
       startDate, 
@@ -172,6 +191,7 @@ export const getMarginAnalysisByCategory = async (req, res) => {
 // @access  Private
 export const getMarginAnalysisByProduct = async (req, res) => {
   try {
+    const { DealerInvoice, SupplierInvoice, Product } = getModels(req.dbConnection);
     const { 
       dataSource = 'dealer', 
       startDate, 
@@ -330,6 +350,7 @@ export const getMarginAnalysisByProduct = async (req, res) => {
 // @access  Private
 export const getGrossMarginTrend = async (req, res) => {
   try {
+    const { DealerInvoice, SupplierInvoice } = getModels(req.dbConnection);
     const { 
       dataSource = 'dealer', 
       startDate, 

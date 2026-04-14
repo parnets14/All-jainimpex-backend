@@ -1,7 +1,19 @@
-import PaymentAllocation from '../models/PaymentAllocation.js';
-import Voucher from '../models/Voucher.js';
-import DealerInvoice from '../models/DealerInvoice.js';
+import { paymentAllocationSchema } from '../models/PaymentAllocation.js';
+import { voucherSchema } from '../models/Voucher.js';
+import { dealerInvoiceSchema } from '../models/DealerInvoice.js';
 import { generateAllocationNumber } from '../services/voucherNumberService.js';
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    PaymentAllocation: dbConnection.models.PaymentAllocation || 
+                       dbConnection.model('PaymentAllocation', paymentAllocationSchema),
+    Voucher: dbConnection.models.Voucher || 
+             dbConnection.model('Voucher', voucherSchema),
+    DealerInvoice: dbConnection.models.DealerInvoice || 
+                   dbConnection.model('DealerInvoice', dealerInvoiceSchema)
+  };
+};
 
 /**
  * Create payment allocation
@@ -9,6 +21,7 @@ import { generateAllocationNumber } from '../services/voucherNumberService.js';
  */
 export const createPaymentAllocation = async (req, res) => {
   try {
+    const { PaymentAllocation, Voucher, DealerInvoice } = getModels(req.dbConnection);
     const {
       voucherId,
       allocations
@@ -180,6 +193,7 @@ export const createPaymentAllocation = async (req, res) => {
  */
 export const getPaymentAllocations = async (req, res) => {
   try {
+    const { PaymentAllocation } = getModels(req.dbConnection);
     const {
       partyId,
       voucherId,
@@ -240,6 +254,7 @@ export const getPaymentAllocations = async (req, res) => {
  */
 export const getPaymentAllocationById = async (req, res) => {
   try {
+    const { PaymentAllocation } = getModels(req.dbConnection);
     const allocation = await PaymentAllocation.findById(req.params.id)
       .populate('voucherId')
       .populate('partyId')
@@ -274,6 +289,7 @@ export const getPaymentAllocationById = async (req, res) => {
  */
 export const getOutstandingInvoices = async (req, res) => {
   try {
+    const { DealerInvoice } = getModels(req.dbConnection);
     const { partyId } = req.query;
     
     if (!partyId) {
@@ -333,6 +349,7 @@ export const getOutstandingInvoices = async (req, res) => {
  */
 export const getUnadjustedPayments = async (req, res) => {
   try {
+    const { Voucher } = getModels(req.dbConnection);
     const { partyId, voucherType = 'Receipt' } = req.query;
     
     if (!partyId) {

@@ -81,4 +81,7 @@ invoicePrintTemplateSchema.index({ createdBy: 1 });
 invoicePrintTemplateSchema.index({ isGlobal: 1 });
 invoicePrintTemplateSchema.index({ isDefault: 1 });
 
+// Export schema for multi-database support
+export { invoicePrintTemplateSchema };
+
 export default mongoose.model('InvoicePrintTemplate', invoicePrintTemplateSchema);

@@ -30,4 +30,7 @@ const claimTypeSchema = new mongoose.Schema({
 
 claimTypeSchema.index({ name: 1 }, { unique: true });
 
+// Export schema for multi-database support
+export { claimTypeSchema };
+
 export default mongoose.model("ClaimType", claimTypeSchema);

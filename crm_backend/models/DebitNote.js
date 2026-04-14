@@ -194,4 +194,7 @@ debitNoteSchema.index({ supplierInvoice: 1 });
 debitNoteSchema.index({ debitNoteDate: -1 });
 debitNoteSchema.index({ status: 1 });
 
+// Export schema for multi-database support
+export { debitNoteSchema };
+
 export default mongoose.model("DebitNote", debitNoteSchema);

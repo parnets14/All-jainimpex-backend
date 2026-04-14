@@ -1,17 +1,45 @@
 // controllers/authController.js
-import User from '../models/User.js';
+import { getCompanyConnection } from '../config/multiDatabase.js';
+import { userSchema } from '../models/User.js';
 import { generateToken } from '../utils/jwtUtils.js';
 import { setAuthCookie, clearAuthCookie } from '../utils/cookieUtils.js';
 import { logAuthActivity } from '../middleware/activityLogMiddleware.js';
 
-// Login - with role-based authentication
+// Login - with role-based authentication and company support
 export const login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    console.log('🔐 Login request received');
+    console.log('🔐 Request body:', JSON.stringify(req.body, null, 2));
+    
+    const { email, password, company } = req.body;
 
-    // Check if user exists
+    console.log('🔐 Extracted values:');
+    console.log('   Email:', email);
+    console.log('   Password:', password ? '***' : 'missing');
+    console.log('   Company:', company);
+
+    // Validate company
+    if (!company) {
+      console.log('❌ Company validation failed - company is:', company);
+      return res.status(400).json({
+        success: false,
+        message: 'Company identifier is required'
+      });
+    }
+
+    console.log(`🔐 Login attempt for ${email} at company: ${company}`);
+
+    // Get company-specific database connection
+    const dbConnection = getCompanyConnection(company);
+    
+    // Get User model from company-specific database
+    // Check if model already exists, otherwise create it
+    const User = dbConnection.models.User || dbConnection.model('User', userSchema);
+
+    // Check if user exists in this company's database
     const user = await User.findOne({ email }).select('+password');
     if (!user) {
+      console.log(`❌ User not found: ${email} in ${company} database`);
       return res.status(401).json({
         success: false,
         message: 'Invalid credentials'
@@ -29,6 +57,7 @@ export const login = async (req, res) => {
     // Check password
     const isPasswordValid = await user.comparePassword(password);
     if (!isPasswordValid) {
+      console.log(`❌ Invalid password for: ${email}`);
       return res.status(401).json({
         success: false,
         message: 'Invalid credentials'
@@ -38,8 +67,8 @@ export const login = async (req, res) => {
     // Update last login
     await user.updateLastLogin();
 
-    // Generate token
-    const token = generateToken(user._id);
+    // Generate token with company information
+    const token = generateToken(user._id, company);
 
     // Set HTTP-only cookie
     setAuthCookie(res, token);
@@ -51,7 +80,10 @@ export const login = async (req, res) => {
     await logAuthActivity(userResponse, 'LOGIN', {
       ipAddress: req.ip || req.connection.remoteAddress,
       userAgent: req.get('User-Agent'),
+      company: company
     });
+
+    console.log(`✅ Login successful for ${email} at ${company}`);
 
     res.json({
       success: true,
@@ -69,7 +101,8 @@ export const login = async (req, res) => {
         allowedDiscountLevels: userResponse.allowedDiscountLevels,
         lastLogin: userResponse.lastLogin,
         phone: userResponse.phone,
-        location: userResponse.location
+        location: userResponse.location,
+        company: company // Include company in response
       }
     });
   } catch (error) {
@@ -84,7 +117,9 @@ export const login = async (req, res) => {
 // Get current user (Protected route)
 export const getCurrentUser = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select('-password');
+    // User is already attached by protect middleware with company info
+    const User = req.dbConnection.models.User || req.dbConnection.model('User', userSchema);
+    const user = await User.findById(req.user._id || req.user.id).select('-password');
     
     res.json({
       success: true,
@@ -102,7 +137,8 @@ export const getCurrentUser = async (req, res) => {
         phone: user.phone,
         location: user.location,
         joinDate: user.joinDate,
-        createdAt: user.createdAt
+        createdAt: user.createdAt,
+        company: req.company // Include company from token
       }
     });
   } catch (error) {

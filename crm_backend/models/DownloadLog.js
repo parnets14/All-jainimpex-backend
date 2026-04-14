@@ -65,6 +65,9 @@ downloadLogSchema.index({ timestamp: -1 });
 
 const DownloadLog = mongoose.model("DownloadLog", downloadLogSchema);
 
+// Export schema for multi-database support
+export { downloadLogSchema };
+
 export default DownloadLog;
 
 

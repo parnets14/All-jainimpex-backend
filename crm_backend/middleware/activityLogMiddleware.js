@@ -1,11 +1,18 @@
-import ActivityLog from "../models/ActivityLog.js";
+import { activityLogSchema } from "../models/ActivityLog.js";
+
+const getModels = (dbConnection) => {
+  return {
+    ActivityLog: dbConnection.models.ActivityLog || dbConnection.model('ActivityLog', activityLogSchema)
+  };
+};
 
 // Enhanced middleware to log user activities with better context
 export const logActivity = (module, activity, action = "READ") => {
   return async (req, res, next) => {
     try {
       // Only log if user is authenticated
-      if (req.user) {
+      if (req.user && req.dbConnection) {
+        const { ActivityLog } = getModels(req.dbConnection);
         // Capture the original response send method
         const originalSend = res.send;
         
@@ -60,7 +67,8 @@ export const logFailedActivity = (module, activity, action = "READ") => {
       // Check if response indicates failure
       const isError = res.statusCode >= 400;
       
-      if (isError && req.user) {
+      if (isError && req.user && req.dbConnection) {
+        const { ActivityLog } = getModels(req.dbConnection);
         const logData = {
           user: req.user._id,
           username: req.user.username || req.user.name || "Unknown",
@@ -96,8 +104,9 @@ export const logFailedActivity = (module, activity, action = "READ") => {
 // Helper function to manually log activities
 export const manualLogActivity = async (req, user, module, activity, action = "READ", details = {}) => {
   try {
-    if (!user) return;
+    if (!user || !req.dbConnection) return;
 
+    const { ActivityLog } = getModels(req.dbConnection);
     const logData = {
       user: user._id || user,
       username: user.username || user.name || "Unknown",
@@ -123,10 +132,11 @@ export const manualLogActivity = async (req, user, module, activity, action = "R
 };
 
 // Helper function to log login/logout activities
-export const logAuthActivity = async (user, action, details = {}) => {
+export const logAuthActivity = async (user, action, details = {}, dbConnection = null) => {
   try {
-    if (!user) return;
+    if (!user || !dbConnection) return;
 
+    const { ActivityLog } = getModels(dbConnection);
     const logData = {
       user: user._id,
       username: user.username || user.name || "Unknown",

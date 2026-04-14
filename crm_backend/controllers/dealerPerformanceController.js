@@ -1,11 +1,27 @@
-import DealerPerformance from "../models/DealerPerformance.js";
-import Dealer from "../models/Dealer.js";
-import DealerInvoice from "../models/DealerInvoice.js";
-import CreditNote from "../models/CreditNote.js";
+import { dealerPerformanceSchema } from "../models/DealerPerformance.js";
+import { dealerSchema } from "../models/Dealer.js";
+import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
+import { creditNoteSchema } from "../models/CreditNote.js";
+
+// Helper function to get models for the current company database
+const getModels = (dbConnection) => {
+  return {
+    DealerPerformance: dbConnection.models.DealerPerformance || 
+                       dbConnection.model('DealerPerformance', dealerPerformanceSchema),
+    Dealer: dbConnection.models.Dealer || 
+            dbConnection.model('Dealer', dealerSchema),
+    DealerInvoice: dbConnection.models.DealerInvoice || 
+                   dbConnection.model('DealerInvoice', dealerInvoiceSchema),
+    CreditNote: dbConnection.models.CreditNote || 
+                dbConnection.model('CreditNote', creditNoteSchema)
+  };
+};
 
 // Get all dealer performance records with pagination and filters
 export const getDealerPerformance = async (req, res) => {
   try {
+    const { DealerPerformance } = getModels(req.dbConnection);
+    
     const {
       page = 1,
       limit = 10,
@@ -130,6 +146,7 @@ export const getDealerPerformance = async (req, res) => {
 // Get dealer performance by ID
 export const getDealerPerformanceById = async (req, res) => {
   try {
+    const { DealerPerformance } = getModels(req.dbConnection);
     const { id } = req.params;
 
     const performanceRecord = await DealerPerformance.findById(id)
@@ -162,6 +179,8 @@ export const getDealerPerformanceById = async (req, res) => {
 // Create new dealer performance record
 export const createDealerPerformance = async (req, res) => {
   try {
+    const { DealerPerformance, Dealer } = getModels(req.dbConnection);
+    
     const {
       dealer,
       dealerName,
@@ -256,6 +275,7 @@ export const createDealerPerformance = async (req, res) => {
 // Update dealer performance record
 export const updateDealerPerformance = async (req, res) => {
   try {
+    const { DealerPerformance } = getModels(req.dbConnection);
     const { id } = req.params;
     const updateData = req.body;
 
@@ -307,6 +327,7 @@ export const updateDealerPerformance = async (req, res) => {
 // Delete dealer performance record
 export const deleteDealerPerformance = async (req, res) => {
   try {
+    const { DealerPerformance } = getModels(req.dbConnection);
     const { id } = req.params;
 
     const deletedRecord = await DealerPerformance.findByIdAndUpdate(
@@ -421,6 +442,8 @@ const getDateRanges = (period, currentDate = new Date()) => {
 // Generate dealer performance from invoices and credit notes
 export const generateDealerPerformance = async (req, res) => {
   try {
+    const { DealerPerformance, Dealer, DealerInvoice, CreditNote } = getModels(req.dbConnection);
+    
     const {
       fromDate,
       toDate,
@@ -661,6 +684,7 @@ export const generateDealerPerformance = async (req, res) => {
 // Get dealer performance statistics
 export const getDealerPerformanceStats = async (req, res) => {
   try {
+    const { DealerPerformance } = getModels(req.dbConnection);
     const { period = "Monthly", fromDate, toDate } = req.query;
 
     const filter = { isActive: true, period };

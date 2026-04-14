@@ -63,6 +63,9 @@ notificationSchema.index({ dealer: 1, createdAt: -1 });
 
 const Notification = mongoose.model("Notification", notificationSchema);
 
+// Export schema for multi-database support
+export { notificationSchema };
+
 export default Notification;
 
 
