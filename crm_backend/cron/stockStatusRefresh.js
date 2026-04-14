@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { salesOrderSchema } from '../models/SalesOrder.js';
 import StockArrivalService from '../services/stockArrivalService.js';
-import { getConnection } from '../config/multiDatabase.js';
+import { getCompanyConnection } from '../config/multiDatabase.js';
 
 // Auto-refresh stock status for all waiting/partial orders
 // Runs every 3 hours: 0:00, 3:00, 6:00, 9:00, 12:00, 15:00, 18:00, 21:00 IST
@@ -17,7 +17,7 @@ export const runStockStatusRefresh = async () => {
 
     for (const company of companies) {
       try {
-        const dbConnection = getConnection(company);
+        const dbConnection = getCompanyConnection(company);
         if (!dbConnection) {
           console.error(`❌ [STOCK_CRON] No connection found for company: ${company}`);
           continue;

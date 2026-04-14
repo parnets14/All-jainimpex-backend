@@ -4,6 +4,7 @@ import { grnSchema } from "../models/GRN.js";
 import { supplierSchema } from "../models/Supplier.js";
 import { productSchema } from "../models/Product.js";
 import { purchaseOrderSchema } from "../models/PurchaseOrder.js";
+import { warehouseSchema } from "../models/Warehouse.js";
 import mongoose from "mongoose";
 
 const getModels = (dbConnection) => {
@@ -13,7 +14,8 @@ const getModels = (dbConnection) => {
     GRN: dbConnection.models.GRN || dbConnection.model('GRN', grnSchema),
     Supplier: dbConnection.models.Supplier || dbConnection.model('Supplier', supplierSchema),
     Product: dbConnection.models.Product || dbConnection.model('Product', productSchema),
-    PurchaseOrder: dbConnection.models.PurchaseOrder || dbConnection.model('PurchaseOrder', purchaseOrderSchema)
+    PurchaseOrder: dbConnection.models.PurchaseOrder || dbConnection.model('PurchaseOrder', purchaseOrderSchema),
+    Warehouse: dbConnection.models.Warehouse || dbConnection.model('Warehouse', warehouseSchema)
   };
 };
 
@@ -158,15 +160,22 @@ export const createSupplierInvoice = async (req, res) => {
       remarks,
       status,
       items, // Accept items with discount data from frontend
-      subtotal,
-      totalDirectDiscount,
-      totalFloatingDiscount,
-      totalDiscount,
-      totalGst,
-      totalAmount,
-      grandTotal,
+      subtotal: frontendSubtotal,
+      totalDirectDiscount: frontendTotalDirectDiscount,
+      totalFloatingDiscount: frontendTotalFloatingDiscount,
+      totalDiscount: frontendTotalDiscount,
+      totalGst: frontendTotalGst,
+      totalAmount: frontendTotalAmount,
+      grandTotal: frontendGrandTotal,
       purchaseDiscountSummary
     } = req.body;
+    
+    console.log('💰 Frontend Totals:', { 
+      subtotal: frontendSubtotal, 
+      totalDiscount: frontendTotalDiscount, 
+      totalGst: frontendTotalGst, 
+      totalAmount: frontendTotalAmount 
+    });
 
     // Validate GRN exists
     const grn = await GRN.findById(grnId)
@@ -204,40 +213,70 @@ export const createSupplierInvoice = async (req, res) => {
     let invoiceItems = [];
     let calculatedSubtotal = 0;
     let calculatedTotalGst = 0;
+    let calculatedTotalDirectDiscount = 0;
+    let calculatedTotalFloatingDiscount = 0;
 
     if (items && items.length > 0) {
       // Use items with discount data from frontend
       console.log("Using items with discount data from frontend");
-      invoiceItems = items.map(item => ({
-        product: item.productId,
-        productCode: item.productCode,
-        productName: item.productName,
-        HSNCode: item.HSNCode,
-        quantity: item.quantity,
-        unitPrice: item.unitPrice,
-        gst: item.gst,
-        gstAmount: item.gstAmount,
-        // Purchase discount information
-        purchaseDiscount: item.purchaseDiscount || {
-          directDiscountPercentage: 0,
-          directDiscountAmount: 0,
-          floatingDiscountPercentage: 0,
-          floatingDiscountAmount: 0,
-          totalDiscountPercentage: 0,
-          totalDiscountAmount: 0,
-          applicableDiscounts: []
-        },
-        // Legacy discount fields
-        discountPercentage: item.discountPercentage || 0,
-        discountAmount: item.discountAmount || 0,
-        subtotal: item.subtotal,
-        totalPrice: item.totalPrice,
-        warehouse: item.warehouseId,
-        warehouseName: item.warehouseName
-      }));
+      invoiceItems = items.map(item => {
+        // Recalculate item totals on backend
+        const quantity = item.quantity || 0;
+        const unitPrice = item.unitPrice || 0;
+        const baseAmount = quantity * unitPrice;
+        
+        const directDiscountAmount = item.purchaseDiscount?.directDiscountAmount || 0;
+        const floatingDiscountAmount = item.purchaseDiscount?.floatingDiscountAmount || 0;
+        const totalDiscountAmount = directDiscountAmount + floatingDiscountAmount;
+        
+        const subtotalAfterDiscount = baseAmount - totalDiscountAmount;
+        const gstAmount = (subtotalAfterDiscount * (item.gst || 0)) / 100;
+        const totalPrice = subtotalAfterDiscount + gstAmount;
+        
+        // Accumulate totals
+        calculatedSubtotal += baseAmount;
+        calculatedTotalDirectDiscount += directDiscountAmount;
+        calculatedTotalFloatingDiscount += floatingDiscountAmount;
+        calculatedTotalGst += gstAmount;
+        
+        return {
+          product: item.productId,
+          productCode: item.productCode,
+          productName: item.productName,
+          HSNCode: item.HSNCode,
+          quantity: quantity,
+          unitPrice: unitPrice,
+          gst: item.gst,
+          gstAmount: gstAmount,
+          // Purchase discount information
+          purchaseDiscount: item.purchaseDiscount || {
+            directDiscountPercentage: 0,
+            directDiscountAmount: 0,
+            floatingDiscountPercentage: 0,
+            floatingDiscountAmount: 0,
+            totalDiscountPercentage: 0,
+            totalDiscountAmount: 0,
+            applicableDiscounts: []
+          },
+          // Legacy discount fields
+          discountPercentage: item.discountPercentage || 0,
+          discountAmount: item.discountAmount || 0,
+          subtotal: subtotalAfterDiscount,
+          totalPrice: totalPrice,
+          warehouse: item.warehouseId,
+          warehouseName: item.warehouseName
+        };
+      });
       
-      calculatedSubtotal = subtotal || 0;
-      calculatedTotalGst = totalGst || 0;
+      // Use backend calculations instead of frontend
+      console.log('💰 Backend Recalculation:', {
+        subtotal: calculatedSubtotal,
+        directDiscount: calculatedTotalDirectDiscount,
+        floatingDiscount: calculatedTotalFloatingDiscount,
+        totalDiscount: calculatedTotalDirectDiscount + calculatedTotalFloatingDiscount,
+        gst: calculatedTotalGst,
+        total: calculatedSubtotal - (calculatedTotalDirectDiscount + calculatedTotalFloatingDiscount) + calculatedTotalGst
+      });
     } else {
       // Fallback: calculate from GRN data (legacy behavior)
       console.log("Calculating from GRN data (no discount data provided)");
@@ -273,7 +312,15 @@ export const createSupplierInvoice = async (req, res) => {
       }
     }
 
-    const calculatedTotalAmount = grandTotal || totalAmount || (calculatedSubtotal + calculatedTotalGst);
+    // Use backend-calculated totals (more reliable than frontend)
+    const subtotal = calculatedSubtotal;
+    const totalDirectDiscount = calculatedTotalDirectDiscount;
+    const totalFloatingDiscount = calculatedTotalFloatingDiscount;
+    const totalDiscount = calculatedTotalDirectDiscount + calculatedTotalFloatingDiscount;
+    const totalGst = calculatedTotalGst;
+    const calculatedTotalAmount = calculatedSubtotal - totalDiscount + calculatedTotalGst;
+    const totalAmount = calculatedTotalAmount;
+    const grandTotal = calculatedTotalAmount;
 
     // Generate unique invoice number
     const timestamp = Date.now().toString().slice(-6); // Last 6 digits of timestamp
@@ -303,20 +350,20 @@ export const createSupplierInvoice = async (req, res) => {
       invoiceDate: invoiceDate || new Date(),
       creditDays: parseInt(creditDays) || 30,
       items: invoiceItems,
-      subtotal: calculatedSubtotal,
+      subtotal: subtotal,
       // Purchase discount fields
-      totalDirectDiscount: totalDirectDiscount || 0,
-      totalFloatingDiscount: totalFloatingDiscount || 0,
-      totalDiscount: totalDiscount || 0,
-      totalGst: calculatedTotalGst,
-      totalAmount: calculatedTotalAmount,
-      grandTotal: calculatedTotalAmount,
+      totalDirectDiscount: totalDirectDiscount,
+      totalFloatingDiscount: totalFloatingDiscount,
+      totalDiscount: totalDiscount,
+      totalGst: totalGst,
+      totalAmount: totalAmount,
+      grandTotal: grandTotal,
       // Purchase discount summary
       purchaseDiscountSummary: purchaseDiscountSummary || {
-        directDiscountApplied: (totalDirectDiscount || 0) > 0,
-        floatingDiscountApplied: (totalFloatingDiscount || 0) > 0,
-        totalSavings: totalDiscount || 0,
-        savingsPercentage: calculatedSubtotal > 0 ? (((totalDiscount || 0) / calculatedSubtotal) * 100) : 0
+        directDiscountApplied: totalDirectDiscount > 0,
+        floatingDiscountApplied: totalFloatingDiscount > 0,
+        totalSavings: totalDiscount,
+        savingsPercentage: subtotal > 0 ? ((totalDiscount / subtotal) * 100) : 0
       },
       status: status || "Draft",
       remarks: remarks || "",
@@ -450,7 +497,7 @@ export const updateSupplierInvoice = async (req, res) => {
     const { status, paymentStatus } = req.body;
     if (status) {
       const validTransitions = {
-        "Draft": ["Pending", "Cancelled"],
+        "Draft": ["Pending", "Approved", "Cancelled"], // Allow Draft → Approved directly
         "Pending": ["Approved", "Paid", "Cancelled"],
         "Approved": ["Paid", "Cancelled"],
         "Paid": [], // Cannot change from paid
@@ -552,6 +599,17 @@ export const updateSupplierInvoiceStatus = async (req, res) => {
     }
 
     await supplierInvoice.save();
+    
+    // Create automatic journal entry for accounting when approved
+    if (status === "Approved") {
+      try {
+        const { createSupplierInvoiceEntry } = await import('../services/accountingService.js');
+        await createSupplierInvoiceEntry(supplierInvoice, req.dbConnection, req.user._id);
+      } catch (accountingError) {
+        console.error('⚠️ Failed to create automatic journal entry (non-critical):', accountingError.message);
+        // Don't fail the invoice approval if journal entry fails
+      }
+    }
 
     // Populate updated invoice for response
     const updatedInvoice = await SupplierInvoice.findById(id)

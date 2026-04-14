@@ -179,7 +179,7 @@ export const createReceiptVoucher = async (req, res) => {
           createdVouchers.push(voucher);
           
           // Update account balance for each split
-          await updateAccountBalance('Receipt', splitData.transactionMode, splitData.bankAccount, splitData.totalAmount);
+          await updateAccountBalance('Receipt', splitData.transactionMode, splitData.bankAccount, splitData.totalAmount, req.dbConnection);
         }
         
         // Set parent voucher ID for child splits
@@ -197,7 +197,7 @@ export const createReceiptVoucher = async (req, res) => {
     } else {
       // Create single voucher
       try {
-        voucherData.voucherNumber = await generateVoucherNumber('Receipt', new Date(voucherDate));
+        voucherData.voucherNumber = await generateVoucherNumber('Receipt', new Date(voucherDate), req.dbConnection);
         console.log('Generated voucher number:', voucherData.voucherNumber);
       } catch (genError) {
         console.error('Error generating voucher number:', genError);
@@ -216,7 +216,7 @@ export const createReceiptVoucher = async (req, res) => {
       
       // Update account balance
       try {
-        await updateAccountBalance('Receipt', voucherData.transactionMode, voucherData.bankAccount, voucherData.totalAmount);
+        await updateAccountBalance('Receipt', voucherData.transactionMode, voucherData.bankAccount, voucherData.totalAmount, req.dbConnection);
         console.log('Account balance updated successfully');
       } catch (balanceError) {
         console.error('Error updating account balance:', balanceError);
@@ -226,13 +226,13 @@ export const createReceiptVoucher = async (req, res) => {
     
     // Create dealer ledger entries for all vouchers
     for (const voucher of createdVouchers) {
-      await createDealerLedgerEntry(voucher, req.user._id);
+      await createDealerLedgerEntry(voucher, req.user._id, req.dbConnection);
     }
     
     // Update invoice status if allocated
     if (allocations && allocations.length > 0) {
       for (const allocation of allocations) {
-        await updateInvoicePaymentStatus(allocation.invoiceId, allocation.allocatedAmount);
+        await updateInvoicePaymentStatus(allocation.invoiceId, allocation.allocatedAmount, req.dbConnection);
       }
     }
     
@@ -364,7 +364,7 @@ export const createPaymentVoucher = async (req, res) => {
         await voucher.save();
         createdVouchers.push(voucher);
         
-        await updateAccountBalance('Payment', splitData.transactionMode, splitData.bankAccount, splitData.totalAmount);
+        await updateAccountBalance('Payment', splitData.transactionMode, splitData.bankAccount, splitData.totalAmount, req.dbConnection);
       }
       
       if (createdVouchers.length > 1) {
@@ -375,17 +375,17 @@ export const createPaymentVoucher = async (req, res) => {
         }
       }
     } else {
-      voucherData.voucherNumber = await generateVoucherNumber('Payment', new Date(voucherDate));
+      voucherData.voucherNumber = await generateVoucherNumber('Payment', new Date(voucherDate), req.dbConnection);
       const voucher = new Voucher(voucherData);
       await voucher.save();
       createdVouchers.push(voucher);
       
-      await updateAccountBalance('Payment', voucherData.transactionMode, voucherData.bankAccount, voucherData.totalAmount);
+      await updateAccountBalance('Payment', voucherData.transactionMode, voucherData.bankAccount, voucherData.totalAmount, req.dbConnection);
     }
     
     // Create dealer ledger entries for all vouchers
     for (const voucher of createdVouchers) {
-      await createDealerLedgerEntry(voucher, req.user._id);
+      await createDealerLedgerEntry(voucher, req.user._id, req.dbConnection);
     }
     
     res.status(201).json({
@@ -467,7 +467,7 @@ export const createContraVoucher = async (req, res) => {
     }
     
     // Create voucher
-    const voucherNumber = await generateVoucherNumber('Contra', new Date(voucherDate));
+    const voucherNumber = await generateVoucherNumber('Contra', new Date(voucherDate), req.dbConnection);
     
     const voucher = new Voucher({
       voucherNumber,
@@ -739,7 +739,8 @@ export const cancelVoucher = async (req, res) => {
       voucher.voucherType,
       voucher.transactionMode,
       voucher.bankAccount,
-      voucher.totalAmount * multiplier
+      voucher.totalAmount * multiplier,
+      req.dbConnection
     );
     
     res.status(200).json({
@@ -877,7 +878,9 @@ export const getBalances = async (req, res) => {
 /**
  * Helper: Update account balance
  */
-const updateAccountBalance = async (voucherType, transactionMode, bankAccountId, amount) => {
+const updateAccountBalance = async (voucherType, transactionMode, bankAccountId, amount, dbConnection) => {
+  const { BankAccount, CashAccount } = getModels(dbConnection);
+  
   if (transactionMode === 'Cash') {
     const cashAccount = await CashAccount.getCashAccount();
     if (voucherType === 'Receipt') {
@@ -904,7 +907,9 @@ const updateAccountBalance = async (voucherType, transactionMode, bankAccountId,
 /**
  * Helper: Update invoice payment status
  */
-const updateInvoicePaymentStatus = async (invoiceId, paidAmount) => {
+const updateInvoicePaymentStatus = async (invoiceId, paidAmount, dbConnection) => {
+  const { DealerInvoice } = getModels(dbConnection);
+  
   const invoice = await DealerInvoice.findById(invoiceId);
   if (invoice) {
     invoice.paidAmount = (invoice.paidAmount || 0) + paidAmount;
@@ -923,7 +928,9 @@ const updateInvoicePaymentStatus = async (invoiceId, paidAmount) => {
 /**
  * Helper: Create dealer ledger entry for voucher
  */
-const createDealerLedgerEntry = async (voucher, userId) => {
+const createDealerLedgerEntry = async (voucher, userId, dbConnection) => {
+  const { DealerLedger } = getModels(dbConnection);
+  
   try {
     // Only create ledger entry if party is a Dealer
     if (voucher.partyType !== 'Dealer' || !voucher.partyId) {

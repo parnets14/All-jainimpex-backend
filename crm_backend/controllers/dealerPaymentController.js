@@ -329,6 +329,23 @@ export const updateDealerPaymentStatus = async (req, res) => {
       if (invoice) {
         await updateInvoiceAndLedger(payment, invoice, req.user._id, req.dbConnection);
       }
+      
+      // Create automatic journal entry for accounting
+      try {
+        const { createDealerPaymentEntry } = await import('../services/accountingService.js');
+        const paymentData = {
+          _id: payment._id,
+          paymentNumber: payment.paymentNumber || `PAY-${payment._id.toString().slice(-8)}`,
+          amount: payment.paymentAmount,
+          paymentDate: payment.paymentDate,
+          paymentMode: payment.paymentMethod,
+          dealerName: invoice?.dealer?.name || 'Dealer'
+        };
+        await createDealerPaymentEntry(paymentData, req.dbConnection, req.user._id);
+      } catch (accountingError) {
+        console.error('⚠️ Failed to create automatic journal entry (non-critical):', accountingError.message);
+        // Don't fail the payment approval if journal entry fails
+      }
     } else if (status === "Rejected") {
       payment.rejectedBy = req.user._id;
       payment.rejectedAt = new Date();

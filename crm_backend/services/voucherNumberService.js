@@ -1,5 +1,5 @@
-import Voucher from '../models/Voucher.js';
-import PaymentAllocation from '../models/PaymentAllocation.js';
+import { voucherSchema } from '../models/Voucher.js';
+import { paymentAllocationSchema } from '../models/PaymentAllocation.js';
 
 /**
  * Get financial year based on date
@@ -27,9 +27,16 @@ const getFinancialYear = (date = new Date()) => {
  * 
  * @param {String} voucherType - Type of voucher (Receipt, Payment, Contra, Journal)
  * @param {Date} date - Date for the voucher
+ * @param {Object} dbConnection - Database connection for multi-company support
  * @returns {Promise<String>} Generated voucher number
  */
-const generateVoucherNumber = async (voucherType, date = new Date()) => {
+const generateVoucherNumber = async (voucherType, date = new Date(), dbConnection = null) => {
+  if (!dbConnection) {
+    throw new Error('dbConnection is required for generateVoucherNumber');
+  }
+  
+  const Voucher = dbConnection.models.Voucher || dbConnection.model('Voucher', voucherSchema);
+  
   const fy = getFinancialYear(date);
   
   // Prefix based on voucher type
@@ -62,8 +69,30 @@ const generateVoucherNumber = async (voucherType, date = new Date()) => {
     }
   }
   
-  // Format: RV-2025-26-0001
-  const voucherNumber = `${prefix}-${fy}-${sequence.toString().padStart(4, '0')}`;
+  // Generate voucher number and check for duplicates (race condition protection)
+  let voucherNumber;
+  let attempts = 0;
+  const maxAttempts = 10;
+  
+  while (attempts < maxAttempts) {
+    voucherNumber = `${prefix}-${fy}-${sequence.toString().padStart(4, '0')}`;
+    
+    // Check if this number already exists
+    const existing = await Voucher.findOne({ voucherNumber });
+    if (!existing) {
+      // Number is unique, we can use it
+      break;
+    }
+    
+    // Number exists, increment and try again
+    console.warn(`⚠️ Voucher number ${voucherNumber} already exists, trying next sequence`);
+    sequence++;
+    attempts++;
+  }
+  
+  if (attempts >= maxAttempts) {
+    throw new Error(`Failed to generate unique voucher number after ${maxAttempts} attempts`);
+  }
   
   return voucherNumber;
 };
@@ -74,9 +103,16 @@ const generateVoucherNumber = async (voucherType, date = new Date()) => {
  * Example: PA-2025-26-0001
  * 
  * @param {Date} date - Date for the allocation
+ * @param {Object} dbConnection - Database connection for multi-company support
  * @returns {Promise<String>} Generated allocation number
  */
-const generateAllocationNumber = async (date = new Date()) => {
+const generateAllocationNumber = async (date = new Date(), dbConnection = null) => {
+  if (!dbConnection) {
+    throw new Error('dbConnection is required for generateAllocationNumber');
+  }
+  
+  const PaymentAllocation = dbConnection.models.PaymentAllocation || dbConnection.model('PaymentAllocation', paymentAllocationSchema);
+  
   const fy = getFinancialYear(date);
   const prefix = 'PA';
   

@@ -11,6 +11,8 @@ const accountMasterSchema = new mongoose.Schema({
       'Fixed Assets', 'Current Assets',
       'Sales', 'Purchase',
       'Direct Expenses', 'Indirect Expenses',
+      'Sundry Debtors', 'Sundry Creditors',
+      'GST Payable', 'GST Input Credit',
       'Other'
     ]
   },

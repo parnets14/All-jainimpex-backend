@@ -428,12 +428,44 @@ export const createDealerInvoice = async (req, res) => {
       creditDays = 30, // This will be overridden based on sales type
       remarks,
       internalNotes,
-      subtotal,
-      totalDiscount,
-      totalGst,
-      totalAmount,
+      subtotal: frontendSubtotal,
+      totalDiscount: frontendTotalDiscount,
+      totalGst: frontendTotalGst,
+      totalAmount: frontendTotalAmount,
       totalPoints
     } = req.body;
+    
+    // ── RECALCULATE AND VALIDATE TOTALS ──────────────────────────────────
+    // Don't trust frontend calculations - recalculate on backend
+    let calculatedSubtotal = 0;
+    let calculatedTotalDiscount = 0;
+    let calculatedTotalGst = 0;
+    
+    if (items && items.length > 0) {
+      items.forEach(item => {
+        const quantity = item.quantity || 0;
+        const unitPrice = item.unitPrice || 0;
+        const baseAmount = quantity * unitPrice;
+        
+        calculatedSubtotal += baseAmount;
+        calculatedTotalDiscount += (item.discountAmount || 0);
+        calculatedTotalGst += (item.gstAmount || 0);
+      });
+    }
+    
+    const calculatedTotalAmount = calculatedSubtotal - calculatedTotalDiscount + calculatedTotalGst;
+    
+    // Log calculation comparison
+    console.log('💰 Total Calculation Comparison:');
+    console.log('  Frontend:', { subtotal: frontendSubtotal, discount: frontendTotalDiscount, gst: frontendTotalGst, total: frontendTotalAmount });
+    console.log('  Backend:', { subtotal: calculatedSubtotal, discount: calculatedTotalDiscount, gst: calculatedTotalGst, total: calculatedTotalAmount });
+    
+    // Use backend calculations (more reliable)
+    const subtotal = calculatedSubtotal;
+    const totalDiscount = calculatedTotalDiscount;
+    const totalGst = calculatedTotalGst;
+    const totalAmount = calculatedTotalAmount;
+    // ── END RECALCULATION ─────────────────────────────────────────────────
 
     // Validate required fields
     if (!dealerId || !items || !Array.isArray(items) || items.length === 0) {
@@ -1237,6 +1269,17 @@ export const approveDealerInvoice = async (req, res) => {
     }
     
     await session.commitTransaction();
+    
+    await session.commitTransaction();
+    
+    // Create automatic journal entry for accounting
+    try {
+      const { createDealerInvoiceEntry } = await import('../services/accountingService.js');
+      await createDealerInvoiceEntry(invoice, req.dbConnection, req.user._id);
+    } catch (accountingError) {
+      console.error('⚠️ Failed to create automatic journal entry (non-critical):', accountingError.message);
+      // Don't fail the invoice approval if journal entry fails
+    }
     
     // Populate and return the approved invoice
     const populatedInvoice = await DealerInvoice.findById(invoice._id)

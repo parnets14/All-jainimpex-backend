@@ -377,6 +377,23 @@ export const updateSupplierPaymentStatus = async (req, res) => {
           console.error("Error creating supplier ledger entry for payment:", ledgerError);
           // Don't fail the payment approval if ledger entry fails
         }
+        
+        // Create automatic journal entry for accounting
+        try {
+          const { createSupplierPaymentEntry } = await import('../services/accountingService.js');
+          const paymentData = {
+            _id: payment._id,
+            paymentNumber: payment.paymentNumber || `SPAY-${payment._id.toString().slice(-8)}`,
+            amount: payment.paymentAmount,
+            paymentDate: payment.paymentDate,
+            paymentMode: payment.paymentMethod,
+            supplierName: invoice?.supplier?.name || 'Supplier'
+          };
+          await createSupplierPaymentEntry(paymentData, req.dbConnection, req.user._id);
+        } catch (accountingError) {
+          console.error('⚠️ Failed to create automatic journal entry (non-critical):', accountingError.message);
+          // Don't fail the payment approval if journal entry fails
+        }
       }
     } else if (status === "Rejected") {
       payment.rejectedBy = req.user._id;
