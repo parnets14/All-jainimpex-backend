@@ -132,12 +132,12 @@ purchaseDiscountMappingSchema.index({ status: 1 });
 // Static method to find applicable discounts for a product and supplier
 purchaseDiscountMappingSchema.statics.findApplicableDiscounts = async function(productId, supplierId) {
   try {
-    const Product = mongoose.model('Product');
+    // Use connection-specific model instead of mongoose.model()
+    const Product = this.db.model('Product');
     const product = await Product.findById(productId)
       .populate('brand')
       .populate('category')
-      .populate('subcategory')
-      .populate('extendedSubcategory');
+      .populate('subcategory');
     
     if (!product) {
       return [];
@@ -170,9 +170,8 @@ purchaseDiscountMappingSchema.statics.findApplicableDiscounts = async function(p
     if (product.subcategory) {
       hierarchyConditions.push({ subcategory: product.subcategory._id });
     }
-    if (product.extendedSubcategory) {
-      hierarchyConditions.push({ extendedSubcategory: product.extendedSubcategory._id });
-    }
+    // Note: Product has subcategory1-5 fields, but PurchaseDiscountMapping uses extendedSubcategory
+    // This is a schema mismatch - purchase discounts don't support extended subcategories currently
     
     // Add supplier condition
     if (supplierId) {

@@ -23,14 +23,16 @@ import {
   autoCreateMissingPricingRecords
 } from '../controllers/dealerPricingController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { attachCompanyDB } from '../middleware/companyMiddleware.js';
 
 const router = express.Router();
 
 // Debug: Log route registration
 console.log('✅ Dealer Pricing Routes: Loading...');
 
-// All routes require authentication
+// All routes require authentication and company database connection
 router.use(protect);
+router.use(attachCompanyDB); // Add company middleware for multi-company support
 
 // Get all dealer pricing records (enhanced with filtering)
 router.get('/', getDealerPricing);

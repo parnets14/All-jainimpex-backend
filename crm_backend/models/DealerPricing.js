@@ -198,7 +198,7 @@ const dealerPricingSchema = new mongoose.Schema({
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: false  // Optional for system-created records
   },
   updatedBy: {
     type: mongoose.Schema.Types.ObjectId,
@@ -293,15 +293,80 @@ dealerPricingSchema.methods.calculateMarginRange = function() {
 
 // Method to update both sales and purchase discount information
 dealerPricingSchema.methods.updateAllDiscountInfo = async function(dealerType = null) {
+  // Update sales discount info (existing logic that was missing)
+  await this.updateSalesDiscountInfo(dealerType);
+  
   // Update purchase discount info (new logic)
   await this.updatePurchaseDiscountInfo();
   
   return this;
 };
 
+// Method to update sales discount information
+dealerPricingSchema.methods.updateSalesDiscountInfo = async function(dealerType = null) {
+  // Use connection-specific model instead of mongoose.model()
+  const DiscountMapping = this.db.model('DiscountMapping');
+  
+  try {
+    // Find applicable sales discounts for this product
+    // IMPORTANT: Pass parameters in correct order: (productId, mappingType, dealerType, dbConnection)
+    const applicableDiscounts = await DiscountMapping.findApplicableDiscounts(
+      this.product, 
+      'sales',  // mappingType
+      dealerType, 
+      this.db  // dbConnection
+    );
+
+    console.log(`🔍 Checking sales discounts for product ${this.product}: found ${applicableDiscounts.length} applicable discounts`);
+
+    if (applicableDiscounts && applicableDiscounts.length > 0) {
+      const discount = applicableDiscounts[0]; // Use highest priority discount
+      
+      this.hasDirectDiscount = discount.directDiscountPercentage > 0;
+      this.directDiscountPercentage = discount.directDiscountPercentage || 0;
+      this.maxDiscountPercentage = discount.maxDiscountPercentage || discount.directDiscountPercentage || 0;
+      
+      // Determine discount source
+      if (discount.brand) {
+        this.salesDiscountSource = 'brand';
+        this.salesDiscountSourceName = discount.brand.name;
+      } else if (discount.category) {
+        this.salesDiscountSource = 'category';
+        this.salesDiscountSourceName = discount.category.name;
+      } else if (discount.subcategory) {
+        this.salesDiscountSource = 'subcategory';
+        this.salesDiscountSourceName = discount.subcategory.name;
+      } else if (discount.extendedSubcategory1 || discount.extendedSubcategory2) {
+        this.salesDiscountSource = 'extended_subcategory';
+        this.salesDiscountSourceName = discount.extendedSubcategory1?.name || discount.extendedSubcategory2?.name || 'Extended Subcategory';
+      } else {
+        this.salesDiscountSource = 'direct';
+        this.salesDiscountSourceName = 'Direct Product Discount';
+      }
+      
+      console.log(`✅ Applied sales discount to product ${this.product}: ${this.directDiscountPercentage}% direct, max: ${this.maxDiscountPercentage}% from ${this.salesDiscountSource}`);
+    } else {
+      // Reset sales discount info if no applicable discounts
+      this.hasDirectDiscount = false;
+      this.directDiscountPercentage = 0;
+      this.maxDiscountPercentage = 0;
+      this.salesDiscountSource = null;
+      this.salesDiscountSourceName = null;
+      
+      console.log(`❌ No applicable sales discounts found for product ${this.product}`);
+    }
+    
+    return this;
+  } catch (error) {
+    console.error('Error updating sales discount info for product:', this.product, error);
+    return this;
+  }
+};
+
 // Method to update purchase discount information
 dealerPricingSchema.methods.updatePurchaseDiscountInfo = async function() {
-  const PurchaseDiscountMapping = mongoose.model('PurchaseDiscountMapping');
+  // Use connection-specific model instead of mongoose.model()
+  const PurchaseDiscountMapping = this.db.model('PurchaseDiscountMapping');
   
   try {
     // Find applicable purchase discounts for this product
@@ -369,7 +434,8 @@ dealerPricingSchema.methods.updatePurchaseDiscountInfo = async function() {
 
 // Method to sync purchase price from latest supplier invoice
 dealerPricingSchema.methods.syncPurchasePriceFromInvoices = async function() {
-  const SupplierInvoice = mongoose.model('SupplierInvoice');
+  // Use connection-specific model instead of mongoose.model()
+  const SupplierInvoice = this.db.model('SupplierInvoice');
   
   try {
     // Find the most recent supplier invoice containing this product
@@ -440,7 +506,8 @@ dealerPricingSchema.statics.updateAllDiscountInfo = async function(dealerType = 
     }
 
     // Get all products to check for those without pricing records
-    const Product = mongoose.model('Product');
+    // Use this.db to get the connection-specific Product model
+    const Product = this.db.model('Product');
     const allProducts = await Product.find({}).select('_id rateSlabs');
     
     // Find products that don't have pricing records but have rate slabs
@@ -462,8 +529,8 @@ dealerPricingSchema.statics.updateAllDiscountInfo = async function(dealerType = 
           sellingPrice: product.rateSlabs[0].rate,
           purchasePrice: 0, // Will be updated when actual purchase happens
           purchasePriceSource: 'product_master',
-          isActive: true,
-          createdBy: null // System created
+          isActive: true
+          // createdBy is optional for system-created records
         });
 
         // Update both sales and purchase discount info for the new pricing record

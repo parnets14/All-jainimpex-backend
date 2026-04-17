@@ -287,7 +287,7 @@ export const getAllDealerLedgerEntries = async (req, res) => {
 // Get Dealer Ledger by Dealer ID (Enhanced with Voucher Integration)
 export const getDealerLedgerByDealer = async (req, res) => {
   try {
-    const { DealerLedger, Dealer, Voucher, PaymentAllocation } = getModels(req.dbConnection);
+    const { DealerLedger, Dealer, DealerInvoice, Voucher, PaymentAllocation } = getModels(req.dbConnection);
     const { dealerId } = req.params;
     const { 
       startDate, 

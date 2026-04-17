@@ -6,8 +6,10 @@ import { brandSchema } from '../models/Brand.js';
 import { categorySchema } from '../models/Category.js';
 import { subcategorySchema } from '../models/Subcategory.js';
 import { discountMappingSchema } from '../models/DiscountMapping.js';
+import { purchaseDiscountMappingSchema } from '../models/PurchaseDiscountMapping.js';
 import { purchaseOrderSchema } from '../models/PurchaseOrder.js';
 import { supplierInvoiceSchema } from '../models/SupplierInvoice.js';
+import { supplierSchema } from '../models/Supplier.js';
 import { v4 as uuidv4 } from 'uuid';
 
 // Helper function to get models for the current company database
@@ -29,10 +31,14 @@ const getModels = (dbConnection) => {
                  dbConnection.model('Subcategory', subcategorySchema),
     DiscountMapping: dbConnection.models.DiscountMapping || 
                      dbConnection.model('DiscountMapping', discountMappingSchema),
+    PurchaseDiscountMapping: dbConnection.models.PurchaseDiscountMapping || 
+                             dbConnection.model('PurchaseDiscountMapping', purchaseDiscountMappingSchema),
     PurchaseOrder: dbConnection.models.PurchaseOrder || 
                    dbConnection.model('PurchaseOrder', purchaseOrderSchema),
     SupplierInvoice: dbConnection.models.SupplierInvoice || 
-                     dbConnection.model('SupplierInvoice', supplierInvoiceSchema)
+                     dbConnection.model('SupplierInvoice', supplierInvoiceSchema),
+    Supplier: dbConnection.models.Supplier || 
+              dbConnection.model('Supplier', supplierSchema)
   };
 };
 
@@ -41,7 +47,7 @@ const getModels = (dbConnection) => {
 // @access  Private
 export const getDealerPricing = async (req, res) => {
   try {
-    const { DealerPricing, Product, DealerPricingSchedule } = getModels(req.dbConnection);
+    const { DealerPricing, Product, DealerPricingSchedule, DealerPricingHistory } = getModels(req.dbConnection);
     const { 
       page = 1, 
       limit = 50, 
@@ -223,7 +229,7 @@ export const getDealerPricing = async (req, res) => {
 // @access  Private
 export const getDealerPricingByProduct = async (req, res) => {
   try {
-    const { DealerPricing, Product, DealerPricingSchedule } = getModels(req.dbConnection);
+    const { DealerPricing, Product, DealerPricingSchedule, DealerPricingHistory } = getModels(req.dbConnection);
     const { productId } = req.params;
 
     let pricing = await DealerPricing.findOne({ product: productId, isActive: true })
@@ -327,6 +333,15 @@ export const createOrUpdateDealerPricing = async (req, res) => {
       );
       
       finalPurchasePrice = purchaseLine?.price || 0;
+      
+      // If still no purchase price, use Product Master price (selling price) as initial purchase price
+      if (!finalPurchasePrice || finalPurchasePrice === 0) {
+        const productMasterPrice = product.rateSlabs && product.rateSlabs.length > 0
+          ? product.rateSlabs[0].rate
+          : 0;
+        finalPurchasePrice = productMasterPrice;
+        console.log(`📊 No purchase price found, using Product Master price: ₹${finalPurchasePrice}`);
+      }
     }
 
     // Check if pricing record exists
@@ -1250,10 +1265,10 @@ export const getPriceHistory = async (req, res) => {
 // @access  Private
 export const getAllPriceHistory = async (req, res) => {
   try {
-    const { DealerPricingHistory } = getModels(req.dbConnection);
+    const { DealerPricingHistory, Product } = getModels(req.dbConnection);
     const { 
       page = 1, 
-      limit = 50,
+      limit = 20,
       search,
       changeType,
       dateFrom,
@@ -1277,36 +1292,44 @@ export const getAllPriceHistory = async (req, res) => {
       filter.changeType = changeType;
     }
     
+    // Search filter - need to find matching products first
+    if (search) {
+      const searchLower = search.toLowerCase();
+      const matchingProducts = await Product.find({
+        $or: [
+          { itemName: { $regex: search, $options: 'i' } },
+          { productCode: { $regex: search, $options: 'i' } }
+        ]
+      }).select('_id');
+      
+      const productIds = matchingProducts.map(p => p._id);
+      
+      // Add product filter or reason filter
+      filter.$or = [
+        { product: { $in: productIds } },
+        { reason: { $regex: search, $options: 'i' } }
+      ];
+    }
+    
+    // Get total count for pagination (before skip/limit)
+    const totalCount = await DealerPricingHistory.countDocuments(filter);
+    
     // Get history with product details
     const history = await DealerPricingHistory.find(filter)
-      .populate('product', 'itemName itemCode')
+      .populate('product', 'itemName productCode')
       .populate('changedBy', 'name')
       .sort({ changeDate: -1 })
       .skip(skip)
       .limit(parseInt(limit));
     
-    // Apply search filter after population (if needed)
-    let filteredHistory = history;
-    if (search) {
-      const searchLower = search.toLowerCase();
-      filteredHistory = history.filter(record => 
-        record.product?.itemName?.toLowerCase().includes(searchLower) ||
-        record.product?.itemCode?.toLowerCase().includes(searchLower) ||
-        record.reason?.toLowerCase().includes(searchLower)
-      );
-    }
-    
-    // Get total count for pagination
-    const totalCount = await DealerPricingHistory.countDocuments(filter);
-    
     res.json({
       success: true,
-      data: filteredHistory,
+      data: history,
       pagination: {
         currentPage: parseInt(page),
         totalPages: Math.ceil(totalCount / parseInt(limit)),
         totalRecords: totalCount,
-        hasNext: skip + filteredHistory.length < totalCount,
+        hasNext: skip + history.length < totalCount,
         hasPrev: parseInt(page) > 1
       }
     });
@@ -1375,7 +1398,7 @@ export const syncPurchasePricesFromInvoices = async (req, res) => {
 // @access  Private
 export const getComprehensivePricing = async (req, res) => {
   try {
-    const { DealerPricing, Product, DiscountMapping } = getModels(req.dbConnection);
+    const { DealerPricing, Product, DiscountMapping, DealerPricingSchedule, DealerPricingHistory } = getModels(req.dbConnection);
     const { 
       page = 1, 
       limit = 50, 
