@@ -1,11 +1,13 @@
 import express from 'express';
 import * as voucherController from '../controllers/voucherController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { attachCompanyDB } from '../middleware/companyMiddleware.js';
 
 const router = express.Router();
 
 // Apply authentication middleware to all routes
 router.use(protect);
+router.use(attachCompanyDB);
 
 // Receipt Voucher
 router.post('/receipt', voucherController.createReceiptVoucher);

@@ -12,12 +12,14 @@ import {
   getChequeReport,
 } from "../controllers/chequeController.js";
 import { protect } from "../middleware/authMiddleware.js";
+import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 import { requirePermission } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
 // All routes are protected
 router.use(protect);
+router.use(attachCompanyDB);
 
 // Get cheque statistics
 router.get("/stats/summary", requirePermission("cheques.view"), getChequeStats);

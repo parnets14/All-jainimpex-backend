@@ -8,12 +8,14 @@ import {
   deleteStockAdjustment
 } from '../controllers/stockAdjustmentController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { attachCompanyDB } from '../middleware/companyMiddleware.js';
 import { logActivity } from '../middleware/activityLogMiddleware.js';
 
 const router = express.Router();
 
 // All routes are protected
 router.use(protect);
+router.use(attachCompanyDB);
 
 router.post('/', logActivity("Manual Stock Adjustment", "Created stock adjustment", "CREATE"), createStockAdjustment);
 router.get('/', logActivity("Manual Stock Adjustment", "Viewed stock adjustments list", "READ"), getStockAdjustments);

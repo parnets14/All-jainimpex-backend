@@ -1,11 +1,13 @@
 import express from 'express';
 import * as paymentAllocationController from '../controllers/paymentAllocationController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { attachCompanyDB } from '../middleware/companyMiddleware.js';
 
 const router = express.Router();
 
 // Apply authentication middleware to all routes
 router.use(protect);
+router.use(attachCompanyDB);
 
 // Helper routes for allocation interface (must come before /:id route)
 router.get('/outstanding-invoices', paymentAllocationController.getOutstandingInvoices);

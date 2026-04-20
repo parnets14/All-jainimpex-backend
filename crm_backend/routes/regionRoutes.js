@@ -8,6 +8,7 @@ import {
   getRegionStats
 } from '../controllers/regionController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { attachCompanyDB } from '../middleware/companyMiddleware.js';
 import { generalLimiter } from '../middleware/rateLimit.js';
 
 const router = express.Router();
@@ -15,11 +16,9 @@ const router = express.Router();
 // Apply general rate limiting to all routes
 router.use(generalLimiter);
 
-// Public routes (if any)
-// router.get('/public', getPublicRegions);
-
 // Protected routes
 router.use(protect);
+router.use(attachCompanyDB);
 
 router.route('/')
   .get(getRegions)

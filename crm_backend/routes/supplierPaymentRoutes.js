@@ -9,11 +9,13 @@ import {
   deleteSupplierPayment
 } from "../controllers/supplierPaymentController.js";
 import { protect } from "../middleware/authMiddleware.js";
+import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 
 const router = express.Router();
 
 // All routes are protected
 router.use(protect);
+router.use(attachCompanyDB);
 
 // @route   GET /api/supplier-payments
 // @desc    Get all supplier payments with pagination and filters

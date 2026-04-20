@@ -10,11 +10,16 @@ import {
   approvePurchaseDiscount
 } from '../controllers/purchaseDiscountController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { attachCompanyDB } from '../middleware/companyMiddleware.js';
 
 const router = express.Router();
 
 // Debug: Log route registration
 console.log('✅ Purchase Discount Routes: Loading...');
+
+// All routes require authentication
+router.use(protect);
+router.use(attachCompanyDB);
 
 // All routes require authentication
 router.use(protect);

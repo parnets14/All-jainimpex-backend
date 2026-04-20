@@ -9,6 +9,7 @@ import {
   getWarehousesByRegion
 } from "../controllers/warehouseController.js";
 import { protect } from "../middleware/authMiddleware.js";
+import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 import { generalLimiter } from "../middleware/rateLimit.js";
 
 const router = express.Router();
@@ -18,6 +19,7 @@ router.use(generalLimiter);
 
 // All routes are protected
 router.use(protect);
+router.use(attachCompanyDB);
 
 router.route("/")
   .get(getWarehouses)

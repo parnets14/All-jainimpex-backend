@@ -311,6 +311,19 @@ export const createGRN = async (req, res) => {
 
     const grn = new GRN(grnData);
     await grn.save({ session });
+
+    // Update PO status to 'Completed' after GRN is created
+    try {
+      await PurchaseOrder.findByIdAndUpdate(
+        poId,
+        { status: 'Completed' },
+        { session }
+      );
+      console.log(`✅ PO ${poId} status updated to Completed after GRN creation`);
+    } catch (poUpdateError) {
+      console.error('Error updating PO status:', poUpdateError);
+      // Don't fail GRN creation if PO status update fails
+    }
     
     // Create stock movements for this GRN within transaction
     // Create stock movements for this GRN within transaction
@@ -713,7 +726,7 @@ export const deleteGRN = async (req, res) => {
 export const getGRNStats = async (req, res) => {
   try {
     // Get models from company-specific connection
-    const { GRN } = getModels(req.dbConnection);
+    const { GRN, PurchaseOrder } = getModels(req.dbConnection);
     
     const today = new Date();
     const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
@@ -729,23 +742,29 @@ export const getGRNStats = async (req, res) => {
       GRN.countDocuments({ createdAt: { $gte: startOfMonth } }),
       GRN.countDocuments({ createdAt: { $gte: startOfYear } }),
       GRN.aggregate([
-        {
-          $group: {
-            _id: '$status',
-            count: { $sum: 1 }
-          }
-        }
+        { $group: { _id: '$status', count: { $sum: 1 } } }
       ])
     ]);
 
     const totalValue = await GRN.aggregate([
-      {
-        $group: {
-          _id: null,
-          total: { $sum: '$totalAmount' }
-        }
-      }
+      { $group: { _id: null, total: { $sum: '$totalAmount' } } }
     ]);
+
+    // Pending GRN = Approved POs that don't have any GRN created yet
+    const approvedPOs = await PurchaseOrder.find(
+      { status: 'Approved' },
+      { _id: 1 }
+    ).lean();
+
+    const approvedPOIds = approvedPOs.map(po => po._id);
+
+    // Find which approved POs already have at least one GRN (any status except Cancelled)
+    const poIdsWithGRN = await GRN.distinct('poId', {
+      poId: { $in: approvedPOIds },
+      status: { $ne: 'Cancelled' }
+    });
+
+    const pendingGRN = Math.max(0, approvedPOIds.length - poIdsWithGRN.length);
 
     res.json({
       success: true,
@@ -754,7 +773,8 @@ export const getGRNStats = async (req, res) => {
         monthlyGRNs,
         yearlyGRNs,
         statusCounts,
-        totalValue: totalValue[0]?.total || 0
+        totalValue: totalValue[0]?.total || 0,
+        pendingGRN: Math.max(0, pendingGRN)
       }
     });
   } catch (error) {

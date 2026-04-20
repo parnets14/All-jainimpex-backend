@@ -1,5 +1,6 @@
 import express from "express";
 import { protect, requirePermission } from "../middleware/authMiddleware.js";
+import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 import { 
   getBillWiseProfitAnalysis, 
   getGroupedProfitAnalysis 
@@ -9,6 +10,7 @@ const router = express.Router();
 
 // All routes are protected
 router.use(protect);
+router.use(attachCompanyDB);
 
 // @route   GET /api/profit-analysis/bills
 // @desc    Get bill-wise profit analysis with pagination

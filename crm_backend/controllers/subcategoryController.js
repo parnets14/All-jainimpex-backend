@@ -468,7 +468,7 @@ export const deleteSubcategory = async (req, res) => {
 // @access  Private
 export const changeSubcategoryParent = async (req, res) => {
   try {
-    const { Subcategory, Category, Brand, Product } = getModels(req.dbConnection);
+    const { Subcategory, Category, Brand, Product, ExtendedSubcategory } = getModels(req.dbConnection);
     const { id } = req.params;
     const { newCategoryId, newBrandId } = req.body;
 
@@ -563,7 +563,8 @@ export const changeSubcategoryParent = async (req, res) => {
         id,
         newCategoryId,
         newBrandId,
-        session
+        session,
+        ExtendedSubcategory
       );
 
       // Update all products using this subcategory
@@ -615,7 +616,8 @@ async function updateExtendedSubcategoriesRecursively(
   subcategoryId,
   newCategoryId,
   newBrandId,
-  session
+  session,
+  ExtendedSubcategory
 ) {
   // Find all Level 1 extended subcategories (direct children of subcategory)
   const level1Items = await ExtendedSubcategory.find({
@@ -640,7 +642,8 @@ async function updateExtendedSubcategoriesRecursively(
       newCategoryId,
       newBrandId,
       subcategoryId,
-      session
+      session,
+      ExtendedSubcategory
     );
   }
 }
@@ -651,7 +654,8 @@ async function updateExtendedChildrenRecursively(
   newCategoryId,
   newBrandId,
   subcategoryId,
-  session
+  session,
+  ExtendedSubcategory
 ) {
   // Find all children of this parent
   const children = await ExtendedSubcategory.find({
@@ -676,7 +680,8 @@ async function updateExtendedChildrenRecursively(
       newCategoryId,
       newBrandId,
       subcategoryId,
-      session
+      session,
+      ExtendedSubcategory
     );
   }
 }

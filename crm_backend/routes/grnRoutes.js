@@ -9,12 +9,14 @@ import {
   getApprovedPOs
 } from '../controllers/grnController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { attachCompanyDB } from '../middleware/companyMiddleware.js';
 import { logActivity } from '../middleware/activityLogMiddleware.js';
 
 const router = express.Router();
 
 // All routes are protected
 router.use(protect);
+router.use(attachCompanyDB);
 
 router.post('/', logActivity("GRN Entry Module", "Created new GRN", "CREATE"), createGRN);
 router.get('/', logActivity("GRN Entry Module", "Viewed GRN list", "READ"), getGRNs);

@@ -22,11 +22,13 @@ import {
 } from "../controllers/extendedSubcategoryController.js";
 import { protect } from "../middleware/authMiddleware.js";
 import { requirePermission } from "../middleware/authMiddleware.js";
+import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 
 const router = express.Router();
 
 // All routes are protected
 router.use(protect);
+router.use(attachCompanyDB);
 
 // Brand stats and child counts - READ operations (no permission check)
 router.get("/stats", getBrandStats);

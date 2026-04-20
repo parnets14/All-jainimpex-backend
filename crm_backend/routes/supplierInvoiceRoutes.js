@@ -10,12 +10,14 @@ import {
   getSupplierInvoiceStats
 } from "../controllers/supplierInvoiceController.js";
 import { protect } from "../middleware/authMiddleware.js";
+import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 import { logActivity } from "../middleware/activityLogMiddleware.js";
 
 const router = express.Router();
 
 // Apply authentication middleware to all routes
 router.use(protect);
+router.use(attachCompanyDB);
 
 // @route   GET /api/supplier-invoices
 // @desc    Get all supplier invoices with pagination and filters

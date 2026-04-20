@@ -14,11 +14,13 @@ import {
   updateDealerPaymentStatusWithAdvance
 } from "../controllers/dealerPaymentController.js";
 import { protect } from "../middleware/authMiddleware.js";
+import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 
 const router = express.Router();
 
 // All routes are protected
 router.use(protect);
+router.use(attachCompanyDB);
 
 // @route   GET /api/dealer-payments
 // @desc    Get all dealer payments with pagination and filters

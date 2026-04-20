@@ -9,12 +9,14 @@ import {
   clearAllDownloadLogs,
 } from "../controllers/downloadLogController.js";
 import { protect } from "../middleware/authMiddleware.js";
+import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 import { requirePermission } from "../middleware/permissionMiddleware.js";
 
 const router = express.Router();
 
 // Apply authentication to all routes
 router.use(protect);
+router.use(attachCompanyDB);
 
 // Get download logs with filters and pagination
 router.get("/", getDownloadLogs);

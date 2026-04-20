@@ -12,11 +12,13 @@ import {
   getCombinedDealerLedger
 } from "../controllers/dealerLedgerController.js";
 import { protect } from "../middleware/authMiddleware.js";
+import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 
 const router = express.Router();
 
 // All routes require authentication
 router.use(protect);
+router.use(attachCompanyDB);
 
 // Dealer Ledger CRUD operations
 router.post("/", createDealerLedgerEntry);

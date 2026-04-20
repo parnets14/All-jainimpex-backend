@@ -13,11 +13,13 @@ import {
   getInvoiceStats
 } from "../controllers/dealerInvoiceController.js";
 import { protect } from "../middleware/authMiddleware.js";
+import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 
 const router = express.Router();
 
 // All routes are protected
 router.use(protect);
+router.use(attachCompanyDB);
 
 // @route   GET /api/dealer-invoices
 // @desc    Get all dealer invoices with pagination and filtering

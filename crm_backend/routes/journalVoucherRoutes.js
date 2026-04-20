@@ -1,5 +1,6 @@
 import express from 'express';
 import { protect } from '../middleware/authMiddleware.js';
+import { attachCompanyDB } from '../middleware/companyMiddleware.js';
 import {
   createJournalVoucher,
   getJournalVouchers,
@@ -10,6 +11,7 @@ import {
 const router = express.Router();
 
 router.use(protect);
+router.use(attachCompanyDB);
 
 router.get('/', getJournalVouchers);
 router.post('/', createJournalVoucher);

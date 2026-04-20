@@ -10,11 +10,13 @@ import {
   getAvailableSupplierInvoices
 } from "../controllers/debitNoteController.js";
 import { protect } from "../middleware/authMiddleware.js";
+import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 
 const router = express.Router();
 
 // Apply protect middleware to all routes
 router.use(protect);
+router.use(attachCompanyDB);
 
 // Debit Note routes
 router.route("/")

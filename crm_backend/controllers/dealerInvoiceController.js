@@ -1705,9 +1705,25 @@ export const getInvoiceStats = async (req, res) => {
     
     const { startDate, endDate, dealerId } = req.query;
 
-    // Build filter object
-    const filter = {};
+    // Build filter object - exclude drafts and deleted invoices
+    const filter = { isDraft: { $ne: true }, isDeleted: { $ne: true } };
     if (dealerId) filter.dealer = dealerId;
+    if (startDate || endDate) {
+      filter.invoiceDate = {};
+      if (startDate) filter.invoiceDate.$gte = new Date(startDate);
+      if (endDate) filter.invoiceDate.$lte = new Date(endDate);
+    }
+
+    // Auto-update overdue status for past-due unpaid invoices
+    await DealerInvoice.updateMany(
+      {
+        isDraft: { $ne: true },
+        isDeleted: { $ne: true },
+        paymentStatus: { $in: ["Pending", "Partial"] },
+        dueDate: { $lt: new Date(), $exists: true, $ne: null }
+      },
+      { $set: { paymentStatus: "Overdue" } }
+    );
     if (startDate || endDate) {
       filter.invoiceDate = {};
       if (startDate) filter.invoiceDate.$gte = new Date(startDate);
@@ -1718,6 +1734,8 @@ export const getInvoiceStats = async (req, res) => {
     const [
       totalInvoices,
       totalAmount,
+      outstandingResult,
+      collectedResult,
       pendingInvoices,
       approvedInvoices,
       dispatchedInvoices,
@@ -1729,14 +1747,28 @@ export const getInvoiceStats = async (req, res) => {
         { $match: filter },
         { $group: { _id: null, total: { $sum: "$totalAmount" } } }
       ]),
+      // Outstanding = sum of (totalAmount - paidAmount) for unpaid invoices
+      DealerInvoice.aggregate([
+        { $match: { ...filter, paymentStatus: { $in: ["Pending", "Partial", "Overdue"] } } },
+        { $group: { _id: null, total: { $sum: { $subtract: ["$totalAmount", { $ifNull: ["$paidAmount", 0] }] } } } }
+      ]),
+      // Collected = sum of paidAmount across all invoices
+      DealerInvoice.aggregate([
+        { $match: filter },
+        { $group: { _id: null, total: { $sum: { $ifNull: ["$paidAmount", 0] } } } }
+      ]),
       DealerInvoice.countDocuments({ ...filter, status: "Pending" }),
       DealerInvoice.countDocuments({ ...filter, status: "Approved" }),
       DealerInvoice.countDocuments({ ...filter, status: "Dispatched" }),
       DealerInvoice.countDocuments({ ...filter, paymentStatus: "Paid" }),
+      // Overdue = unpaid/partially paid invoices where dueDate has passed
+      // Exclude drafts and fully paid invoices
       DealerInvoice.countDocuments({ 
-        ...filter, 
-        paymentStatus: "Pending",
-        dueDate: { $lt: new Date() }
+        ...filter,
+        isDraft: { $ne: true },
+        isDeleted: { $ne: true },
+        paymentStatus: { $in: ["Pending", "Partial", "Overdue"] },
+        dueDate: { $lt: new Date(), $exists: true, $ne: null }
       })
     ]);
 
@@ -1745,6 +1777,8 @@ export const getInvoiceStats = async (req, res) => {
       stats: {
         totalInvoices,
         totalAmount: totalAmount[0]?.total || 0,
+        outstandingAmount: outstandingResult[0]?.total || 0,
+        paidAmount: collectedResult[0]?.total || 0,
         pendingInvoices,
         approvedInvoices,
         dispatchedInvoices,

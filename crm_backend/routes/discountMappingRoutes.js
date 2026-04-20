@@ -15,12 +15,14 @@ import {
   expireAllApprovedDiscounts
 } from '../controllers/discountMappingController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { attachCompanyDB } from '../middleware/companyMiddleware.js';
 import { logActivity } from '../middleware/activityLogMiddleware.js';
 
 const router = express.Router();
 
 // Apply authentication to all routes
 router.use(protect);
+router.use(attachCompanyDB);
 
 // Routes
 router.route('/')

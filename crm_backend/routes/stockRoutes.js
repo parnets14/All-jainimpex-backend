@@ -17,9 +17,12 @@ import {
   recalculateStockBalances
 } from '../controllers/stockController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { attachCompanyDB } from '../middleware/companyMiddleware.js';
 
 const router = express.Router();
 
+router.use(protect);
+router.use(attachCompanyDB);
 // Test endpoints without auth (temporary)
 router.post('/migrate-test', migrateStockMovements);
 router.get('/test-separation', testStockSeparation);

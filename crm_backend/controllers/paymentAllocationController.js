@@ -108,12 +108,12 @@ export const createPaymentAllocation = async (req, res) => {
         previouslyPaid,
         allocatedAmount: alloc.allocatedAmount,
         remainingAmount,
-        paymentStatus: remainingAmount === 0 ? 'Paid' : 'Partial'
+        paymentStatus: remainingAmount === 0 ? 'Full' : 'Partial'
       });
     }
     
     // Generate allocation number
-    const allocationNumber = await generateAllocationNumber();
+    const allocationNumber = await generateAllocationNumber(new Date(), req.dbConnection);
     
     // Create payment allocation
     const paymentAllocation = new PaymentAllocation({

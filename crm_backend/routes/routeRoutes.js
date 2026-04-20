@@ -8,11 +8,13 @@ import {
   updateRouteDealerCount
 } from '../controllers/routeController.js';
 import { protect, requireRole } from '../middleware/authMiddleware.js';
+import { attachCompanyDB } from '../middleware/companyMiddleware.js';
 
 const router = express.Router();
 
 // All routes require authentication
 router.use(protect);
+router.use(attachCompanyDB);
 
 // GET /api/routes - Get all routes with pagination and filters
 router.get('/', getRoutes);

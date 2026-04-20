@@ -13,6 +13,7 @@ import {
   exportProductsToExcel
 } from '../controllers/productController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { attachCompanyDB } from '../middleware/companyMiddleware.js';
 import { generalLimiter } from '../middleware/rateLimit.js';
 import { logActivity } from '../middleware/activityLogMiddleware.js';
 import { imageUpload, handleUploadErrors } from '../middleware/upload.js';
@@ -22,11 +23,9 @@ const router = express.Router();
 // Apply general rate limiting to all routes
 router.use(generalLimiter);
 
-// Public routes (if any)
-// router.get('/public', getPublicProducts);
-
 // Protected routes
 router.use(protect);
+router.use(attachCompanyDB);
 
 router.route('/')
   .get(logActivity("Product Management", "Viewed products list", "READ"), getProducts)

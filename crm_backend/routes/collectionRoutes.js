@@ -7,11 +7,13 @@ import {
   getCollectionStats
 } from '../controllers/collectionController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { attachCompanyDB } from '../middleware/companyMiddleware.js';
 
 const router = express.Router();
 
 // Admin routes - require authentication
 router.use(protect);
+router.use(attachCompanyDB);
 
 // Get all collections
 router.get('/', getAllCollections);

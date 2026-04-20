@@ -10,11 +10,13 @@ import {
   getLastPurchasePrice,
 } from "../controllers/purchaseOrderController.js";
 import { protect } from "../middleware/authMiddleware.js";
+import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 import { logActivity } from "../middleware/activityLogMiddleware.js";
 
 const router = express.Router();
 
 router.use(protect);
+router.use(attachCompanyDB);
 
 // Purchase Order Routes with activity logging
 router.post("/", logActivity("Purchase Order Management", "Created new purchase order", "CREATE"), createPurchaseOrder);

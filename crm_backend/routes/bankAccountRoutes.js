@@ -1,11 +1,13 @@
 import express from 'express';
 import * as bankAccountController from '../controllers/bankAccountController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { attachCompanyDB } from '../middleware/companyMiddleware.js';
 
 const router = express.Router();
 
 // Apply authentication middleware to all routes
 router.use(protect);
+router.use(attachCompanyDB);
 
 // Cash Account routes
 router.get('/cash-account', bankAccountController.getCashAccount);

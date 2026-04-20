@@ -8,6 +8,7 @@ import {
   testConnection
 } from "../controllers/priceDeviationController.js";
 import { protect } from "../middleware/authMiddleware.js";
+import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 import { logActivity } from "../middleware/activityLogMiddleware.js";
 
 const router = express.Router();
@@ -18,6 +19,7 @@ router.route("/test-no-auth")
 
 // All other routes are protected
 router.use(protect);
+router.use(attachCompanyDB);
 
 // Price Deviation Reports
 router.route("/price-deviation")

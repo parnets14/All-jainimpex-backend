@@ -15,6 +15,7 @@ import {
 } from "../controllers/dealerController.js";
 import { protect } from "../middleware/authMiddleware.js";
 import { requirePermission } from "../middleware/authMiddleware.js";
+import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 import { uploadFields } from "../middleware/upload.js";
 import { logActivity } from "../middleware/activityLogMiddleware.js";
 
@@ -22,6 +23,7 @@ const router = express.Router();
 
 // All routes are protected
 router.use(protect);
+router.use(attachCompanyDB);
 
 // Get dealer statistics - Allow all authenticated users (needed for dashboard)
 router.get("/stats", logActivity("Dealer Management", "Viewed dealer statistics", "READ"), getDealerStats);

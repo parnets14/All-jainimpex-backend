@@ -6,10 +6,12 @@ import {
   deleteCapital 
 } from '../controllers/capitalController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { attachCompanyDB } from '../middleware/companyMiddleware.js';
 
 const router = express.Router();
 
 router.use(protect);
+router.use(attachCompanyDB);
 
 router.route('/')
   .get(getAllCapitals)

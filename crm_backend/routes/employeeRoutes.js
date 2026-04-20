@@ -10,12 +10,15 @@ import {
   getEmployeeFaceImage,
 } from '../controllers/employeeController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { attachCompanyDB } from '../middleware/companyMiddleware.js';
 import { requirePermission } from '../middleware/authMiddleware.js';
 import { uploadSingle, handleUploadErrors } from '../middleware/upload.js';
 
 const router = express.Router();
 
 // All routes are protected
+router.use(protect);
+router.use(attachCompanyDB);
 router.use(protect);
 
 // Get employee statistics

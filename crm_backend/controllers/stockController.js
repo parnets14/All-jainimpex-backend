@@ -1354,76 +1354,69 @@ export const debugTransfers = async (req, res) => {
 
 export const getStockAlerts = async (req, res) => {
   try {
-    // Get models from company-specific connection
-    const { Product, StockMovement, Warehouse, GRN } = getModels(req.dbConnection);
+    const { GRN, Product } = getModels(req.dbConnection);
     
     const { page = 1, limit = 10 } = req.query;
 
-    // Get all products with their current stock
-    const products = await Product.find({ minStockLevel: { $gt: 0 } });
-    const lowStockItems = [];
-    
-    for (const product of products) {
-      const grns = await GRN.find({ 'items.productId': product._id })
-        .populate('warehouseId', 'name');
+    // Get all products with minStockLevel > 0
+    const productsWithMin = await Product.find(
+      { minStockLevel: { $gt: 0 } },
+      { _id: 1, itemName: 1, productCode: 1, minStockLevel: 1 }
+    ).lean();
 
-      const warehouseStock = {};
-      
-      grns.forEach(grn => {
-        if (!grn.warehouseId) return;
-        
-        const warehouseId = grn.warehouseId._id.toString();
-        const warehouseName = grn.warehouseId.name;
-        
-        if (!warehouseStock[warehouseId]) {
-          warehouseStock[warehouseId] = {
-            warehouseId: warehouseId,
-            warehouseName: warehouseName,
-            totalQty: 0,
-            damagedQty: 0
-          };
-        }
-        
-        grn.items.forEach(item => {
-          if (item.productId.toString() === product._id.toString()) {
-            warehouseStock[warehouseId].totalQty += item.acceptedQuantity || 0;
-            // REMOVED: warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
-            // Damaged quantity will be calculated from stock movements (source of truth)
-          }
-        });
-      });
-
-      // Calculate damaged quantity from stock movements for each warehouse
-      for (const warehouseId of Object.keys(warehouseStock)) {
-        const damagedQty = await calculateDamagedQuantity(req.dbConnection, product._id, warehouseId);
-        warehouseStock[warehouseId].damagedQty = damagedQty;
-      }
-
-      Object.values(warehouseStock).forEach(warehouse => {
-        // Don't subtract damaged quantity - it's already accounted for in stock movements
-        const netStock = warehouse.totalQty;
-        
-        if (netStock <= product.minStockLevel) {
-        lowStockItems.push({
-          productId: product._id,
-          productCode: product.productCode,
-          itemName: product.itemName,
-            warehouse: warehouse.warehouseName,
-            warehouseId: warehouse.warehouseId,
-            currentStock: netStock,
-          minStockLevel: product.minStockLevel,
-            shortage: product.minStockLevel - netStock
-        });
-      }
+    if (productsWithMin.length === 0) {
+      return res.json({
+        success: true,
+        data: [],
+        pagination: { currentPage: 1, totalPages: 0, totalRecords: 0 }
       });
     }
 
-    // Manual pagination
+    const productIds = productsWithMin.map(p => p._id);
+
+    // Get GRN stock totals per product (across all warehouses)
+    const stockAgg = await GRN.aggregate([
+      { $unwind: "$items" },
+      { $match: { "items.productId": { $in: productIds } } },
+      {
+        $group: {
+          _id: "$items.productId",
+          totalQty: { $sum: "$items.acceptedQuantity" },
+          damagedQty: { $sum: "$items.damageQuantity" }
+        }
+      }
+    ]);
+
+    // Build stock map
+    const stockMap = {};
+    stockAgg.forEach(item => {
+      if (item._id) {
+        stockMap[item._id.toString()] = Math.max(0, (item.totalQty || 0) - (item.damagedQty || 0));
+      }
+    });
+
+    // Build low stock items list
+    const lowStockItems = productsWithMin
+      .map(product => {
+        const currentStock = stockMap[product._id.toString()] ?? 0;
+        const shortage = product.minStockLevel - currentStock;
+        return {
+          productId: product._id,
+          productCode: product.productCode,
+          itemName: product.itemName,
+          currentStock,
+          minStockLevel: product.minStockLevel,
+          shortage
+        };
+      })
+      .filter(item => item.currentStock <= item.minStockLevel)
+      .sort((a, b) => b.shortage - a.shortage);
+
+    // Pagination
     const pageNum = parseInt(page);
     const limitNum = parseInt(limit);
     const startIndex = (pageNum - 1) * limitNum;
     const endIndex = pageNum * limitNum;
-
     const paginatedData = lowStockItems.slice(startIndex, endIndex);
 
     res.json({

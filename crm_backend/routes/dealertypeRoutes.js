@@ -7,11 +7,13 @@ import {
   deleteDealerType
 } from '../controllers/dealerTypeController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { attachCompanyDB } from '../middleware/companyMiddleware.js';
 
 const router = express.Router();
 
 // All routes are protected
 router.use(protect);
+router.use(attachCompanyDB);
 
 // Create a new dealer type
 router.post('/', createDealerType);

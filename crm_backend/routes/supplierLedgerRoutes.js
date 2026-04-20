@@ -8,12 +8,14 @@ import {
   getSupplierLedgerSummary
 } from "../controllers/supplierLedgerController.js";
 import { protect } from "../middleware/authMiddleware.js";
+import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 import { requirePermission } from "../middleware/permissionMiddleware.js";
 
 const router = express.Router();
 
 // Apply authentication to all routes
 router.use(protect);
+router.use(attachCompanyDB);
 
 // Create supplier ledger entry
 router.post("/", 

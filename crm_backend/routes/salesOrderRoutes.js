@@ -31,14 +31,14 @@ import {
   partialDispatch
 } from "../controllers/salesOrderController.js";
 import { protect } from "../middleware/authMiddleware.js";
+import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 import { logActivity } from "../middleware/activityLogMiddleware.js";
 
 const router = express.Router();
 
-// Public routes (if any)
-
 // Protected routes
 router.use(protect);
+router.use(attachCompanyDB);
 
 router.route("/")
   .get(logActivity("Sales Order Dashboard", "Viewed sales orders list", "READ"), getSalesOrders)

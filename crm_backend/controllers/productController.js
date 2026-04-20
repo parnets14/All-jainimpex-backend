@@ -896,120 +896,62 @@ export const getProductStats = async (req, res) => {
     // Get models from company-specific connection
     const { Product, GRN } = getModels(req.dbConnection);
     
-    const totalProducts = await Product.countDocuments();
-    const activeProducts = await Product.countDocuments({ status: "active" });
-    const inactiveProducts = await Product.countDocuments({
-      status: "inactive",
-    });
-
-    // Products by category
-    const productsByCategory = await Product.aggregate([
-      {
-        $lookup: {
-          from: "categories",
-          localField: "category",
-          foreignField: "_id",
-          as: "category",
-        },
-      },
-      {
-        $unwind: "$category",
-      },
-      {
-        $group: {
-          _id: "$category.name",
-          count: { $sum: 1 },
-        },
-      },
+    // Run all count queries in parallel for speed
+    const [totalProducts, activeProducts, inactiveProducts] = await Promise.all([
+      Product.countDocuments(),
+      Product.countDocuments({ status: "active" }),
+      Product.countDocuments({ status: "inactive" })
     ]);
 
-    // Products by brand
-    const productsByBrand = await Product.aggregate([
-      {
-        $lookup: {
-          from: "brands",
-          localField: "brand",
-          foreignField: "_id",
-          as: "brand",
-        },
-      },
-      {
-        $unwind: "$brand",
-      },
-      {
-        $group: {
-          _id: "$brand.name",
-          count: { $sum: 1 },
-        },
-      },
-    ]);
-
-    // Calculate low stock items using same logic as Stock Management page
-    // The Stock Management page counts individual warehouse entries, not unique products
-    const products = await Product.find({});
+    // Calculate low stock items - products where current stock <= minStockLevel
     let lowStockCount = 0;
-    const lowStockDetails = [];
+    try {
+      // Get all products with minStockLevel > 0
+      const productsWithMinStock = await Product.countDocuments({ minStockLevel: { $gt: 0 } });
+      console.log(`Products with minStockLevel > 0: ${productsWithMinStock}`);
+      
+      if (productsWithMinStock > 0) {
+        const productsWithMin = await Product.find(
+          { minStockLevel: { $gt: 0 } },
+          { _id: 1, minStockLevel: 1 }
+        ).lean();
 
-    for (const product of products) {
-      // Get all GRNs for this product
-      const grns = await GRN.find({ "items.productId": product._id });
+        // Get GRN stock totals per product (across all warehouses)
+        const stockAgg = await GRN.aggregate([
+          { $unwind: "$items" },
+          {
+            $group: {
+              _id: "$items.productId",
+              totalQty: { $sum: "$items.acceptedQuantity" },
+              damagedQty: { $sum: "$items.damageQuantity" }
+            }
+          }
+        ]);
 
-      // Group by warehouse (same as Stock Management page)
-      const warehouseStock = {};
-
-      grns.forEach((grn) => {
-        if (!grn.warehouseId) return;
-
-        const warehouseId = grn.warehouseId.toString();
-
-        if (!warehouseStock[warehouseId]) {
-          warehouseStock[warehouseId] = {
-            totalQty: 0,
-            damagedQty: 0,
-            blockedQty: 0,
-          };
-        }
-
-        grn.items.forEach((item) => {
-          const itemProductId = item.productId?._id
-            ? item.productId._id.toString()
-            : item.productId.toString();
-          const targetProductId = product._id.toString();
-
-          if (itemProductId === targetProductId) {
-            warehouseStock[warehouseId].totalQty += item.acceptedQuantity || 0;
-            warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
-            // Note: blockedQty is not in GRN data, so it stays 0
+        // Build a map of productId -> netStock
+        const stockMap = {};
+        stockAgg.forEach(item => {
+          if (item._id) {
+            stockMap[item._id.toString()] = Math.max(0, (item.totalQty || 0) - (item.damagedQty || 0));
           }
         });
-      });
 
-      // Check each warehouse entry for low stock (same as Stock Management page)
-      Object.values(warehouseStock).forEach((warehouse) => {
-        const netStock =
-          warehouse.totalQty - warehouse.damagedQty - warehouse.blockedQty;
+        // Count products where netStock <= minStockLevel
+        // Products with no GRN data have stock = 0, which is <= any minStockLevel > 0
+        productsWithMin.forEach(product => {
+          const netStock = stockMap[product._id.toString()] ?? 0;
+          if (netStock <= product.minStockLevel) {
+            lowStockCount++;
+          }
+        });
 
-        if (product.minStockLevel && netStock <= product.minStockLevel) {
-          lowStockCount++;
-          lowStockDetails.push({
-            productId: product._id,
-            productName: product.itemName,
-            totalQty: warehouse.totalQty,
-            damagedQty: warehouse.damagedQty,
-            blockedQty: warehouse.blockedQty,
-            netStock: netStock,
-            minStockLevel: product.minStockLevel,
-          });
-        }
-      });
+        console.log(`Low stock count: ${lowStockCount}`);
+      }
+    } catch (lowStockError) {
+      console.warn("Low stock calculation failed, defaulting to 0:", lowStockError.message);
     }
 
-    console.log("Low stock calculation:", {
-      lowStockCount,
-      lowStockDetails,
-      totalProducts,
-      activeProducts,
-    });
+    console.log("Product stats:", { totalProducts, activeProducts, lowStockCount });
 
     res.json({
       success: true,
@@ -1018,9 +960,7 @@ export const getProductStats = async (req, res) => {
         activeProducts,
         inactiveProducts,
         lowStockItems: lowStockCount,
-        lowStock: lowStockCount, // Alternative key for compatibility
-        productsByCategory,
-        productsByBrand,
+        lowStock: lowStockCount,
       },
     });
   } catch (error) {
