@@ -1,284 +1,229 @@
-import User from '../../models/User.js';
-import Dealer from '../../models/Dealer.js';
 import { generateToken } from '../../utils/jwtUtils.js';
 import { setAuthCookie, clearAuthCookie } from '../../utils/cookieUtils.js';
+import { getCompanyConnection } from '../../config/multiDatabase.js';
+import { dealerSchema } from '../../models/Dealer.js';
+import { userSchema } from '../../models/User.js';
 
-// @desc    Login dealer (phone/OTP based)
-// @route   POST /api/app/auth/login
-// @access  Public
-export const loginDealer = async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    // Check if user exists and is a dealer
-    const user = await User.findOne({ email, role: 'dealer' }).select('+password');
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid credentials'
-      });
-    }
-
-    // Check if user is active
-    if (user.status !== 'Active') {
-      return res.status(401).json({
-        success: false,
-        message: 'Your account has been deactivated. Please contact administrator.'
-      });
-    }
-
-    // Check password
-    const isPasswordValid = await user.comparePassword(password);
-    if (!isPasswordValid) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid credentials'
-      });
-    }
-
-    // Get dealer information
-    const dealer = await Dealer.findOne({ code: user.username });
-    if (!dealer) {
-      return res.status(404).json({
-        success: false,
-        message: 'Dealer profile not found'
-      });
-    }
-
-    // Update last login
-    await user.updateLastLogin();
-
-    // Generate token
-    const token = generateToken(user._id);
-
-    // Set HTTP-only cookie
-    setAuthCookie(res, token);
-
-    // Remove password from response
-    const userResponse = await User.findById(user._id).select('-password');
-
-    res.json({
-      success: true,
-      message: 'Login successful',
-      token,
-      user: {
-        id: userResponse._id,
-        name: userResponse.name,
-        email: userResponse.email,
-        role: userResponse.role,
-        dealerId: dealer._id,
-        dealerCode: dealer.code,
-        dealerName: dealer.name
-      },
-      dealer: {
-        id: dealer._id,
-        code: dealer.code,
-        name: dealer.name,
-        phone: dealer.phone,
-        email: dealer.email,
-        address: dealer.address,
-        image: dealer.image
-      }
-    });
-  } catch (error) {
-    console.error('Dealer login error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
+// ─── Company metadata ────────────────────────────────────────────────────────
+const COMPANY_INFO = {
+  'jain-impex': {
+    id: 'jain-impex',
+    name: 'Jain Impex',
+    tagline: 'Sanitary Ware & Plumbing Products',
+  },
+  'ridhi': {
+    id: 'ridhi',
+    name: 'Ridhi Build Mart',
+    tagline: 'Premium Plumbing Products',
+  },
+  'shree-jain-impex': {
+    id: 'shree-jain-impex',
+    name: 'Shree Jain Impex',
+    tagline: 'Complete Sanitary & Plumbing Solutions',
+  },
 };
 
-// Helper function to normalize phone number
+const ALL_COMPANIES = Object.keys(COMPANY_INFO);
+
+// ─── Helper: get Dealer + User models for a company ─────────────────────────
+const getModels = (company) => {
+  const conn = getCompanyConnection(company);
+  const Dealer = conn.models.Dealer || conn.model('Dealer', dealerSchema);
+  const User   = conn.models.User   || conn.model('User',   userSchema);
+  return { Dealer, User, conn };
+};
+
+// ─── Helper: normalize phone ─────────────────────────────────────────────────
 const normalizePhone = (phone) => {
   if (!phone) return '';
-  // Remove all non-digit characters
-  let normalized = phone.replace(/\D/g, '');
-  // Remove country code if present (India: 91)
-  if (normalized.startsWith('91') && normalized.length === 12) {
-    normalized = normalized.substring(2);
-  }
-  return normalized;
+  let n = phone.replace(/\D/g, '');
+  if (n.startsWith('91') && n.length === 12) n = n.substring(2);
+  return n;
 };
 
-// @desc    Send OTP to dealer
+// ─── Helper: find dealer across all companies ────────────────────────────────
+const findDealerInAllCompanies = async (phone) => {
+  const normalizedPhone = normalizePhone(phone);
+  const query = { $or: [{ phone: normalizedPhone }, { phone }] };
+
+  const results = await Promise.all(
+    ALL_COMPANIES.map(async (company) => {
+      try {
+        const { Dealer } = getModels(company);
+        const dealer = await Dealer.findOne(query);
+        return dealer ? { company, dealer } : null;
+      } catch (err) {
+        console.error(`Error searching ${company}:`, err.message);
+        return null;
+      }
+    })
+  );
+
+  return results.filter(Boolean); // [{company, dealer}, ...]
+};
+
+// ─── Helper: find or create User for a dealer ────────────────────────────────
+const findOrCreateUser = async (dealer, company) => {
+  const { User } = getModels(company);
+
+  let user = await User.findOne({ username: dealer.code, role: 'dealer' });
+  if (!user) {
+    console.log(`Creating User for dealer ${dealer.code} in ${company}`);
+    user = await User.create({
+      username: dealer.code,
+      name: dealer.name || dealer.contactPerson || 'Dealer',
+      email: dealer.email || `${dealer.code.toLowerCase()}@dealer.local`,
+      phone: dealer.phone,
+      role: 'dealer',
+      status: dealer.isActive !== false ? 'Active' : 'Inactive',
+      password: 'temp123',
+      createdBy: dealer.createdBy || null,
+    });
+    console.log(`✅ User created for ${dealer.code} in ${company}: ${user._id}`);
+  }
+  return user;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// @desc    Send OTP — searches ALL 3 company DBs
 // @route   POST /api/app/auth/send-otp
 // @access  Public
+// ─────────────────────────────────────────────────────────────────────────────
 export const sendOTP = async (req, res) => {
   try {
     const { phone } = req.body;
-
     if (!phone) {
-      return res.status(400).json({
-        success: false,
-        message: 'Phone number is required'
-      });
+      return res.status(400).json({ success: false, message: 'Phone number is required' });
     }
 
-    // Normalize phone number for search
-    const normalizedPhone = normalizePhone(phone);
+    const found = await findDealerInAllCompanies(phone);
 
-    // Find dealer by phone (try both normalized and exact match)
-    const dealer = await Dealer.findOne({
-      $or: [
-        { phone: normalizedPhone },
-        { phone: phone }
-      ]
-    });
-    
-    if (!dealer) {
+    if (found.length === 0) {
       return res.status(404).json({
         success: false,
-        message: 'Dealer not found with this phone number'
+        message: 'Dealer not found with this phone number',
       });
     }
 
-    // TODO: Implement OTP sending logic (SMS service)
-    // For demo/testing: Generate and return OTP to display on screen
+    // Generate OTP (for demo — return it in response)
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-    res.json({
+    console.log(`📱 OTP for ${phone}: ${otp} (found in ${found.map(f => f.company).join(', ')})`);
+
+    return res.json({
       success: true,
       message: 'OTP sent successfully',
-      // Always return OTP for demo/testing (display on screen)
-      otp: otp
+      otp, // Remove in production — use SMS service
     });
   } catch (error) {
     console.error('Send OTP error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// @desc    Verify OTP and login
+// ─────────────────────────────────────────────────────────────────────────────
+// @desc    Verify OTP — returns tokens for ALL companies dealer belongs to
 // @route   POST /api/app/auth/verify-otp
 // @access  Public
+// ─────────────────────────────────────────────────────────────────────────────
 export const verifyOTP = async (req, res) => {
   try {
     const { phone, otp } = req.body;
 
     if (!phone || !otp) {
-      return res.status(400).json({
-        success: false,
-        message: 'Phone number and OTP are required'
-      });
+      return res.status(400).json({ success: false, message: 'Phone number and OTP are required' });
     }
 
-    // TODO: Verify OTP from SMS service
-    // For demo/testing: Accept any 6-digit OTP
-    if (!otp || otp.length !== 6 || !/^\d{6}$/.test(otp)) {
-      return res.status(400).json({
-        success: false,
-        message: 'OTP must be a 6-digit number'
-      });
-    }
-    // Accept any valid 6-digit OTP for demo/testing
-
-    // Normalize phone number for search
-    const normalizedPhone = normalizePhone(phone);
-
-    // Find dealer by phone (try both normalized and exact match)
-    const dealer = await Dealer.findOne({
-      $or: [
-        { phone: normalizedPhone },
-        { phone: phone }
-      ]
-    });
-    
-    if (!dealer) {
-      return res.status(404).json({
-        success: false,
-        message: 'Dealer not found'
-      });
+    // Validate OTP format (any 6-digit for demo)
+    if (!/^\d{6}$/.test(otp)) {
+      return res.status(400).json({ success: false, message: 'OTP must be a 6-digit number' });
     }
 
-    // Find or create user associated with dealer
-    let user = await User.findOne({ username: dealer.code, role: 'dealer' });
-    if (!user) {
-      // Create user account for dealer if it doesn't exist
-      console.log(`Creating User account for dealer ${dealer.code}`);
-      user = await User.create({
-        username: dealer.code,
-        name: dealer.name || dealer.contactPerson || 'Dealer',
-        email: dealer.email || `${dealer.code.toLowerCase()}@dealer.local`,
-        phone: dealer.phone,
-        role: 'dealer',
-        status: dealer.isActive !== false ? 'Active' : 'Inactive',
-        password: 'temp123', // Temporary password - dealer will use OTP login
-        createdBy: dealer.createdBy || null
-      });
-      console.log(`✅ User account created for dealer ${dealer.code}: ${user._id}`);
+    // Find dealer in all companies
+    const found = await findDealerInAllCompanies(phone);
+
+    if (found.length === 0) {
+      return res.status(404).json({ success: false, message: 'Dealer not found' });
     }
 
-    // Update last login
-    await user.updateLastLogin();
+    // Build company entries with tokens
+    const companies = await Promise.all(
+      found.map(async ({ company, dealer }) => {
+        try {
+          const user = await findOrCreateUser(dealer, company);
+          await user.updateLastLogin();
 
-    // Generate token
-    const token = generateToken(user._id);
+          const token = generateToken(user._id, company);
 
-    // Set HTTP-only cookie
-    setAuthCookie(res, token);
+          return {
+            ...COMPANY_INFO[company],
+            token,
+            user: {
+              id: user._id,
+              name: user.name,
+              email: user.email,
+              phone: user.phone || dealer.phone,
+              role: user.role,
+              dealerId: dealer._id,
+              dealerCode: dealer.code,
+              dealerName: dealer.name,
+            },
+            dealer: {
+              id: dealer._id,
+              code: dealer.code,
+              name: dealer.name,
+              phone: dealer.phone,
+              email: dealer.email,
+              address: dealer.address,
+              image: dealer.image,
+            },
+          };
+        } catch (err) {
+          console.error(`Error processing ${company}:`, err.message);
+          return null;
+        }
+      })
+    );
 
-    res.json({
+    const validCompanies = companies.filter(Boolean);
+
+    if (validCompanies.length === 0) {
+      return res.status(500).json({ success: false, message: 'Failed to process login' });
+    }
+
+    // Set cookie for the first company (backward compat)
+    setAuthCookie(res, validCompanies[0].token);
+
+    return res.json({
       success: true,
       message: 'OTP verified successfully',
-      token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        phone: user.phone || dealer.phone,
-        role: user.role,
-        dealerId: dealer._id,
-        dealerCode: dealer.code,
-        dealerName: dealer.name
-      },
-      dealer: {
-        id: dealer._id,
-        code: dealer.code,
-        name: dealer.name,
-        phone: dealer.phone,
-        email: dealer.email,
-        address: dealer.address,
-        image: dealer.image
-      }
+      companiesCount: validCompanies.length,
+      companies: validCompanies,
     });
   } catch (error) {
     console.error('Verify OTP error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// @desc    Get dealer profile
+// ─────────────────────────────────────────────────────────────────────────────
+// @desc    Get dealer profile (uses company from JWT via authMiddleware)
 // @route   GET /api/app/auth/me
-// @access  Private (Dealer)
+// @access  Private
+// ─────────────────────────────────────────────────────────────────────────────
 export const getDealerProfile = async (req, res) => {
   try {
-    const userId = req.user._id;
-    const user = await User.findById(userId).select('-password');
-    
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
-    }
+    const company = req.company;
+    const { Dealer } = getModels(company);
 
-    // Get dealer information
+    const user = req.user;
     const dealer = await Dealer.findOne({ code: user.username });
+
     if (!dealer) {
-      return res.status(404).json({
-        success: false,
-        message: 'Dealer profile not found'
-      });
+      return res.status(404).json({ success: false, message: 'Dealer profile not found' });
     }
 
-    res.json({
+    return res.json({
       success: true,
       user: {
         id: user._id,
@@ -288,7 +233,8 @@ export const getDealerProfile = async (req, res) => {
         role: user.role,
         dealerId: dealer._id,
         dealerCode: dealer.code,
-        dealerName: dealer.name
+        dealerName: dealer.name,
+        company,
       },
       dealer: {
         id: dealer._id,
@@ -306,35 +252,38 @@ export const getDealerProfile = async (req, res) => {
         creditLimit: dealer.creditLimit,
         creditDays: dealer.creditDays,
         salesTarget: dealer.salesTarget,
-        image: dealer.image
-      }
+        image: dealer.image,
+      },
     });
   } catch (error) {
     console.error('Get dealer profile error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// @desc    Logout dealer
+// ─────────────────────────────────────────────────────────────────────────────
+// @desc    Logout
 // @route   POST /api/app/auth/logout
-// @access  Private (Dealer)
+// @access  Private
+// ─────────────────────────────────────────────────────────────────────────────
 export const logoutDealer = async (req, res) => {
   try {
     clearAuthCookie(res);
-    
-    res.json({
-      success: true,
-      message: 'Logout successful'
-    });
+    return res.json({ success: true, message: 'Logout successful' });
   } catch (error) {
     console.error('Logout error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// @desc    Legacy email/password login (kept for backward compat)
+// @route   POST /api/app/auth/login
+// @access  Public
+// ─────────────────────────────────────────────────────────────────────────────
+export const loginDealer = async (req, res) => {
+  return res.status(400).json({
+    success: false,
+    message: 'Email/password login is deprecated. Please use OTP login.',
+  });
+};

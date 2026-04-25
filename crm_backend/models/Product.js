@@ -32,6 +32,11 @@ const productSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
+  aliasName: {
+    type: String,
+    trim: true,
+    default: ''
+  },
   description: {
     type: String,
     trim: true
@@ -230,6 +235,7 @@ productSchema.pre('save', async function(next) {
 // Index for better performance
 productSchema.index({ productCode: 1 });
 productSchema.index({ itemName: 1 });
+productSchema.index({ aliasName: 1 });
 productSchema.index({ category: 1 });
 productSchema.index({ subcategory: 1 });
 productSchema.index({ brand: 1 });

@@ -106,6 +106,7 @@ export const getProducts = async (req, res) => {
       filter.$or = [
         { productCode: { $regex: search, $options: "i" } },
         { itemName: { $regex: search, $options: "i" } },
+        { aliasName: { $regex: search, $options: "i" } },
         { description: { $regex: search, $options: "i" } },
         { HSNCode: { $regex: search, $options: "i" } },
         ...(categoryIds.length > 0 ? [{ category: { $in: categoryIds } }] : []),
@@ -385,6 +386,7 @@ export const createProduct = async (req, res) => {
       productCode,
       HSNCode,
       itemName,
+      aliasName,
       description,
       unit,
       alternateUnit,
@@ -512,6 +514,7 @@ export const createProduct = async (req, res) => {
       productCode: finalProductCode,
       HSNCode,
       itemName,
+      aliasName: aliasName || '',
       description,
       unit,
       alternateUnit,
@@ -584,6 +587,7 @@ export const updateProduct = async (req, res) => {
       productCode,
       HSNCode,
       itemName,
+      aliasName,
       description,
       unit,
       alternateUnit,
@@ -697,6 +701,7 @@ export const updateProduct = async (req, res) => {
     product.productCode = finalProductCode;
     product.HSNCode = HSNCode;
     product.itemName = itemName;
+    product.aliasName = aliasName !== undefined ? aliasName : (product.aliasName || '');
     product.description = description;
     product.unit = unit;
     product.alternateUnit = alternateUnit;
