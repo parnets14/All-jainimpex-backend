@@ -190,8 +190,10 @@ app.use(
     origin: function (origin, callback) {
       const allowedOrigins = [
         "http://localhost:5173",             // local web dev
-        "https://jainimpex.netlify.app",     // ✅ correct Netlify domain
-        "https://jainimpex.netlify.app/",    // ✅ with trailing slash
+        "https://jainimpex.netlify.app",     // Netlify domain
+        "https://jainimpex.netlify.app/",    // with trailing slash
+        "https://jainimpexall.netlify.app",  // new Netlify domain
+        "https://jainimpexall.netlify.app/", // with trailing slash
         "http://localhost:3000",             // local dealer app (React Native Metro)
         "http://localhost:8081",             // local dealer app (React Native alternative)
         "exp://localhost:19000",             // Expo dev
