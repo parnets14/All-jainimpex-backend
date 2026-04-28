@@ -14,6 +14,7 @@ import { voucherSchema } from "../models/Voucher.js";
 import { userSchema } from "../models/User.js";
 import { regionSchema } from "../models/Region.js";
 import { warehouseSchema } from "../models/Warehouse.js";
+import { sendPushNotification } from '../services/firebaseNotificationService.js';
 
 // Helper function to get models from company-specific connection
 const getModels = (dbConnection) => {
@@ -1235,6 +1236,19 @@ export const approveDealerInvoice = async (req, res) => {
       }], { session });
       
       console.log(`✅ Notification created for invoice: ${invoice.invoiceNumber}`);
+
+      // Send push notification
+      try {
+        const dealerDoc = await Dealer.findById(invoice.dealer).select('fcmToken').lean();
+        if (dealerDoc?.fcmToken) {
+          await sendPushNotification({
+            token: dealerDoc.fcmToken,
+            title,
+            body: message,
+            data: { type: 'invoice', invoiceId: invoice._id.toString(), invoiceNumber: invoice.invoiceNumber },
+          });
+        }
+      } catch (pushErr) { console.error('Push error (non-fatal):', pushErr.message); }
       
       // Points earned notification
       if (invoice.totalPoints && invoice.totalPoints > 0) {

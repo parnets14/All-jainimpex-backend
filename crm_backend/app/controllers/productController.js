@@ -1,18 +1,267 @@
-import Product from '../../models/Product.js';
-import Category from '../../models/Category.js';
-import Brand from '../../models/Brand.js';
-import Dealer from '../../models/Dealer.js';
-import DiscountMapping from '../../models/DiscountMapping.js';
-import DealerPricing from '../../models/DealerPricing.js';
-import StockMovement from '../../models/Stock.js';
-import GRN from '../../models/GRN.js';
-import StockMovementService from '../../services/stockMovementService.js';
+import { productSchema } from '../../models/Product.js';
+import { dealerSchema } from '../../models/Dealer.js';
+import { discountMappingSchema } from '../../models/DiscountMapping.js';
+import { dealerPricingSchema } from '../../models/DealerPricing.js';
+import { stockMovementSchema } from '../../models/Stock.js';
+import { grnSchema } from '../../models/GRN.js';
+import { categorySchema } from '../../models/Category.js';
+import { subcategorySchema } from '../../models/Subcategory.js';
+import { extendedSubcategorySchema } from '../../models/ExtendedSubcategory.js';
+import { brandSchema } from '../../models/Brand.js';
 
-// @desc    Get products for dealer (with dealer-specific pricing)
-// @route   GET /api/app/products
-// @access  Private (Dealer)
+// ── Model helper (company-specific connection) ────────────────────────────────
+const getModels = (db) => ({
+  Product:        db.models.Product        || db.model('Product',        productSchema),
+  Dealer:         db.models.Dealer         || db.model('Dealer',         dealerSchema),
+  DiscountMapping:db.models.DiscountMapping|| db.model('DiscountMapping',discountMappingSchema),
+  DealerPricing:  db.models.DealerPricing  || db.model('DealerPricing',  dealerPricingSchema),
+  StockMovement:  db.models.StockMovement  || db.model('StockMovement',  stockMovementSchema),
+  GRN:            db.models.GRN            || db.model('GRN',            grnSchema),
+  Category:       db.models.Category       || db.model('Category',       categorySchema),
+  Subcategory:    db.models.Subcategory    || db.model('Subcategory',    subcategorySchema),
+  ExtendedSubcategory: db.models.ExtendedSubcategory || db.model('ExtendedSubcategory', extendedSubcategorySchema),
+  Brand:          db.models.Brand          || db.model('Brand',          brandSchema),
+});
+
+// ── Permission filter builder ─────────────────────────────────────────────────
+/**
+ * Build a MongoDB filter that respects the dealer's allowed brands/categories/subcategories.
+ * Logic:
+ *   - No allowedBrands → all active products
+ *   - allowedBrands only → all active products from those brands
+ *   - allowedBrands + allowedCategories/Subcategories → hierarchical filter per brand
+ */
+async function buildPermissionFilter(dealer, models) {
+  const { Category, Subcategory } = models;
+
+  const brandIds = (dealer.allowedBrands || []).map(b =>
+    typeof b === 'object' ? b._id : b
+  );
+
+  // No restrictions → all active products
+  if (brandIds.length === 0) {
+    return { status: 'active' };
+  }
+
+  const categoryIds = (dealer.allowedCategories || []).map(c =>
+    typeof c === 'object' ? c._id : c
+  );
+  const subcategoryIds = (dealer.allowedSubcategories || []).map(s =>
+    typeof s === 'object' ? s._id : s
+  );
+
+  // Brand-only restriction
+  if (categoryIds.length === 0 && subcategoryIds.length === 0) {
+    return { status: 'active', brand: { $in: brandIds } };
+  }
+
+  // Hierarchical: build per-brand OR conditions
+  const orConditions = [];
+
+  for (const brandId of brandIds) {
+    const brandIdStr = brandId.toString();
+
+    // Categories belonging to this brand
+    const brandCats = categoryIds.length > 0
+      ? (await Category.find({ _id: { $in: categoryIds }, brand: brandId }).select('_id')).map(c => c._id)
+      : [];
+
+    // Subcategories belonging to this brand's categories
+    let brandSubs = [];
+    if (subcategoryIds.length > 0) {
+      const allBrandCats = await Category.find({ brand: brandId }).select('_id');
+      brandSubs = (await Subcategory.find({
+        _id: { $in: subcategoryIds },
+        category: { $in: allBrandCats.map(c => c._id) }
+      }).select('_id')).map(s => s._id);
+    }
+
+    if (brandSubs.length > 0) {
+      orConditions.push({ status: 'active', brand: brandId, subcategory: { $in: brandSubs } });
+    } else if (brandCats.length > 0) {
+      orConditions.push({ status: 'active', brand: brandId, category: { $in: brandCats } });
+    } else {
+      // Brand selected but no matching categories/subcategories → all products from brand
+      orConditions.push({ status: 'active', brand: brandId });
+    }
+  }
+
+  if (orConditions.length === 0) return { _id: null }; // no access
+  if (orConditions.length === 1) return orConditions[0];
+  return { $or: orConditions };
+}
+
+// ── Stock calculator (reused for list + detail) ───────────────────────────────
+async function calcAvailableStock(productId, models) {
+  const { GRN, StockMovement } = models;
+  try {
+    const grns = await GRN.find({ 'items.productId': productId }).select('warehouseId items').lean();
+
+    const warehouseStock = {};
+    grns.forEach(grn => {
+      if (!grn.warehouseId) return;
+      const wId = grn.warehouseId.toString();
+      if (!warehouseStock[wId]) warehouseStock[wId] = { total: 0, damaged: 0 };
+      grn.items.forEach(item => {
+        const itemPid = item.productId?._id ? item.productId._id.toString() : item.productId?.toString();
+        if (itemPid === productId.toString()) {
+          warehouseStock[wId].total   += item.acceptedQuantity || 0;
+          warehouseStock[wId].damaged += item.damageQuantity   || 0;
+        }
+      });
+    });
+
+    const warehouseIds = Object.keys(warehouseStock);
+    if (warehouseIds.length === 0) return 0;
+
+    const allMovements = await StockMovement.find({
+      productId,
+      warehouseId: { $in: warehouseIds }
+    }).lean();
+
+    const byWarehouse = {};
+    allMovements.forEach(m => {
+      const wId = m.warehouseId.toString();
+      if (!byWarehouse[wId]) byWarehouse[wId] = [];
+      byWarehouse[wId].push(m);
+    });
+
+    let total = 0;
+    for (const wId of warehouseIds) {
+      const movements = byWarehouse[wId] || [];
+      let currentStock = warehouseStock[wId].total;
+
+      if (movements.length > 0) {
+        const sorted = movements.sort((a, b) =>
+          new Date(b.date || b.createdAt) - new Date(a.date || a.createdAt)
+        );
+        currentStock = sorted[0]?.balance || 0;
+      }
+
+      // Blocked stock
+      let blocked = 0;
+      movements.forEach(m => {
+        if (m.type === 'OUT' && m.referenceType === 'SALE' && m.remarks?.includes('Stock Blocked'))
+          blocked += m.quantity || 0;
+        if (m.type === 'IN'  && m.referenceType === 'SALE' && m.remarks?.includes('Stock Unblocked'))
+          blocked -= m.quantity || 0;
+      });
+      blocked = Math.max(0, blocked);
+
+      const net = currentStock - warehouseStock[wId].damaged - blocked;
+      if (net > 0) total += net;
+    }
+    return Math.max(0, Math.round(total));
+  } catch {
+    return 0;
+  }
+}
+
+// ── Pricing helper ────────────────────────────────────────────────────────────
+async function getPricingForProduct(product, models, dealerType = null) {
+  const { DealerPricing, DiscountMapping } = models;
+
+  const dealerPricing = await DealerPricing.findOne({ product: product._id, isActive: true });
+
+  let mrp = 0;
+  let dealerPrice = 0;
+
+  if (dealerPricing) {
+    mrp         = dealerPricing.mrp || dealerPricing.sellingPrice;
+    dealerPrice = dealerPricing.sellingPrice;
+  } else {
+    mrp         = product.rateSlabs?.length > 0 ? product.rateSlabs[0].rate : (product.totalAmount || 0);
+    dealerPrice = mrp;
+  }
+
+  // Build discount query — match by product hierarchy (only include non-null refs)
+  const orConditions = [];
+  if (product.brand?._id || product.brand)
+    orConditions.push({ targetType: 'brand',       brand:       product.brand?._id       || product.brand       });
+  if (product.category?._id || product.category)
+    orConditions.push({ targetType: 'category',    category:    product.category?._id    || product.category    });
+  if (product.subcategory?._id || product.subcategory)
+    orConditions.push({ targetType: 'subcategory', subcategory: product.subcategory?._id || product.subcategory });
+  orConditions.push({ targetType: 'product', product: product._id });
+
+  const discountQuery = {
+    mappingType: 'sales',
+    status: 'Approved',
+    isActive: true,
+    validFrom: { $lte: new Date() },
+    validTo:   { $gte: new Date() },
+    $or: orConditions,
+  };
+
+  // Filter by dealer type — empty array means applies to all
+  if (dealerType) {
+    discountQuery.$and = [{
+      $or: [
+        { applicableDealerTypes: { $size: 0 } },
+        { applicableDealerTypes: { $exists: false } },
+        { applicableDealerTypes: dealerType },
+      ]
+    }];
+  }
+
+  const discountMappings = await DiscountMapping.find(discountQuery);
+  console.log(`🏷️ Discounts for ${product.itemName}: found ${discountMappings.length}, dealerType: ${dealerType}`);
+
+  let maxDiscount = 0;
+  let directDiscountPct = 0;
+  let appliedDiscount = null;
+
+  discountMappings.forEach(d => {
+    // Check directDiscountPercentage first
+    if ((d.discountType === 'direct' || d.discountType === 'both') && d.directDiscountPercentage > 0) {
+      if (d.directDiscountPercentage > directDiscountPct) {
+        directDiscountPct = d.directDiscountPercentage;
+        appliedDiscount = {
+          discountId:         d._id,
+          discountPercentage: d.directDiscountPercentage,
+          level:              'Direct',
+          validFrom:          d.validFrom,
+          validTo:            d.validTo,
+        };
+      }
+    }
+    // Also check level-based discounts
+    if (d.discountType === 'level_based' || d.discountType === 'both') {
+      d.levels.forEach(level => {
+        if (level.discountPercentage > maxDiscount) {
+          maxDiscount = level.discountPercentage;
+        }
+      });
+    }
+  });
+
+  // Use the higher of direct or level discount
+  const effectiveDiscount = Math.max(directDiscountPct, maxDiscount);
+  if (effectiveDiscount > 0) {
+    console.log(`💰 Applying ${effectiveDiscount}% discount to ${product.itemName}: ${dealerPrice} → ${dealerPrice * (1 - effectiveDiscount / 100)}`);
+    dealerPrice = dealerPrice * (1 - effectiveDiscount / 100);
+  }
+
+  return {
+    mrp:                  Math.round(mrp * 100) / 100,
+    dealerPrice:          Math.round(dealerPrice * 100) / 100,
+    originalDealerPrice:  Math.round((dealerPricing?.sellingPrice || mrp) * 100) / 100,
+    purchasePrice:        dealerPricing?.purchasePrice || 0,
+    hasOffer:             effectiveDiscount > 0,
+    discountPercentage:   effectiveDiscount,
+    directDiscountPercentage: directDiscountPct,  // ← explicit direct discount for display
+    discount:             appliedDiscount,
+  };
+}
+
+// ── GET /api/app/products ─────────────────────────────────────────────────────
 export const getProductsForDealer = async (req, res) => {
   try {
+    const models = getModels(req.dbConnection);
+    const { Product, Dealer } = models;
+
+    console.log(`🏢 getProductsForDealer - company: ${req.company}, db: ${req.dbConnection.name}`);
+
     const {
       page = 1,
       limit = 20,
@@ -20,562 +269,237 @@ export const getProductsForDealer = async (req, res) => {
       category,
       subcategory,
       brand,
-      status
     } = req.query;
 
-    // Get dealer info for pricing (dealers are identified by username matching dealer code)
-    const dealer = await Dealer.findOne({ code: req.user.username });
+    // Identify dealer by username (dealer code)
+    const dealer = await Dealer.findOne({ code: req.user.username })
+      .populate('allowedBrands',       '_id name')
+      .populate('allowedCategories',    '_id name')
+      .populate('allowedSubcategories', '_id name');
+
     if (!dealer) {
-      return res.status(404).json({
-        success: false,
-        message: 'Dealer not found'
-      });
+      console.log(`❌ Dealer not found - username: ${req.user.username}, company: ${req.company}`);
+      return res.status(404).json({ success: false, message: 'Dealer not found' });
     }
 
-    const filter = { status: 'active' };
+    console.log(`✅ Dealer found: ${dealer.name} (${dealer.code}) in ${req.company}`);
 
-    // Search filter
+    // Build permission-aware base filter
+    const permFilter = await buildPermissionFilter(dealer, models);
+
+    // Merge with user-supplied filters
+    const filter = { ...permFilter };
+
     if (search) {
-      filter.$or = [
-        { productCode: { $regex: search, $options: 'i' } },
-        { itemName: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } }
+      const searchRegex = { $regex: search, $options: 'i' };
+      const searchOr = [
+        { productCode: searchRegex },
+        { itemName:    searchRegex },
+        { description: searchRegex },
       ];
+      // Merge with existing $or if present
+      if (filter.$or) {
+        filter.$and = [{ $or: filter.$or }, { $or: searchOr }];
+        delete filter.$or;
+      } else {
+        filter.$or = searchOr;
+      }
     }
 
-    // Category filter
-    if (category) {
-      filter.category = category;
-    }
+    // Additional user-supplied filters (only if within allowed scope)
+    if (category)    filter.category    = category;
+    if (subcategory) filter.subcategory = subcategory;
+    if (brand)       filter.brand       = brand;
 
-    // Subcategory filter
-    if (subcategory) {
-      filter.subcategory = subcategory;
-    }
+    const pageNum  = Math.max(1, parseInt(page));
+    const limitNum = Math.min(50, Math.max(1, parseInt(limit)));
+    const skip     = (pageNum - 1) * limitNum;
 
-    // Brand filter
-    if (brand) {
-      filter.brand = brand;
-    }
+    const [products, total] = await Promise.all([
+      Product.find(filter)
+        .populate('category',    'name')
+        .populate('subcategory', 'name')
+        .populate('brand',       'name')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean(),
+      Product.countDocuments(filter),
+    ]);
 
-    // Status filter
-    if (status) {
-      filter.status = status;
-    }
+    console.log(`📦 Products query - company: ${req.company}, found: ${products.length}, total: ${total}, db: ${req.dbConnection.name}`);
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-
-    const products = await Product.find(filter)
-      .populate('category', 'name')
-      .populate('subcategory', 'name')
-      .populate('brand', 'name')
-      .limit(parseInt(limit))
-      .skip(skip)
-      .sort({ createdAt: -1 });
-
-    const total = await Product.countDocuments(filter);
-
-        // Get dealer-specific pricing from DealerPricing model
-    const productsWithPricing = await Promise.all(
+    // Enrich with pricing + stock
+    const enriched = await Promise.all(
       products.map(async (product) => {
-        // Get pricing from DealerPricing model
-        const dealerPricing = await DealerPricing.findOne({ 
-          product: product._id, 
-          isActive: true 
-        });
-
-        // Fallback to rateSlabs if DealerPricing doesn't exist
-        let mrp = 0;
-        let dealerPrice = 0;
-
-        if (dealerPricing) {
-          // Use DealerPricing model data
-          mrp = dealerPricing.mrp || dealerPricing.sellingPrice;
-          dealerPrice = dealerPricing.sellingPrice;
-        } else {
-          // Fallback to rateSlabs (legacy)
-          mrp = product.rateSlabs && product.rateSlabs.length > 0
-            ? product.rateSlabs[0].rate
-            : product.totalAmount || 0;
-          dealerPrice = mrp;
-        }
-
-        // Get dealer-specific discount based on brand/category/subcategory
-        const discountMappings = await DiscountMapping.find({
-          mappingType: 'sales',
-          status: 'Approved',
-          brand: product.brand?._id || product.brand,
-          category: product.category?._id || product.category,
-          subcategory: product.subcategory?._id || product.subcategory,
-          validFrom: { $lte: new Date() },
-          validTo: { $gte: new Date() }
-        });
-
-        // Calculate maximum discount percentage from all applicable discounts
-        let maxDiscountPercentage = 0;
-        let appliedDiscount = null;
-
-        if (discountMappings.length > 0) {
-          // Find the highest discount from all levels
-          discountMappings.forEach(discount => {
-            discount.levels.forEach(level => {
-              if (level.discountPercentage > maxDiscountPercentage) {
-                maxDiscountPercentage = level.discountPercentage;
-                appliedDiscount = {
-                  discountId: discount._id,
-                  discountPercentage: level.discountPercentage,
-                  level: level.level || 'Direct',
-                  validFrom: discount.validFrom,
-                  validTo: discount.validTo
-                };
-              }
-            });
-          });
-
-          // Apply discount to dealer price
-          if (maxDiscountPercentage > 0) {
-            dealerPrice = dealerPrice * (1 - maxDiscountPercentage / 100);
-          }
-        }
-
-        // Calculate total available stock across all warehouses
-        // Use a more efficient approach: Get all GRNs for this product and calculate net stock
-        let totalAvailableStock = 0;
-        try {
-          // Get all warehouses that have this product (from GRNs)
-          const grnQuery = { 'items.productId': product._id };
-          const grns = await GRN.find(grnQuery).select('warehouseId items').lean();
-
-          // Group by warehouse
-          const warehouseStock = {};
-          
-          grns.forEach(grn => {
-            if (!grn.warehouseId) return;
-            
-            const warehouseId = grn.warehouseId.toString();
-            
-            if (!warehouseStock[warehouseId]) {
-              warehouseStock[warehouseId] = {
-                totalQty: 0,
-                damagedQty: 0
-              };
-            }
-            
-            grn.items.forEach(item => {
-              const itemProductId = item.productId?._id ? item.productId._id.toString() : item.productId.toString();
-              if (itemProductId === product._id.toString()) {
-                warehouseStock[warehouseId].totalQty += item.acceptedQuantity || 0;
-                warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
-              }
-            });
-          });
-
-          // Calculate net stock for each warehouse using StockMovements
-          const warehouseIds = Object.keys(warehouseStock);
-          
-          // Get all stock movements for this product in one query
-          const allMovements = await StockMovement.find({
-            productId: product._id,
-            warehouseId: { $in: warehouseIds }
-          }).lean();
-
-          // Group movements by warehouse
-          const movementsByWarehouse = {};
-          allMovements.forEach(movement => {
-            const whId = movement.warehouseId.toString();
-            if (!movementsByWarehouse[whId]) {
-              movementsByWarehouse[whId] = [];
-            }
-            movementsByWarehouse[whId].push(movement);
-          });
-
-          // Calculate net stock for each warehouse
-          for (const warehouseId of warehouseIds) {
-            try {
-              // Get latest balance from movements
-              const movements = movementsByWarehouse[warehouseId] || [];
-              let currentStock = 0;
-              
-              if (movements.length > 0) {
-                // Sort by date descending to get latest
-                const sortedMovements = movements.sort((a, b) => {
-                  const dateA = new Date(a.date || a.createdAt);
-                  const dateB = new Date(b.date || b.createdAt);
-                  return dateB - dateA;
-                });
-                currentStock = sortedMovements[0]?.balance || 0;
-              } else {
-                // Fallback to GRN total if no movements
-                currentStock = warehouseStock[warehouseId].totalQty;
-              }
-              
-              // Calculate blocked stock from movements
-              // Only count movements with "Stock Blocked" or "Stock Unblocked" remarks
-              const blockedMovements = movements.filter(m => 
-                m.type === 'OUT' && m.referenceType === 'SALE' && 
-                m.remarks && m.remarks.includes('Stock Blocked')
-              );
-              
-              const unblockedMovements = movements.filter(m => 
-                m.type === 'IN' && m.referenceType === 'SALE' && 
-                m.remarks && m.remarks.includes('Stock Unblocked')
-              );
-              
-              let blockedQty = 0;
-              blockedMovements.forEach(movement => {
-                blockedQty += movement.quantity || 0;
-              });
-              
-              unblockedMovements.forEach(movement => {
-                blockedQty -= movement.quantity || 0;
-              });
-              
-              blockedQty = Math.max(0, blockedQty);
-              
-              // Calculate net stock
-              const netStock = currentStock - warehouseStock[warehouseId].damagedQty - blockedQty;
-              
-              // Only add positive net stock
-              if (netStock > 0) {
-                totalAvailableStock += netStock;
-              }
-            } catch (error) {
-              console.error(`Error calculating stock for warehouse ${warehouseId} for product ${product.productCode}:`, error.message);
-              // Fallback: use GRN calculation
-              const netStock = warehouseStock[warehouseId].totalQty - warehouseStock[warehouseId].damagedQty;
-              if (netStock > 0) {
-                totalAvailableStock += netStock;
-              }
-            }
-          }
-          
-          // Debug logging
-          if (totalAvailableStock > 0) {
-            console.log(`✅ Stock calculated for ${product.productCode}: ${totalAvailableStock} units across ${warehouseIds.length} warehouses`);
-          }
-        } catch (error) {
-          console.error(`❌ Error calculating stock for product ${product.productCode || product._id}:`, error.message);
-          console.error('Stack:', error.stack);
-          totalAvailableStock = 0;
-        }
-
+        const [pricing, availableStock] = await Promise.all([
+          getPricingForProduct(product, models, dealer.dealerType),
+          calcAvailableStock(product._id, models),
+        ]);
         return {
-          ...product.toObject(),
-          mrp: Math.round(mrp * 100) / 100,
-          dealerPrice: Math.round(dealerPrice * 100) / 100,
-          purchasePrice: dealerPricing?.purchasePrice || 0,
-          hasOffer: maxDiscountPercentage > 0,
-          discountPercentage: maxDiscountPercentage,
-          discount: appliedDiscount,
-          originalDealerPrice: Math.round((dealerPricing?.sellingPrice || mrp) * 100) / 100,
-          availableStock: Math.max(0, Math.round(totalAvailableStock)),
-          isOutOfStock: totalAvailableStock <= 0
+          ...product,
+          ...pricing,
+          availableStock,
+          isOutOfStock: availableStock <= 0,
         };
       })
     );
 
-    // Log sample product with stock for debugging
-    if (productsWithPricing.length > 0) {
-      const sampleProduct = productsWithPricing[0];
-      console.log('📦 Sample product response:', {
-        productCode: sampleProduct.productCode,
-        itemName: sampleProduct.itemName,
-        availableStock: sampleProduct.availableStock,
-        isOutOfStock: sampleProduct.isOutOfStock
-      });
-    }
-
     res.json({
       success: true,
-      products: productsWithPricing,
+      products: enriched,
       pagination: {
-        currentPage: parseInt(page),
-        totalPages: Math.ceil(total / parseInt(limit)),
+        currentPage:  pageNum,
+        totalPages:   Math.ceil(total / limitNum),
         totalProducts: total,
-        hasNext: skip + products.length < total,
-        hasPrev: parseInt(page) > 1
-      }
+        hasNext:      skip + products.length < total,
+        hasPrev:      pageNum > 1,
+      },
     });
   } catch (error) {
     console.error('Error getting products for dealer:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching products',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error fetching products', error: error.message });
   }
 };
 
-// @desc    Get product details for dealer
-// @route   GET /api/app/products/:id
-// @access  Private (Dealer)
+// ── GET /api/app/products/:id ─────────────────────────────────────────────────
 export const getProductDetailsForDealer = async (req, res) => {
   try {
+    const models = getModels(req.dbConnection);
+    const { Product, Dealer } = models;
+
     const product = await Product.findById(req.params.id)
-      .populate('category', 'name')
+      .populate('category',    'name')
       .populate('subcategory', 'name')
-      .populate('brand', 'name');
+      .populate('brand',       'name')
+      .lean();
 
     if (!product) {
-      return res.status(404).json({
-        success: false,
-        message: 'Product not found'
-      });
+      return res.status(404).json({ success: false, message: 'Product not found' });
     }
 
-    // Get dealer info for pricing (dealers are identified by username matching dealer code)
-    const dealer = await Dealer.findOne({ code: req.user.username });
+    const dealer = await Dealer.findOne({ code: req.user.username })
+      .populate('allowedBrands',       '_id')
+      .populate('allowedCategories',    '_id')
+      .populate('allowedSubcategories', '_id');
+
     if (!dealer) {
-      return res.status(404).json({
-        success: false,
-        message: 'Dealer not found'
-      });
+      return res.status(404).json({ success: false, message: 'Dealer not found' });
     }
 
-    // Get pricing from DealerPricing model
-    const dealerPricing = await DealerPricing.findOne({ 
-      product: product._id, 
-      isActive: true 
-    });
-
-    // Fallback to rateSlabs if DealerPricing doesn't exist
-    let mrp = 0;
-    let dealerPrice = 0;
-
-    if (dealerPricing) {
-      mrp = dealerPricing.mrp || dealerPricing.sellingPrice;
-      dealerPrice = dealerPricing.sellingPrice;
-    } else {
-      mrp = product.rateSlabs && product.rateSlabs.length > 0
-        ? product.rateSlabs[0].rate
-        : product.totalAmount || 0;
-      dealerPrice = mrp;
+    // Verify dealer has access to this product
+    const permFilter = await buildPermissionFilter(dealer, models);
+    const hasAccess = await Product.countDocuments({ _id: product._id, ...permFilter });
+    if (!hasAccess) {
+      return res.status(403).json({ success: false, message: 'Access denied to this product' });
     }
 
-    // Get dealer-specific discount based on brand/category/subcategory
-    const discountMappings = await DiscountMapping.find({
-      mappingType: 'sales',
-      status: 'Approved',
-      brand: product.brand?._id || product.brand,
-      category: product.category?._id || product.category,
-      subcategory: product.subcategory?._id || product.subcategory,
-      validFrom: { $lte: new Date() },
-      validTo: { $gte: new Date() }
-    });
-
-    // Calculate maximum discount percentage from all applicable discounts
-    let maxDiscountPercentage = 0;
-    let appliedDiscount = null;
-
-    if (discountMappings.length > 0) {
-      // Find the highest discount from all levels
-      discountMappings.forEach(discount => {
-        discount.levels.forEach(level => {
-          if (level.discountPercentage > maxDiscountPercentage) {
-            maxDiscountPercentage = level.discountPercentage;
-            appliedDiscount = {
-              discountId: discount._id,
-              discountPercentage: level.discountPercentage,
-              level: level.level || 'Direct',
-              validFrom: discount.validFrom,
-              validTo: discount.validTo,
-              remarks: discount.remarks
-            };
-          }
-        });
-      });
-
-      // Apply discount to dealer price
-      if (maxDiscountPercentage > 0) {
-        dealerPrice = dealerPrice * (1 - maxDiscountPercentage / 100);
-      }
-    }
-
-    // Calculate total available stock across all warehouses
-    let totalAvailableStock = 0;
-    try {
-      const grnQuery = { 'items.productId': product._id };
-      const grns = await GRN.find(grnQuery).select('warehouseId items');
-
-      const warehouseStock = {};
-      
-      grns.forEach(grn => {
-        if (!grn.warehouseId) return;
-        
-        const warehouseId = grn.warehouseId.toString();
-        
-        if (!warehouseStock[warehouseId]) {
-          warehouseStock[warehouseId] = {
-            totalQty: 0,
-            damagedQty: 0
-          };
-        }
-        
-        grn.items.forEach(item => {
-          const itemProductId = item.productId?._id ? item.productId._id.toString() : item.productId.toString();
-          if (itemProductId === product._id.toString()) {
-            warehouseStock[warehouseId].totalQty += item.acceptedQuantity || 0;
-            warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
-          }
-        });
-      });
-
-      for (const warehouseId of Object.keys(warehouseStock)) {
-        try {
-          const currentStock = await StockMovementService.getCurrentStock(product._id, warehouseId);
-          
-          // Only count movements with "Stock Blocked" remark
-          const blockedMovements = await StockMovement.find({
-            productId: product._id,
-            warehouseId: warehouseId,
-            type: 'OUT',
-            referenceType: 'SALE',
-            remarks: { $regex: /Stock Blocked/ }
-          });
-          
-          const unblockedMovements = await StockMovement.find({
-            productId: product._id,
-            warehouseId: warehouseId,
-            type: 'IN',
-            referenceType: 'SALE',
-            remarks: { $regex: /Stock Unblocked/ }
-          });
-          
-          let blockedQty = 0;
-          blockedMovements.forEach(movement => {
-            blockedQty += movement.quantity;
-          });
-          
-          unblockedMovements.forEach(movement => {
-            blockedQty -= movement.quantity;
-          });
-          
-          blockedQty = Math.max(0, blockedQty);
-          
-          const currentStockValue = currentStock !== undefined ? currentStock : warehouseStock[warehouseId].totalQty;
-          const netStock = currentStockValue - warehouseStock[warehouseId].damagedQty - blockedQty;
-          
-          totalAvailableStock += Math.max(0, netStock);
-        } catch (error) {
-          const netStock = warehouseStock[warehouseId].totalQty - warehouseStock[warehouseId].damagedQty;
-          totalAvailableStock += Math.max(0, netStock);
-        }
-      }
-    } catch (error) {
-      console.error(`Error calculating stock for product ${product._id}:`, error);
-      totalAvailableStock = 0;
-    }
+    const [pricing, availableStock] = await Promise.all([
+      getPricingForProduct(product, models, dealer.dealerType),
+      calcAvailableStock(product._id, models),
+    ]);
 
     res.json({
       success: true,
       product: {
-        ...product.toObject(),
-        mrp: Math.round(mrp * 100) / 100,
-        dealerPrice: Math.round(dealerPrice * 100) / 100,
-        purchasePrice: dealerPricing?.purchasePrice || 0,
-        hasOffer: maxDiscountPercentage > 0,
-        discountPercentage: maxDiscountPercentage,
-        discount: appliedDiscount,
-        originalDealerPrice: Math.round((dealerPricing?.sellingPrice || mrp) * 100) / 100,
-        availableStock: Math.max(0, Math.round(totalAvailableStock)),
-        isOutOfStock: totalAvailableStock <= 0
-      }
+        ...product,
+        ...pricing,
+        availableStock,
+        isOutOfStock: availableStock <= 0,
+      },
     });
   } catch (error) {
     console.error('Error getting product details:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching product details',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error fetching product details', error: error.message });
   }
 };
 
-// @desc    Get products by category for dealer
-// @route   GET /api/app/products/category/:categoryId
-// @access  Private (Dealer)
+// ── GET /api/app/products/category/:categoryId ────────────────────────────────
 export const getProductsByCategoryForDealer = async (req, res) => {
   try {
+    const models = getModels(req.dbConnection);
+    const { Product, Dealer } = models;
     const { categoryId } = req.params;
     const { page = 1, limit = 20 } = req.query;
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const dealer = await Dealer.findOne({ code: req.user.username })
+      .populate('allowedBrands', '_id')
+      .populate('allowedCategories', '_id')
+      .populate('allowedSubcategories', '_id');
 
-    const products = await Product.find({
-      category: categoryId,
-      status: 'active'
-    })
-      .populate('category', 'name')
-      .populate('brand', 'name')
-      .limit(parseInt(limit))
-      .skip(skip)
-      .sort({ createdAt: -1 });
+    if (!dealer) return res.status(404).json({ success: false, message: 'Dealer not found' });
 
-    const total = await Product.countDocuments({
-      category: categoryId,
-      status: 'active'
-    });
+    const permFilter = await buildPermissionFilter(dealer, models);
+    const filter = { ...permFilter, category: categoryId };
+
+    const pageNum  = Math.max(1, parseInt(page));
+    const limitNum = Math.min(50, Math.max(1, parseInt(limit)));
+    const skip     = (pageNum - 1) * limitNum;
+
+    const [products, total] = await Promise.all([
+      Product.find(filter).populate('category', 'name').populate('brand', 'name')
+        .sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
+      Product.countDocuments(filter),
+    ]);
 
     res.json({
       success: true,
       products,
       pagination: {
-        currentPage: parseInt(page),
-        totalPages: Math.ceil(total / parseInt(limit)),
-        totalProducts: total
-      }
+        currentPage: pageNum,
+        totalPages: Math.ceil(total / limitNum),
+        totalProducts: total,
+        hasNext: skip + products.length < total,
+        hasPrev: pageNum > 1,
+      },
     });
   } catch (error) {
     console.error('Error getting products by category:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching products',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error fetching products', error: error.message });
   }
 };
 
-// @desc    Get products by brand for dealer
-// @route   GET /api/app/products/brand/:brandId
-// @access  Private (Dealer)
+// ── GET /api/app/products/brand/:brandId ──────────────────────────────────────
 export const getProductsByBrandForDealer = async (req, res) => {
   try {
+    const models = getModels(req.dbConnection);
+    const { Product, Dealer } = models;
     const { brandId } = req.params;
     const { page = 1, limit = 20 } = req.query;
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const dealer = await Dealer.findOne({ code: req.user.username })
+      .populate('allowedBrands', '_id')
+      .populate('allowedCategories', '_id')
+      .populate('allowedSubcategories', '_id');
 
-    const products = await Product.find({
-      brand: brandId,
-      status: 'active'
-    })
-      .populate('category', 'name')
-      .populate('brand', 'name')
-      .limit(parseInt(limit))
-      .skip(skip)
-      .sort({ createdAt: -1 });
+    if (!dealer) return res.status(404).json({ success: false, message: 'Dealer not found' });
 
-    const total = await Product.countDocuments({
-      brand: brandId,
-      status: 'active'
-    });
+    const permFilter = await buildPermissionFilter(dealer, models);
+    const filter = { ...permFilter, brand: brandId };
+
+    const pageNum  = Math.max(1, parseInt(page));
+    const limitNum = Math.min(50, Math.max(1, parseInt(limit)));
+    const skip     = (pageNum - 1) * limitNum;
+
+    const [products, total] = await Promise.all([
+      Product.find(filter).populate('category', 'name').populate('brand', 'name')
+        .sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
+      Product.countDocuments(filter),
+    ]);
 
     res.json({
       success: true,
       products,
       pagination: {
-        currentPage: parseInt(page),
-        totalPages: Math.ceil(total / parseInt(limit)),
-        totalProducts: total
-      }
+        currentPage: pageNum,
+        totalPages: Math.ceil(total / limitNum),
+        totalProducts: total,
+        hasNext: skip + products.length < total,
+        hasPrev: pageNum > 1,
+      },
     });
   } catch (error) {
     console.error('Error getting products by brand:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching products',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error fetching products', error: error.message });
   }
 };
-

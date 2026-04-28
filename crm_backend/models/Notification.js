@@ -11,7 +11,7 @@ const notificationSchema = new mongoose.Schema(
     type: {
       type: String,
       required: [true, "Notification type is required"],
-      enum: ["order_status", "payment", "credit", "offer", "system"],
+      enum: ["order_status", "payment", "credit", "offer", "system", "invoice", "payment_reminder", "order_request"],
       default: "order_status",
     },
     title: {

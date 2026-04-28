@@ -53,13 +53,14 @@ export const protect = async (req, res, next) => {
     let token;
     let tokenSource = 'none';
 
-    // Check for token in cookies first, then Authorization header, then query string
-    if (req.cookies.token) {
-      token = req.cookies.token;
-      tokenSource = 'cookie';
-    } else if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+    // Check Authorization header FIRST (mobile app always sends this)
+    // Cookie is checked as fallback for web browser sessions only
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
       token = req.headers.authorization.split(' ')[1];
       tokenSource = 'header';
+    } else if (req.cookies.token) {
+      token = req.cookies.token;
+      tokenSource = 'cookie';
     } else if (req.query.token) {
       // Support token in query string for cases like PDF downloads via Linking.openURL
       token = req.query.token;

@@ -548,7 +548,7 @@ export const createContraVoucher = async (req, res) => {
  */
 export const getVouchers = async (req, res) => {
   try {
-    const { Voucher } = getModels(req.dbConnection);
+    const { Voucher, PaymentAllocation } = getModels(req.dbConnection);
     const {
       voucherType,
       partyId,

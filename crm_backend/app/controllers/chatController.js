@@ -1,26 +1,35 @@
-import ChatConversation from '../../models/ChatConversation.js';
-import ChatMessage from '../../models/ChatMessage.js';
-import Dealer from '../../models/Dealer.js';
-import User from '../../models/User.js';
-import SalesOrder from '../../models/SalesOrder.js';
-import DealerInvoice from '../../models/DealerInvoice.js';
-import Notification from '../../models/Notification.js';
+import { chatConversationSchema } from '../../models/ChatConversation.js';
+import { chatMessageSchema }     from '../../models/ChatMessage.js';
+import { dealerSchema }          from '../../models/Dealer.js';
+import { userSchema }            from '../../models/User.js';
+import { salesOrderSchema }      from '../../models/SalesOrder.js';
+import { dealerInvoiceSchema }   from '../../models/DealerInvoice.js';
+import { notificationSchema }    from '../../models/Notification.js';
+import { creditNoteSchema }      from '../../models/CreditNote.js';
+import { productSchema }         from '../../models/Product.js';
+
+const getModels = (db) => ({
+  ChatConversation: db.models.ChatConversation || db.model('ChatConversation', chatConversationSchema),
+  ChatMessage:      db.models.ChatMessage      || db.model('ChatMessage',      chatMessageSchema),
+  Dealer:           db.models.Dealer           || db.model('Dealer',           dealerSchema),
+  User:             db.models.User             || db.model('User',             userSchema),
+  SalesOrder:       db.models.SalesOrder       || db.model('SalesOrder',       salesOrderSchema),
+  DealerInvoice:    db.models.DealerInvoice    || db.model('DealerInvoice',    dealerInvoiceSchema),
+  Notification:     db.models.Notification     || db.model('Notification',     notificationSchema),
+  CreditNote:       db.models.CreditNote       || db.model('CreditNote',       creditNoteSchema),
+  Product:          db.models.Product          || db.model('Product',          productSchema),
+});
 
 // @desc    Create a new chat conversation
 // @route   POST /api/app/support/chat/conversations
 // @access  Protected (Dealer)
 export const createConversation = async (req, res) => {
   try {
+    const { ChatConversation, Dealer } = getModels(req.dbConnection);
     const { type = 'general' } = req.body;
     
-    // Get dealer by username (dealer code) - consistent with other app controllers
     const dealer = await Dealer.findOne({ code: req.user.username });
-    if (!dealer) {
-      return res.status(404).json({
-        success: false,
-        message: 'Dealer not found'
-      });
-    }
+    if (!dealer) return res.status(404).json({ success: false, message: 'Dealer not found' });
 
     // Check if there's already an active conversation of this type
     // Only allow one active conversation per type at a time
@@ -69,6 +78,7 @@ export const createConversation = async (req, res) => {
 // @access  Protected
 export const getConversations = async (req, res) => {
   try {
+    const { ChatConversation, Dealer } = getModels(req.dbConnection);
     const { status, type, limit = 50, page = 1 } = req.query;
     const query = {};
 
@@ -121,6 +131,7 @@ export const getConversations = async (req, res) => {
 // @access  Protected
 export const getConversation = async (req, res) => {
   try {
+    const { ChatConversation, Dealer } = getModels(req.dbConnection);
     const { id } = req.params;
     const query = { _id: id };
 
@@ -162,6 +173,7 @@ export const getConversation = async (req, res) => {
 // @access  Protected
 export const getMessages = async (req, res) => {
   try {
+    const { ChatConversation, ChatMessage, Dealer } = getModels(req.dbConnection);
     const { id } = req.params;
 
     // Verify conversation access
@@ -206,6 +218,7 @@ export const getMessages = async (req, res) => {
 // @access  Protected
 export const sendMessage = async (req, res) => {
   try {
+    const { ChatConversation, ChatMessage, Dealer, Notification } = getModels(req.dbConnection);
     const { id } = req.params;
     
     // Handle both JSON and multipart/form-data requests
@@ -327,6 +340,7 @@ export const sendMessage = async (req, res) => {
 // @access  Protected (Dealer)
 export const getAIResponse = async (req, res) => {
   try {
+    const { ChatConversation, ChatMessage, Dealer, SalesOrder, DealerInvoice } = getModels(req.dbConnection);
     const { id } = req.params;
     const { message, context = {} } = req.body;
 
@@ -360,9 +374,8 @@ export const getAIResponse = async (req, res) => {
     const dealer = await Dealer.findOne({ code: req.user.username });
     const dealerId = dealer?._id;
 
-    // TODO: Integrate with AI service (OpenAI, etc.)
-    // For now, return a simple response with conversation history
-    const aiMessage = await generateAIResponse(message, conversation, context, recentMessages, dealerId);
+    // Pass db models to AI response generator so it uses the correct company DB
+    const aiMessage = await generateAIResponse(message, conversation, context, recentMessages, dealerId, { SalesOrder, DealerInvoice });
 
     // Save AI message
     const chatMessage = await ChatMessage.create({
@@ -398,7 +411,11 @@ export const getAIResponse = async (req, res) => {
       needsOrderNumber: aiMessage.metadata?.needsOrderNumber || false,
       needsProductSelection: aiMessage.metadata?.needsProductSelection || false,
       products: aiMessage.metadata?.products || [],
-      needsLiveChat: aiMessage.metadata?.needsLiveChat || false
+      needsLiveChat: aiMessage.metadata?.needsLiveChat || false,
+      needsOrderSelection: aiMessage.metadata?.needsOrderSelection || false,
+      recentOrders: aiMessage.metadata?.recentOrders || [],
+      needsInvoiceSelection: aiMessage.metadata?.needsInvoiceSelection || false,
+      recentInvoices: aiMessage.metadata?.recentInvoices || [],
     });
   } catch (error) {
     console.error('Error getting AI response:', error);
@@ -410,7 +427,9 @@ export const getAIResponse = async (req, res) => {
 };
 
 // Helper function to lookup order by order number
-async function lookupOrder(orderNumber, dealerId) {
+async function lookupOrder(orderNumber, dealerId, SalesOrderModel) {
+  const SalesOrder = SalesOrderModel;
+  if (!SalesOrder) return null;
   try {
     if (!orderNumber || !dealerId) {
       console.error('Missing orderNumber or dealerId for lookup');
@@ -491,7 +510,9 @@ async function lookupOrder(orderNumber, dealerId) {
 }
 
 // Helper function to lookup invoice by invoice number
-async function lookupInvoice(invoiceNumber, dealerId) {
+async function lookupInvoice(invoiceNumber, dealerId, DealerInvoiceModel) {
+  const DealerInvoice = DealerInvoiceModel;
+  if (!DealerInvoice) return null;
   try {
     const invoice = await DealerInvoice.findOne({
       invoiceNumber: invoiceNumber.trim(),
@@ -657,7 +678,10 @@ function detectIssueType(message, existingIssueType) {
 }
 
 // Simple AI response generator (replace with actual AI service)
-async function generateAIResponse(userMessage, conversation, context, recentMessages = [], dealerId) {
+async function generateAIResponse(userMessage, conversation, context, recentMessages = [], dealerId, models = {}) {
+  // Use passed models (company-specific) or fall back to module-level imports
+  const SalesOrder   = models.SalesOrder   || null;
+  const DealerInvoice = models.DealerInvoice || null;
   const lowerMessage = userMessage.toLowerCase();
   let response = '';
   let extractedInfo = {};
@@ -667,6 +691,10 @@ async function generateAIResponse(userMessage, conversation, context, recentMess
   let needsProductSelection = false;
   let products = [];
   let needsLiveChat = false;
+  let needsOrderSelection = false;
+  let recentOrders = [];
+  let needsInvoiceSelection = false;
+  let recentInvoices = [];
 
   // Get existing collected info from conversation
   const existingInfo = conversation.collectedInfo || {};
@@ -793,39 +821,110 @@ async function generateAIResponse(userMessage, conversation, context, recentMess
   
   // Handle order-based issues: damaged_product, wrong_product, missing_items, quality_issue
   if (['damaged_product', 'wrong_product', 'missing_items', 'quality_issue'].includes(currentIssueType)) {
-    if (!hasOrderNumber) {
-      needsOrderNumber = true;
-      response = `I understand you have an issue with ${currentIssueType.replace('_', ' ')}. To help you, I need your order number. Could you please provide your order number?`;
-    } else {
-      // Lookup order and check status
-      const order = await lookupOrder(extractedInfo.orderNumber, dealerId);
-      if (!order) {
-        response = `I couldn't find order "${extractedInfo.orderNumber}" in your account. Please double-check the order number and make sure it's correct. You can find your order number in your order history or invoice.`;
-      } else if (order.status !== 'Delivered') {
-        response = `I found your order ${extractedInfo.orderNumber}, but it shows status "${order.status}". For ${currentIssueType.replace('_', ' ')} issues, the order must be delivered. Please contact us once your order is delivered.`;
+    // Check if dealer selected an order from the picker (via context.selectedOrderId)
+    if (context.selectedOrderId && !extractedInfo.orderNumber) {
+      extractedInfo.orderNumber = context.selectedOrderNumber || context.selectedOrderId;
+      extractedInfo.selectedOrderId = context.selectedOrderId;
+    }
+
+    if (!hasOrderNumber && !extractedInfo.selectedOrderId) {
+      // Fetch last 5 delivered orders for selection
+      if (dealerId && SalesOrder) {
+        try {
+          const delivered = await SalesOrder.find({ dealer: dealerId, status: 'Delivered' })
+            .sort({ orderDate: -1 })
+            .limit(5)
+            .populate('products.product', 'itemName productCode')
+            .lean();
+          if (delivered.length > 0) {
+            needsOrderSelection = true;
+            recentOrders = delivered.map(o => ({
+              orderId: o._id.toString(),
+              orderNumber: o.orderNumber,
+              orderDate: o.orderDate,
+              totalAmount: o.totalAmount,
+              productCount: o.products?.length || 0,
+            }));
+            response = `I understand you have a ${currentIssueType.replace(/_/g, ' ')} issue. Please select the order it relates to:`;
+          } else {
+            needsOrderNumber = true;
+            response = `I understand you have a ${currentIssueType.replace(/_/g, ' ')} issue. I couldn't find any delivered orders in your account. Could you please provide your order number?`;
+          }
+        } catch (e) {
+          needsOrderNumber = true;
+          response = `I understand you have a ${currentIssueType.replace(/_/g, ' ')} issue. Could you please provide your order number?`;
+        }
       } else {
-        // Order is delivered, show products for selection
+        needsOrderNumber = true;
+        response = `I understand you have a ${currentIssueType.replace(/_/g, ' ')} issue. Could you please provide your order number?`;
+      }
+    } else {
+      // We have an order number — look it up
+      const orderRef = extractedInfo.orderNumber || extractedInfo.selectedOrderId;
+      let order = null;
+      if (extractedInfo.selectedOrderId) {
+        // Direct ID lookup (from picker)
+        try {
+          order = await SalesOrder.findOne({ _id: extractedInfo.selectedOrderId, dealer: dealerId })
+            .populate('products.product', 'itemName productCode')
+            .lean();
+        } catch (e) { /* fall through to number lookup */ }
+      }
+      if (!order) {
+        order = await lookupOrder(orderRef, dealerId, SalesOrder);
+      }
+
+      if (!order) {
+        // Order not found — show picker again
+        if (dealerId && SalesOrder) {
+          try {
+            const delivered = await SalesOrder.find({ dealer: dealerId, status: 'Delivered' })
+              .sort({ orderDate: -1 }).limit(5)
+              .populate('products.product', 'itemName productCode').lean();
+            if (delivered.length > 0) {
+              needsOrderSelection = true;
+              recentOrders = delivered.map(o => ({
+                orderId: o._id.toString(),
+                orderNumber: o.orderNumber,
+                orderDate: o.orderDate,
+                totalAmount: o.totalAmount,
+                productCount: o.products?.length || 0,
+              }));
+              response = `I couldn't find that order. Please select from your recent delivered orders:`;
+            } else {
+              needsOrderNumber = true;
+              response = `I couldn't find order "${orderRef}". Please double-check the order number.`;
+            }
+          } catch (e) {
+            needsOrderNumber = true;
+            response = `I couldn't find order "${orderRef}". Please double-check the order number.`;
+          }
+        }
+      } else if (order.status !== 'Delivered') {
+        response = `I found your order ${order.orderNumber}, but it shows status "${order.status}". For ${currentIssueType.replace(/_/g, ' ')} issues, the order must be delivered. Please contact us once your order is delivered.`;
+      } else {
+        // Order is delivered — show products for selection
         if (!hasSelectedProduct) {
           needsProductSelection = true;
           products = order.products.map(p => ({
             productId: p.product?._id?.toString() || p.product?.toString(),
             productName: p.productName || p.product?.itemName || 'Unknown Product',
             productCode: p.productCode || p.product?.productCode || '',
-            quantity: p.quantity
+            quantity: p.quantity,
           }));
           extractedInfo.orderData = {
             orderNumber: order.orderNumber,
             orderDate: order.orderDate,
             deliveryDate: order.deliveryDate,
-            status: order.status
+            status: order.status,
           };
-          response = `Great! I found your order ${extractedInfo.orderNumber} and it's been delivered. Please select which product has the issue:\n\n${products.map((p, i) => `${i + 1}. ${p.productName} (Qty: ${p.quantity})`).join('\n')}`;
+          extractedInfo.orderNumber = order.orderNumber;
+          response = `Great! I found your order ${order.orderNumber} (delivered). Please select which product has the issue:`;
         } else if (!hasImage) {
           needsImage = true;
-          response = `Thank you for selecting ${extractedInfo.selectedProductName}. To process your ${currentIssueType.replace('_', ' ')} request, please share a clear image of the product.`;
+          response = `Thank you for selecting "${extractedInfo.selectedProductName}". To process your ${currentIssueType.replace(/_/g, ' ')} request, please share a clear photo of the product.`;
         } else {
-          // All info collected, ready to submit
-          response = `Perfect! I have all the information:\n- Order: ${extractedInfo.orderNumber}\n- Product: ${extractedInfo.selectedProductName}\n- Image: Received\n\nYour ${currentIssueType.replace('_', ' ')} complaint will be submitted to our support team. They will review it and get back to you soon.`;
+          response = `Perfect! I have all the information:\n• Order: ${extractedInfo.orderNumber}\n• Product: ${extractedInfo.selectedProductName}\n• Photo: Received ✓\n\nYour ${currentIssueType.replace(/_/g, ' ')} complaint has been submitted. Our team will review it and get back to you soon.`;
           readyToSubmit = true;
         }
       }
@@ -833,29 +932,72 @@ async function generateAIResponse(userMessage, conversation, context, recentMess
   }
   // Handle late delivery
   else if (currentIssueType === 'late_delivery') {
-    if (!hasOrderNumber) {
-      needsOrderNumber = true;
-      response = 'I understand you have a late delivery concern. To help you, I need your order number. Could you please provide your order number?';
-    } else {
-      const order = await lookupOrder(extractedInfo.orderNumber, dealerId);
-      if (!order) {
-        response = `I couldn't find order "${extractedInfo.orderNumber}" in your account. Please double-check the order number and make sure it's correct. You can find your order number in your order history or invoice.`;
+    if (context.selectedOrderId && !extractedInfo.orderNumber) {
+      extractedInfo.orderNumber = context.selectedOrderNumber || context.selectedOrderId;
+      extractedInfo.selectedOrderId = context.selectedOrderId;
+    }
+
+    if (!hasOrderNumber && !extractedInfo.selectedOrderId) {
+      // Fetch last 5 non-delivered orders for selection
+      if (dealerId && SalesOrder) {
+        try {
+          const pending = await SalesOrder.find({
+            dealer: dealerId,
+            status: { $in: ['Pending', 'Confirmed', 'Processing', 'In Transit'] }
+          })
+            .sort({ orderDate: -1 })
+            .limit(5)
+            .lean();
+          if (pending.length > 0) {
+            needsOrderSelection = true;
+            recentOrders = pending.map(o => ({
+              orderId: o._id.toString(),
+              orderNumber: o.orderNumber,
+              orderDate: o.orderDate,
+              totalAmount: o.totalAmount,
+              status: o.status,
+              productCount: o.products?.length || 0,
+            }));
+            response = 'I understand you have a late delivery concern. Please select the order:';
+          } else {
+            needsOrderNumber = true;
+            response = 'I understand you have a late delivery concern. Could you please provide your order number?';
+          }
+        } catch (e) {
+          needsOrderNumber = true;
+          response = 'I understand you have a late delivery concern. Could you please provide your order number?';
+        }
       } else {
-        const expectedDate = order.deliveryDate || new Date(order.orderDate.getTime() + (order.creditDays || 7) * 24 * 60 * 60 * 1000);
+        needsOrderNumber = true;
+        response = 'I understand you have a late delivery concern. Could you please provide your order number?';
+      }
+    } else {
+      const orderRef = extractedInfo.orderNumber || extractedInfo.selectedOrderId;
+      let order = null;
+      if (extractedInfo.selectedOrderId) {
+        try {
+          order = await SalesOrder.findOne({ _id: extractedInfo.selectedOrderId, dealer: dealerId }).lean();
+        } catch (e) { /* fall through */ }
+      }
+      if (!order) order = await lookupOrder(orderRef, dealerId, SalesOrder);
+
+      if (!order) {
+        needsOrderNumber = true;
+        response = `I couldn't find that order. Please provide your order number.`;
+      } else {
+        const expectedDate = order.deliveryDate || new Date(new Date(order.orderDate).getTime() + (order.creditDays || 7) * 24 * 60 * 60 * 1000);
         const today = new Date();
         const daysLate = Math.floor((today - expectedDate) / (1000 * 60 * 60 * 24));
-        
         if (daysLate <= 0) {
-          response = `I checked your order ${extractedInfo.orderNumber}. The expected delivery date is ${expectedDate.toLocaleDateString()}, which hasn't passed yet. Your order is still within the expected timeframe.`;
+          response = `I checked your order ${order.orderNumber}. The expected delivery date is ${expectedDate.toLocaleDateString()}, which hasn't passed yet. Your order is still within the expected timeframe.`;
         } else if (daysLate <= 3) {
-          response = `I see your order ${extractedInfo.orderNumber} is ${daysLate} day(s) late. This is a minor delay. We're working on it and it should arrive soon. Is this acceptable, or would you like to speak with our support team?`;
+          response = `I see your order ${order.orderNumber} is ${daysLate} day(s) late. This is a minor delay — it should arrive soon. Would you like to speak with our support team?`;
         } else {
-          response = `I understand your concern. Your order ${extractedInfo.orderNumber} is ${daysLate} days late, which is significant. Would you like me to connect you with our support team for immediate assistance? (Reply "yes" to connect)`;
-          // If user doesn't agree or says no, escalate to live chat
+          response = `I understand your concern. Your order ${order.orderNumber} is ${daysLate} days late. Would you like me to connect you with our support team for immediate assistance?`;
           if (lowerMessage.includes('no') || lowerMessage.includes('not') || lowerMessage.includes('unacceptable')) {
             needsLiveChat = true;
             extractedInfo.needsLiveChat = true;
-            response = 'I understand. I\'m connecting you with our support team for immediate assistance. They will help resolve this issue right away.';
+            response = "I'm connecting you with our support team for immediate assistance.";
           }
         }
       }
@@ -863,27 +1005,89 @@ async function generateAIResponse(userMessage, conversation, context, recentMess
   }
   // Handle billing error
   else if (currentIssueType === 'billing_error') {
-    if (!hasInvoice) {
-      response = 'I can help you with billing errors. Please provide your invoice number so I can check for any discrepancies.';
-    } else {
-      const invoice = await lookupInvoice(extractedInfo.invoiceNumber, dealerId);
-      if (!invoice) {
-        response = `I couldn't find invoice ${extractedInfo.invoiceNumber}. Could you please verify the invoice number?`;
+    if (context.selectedInvoiceId && !extractedInfo.invoiceNumber) {
+      extractedInfo.invoiceNumber = context.selectedInvoiceNumber || context.selectedInvoiceId;
+      extractedInfo.selectedInvoiceId = context.selectedInvoiceId;
+    }
+
+    if (!hasInvoice && !extractedInfo.selectedInvoiceId) {
+      // Fetch last 5 invoices for selection
+      if (dealerId && DealerInvoice) {
+        try {
+          const recent = await DealerInvoice.find({ dealer: dealerId })
+            .sort({ invoiceDate: -1 })
+            .limit(5)
+            .lean();
+          if (recent.length > 0) {
+            needsInvoiceSelection = true;
+            recentInvoices = recent.map(inv => ({
+              invoiceId: inv._id.toString(),
+              invoiceNumber: inv.invoiceNumber,
+              invoiceDate: inv.invoiceDate,
+              totalAmount: inv.totalAmount || inv.grandTotal || 0,
+              paymentStatus: inv.paymentStatus || 'Unpaid',
+            }));
+            response = 'I can help you with a billing error. Please select the invoice you have a query about:';
+          } else {
+            response = 'I can help you with billing errors. Please provide your invoice number so I can check for any discrepancies.';
+          }
+        } catch (e) {
+          response = 'I can help you with billing errors. Please provide your invoice number.';
+        }
       } else {
-        const order = invoice.salesOrder ? await lookupOrder(invoice.salesOrderNumber || invoice.salesOrder.orderNumber, dealerId) : null;
+        response = 'I can help you with billing errors. Please provide your invoice number.';
+      }
+    } else {
+      const invoiceRef = extractedInfo.invoiceNumber || extractedInfo.selectedInvoiceId;
+      let invoice = null;
+      if (extractedInfo.selectedInvoiceId) {
+        try {
+          invoice = await DealerInvoice.findOne({ _id: extractedInfo.selectedInvoiceId, dealer: dealerId })
+            .populate('items.product', 'itemName productCode')
+            .populate('salesOrder')
+            .lean();
+        } catch (e) { /* fall through */ }
+      }
+      if (!invoice) invoice = await lookupInvoice(invoiceRef, dealerId, DealerInvoice);
+
+      if (!invoice) {
+        // Show picker again
+        if (dealerId && DealerInvoice) {
+          try {
+            const recent = await DealerInvoice.find({ dealer: dealerId })
+              .sort({ invoiceDate: -1 }).limit(5).lean();
+            if (recent.length > 0) {
+              needsInvoiceSelection = true;
+              recentInvoices = recent.map(inv => ({
+                invoiceId: inv._id.toString(),
+                invoiceNumber: inv.invoiceNumber,
+                invoiceDate: inv.invoiceDate,
+                totalAmount: inv.totalAmount || inv.grandTotal || 0,
+                paymentStatus: inv.paymentStatus || 'Unpaid',
+              }));
+              response = `I couldn't find that invoice. Please select from your recent invoices:`;
+            } else {
+              response = `I couldn't find invoice "${invoiceRef}". Could you please verify the invoice number?`;
+            }
+          } catch (e) {
+            response = `I couldn't find invoice "${invoiceRef}". Could you please verify the invoice number?`;
+          }
+        }
+      } else {
+        const order = invoice.salesOrder
+          ? await lookupOrder(invoice.salesOrderNumber || invoice.salesOrder?.orderNumber, dealerId, SalesOrder)
+          : null;
         const errors = checkBillingErrors(invoice, order);
-        
         if (errors.length === 0) {
-          response = `I've checked invoice ${extractedInfo.invoiceNumber} and compared it with the related order. I didn't find any billing errors. Everything looks correct. Is there a specific issue you're concerned about?`;
-          // If user insists there's an error, escalate
+          response = `I've checked invoice ${invoice.invoiceNumber} and everything looks correct. Is there a specific discrepancy you noticed?`;
           if (hasDescription && (lowerMessage.includes('wrong') || lowerMessage.includes('error') || lowerMessage.includes('mistake'))) {
             needsLiveChat = true;
             extractedInfo.needsLiveChat = true;
-            response = 'I understand your concern. Let me connect you with our billing team who can review this in detail. They will help resolve any billing issues.';
+            response = "I understand your concern. Let me connect you with our billing team who can review this in detail.";
           }
         } else {
           extractedInfo.billingErrors = errors;
-          response = `I found the following billing errors in invoice ${extractedInfo.invoiceNumber}:\n\n${errors.map((e, i) => `${i + 1}. ${e}`).join('\n')}\n\nI'm forwarding this to our billing team for immediate resolution. They will get back to you soon.`;
+          response = `I found the following billing discrepancies in invoice ${invoice.invoiceNumber}:\n\n${errors.map((e, i) => `${i + 1}. ${e}`).join('\n')}\n\nI'm forwarding this to our billing team for immediate resolution.`;
           readyToSubmit = true;
         }
       }
@@ -974,7 +1178,11 @@ async function generateAIResponse(userMessage, conversation, context, recentMess
       needsOrderNumber,
       needsProductSelection,
       products,
-      needsLiveChat
+      needsLiveChat,
+      needsOrderSelection,
+      recentOrders,
+      needsInvoiceSelection,
+      recentInvoices,
     }
   };
 }
@@ -984,6 +1192,7 @@ async function generateAIResponse(userMessage, conversation, context, recentMess
 // @access  Protected (Dealer)
 export const submitIssue = async (req, res) => {
   try {
+    const { ChatConversation, Dealer } = getModels(req.dbConnection);
     const { id } = req.params;
     const issueData = req.body;
 
@@ -1031,6 +1240,7 @@ export const submitIssue = async (req, res) => {
 // @access  Protected (Dealer)
 export const submitReturnRequest = async (req, res) => {
   try {
+    const { ChatConversation, Dealer } = getModels(req.dbConnection);
     const { id } = req.params;
     const returnData = req.body;
 
@@ -1070,6 +1280,7 @@ export const submitReturnRequest = async (req, res) => {
 // @access  Protected (Admin)
 export const markResolved = async (req, res) => {
   try {
+    const { ChatConversation, Notification } = getModels(req.dbConnection);
     const { id } = req.params;
     const { resolutionNotes } = req.body;
 
@@ -1108,6 +1319,7 @@ export const markResolved = async (req, res) => {
 // @access  Protected (Admin)
 export const createCreditNoteFromConversation = async (req, res) => {
   try {
+    const { ChatConversation, Dealer } = getModels(req.dbConnection);
     const { id } = req.params;
     const creditNoteData = req.body;
 
@@ -1119,8 +1331,7 @@ export const createCreditNoteFromConversation = async (req, res) => {
       });
     }
     
-    // Get dealer info separately if needed
-    const Dealer = (await import('../../models/Dealer.js')).default;
+    // Use Dealer from getModels (already destructured above)
     const dealer = await Dealer.findById(conversation.dealer);
     if (!dealer) {
       return res.status(400).json({
@@ -1129,9 +1340,11 @@ export const createCreditNoteFromConversation = async (req, res) => {
       });
     }
 
-    // Import models dynamically to avoid circular dependency
-    const CreditNote = (await import('../../models/CreditNote.js')).default;
-    const DealerInvoice = (await import('../../models/DealerInvoice.js')).default;
+    // Import CreditNote and DealerInvoice via dbConnection
+    const { creditNoteSchema }   = await import('../../models/CreditNote.js');
+    const { dealerInvoiceSchema } = await import('../../models/DealerInvoice.js');
+    const CreditNote    = req.dbConnection.models.CreditNote    || req.dbConnection.model('CreditNote',    creditNoteSchema);
+    const DealerInvoice = req.dbConnection.models.DealerInvoice || req.dbConnection.model('DealerInvoice', dealerInvoiceSchema);
 
     // Validate required fields
     if (!req.user || !req.user._id) {

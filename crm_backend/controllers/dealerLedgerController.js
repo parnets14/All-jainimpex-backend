@@ -287,7 +287,7 @@ export const getAllDealerLedgerEntries = async (req, res) => {
 // Get Dealer Ledger by Dealer ID (Enhanced with Voucher Integration)
 export const getDealerLedgerByDealer = async (req, res) => {
   try {
-    const { DealerLedger, Dealer, DealerInvoice, Voucher, PaymentAllocation } = getModels(req.dbConnection);
+    const { DealerLedger, Dealer, DealerInvoice } = getModels(req.dbConnection);
     const { dealerId } = req.params;
     const { 
       startDate, 
@@ -302,12 +302,16 @@ export const getDealerLedgerByDealer = async (req, res) => {
     // Build date filter
     const dateFilter = {};
     if (startDate) dateFilter.$gte = new Date(startDate);
-    if (endDate) dateFilter.$lte = new Date(endDate);
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      dateFilter.$lte = end;
+    }
 
-    // 1. Get old ledger entries (invoices, old payments)
+    // ── 1. Old DealerLedger entries (invoices + payments recorded the old way) ──
     const oldLedgerFilter = { 
       dealer: dealerId,
-      transactionType: { $in: ['Invoice', 'Payment', 'Advance Payment', 'Advance Adjustment'] }
+      transactionType: { $in: ['Invoice', 'Payment', 'Advance Payment', 'Advance Adjustment', 'Credit Note'] }
     };
     if (startDate || endDate) oldLedgerFilter.entryDate = dateFilter;
     if (transactionType && transactionType !== 'all') oldLedgerFilter.transactionType = transactionType;
@@ -317,27 +321,36 @@ export const getDealerLedgerByDealer = async (req, res) => {
       .populate('creditNote', 'creditNoteNumber creditAmount creditNoteDate')
       .lean();
 
-    // 2. Get invoices (new system)
+    // Track which invoice IDs are already covered by old ledger entries
+    // to avoid double-counting when we also query DealerInvoice directly
+    const invoiceIdsInOldLedger = new Set(
+      oldEntries
+        .filter(e => e.transactionType === 'Invoice' && e.invoice)
+        .map(e => (e.invoice?._id || e.invoice)?.toString())
+        .filter(Boolean)
+    );
+
+    // ── 2. New-system invoices NOT already in old ledger ──
+    // FIX: use 'dealer' field (not 'dealerId'), exclude drafts and deleted
     const invoiceFilter = { 
-      dealerId: dealerId,
-      isDeleted: false
+      dealer: dealerId,
+      isDeleted: false,
+      isDraft: false
     };
     if (startDate || endDate) invoiceFilter.invoiceDate = dateFilter;
 
     const invoices = await DealerInvoice.find(invoiceFilter).lean();
 
-    // 3. Get payment allocations (replaces individual vouchers)
-    const allocationFilter = { partyId: dealerId };
-    if (startDate || endDate) allocationFilter.allocationDate = dateFilter;
+    // ── 3. Payment allocations — DO NOT add these as separate ledger entries.
+    // The voucherController already creates a DealerLedger entry when a Receipt voucher
+    // is posted. PaymentAllocation only links that payment to specific invoices.
+    // Adding allocations here would double-count every payment.
+    // (We still fetch allocations to enrich invoice entries with payment status if needed.)
 
-    const allocations = await PaymentAllocation.find(allocationFilter)
-      .populate('allocations.invoiceId', 'invoiceNumber')
-      .lean();
-
-    // 4. Combine all entries
+    // ── 4. Combine entries (no double-counting) ──
     const combinedEntries = [];
 
-    // Add old ledger entries
+    // Add old ledger entries as-is
     oldEntries.forEach(entry => {
       combinedEntries.push({
         entryDate: entry.entryDate,
@@ -361,8 +374,9 @@ export const getDealerLedgerByDealer = async (req, res) => {
       });
     });
 
-    // Add invoice entries (from new system)
+    // Add new-system invoices ONLY if not already in old ledger
     invoices.forEach(invoice => {
+      if (invoiceIdsInOldLedger.has(invoice._id.toString())) return; // skip — already counted
       combinedEntries.push({
         entryDate: invoice.invoiceDate,
         transactionType: 'Invoice',
@@ -387,110 +401,86 @@ export const getDealerLedgerByDealer = async (req, res) => {
       });
     });
 
-    // Add payment allocations (grouped by allocation, not individual vouchers)
-    allocations.forEach(allocation => {
-      const totalAllocated = allocation.totalAllocated || 0;
-      const invoiceNumbers = allocation.allocations.map(a => a.invoiceNumber).join(', ');
-      
-      combinedEntries.push({
-        entryDate: allocation.allocationDate,
-        transactionType: 'Payment',
-        invoiceNumber: invoiceNumbers,
-        creditNoteNumber: '',
-        debitAmount: 0,
-        creditAmount: totalAllocated,
-        description: `Payment allocated to: ${invoiceNumbers}`,
-        remarks: `Allocation: ${allocation.allocationNumber}`,
-        paymentMethod: allocation.voucherType || 'Receipt',
-        source: 'allocation',
-        _id: allocation._id,
-        allocationNumber: allocation.allocationNumber,
-        voucherNumber: allocation.voucherNumber
-      });
-    });
-
-    // Sort by date
+    // ── 5. Sort: ascending by DATE only (ignore time); same date → invoices (debit) before payments (credit) ──
     combinedEntries.sort((a, b) => {
-      const dateCompare = new Date(a.entryDate) - new Date(b.entryDate);
-      return sortOrder === 'desc' ? -dateCompare : dateCompare;
+      const da = new Date(a.entryDate); da.setHours(0, 0, 0, 0);
+      const db = new Date(b.entryDate); db.setHours(0, 0, 0, 0);
+      const diff = da - db;
+      if (diff !== 0) return diff;
+      const aIsDebit = (a.debitAmount || 0) > 0 ? 0 : 1;
+      const bIsDebit = (b.debitAmount || 0) > 0 ? 0 : 1;
+      return aIsDebit - bIsDebit;
     });
 
-    // Calculate running balance
-    let runningBalance = 0;
-    
-    // Calculate opening balance (entries before startDate)
+    // ── 6. Calculate opening balance (entries BEFORE startDate) ──
+    let openingBalance = 0;
     if (startDate) {
-      // Old ledger entries before start date
-      const entriesBeforeStart = await DealerLedger.find({
-        dealer: dealerId,
-        entryDate: { $lt: new Date(startDate) }
-      }).lean();
-      
-      entriesBeforeStart.forEach(entry => {
-        runningBalance += (entry.debitAmount || 0) - (entry.creditAmount || 0);
-      });
-      
-      // Invoices before start date
-      const invoicesBeforeStart = await DealerInvoice.find({
-        dealerId: dealerId,
-        isDeleted: false,
-        invoiceDate: { $lt: new Date(startDate) }
-      }).lean();
-      
-      invoicesBeforeStart.forEach(invoice => {
-        runningBalance += invoice.totalAmount;
-      });
-      
-      // Payment allocations before start date
-      const allocationsBeforeStart = await PaymentAllocation.find({
-        partyId: dealerId,
-        allocationDate: { $lt: new Date(startDate) }
-      }).lean();
-      
-      allocationsBeforeStart.forEach(allocation => {
-        runningBalance -= (allocation.totalAllocated || 0);
+      const beforeStart = new Date(startDate);
+
+      const [oldBefore, invBefore] = await Promise.all([
+        DealerLedger.find({
+          dealer: dealerId,
+          entryDate: { $lt: beforeStart }
+        }).lean(),
+        DealerInvoice.find({
+          dealer: dealerId,
+          isDeleted: false,
+          isDraft: false,
+          invoiceDate: { $lt: beforeStart }
+        }).lean()
+      ]);
+
+      // Track invoice IDs already in old ledger (before start)
+      const invIdsBeforeInOldLedger = new Set(
+        oldBefore
+          .filter(e => e.transactionType === 'Invoice' && e.invoice)
+          .map(e => (e.invoice?._id || e.invoice)?.toString())
+          .filter(Boolean)
+      );
+
+      oldBefore.forEach(e => { openingBalance += (e.debitAmount || 0) - (e.creditAmount || 0); });
+      invBefore.forEach(inv => {
+        if (!invIdsBeforeInOldLedger.has(inv._id.toString())) {
+          openingBalance += inv.totalAmount;
+        }
       });
     }
-    
-    const openingBalance = runningBalance;
-    
+
+    // ── 7. Calculate running balance for each entry ──
+    let runningBalance = openingBalance;
     combinedEntries.forEach(entry => {
-      runningBalance += entry.debitAmount - entry.creditAmount;
+      runningBalance += (entry.debitAmount || 0) - (entry.creditAmount || 0);
       entry.balance = runningBalance;
     });
 
-    // Paginate
-    const total = combinedEntries.length;
-    const startIndex = (page - 1) * limit;
-    const endIndex = startIndex + parseInt(limit);
-    const paginatedEntries = combinedEntries.slice(startIndex, endIndex);
+    // ── 8. Apply sort direction for display ──
+    if (sortOrder === 'desc') combinedEntries.reverse();
 
-    // Calculate summary
+    // ── 9. Paginate ──
+    const total = combinedEntries.length;
+    const startIndex = (parseInt(page) - 1) * parseInt(limit);
+    const paginatedEntries = combinedEntries.slice(startIndex, startIndex + parseInt(limit));
+
+    // ── 10. Summary ──
     const summary = {
       openingBalance,
-      totalDebit: combinedEntries.reduce((sum, e) => sum + e.debitAmount, 0),
-      totalCredit: combinedEntries.reduce((sum, e) => sum + e.creditAmount, 0),
+      totalDebit:  combinedEntries.reduce((s, e) => s + e.debitAmount,  0),
+      totalCredit: combinedEntries.reduce((s, e) => s + e.creditAmount, 0),
       currentBalance: runningBalance,
       totalTransactions: total
     };
 
-    // Get dealer information
     const dealer = await Dealer.findById(dealerId);
 
     res.status(200).json({
       success: true,
-      data: {
-        dealer,
-        entries: paginatedEntries,
-        summary,
-        openingBalance
-      },
+      data: { dealer, entries: paginatedEntries, summary, openingBalance },
       pagination: {
         currentPage: parseInt(page),
-        totalPages: Math.ceil(total / limit),
+        totalPages: Math.ceil(total / parseInt(limit)),
         totalItems: total,
         itemsPerPage: parseInt(limit),
-        hasNextPage: parseInt(page) < Math.ceil(total / limit),
+        hasNextPage: parseInt(page) < Math.ceil(total / parseInt(limit)),
         hasPrevPage: parseInt(page) > 1
       }
     });

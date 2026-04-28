@@ -35,6 +35,11 @@ const dealerSchema = new mongoose.Schema(
         "Please enter a valid email",
       ],
     },
+    // FCM token for push notifications
+    fcmToken: {
+      type: String,
+      default: null,
+    },
     address: {
       type: String,
       trim: true,

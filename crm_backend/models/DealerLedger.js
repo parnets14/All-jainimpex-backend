@@ -177,15 +177,16 @@ const dealerLedgerSchema = new mongoose.Schema({
 // Pre-save middleware to calculate running balance
 dealerLedgerSchema.pre("save", async function(next) {
   if (this.isNew) {
-    // Get the last entry for this dealer to calculate running balance
+    // Get the last entry for this dealer sorted by entryDate (not createdAt)
+    // to ensure correct running balance even for backdated entries
     const lastEntry = await this.constructor.findOne(
-      { dealer: this.dealer },
+      { dealer: this.dealer, entryDate: { $lte: this.entryDate } },
       {},
-      { sort: { 'createdAt': -1 } }
+      { sort: { entryDate: -1, createdAt: -1 } }
     );
     
     let previousBalance = 0;
-    if (lastEntry) {
+    if (lastEntry && lastEntry._id.toString() !== this._id?.toString()) {
       previousBalance = lastEntry.runningBalance;
     }
     

@@ -85,6 +85,7 @@ import chatRoutes from './routes/chatRoutes.js';
 import collectionRoutes from './routes/collectionRoutes.js';
 import invoicePrintTemplateRoutes from './routes/invoicePrintTemplateRoutes.js';
 import salesAnalyticsRoutes from './routes/salesAnalyticsRoutes.js';
+import dealerOrderRequestRoutes from './routes/dealerOrderRequestRoutes.js';
 
 // Dealer App Routes
 import appAuthRoutes from './app/routes/authRoutes.js';
@@ -98,6 +99,7 @@ import appPointsRoutes from './app/routes/pointsRoutes.js';
 import appChatRoutes from './app/routes/chatRoutes.js';
 import appDealerRoutes from './app/routes/dealerRoutes.js';
 import appCreditNoteRoutes from './app/routes/creditNoteRoutes.js';
+import appDealerOrderRequestRoutes from './app/routes/dealerOrderRequestRoutes.js';
 
 // Sales Executive App Routes
 import seAuthRoutes from './SalesExecutiveAppBackend/routes/authRoutes.js';
@@ -336,6 +338,7 @@ app.use('/api/stock-adjustments', stockAdjustmentRoutes);
 app.use('/api/purchase-wishlists', purchaseWishlistRoutes);
 app.use('/api/sales-orders', salesOrderRoutes);
 app.use('/api/sales-analytics', salesAnalyticsRoutes);
+app.use('/api/dealer-order-requests', dealerOrderRequestRoutes);
 app.use('/api/cheques', chequeRoutes);
 app.use('/api/dealer-invoices', dealerInvoiceRoutes);
 app.use('/api/invoice-print-templates', invoicePrintTemplateRoutes);
@@ -381,6 +384,7 @@ app.use('/api/app/points', appPointsRoutes);
 app.use('/api/app/support/chat', appChatRoutes);
 app.use('/api/app/dealer', appDealerRoutes);
 app.use('/api/app/credit-notes', appCreditNoteRoutes);
+app.use('/api/app/order-requests', appDealerOrderRequestRoutes);
 
 // Sales Executive App Routes (separate API prefix for SE app)
 console.log('🔧 Registering Sales Executive App routes...');
@@ -533,6 +537,14 @@ app.use("/public", express.static(join(__dirname, "public")));
     scheduleStockStatusRefresh();
   } catch (error) {
     console.error('❌ Failed to initialize stock status refresh cron job:', error);
+  }
+
+  // Initialize overdue payment reminder cron (daily 9 AM IST)
+  try {
+    const { startOverduePaymentCron } = await import('./cron/overduePaymentCron.js');
+    startOverduePaymentCron();
+  } catch (error) {
+    console.error('❌ Failed to initialize overdue payment cron:', error);
   }
 
   // Start server

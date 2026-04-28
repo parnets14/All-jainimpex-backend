@@ -4,6 +4,7 @@ import {
   updateDealerProfile,
   getDealerProfile,
   uploadProfileImage,
+  saveFcmToken,
 } from '../controllers/dealerController.js';
 
 const router = express.Router();
@@ -16,6 +17,9 @@ router.get('/profile', getDealerProfile);
 
 // Update dealer profile (name and image only)
 router.put('/profile', uploadProfileImage, updateDealerProfile);
+
+// Save FCM token for push notifications
+router.post('/fcm-token', saveFcmToken);
 
 export default router;
 

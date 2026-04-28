@@ -19,3 +19,6 @@ Thumbs.db
 # Optional: build output (if any)
 dist/
 build/
+
+# Firebase service account key (never commit this)
+firebase-service-account.json

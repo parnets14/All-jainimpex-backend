@@ -11,6 +11,7 @@ import { discountMappingSchema } from "../models/DiscountMapping.js";
 import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
 import { dealerLedgerSchema } from "../models/DealerLedger.js";
 import { paymentAllocationSchema } from "../models/PaymentAllocation.js";
+import { sendPushNotification } from '../services/firebaseNotificationService.js';
 
 // Helper function to get models from company-specific connection
 const getModels = (dbConnection) => {
@@ -851,6 +852,32 @@ export const createSalesOrder = async (req, res) => {
         "Sales order created successfully",
       salesOrder: populatedOrder
     });
+
+    // Send push notification to dealer (non-blocking, after response)
+    try {
+      const dealerDoc = await Dealer.findById(salesOrder.dealer).select('fcmToken').lean();
+      if (dealerDoc?.fcmToken) {
+        const soTitle = 'Sales Order Created';
+        const soMsg   = `Sales order ${salesOrder.orderNumber} has been created for you. Total: Rs. ${(salesOrder.totalAmount || 0).toLocaleString('en-IN')}.`;
+        await Notification.create({
+          dealer: salesOrder.dealer,
+          type: 'order_status',
+          title: soTitle,
+          message: soMsg,
+          orderId: salesOrder._id,
+          orderNumber: salesOrder.orderNumber,
+          status: salesOrder.status,
+          priority: 'high',
+          metadata: { originalType: 'sales_order_created' },
+        });
+        await sendPushNotification({
+          token: dealerDoc.fcmToken,
+          title: soTitle,
+          body: soMsg,
+          data: { type: 'order_status', orderId: salesOrder._id.toString(), orderNumber: salesOrder.orderNumber },
+        });
+      }
+    } catch (notifErr) { console.error('SO notification error (non-fatal):', notifErr.message); }
   } catch (error) {
     console.error("Create Sales Order Error:", error);
     console.error("Error name:", error.name);

@@ -5,7 +5,8 @@ import {
   getRecentInvoices,
   getNotifications,
   markNotificationAsRead,
-  markAllNotificationsAsRead
+  markAllNotificationsAsRead,
+  sendTestNotification
 } from '../controllers/dashboardController.js';
 import { protect } from '../../middleware/authMiddleware.js';
 import { generalLimiter } from '../../middleware/rateLimit.js';
@@ -30,11 +31,14 @@ router.get('/recent-invoices', getRecentInvoices);
 // Get notifications
 router.get('/notifications', getNotifications);
 
+// Mark all notifications as read — MUST be before /:id/read to avoid route conflict
+router.patch('/notifications/read-all', markAllNotificationsAsRead);
+
 // Mark notification as read
 router.patch('/notifications/:id/read', markNotificationAsRead);
 
-// Mark all notifications as read
-router.patch('/notifications/read-all', markAllNotificationsAsRead);
+// Test push notification (dev only)
+router.post('/test-notification', sendTestNotification);
 
 export default router;
 
