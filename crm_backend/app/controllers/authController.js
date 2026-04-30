@@ -4,6 +4,29 @@ import { getCompanyConnection } from '../../config/multiDatabase.js';
 import { dealerSchema } from '../../models/Dealer.js';
 import { userSchema } from '../../models/User.js';
 
+// ─── In-memory OTP store (phone → { otp, expiresAt }) ───────────────────────
+// OTPs expire after 5 minutes. Cleaned up on each verify call.
+const otpStore = new Map();
+const OTP_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+const saveOTP = (phone, otp) => {
+  otpStore.set(phone, { otp, expiresAt: Date.now() + OTP_TTL_MS });
+};
+
+const validateOTP = (phone, otp) => {
+  const entry = otpStore.get(phone);
+  if (!entry) return { valid: false, reason: 'No OTP found. Please request a new one.' };
+  if (Date.now() > entry.expiresAt) {
+    otpStore.delete(phone);
+    return { valid: false, reason: 'OTP has expired. Please request a new one.' };
+  }
+  if (entry.otp !== otp) {
+    return { valid: false, reason: 'Incorrect OTP. Please try again.' };
+  }
+  otpStore.delete(phone); // one-time use
+  return { valid: true };
+};
+
 // ─── Company metadata ────────────────────────────────────────────────────────
 const COMPANY_INFO = {
   'jain-impex': {
@@ -105,15 +128,16 @@ export const sendOTP = async (req, res) => {
       });
     }
 
-    // Generate OTP (for demo — return it in response)
+    // Generate OTP and store it with TTL
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    saveOTP(normalizePhone(phone), otp);
 
     console.log(`📱 OTP for ${phone}: ${otp} (found in ${found.map(f => f.company).join(', ')})`);
 
     return res.json({
       success: true,
       message: 'OTP sent successfully',
-      otp, // Remove in production — use SMS service
+      otp, // TODO: Remove in production — send via SMS instead
     });
   } catch (error) {
     console.error('Send OTP error:', error);
@@ -134,9 +158,16 @@ export const verifyOTP = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Phone number and OTP are required' });
     }
 
-    // Validate OTP format (any 6-digit for demo)
+    // Validate OTP format
     if (!/^\d{6}$/.test(otp)) {
       return res.status(400).json({ success: false, message: 'OTP must be a 6-digit number' });
+    }
+
+    // Validate OTP against stored value
+    const normalizedPhone = normalizePhone(phone);
+    const otpCheck = validateOTP(normalizedPhone, otp);
+    if (!otpCheck.valid) {
+      return res.status(400).json({ success: false, message: otpCheck.reason });
     }
 
     // Find dealer in all companies
