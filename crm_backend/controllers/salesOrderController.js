@@ -2231,7 +2231,27 @@ export const updateSalesOrder = async (req, res) => {
           read: false,
           priority: priority
         });
-        
+
+        // Send push notification to dealer
+        try {
+          const dealerForPush = await Dealer.findById(updatedOrder.dealer).select('fcmToken').lean();
+          if (dealerForPush?.fcmToken) {
+            await sendPushNotification({
+              token: dealerForPush.fcmToken,
+              title,
+              body: message,
+              data: {
+                type: 'order_status',
+                orderId: updatedOrder._id.toString(),
+                orderNumber: updatedOrder.orderNumber,
+                status: newStatus,
+              },
+            });
+          }
+        } catch (pushErr) {
+          console.error('Push notification error (non-fatal):', pushErr.message);
+        }
+
         console.log(`📧 Notification created for dealer ${updatedOrder.dealer}: ${message} (Status changed from ${originalStatus} to ${newStatus})`);
       } catch (notificationError) {
         console.error('Error creating notification:', notificationError);
