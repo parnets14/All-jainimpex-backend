@@ -1469,7 +1469,27 @@ OR wait for stock to arrive and this order will be auto-processed.`,
           read: false,
           priority: priority
         });
-        
+
+        // Send push notification to dealer
+        try {
+          const dealerForPush = await Dealer.findById(salesOrder.dealer).select('fcmToken').lean();
+          if (dealerForPush?.fcmToken) {
+            await sendPushNotification({
+              token: dealerForPush.fcmToken,
+              title,
+              body: message,
+              data: {
+                type: 'order_status',
+                orderId: salesOrder._id.toString(),
+                orderNumber: salesOrder.orderNumber,
+                status,
+              },
+            });
+          }
+        } catch (pushErr) {
+          console.error('Push notification error (non-fatal):', pushErr.message);
+        }
+
         console.log(`📧 Notification created for dealer ${salesOrder.dealer}: ${message} (Status changed from ${originalStatus} to ${status})`);
       } catch (notificationError) {
         console.error('Error creating notification:', notificationError);

@@ -5,6 +5,7 @@ import {
   approveOrderRequest,
   rejectOrderRequest,
   linkSalesOrder,
+  autoLinkSalesOrders,
   getPrefillData,
 } from '../controllers/dealerOrderRequestController.js';
 import { protect } from '../middleware/authMiddleware.js';
@@ -19,6 +20,7 @@ router.get('/:id',                   getOrderRequest);
 router.patch('/:id/approve',         approveOrderRequest);
 router.patch('/:id/reject',          rejectOrderRequest);
 router.patch('/:id/link-so',         linkSalesOrder);
+router.post('/:id/auto-link',        autoLinkSalesOrders);
 router.get('/:id/prefill',           getPrefillData);
 
 export default router;
