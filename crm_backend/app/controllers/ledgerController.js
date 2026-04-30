@@ -40,6 +40,25 @@ async function buildCombinedEntries(db, dealerId, startDate, endDate) {
       .filter(Boolean)
   );
 
+  // Fetch paymentStatus for old-ledger invoice entries from DealerInvoice
+  const oldInvoiceIds = oldEntries
+    .filter(e => e.transactionType === 'Invoice' && e.invoice)
+    .map(e => (e.invoice?._id || e.invoice));
+  const invoiceStatusMap = {};
+  if (oldInvoiceIds.length > 0) {
+    const invDocs = await DealerInvoice.find({ _id: { $in: oldInvoiceIds } })
+      .select('_id paymentStatus paidAmount totalAmount pendingAmount')
+      .lean();
+    invDocs.forEach(inv => {
+      invoiceStatusMap[inv._id.toString()] = {
+        paymentStatus: inv.paymentStatus,
+        paidAmount: inv.paidAmount,
+        totalAmount: inv.totalAmount,
+        pendingAmount: inv.pendingAmount,
+      };
+    });
+  }
+
   // 2. New-system invoices NOT already in old ledger
   const invFilter = { dealer: dealerId, isDeleted: false, isDraft: false };
   if (startDate || endDate) invFilter.invoiceDate = dateFilter;
@@ -49,6 +68,8 @@ async function buildCombinedEntries(db, dealerId, startDate, endDate) {
   const combined = [];
 
   oldEntries.forEach(e => {
+    const invId = (e.invoice?._id || e.invoice)?.toString();
+    const invStatus = invId ? invoiceStatusMap[invId] : null;
     combined.push({
       _id: e._id,
       entryDate: e.entryDate,
@@ -64,6 +85,10 @@ async function buildCombinedEntries(db, dealerId, startDate, endDate) {
       creditDays: e.creditDays || 0,
       salesType: e.salesType || '',
       source: 'ledger',
+      // Include payment status from the linked DealerInvoice (if any)
+      paymentStatus: invStatus?.paymentStatus || null,
+      paidAmount: invStatus?.paidAmount,
+      pendingAmount: invStatus?.pendingAmount,
     });
   });
 
