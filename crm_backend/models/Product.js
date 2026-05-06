@@ -37,6 +37,11 @@ const productSchema = new mongoose.Schema({
     trim: true,
     default: ''
   },
+  internalRate: {
+    type: String,
+    trim: true,
+    default: null
+  },
   description: {
     type: String,
     trim: true

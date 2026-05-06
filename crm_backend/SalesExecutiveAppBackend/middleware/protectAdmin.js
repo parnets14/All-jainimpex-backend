@@ -1,73 +1,62 @@
 import { verifyToken } from '../../utils/jwtUtils.js';
-import User from '../../models/User.js';
+import { getCompanyConnection } from '../../config/multiDatabase.js';
+import { userSchema } from '../../models/User.js';
+import User from '../../models/User.js'; // fallback default DB
 
-// Protect routes for admin/web access - verify JWT token
+// Protect routes for admin/web access
+// Supports both: CRM web token (has company) and legacy tokens (no company)
 const protectAdmin = async (req, res, next) => {
   try {
     let token;
 
-    // Check for token in headers (same as CRM's protect middleware)
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+    if (req.headers.authorization?.startsWith('Bearer')) {
       token = req.headers.authorization.split(' ')[1];
     }
 
-    console.log('🔐 SE Admin Auth Check:', {
-      hasAuth: !!req.headers.authorization,
-      hasToken: !!token,
-      tokenPreview: token ? token.substring(0, 20) + '...' : 'none'
-    });
-
     if (!token) {
-      console.log('❌ No token provided');
-      return res.status(401).json({
-        success: false,
-        message: 'Not authorized to access this route',
-      });
+      return res.status(401).json({ success: false, message: 'Not authorized — no token' });
     }
 
+    let decoded;
     try {
-      // Verify token using the same utility as CRM
-      const decoded = verifyToken(token);
-      console.log('✅ Token decoded:', { userId: decoded.userId });
-
-      // Get user from token (using userId like CRM does)
-      req.user = await User.findById(decoded.userId).select('-password');
-
-      if (!req.user) {
-        console.log('❌ User not found in database');
-        return res.status(401).json({
-          success: false,
-          message: 'User not found',
-        });
-      }
-
-      console.log('✅ User found:', { id: req.user._id, role: req.user.role, email: req.user.email });
-
-      // Allow admin, super_admin, sub_admin, and hr_manager to view attendance
-      const allowedRoles = ['super_admin', 'admin', 'sub_admin', 'hr_manager', 'sales_executive'];
-      if (!allowedRoles.includes(req.user.role)) {
-        console.log('❌ Role not allowed:', req.user.role);
-        return res.status(403).json({
-          success: false,
-          message: 'Access denied. Admin privileges required.',
-        });
-      }
-
-      console.log('✅ Access granted for role:', req.user.role);
-      next();
-    } catch (error) {
-      console.log('❌ Token verification failed:', error.message);
-      return res.status(401).json({
-        success: false,
-        message: 'Not authorized, token failed',
-      });
+      decoded = verifyToken(token);
+    } catch (err) {
+      return res.status(401).json({ success: false, message: 'Invalid or expired token' });
     }
+
+    // Try company-specific DB first (if token has company)
+    let user = null;
+    if (decoded.company) {
+      try {
+        const conn = getCompanyConnection(decoded.company);
+        const UserModel = conn.models.User || conn.model('User', userSchema);
+        user = await UserModel.findById(decoded.userId).select('-password');
+        if (user) req.company = decoded.company;
+      } catch (e) {
+        console.warn(`protectAdmin: company DB lookup failed for ${decoded.company}:`, e.message);
+      }
+    }
+
+    // Fallback to default DB (legacy tokens without company)
+    if (!user) {
+      user = await User.findById(decoded.userId).select('-password');
+    }
+
+    if (!user) {
+      return res.status(401).json({ success: false, message: 'User not found' });
+    }
+
+    const allowedRoles = ['super_admin', 'admin', 'sub_admin', 'hr_manager', 'sales_executive'];
+    if (!allowedRoles.includes(user.role)) {
+      return res.status(403).json({ success: false, message: 'Access denied. Admin privileges required.' });
+    }
+
+    req.user = user;
+    console.log(`✅ SE Admin Auth: ${user.name} (${user.role}) → company: ${req.company || 'default'}`);
+    next();
   } catch (error) {
-    console.error('❌ Auth middleware error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Server error in authentication',
-    });
+    console.error('protectAdmin error:', error);
+    res.status(500).json({ success: false, message: 'Server error in authentication' });
   }
 };
 

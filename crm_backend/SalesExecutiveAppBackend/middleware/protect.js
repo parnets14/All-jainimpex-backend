@@ -1,12 +1,12 @@
 import { verifyToken } from '../../utils/jwtUtils.js';
-import User from '../../models/User.js';
+import { getCompanyConnection } from '../../config/multiDatabase.js';
+import { userSchema } from '../../models/User.js';
 
-// Protect routes - verify JWT token
+// Protect routes - verify JWT token and attach correct company DB connection
 const protect = async (req, res, next) => {
   try {
     let token;
 
-    // Check for token in headers
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
       token = req.headers.authorization.split(' ')[1];
     }
@@ -18,46 +18,62 @@ const protect = async (req, res, next) => {
       });
     }
 
-    try {
-      // Verify token using shared utility
-      const decoded = verifyToken(token);
+    // Verify token — contains userId + company
+    const decoded = verifyToken(token);
 
-      // Get user from token (using userId from shared utility)
-      req.user = await User.findById(decoded.userId).select('-password');
-
-      if (!req.user) {
-        return res.status(401).json({
-          success: false,
-          message: 'User not found',
-        });
-      }
-
-      // Check if user is sales executive, admin, or sub_admin (case-insensitive check)
-      const userRole = req.user.role?.toLowerCase().replace(/\s+/g, '_');
-      const allowedRoles = ['sales_executive', 'super_admin', 'admin', 'sub_admin'];
-      
-      if (!allowedRoles.includes(userRole)) {
-        console.log(`⚠️ Access denied for role: ${req.user.role} (normalized: ${userRole})`);
-        return res.status(403).json({
-          success: false,
-          message: 'Access denied. Sales Executive or Admin role required.',
-        });
-      }
-      
-      console.log(`✅ Access granted for role: ${req.user.role}`);
-
-      next();
-    } catch (error) {
+    if (!decoded.company) {
       return res.status(401).json({
         success: false,
-        message: 'Not authorized, token failed',
+        message: 'Invalid token: missing company context',
       });
     }
+
+    // Get the correct company DB connection from token
+    const dbConnection = getCompanyConnection(decoded.company);
+    const User = dbConnection.models.User || dbConnection.model('User', userSchema);
+
+    // Find user in the correct company DB
+    const user = await User.findById(decoded.userId).select('-password');
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    if (user.status !== 'Active') {
+      return res.status(403).json({
+        success: false,
+        message: 'Your account is inactive. Please contact admin.',
+      });
+    }
+
+    // Check role
+    const userRole = user.role?.toLowerCase().replace(/\s+/g, '_');
+    const allowedRoles = ['sales_executive', 'super_admin', 'admin', 'sub_admin'];
+
+    if (!allowedRoles.includes(userRole)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Sales Executive or Admin role required.',
+      });
+    }
+
+    // Attach user, company, and DB connection to request
+    // All downstream controllers use req.company to query the right DB
+    req.user       = user;
+    req.company    = decoded.company;   // e.g. 'jain-impex'
+    req.dbConnection = dbConnection;    // ready-to-use mongoose connection
+
+    console.log(`✅ SE Auth: ${user.name} → ${decoded.company} DB`);
+    next();
+
   } catch (error) {
-    console.error('Auth middleware error:', error);
-    res.status(500).json({
+    console.error('SE protect middleware error:', error.message);
+    return res.status(401).json({
       success: false,
-      message: 'Server error in authentication',
+      message: error.message || 'Not authorized',
     });
   }
 };

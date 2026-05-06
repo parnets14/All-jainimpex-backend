@@ -406,6 +406,7 @@ export const createProduct = async (req, res) => {
       images,
       salesType, // FIX: Added missing salesType
       productType, // FIX: Added missing productType
+      internalRate,
     } = req.body;
 
     // Convert empty productCode to undefined for auto-generation
@@ -515,6 +516,7 @@ export const createProduct = async (req, res) => {
       HSNCode,
       itemName,
       aliasName: aliasName || '',
+      internalRate: internalRate !== undefined && internalRate !== '' ? internalRate : null,
       description,
       unit,
       alternateUnit,
@@ -608,6 +610,7 @@ export const updateProduct = async (req, res) => {
       images,
       salesType, // FIX: Added missing salesType
       productType, // FIX: Added missing productType
+      internalRate,
     } = req.body;
 
     // Convert empty productCode to undefined for auto-generation
@@ -702,6 +705,7 @@ export const updateProduct = async (req, res) => {
     product.HSNCode = HSNCode;
     product.itemName = itemName;
     product.aliasName = aliasName !== undefined ? aliasName : (product.aliasName || '');
+    product.internalRate = internalRate !== undefined && internalRate !== '' ? internalRate : (internalRate === '' ? null : product.internalRate);
     product.description = description;
     product.unit = unit;
     product.alternateUnit = alternateUnit;

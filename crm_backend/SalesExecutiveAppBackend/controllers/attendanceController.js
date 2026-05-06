@@ -221,8 +221,8 @@ export const getAttendanceHistory = async (req, res) => {
   }
 };
 
-// @desc    Get all attendance records (Admin/Web view)
-// @route   GET /api/se-app/attendance/all
+// @desc    Get all attendance records (Admin/Web view) — filtered by admin's company
+// @route   GET /api/se/attendance/all
 // @access  Private (Admin)
 export const getAllAttendance = async (req, res) => {
   try {
@@ -230,54 +230,81 @@ export const getAllAttendance = async (req, res) => {
 
     const query = {};
 
-    // Date filter - if date provided, get records for that specific date
     if (date) {
       const targetDate = new Date(date);
-      const startOfDay = new Date(targetDate.setHours(0, 0, 0, 0));
-      const endOfDay = new Date(targetDate.setHours(23, 59, 59, 999));
+      const startOfDay = new Date(targetDate); startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay   = new Date(targetDate); endOfDay.setHours(23, 59, 59, 999);
       query.date = { $gte: startOfDay, $lte: endOfDay };
     }
 
-    // Date range filter (for history)
     if (startDate && endDate) {
       const start = new Date(startDate);
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
-      query.date = { $gte: start, $lte: end };
+      const end   = new Date(endDate); end.setHours(23, 59, 59, 999);
+      query.date  = { $gte: start, $lte: end };
     }
 
-    // User filter
-    if (userId) {
-      query.user = userId;
-    }
+    if (userId) query.user = userId;
 
-    const skip = (page - 1) * limit;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
 
+    // Get all attendance from default DB
     const [attendances, total] = await Promise.all([
       Attendance.find(query)
-        .populate('user', 'name phone email')
         .sort({ date: -1, checkInTime: -1 })
         .skip(skip)
-        .limit(parseInt(limit)),
+        .limit(parseInt(limit))
+        .lean(),
       Attendance.countDocuments(query),
     ]);
 
+    // Get user info from the admin's company DB only
+    const { getCompanyConnection } = await import('../../config/multiDatabase.js');
+    const { userSchema } = await import('../../models/User.js');
+
+    // Use admin's company from token, fallback to searching all companies
+    const adminCompany = req.company;
+    const companiesToSearch = adminCompany
+      ? [adminCompany]
+      : ['jain-impex', 'ridhi', 'shree-jain-impex'];
+
+    const userMap = {};
+    const userIds = [...new Set(attendances.map(a => a.user?.toString()).filter(Boolean))];
+
+    for (const companyId of companiesToSearch) {
+      try {
+        const conn = getCompanyConnection(companyId);
+        const UserModel = conn.models.User || conn.model('User', userSchema);
+        if (userIds.length > 0) {
+          const users = await UserModel.find({ _id: { $in: userIds } }).select('name phone email').lean();
+          users.forEach(u => {
+            if (!userMap[u._id.toString()]) {
+              userMap[u._id.toString()] = u;
+            }
+          });
+        }
+      } catch (e) { /* silent */ }
+    }
+
+    // Attach user info — only include records where user was found in this company
+    const enriched = attendances
+      .map(a => ({
+        ...a,
+        user: userMap[a.user?.toString()] || null,
+      }))
+      .filter(a => a.user !== null); // only show records for this company's SEs
+
     res.status(200).json({
       success: true,
-      data: attendances,
+      data: enriched,
       pagination: {
         currentPage: parseInt(page),
-        totalPages: Math.ceil(total / limit),
-        totalItems: total,
+        totalPages: Math.ceil(enriched.length / parseInt(limit)),
+        totalItems: enriched.length,
         itemsPerPage: parseInt(limit),
       },
     });
   } catch (error) {
     console.error('Get all attendance error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get attendance records',
-      error: error.message,
-    });
+    res.status(500).json({ success: false, message: 'Failed to get attendance records', error: error.message });
   }
 };
