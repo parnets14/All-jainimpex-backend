@@ -13,6 +13,9 @@ router.use(attachCompanyDB);
 router.get('/outstanding-invoices', paymentAllocationController.getOutstandingInvoices);
 router.get('/unadjusted-payments', paymentAllocationController.getUnadjustedPayments);
 
+// Auto-allocate route
+router.post('/auto-allocate', paymentAllocationController.autoAllocatePayments);
+
 // Payment Allocation routes
 router.post('/', paymentAllocationController.createPaymentAllocation);
 router.get('/', paymentAllocationController.getPaymentAllocations);

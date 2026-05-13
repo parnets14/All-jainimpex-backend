@@ -1,5 +1,4 @@
-import Collection from '../models/Collection.js';
-import Dealer from '../../models/Dealer.js';
+import { getModels } from '../utils/getModels.js';
 
 // Create collection
 export const createCollection = async (req, res) => {
@@ -13,8 +12,10 @@ export const createCollection = async (req, res) => {
       chequeDate,
       bankName,
       transactionId,
+      referenceNumber,
       notes
     } = req.body;
+    const { Dealer, Collection } = getModels(req);
 
     console.log('💰 Creating collection:', {
       dealerId,
@@ -23,7 +24,6 @@ export const createCollection = async (req, res) => {
       salesExecutive: user.name
     });
 
-    // Validate required fields
     if (!dealerId || !amount || !paymentMode) {
       return res.status(400).json({
         success: false,
@@ -31,7 +31,6 @@ export const createCollection = async (req, res) => {
       });
     }
 
-    // Get dealer details
     const dealer = await Dealer.findById(dealerId).select('name code');
     if (!dealer) {
       return res.status(404).json({
@@ -40,34 +39,30 @@ export const createCollection = async (req, res) => {
       });
     }
 
-    // Validate payment mode specific fields
-    if (paymentMode === 'Cheque' && (!chequeNumber || !bankName)) {
+    // Map referenceNumber to appropriate field based on payment mode
+    const effectiveChequeNumber = chequeNumber || (paymentMode === 'Cheque' ? referenceNumber : null);
+    const effectiveTransactionId = transactionId || (paymentMode !== 'Cash' && paymentMode !== 'Cheque' ? referenceNumber : null);
+
+    if (paymentMode === 'Cheque' && !effectiveChequeNumber) {
       return res.status(400).json({
         success: false,
-        message: 'Cheque number and bank name are required for cheque payments'
+        message: 'Cheque number is required for cheque payments'
       });
     }
 
-    if ((paymentMode === 'NEFT' || paymentMode === 'Bank Transfer') && (!transactionId || !bankName)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Transaction ID and bank name are required for bank transfers'
-      });
-    }
-
-    // Create collection
     const collection = new Collection({
       dealer: dealerId,
       dealerName: dealer.name,
       dealerCode: dealer.code,
       amount: parseFloat(amount),
       paymentMode,
-      chequeNumber,
+      chequeNumber: effectiveChequeNumber,
       chequeDate,
       bankName,
-      transactionId,
+      transactionId: effectiveTransactionId,
       receiptImage: req.file ? `/uploads/receipts/${req.file.filename}` : null,
       notes,
+      cashSplitRequired: req.body.cashSplitRequired === 'true' || req.body.cashSplitRequired === true,
       collectedBy: user._id,
       collectedByName: user.name,
       status: 'Pending'
@@ -102,17 +97,16 @@ export const getMyCollections = async (req, res) => {
   try {
     const user = req.user;
     const { status, page = 1, limit = 20 } = req.query;
+    const { Collection } = getModels(req);
 
     console.log('📋 Fetching collections for:', user.name);
 
-    // Build query
     let query = { collectedBy: user._id };
     
     if (status && status !== 'all') {
       query.status = status;
     }
 
-    // Fetch collections with pagination
     const skip = (page - 1) * limit;
     const collections = await Collection.find(query)
       .populate('dealer', 'name code')
@@ -122,7 +116,6 @@ export const getMyCollections = async (req, res) => {
       .limit(parseInt(limit))
       .lean();
 
-    // Get total count
     const total = await Collection.countDocuments(query);
 
     console.log(`✅ Found ${collections.length} collections`);
@@ -152,6 +145,7 @@ export const getCollectionById = async (req, res) => {
   try {
     const { id } = req.params;
     const user = req.user;
+    const { Collection } = getModels(req);
 
     console.log('📄 Fetching collection details:', id);
 
@@ -168,7 +162,6 @@ export const getCollectionById = async (req, res) => {
       });
     }
 
-    // Check if user has access
     if (collection.collectedBy._id.toString() !== user._id.toString() && user.role !== 'admin') {
       return res.status(403).json({
         success: false,

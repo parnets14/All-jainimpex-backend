@@ -108,4 +108,7 @@ targetSchema.index({ salesExecutive: 1, startDate: -1 });
 targetSchema.index({ targetType: 1, status: 1 });
 targetSchema.index({ startDate: 1, endDate: 1 });
 
+// Export schema for multi-database support
+export { targetSchema };
+
 export default mongoose.model('Target', targetSchema);

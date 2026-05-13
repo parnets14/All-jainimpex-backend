@@ -151,7 +151,12 @@ const userSchema = new mongoose.Schema({
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
-  }
+  },
+  // FCM token for push notifications (SE app and Delivery app)
+  fcmToken: {
+    type: String,
+    default: null,
+  },
 }, {
   timestamps: true
 });

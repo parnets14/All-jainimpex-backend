@@ -5,7 +5,7 @@ const claimTypeSchema = new mongoose.Schema({
     type: String,
     required: true,
     trim: true,
-    unique: true,
+    // NOTE: unique is enforced per-company via the index below, not globally
   },
   description: {
     type: String,
@@ -28,6 +28,7 @@ const claimTypeSchema = new mongoose.Schema({
   timestamps: true,
 });
 
+// Per-connection unique index (each company DB gets its own index)
 claimTypeSchema.index({ name: 1 }, { unique: true });
 
 // Export schema for multi-database support

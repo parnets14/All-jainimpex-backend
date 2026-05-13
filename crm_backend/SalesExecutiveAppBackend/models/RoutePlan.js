@@ -89,4 +89,7 @@ routePlanSchema.index({ 'endLocation': '2dsphere' });
 routePlanSchema.index({ salesExecutive: 1, date: -1 });
 routePlanSchema.index({ status: 1 });
 
+// Export schema for multi-database support
+export { routePlanSchema };
+
 export default mongoose.model('RoutePlan', routePlanSchema);

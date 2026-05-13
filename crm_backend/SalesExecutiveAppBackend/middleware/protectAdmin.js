@@ -31,7 +31,10 @@ const protectAdmin = async (req, res, next) => {
         const conn = getCompanyConnection(decoded.company);
         const UserModel = conn.models.User || conn.model('User', userSchema);
         user = await UserModel.findById(decoded.userId).select('-password');
-        if (user) req.company = decoded.company;
+        if (user) {
+          req.company      = decoded.company;
+          req.dbConnection = conn;           // ← attach company DB connection
+        }
       } catch (e) {
         console.warn(`protectAdmin: company DB lookup failed for ${decoded.company}:`, e.message);
       }
@@ -40,6 +43,18 @@ const protectAdmin = async (req, res, next) => {
     // Fallback to default DB (legacy tokens without company)
     if (!user) {
       user = await User.findById(decoded.userId).select('-password');
+      // For legacy tokens, try to get a connection from the query param or default
+      if (user && !req.dbConnection) {
+        const company = req.query.company || req.body.company;
+        if (company) {
+          try {
+            req.dbConnection = getCompanyConnection(company);
+            req.company      = company;
+          } catch (e) {
+            // ignore — controller will handle missing connection
+          }
+        }
+      }
     }
 
     if (!user) {

@@ -8,12 +8,37 @@ import { dealerOrderRequestSchema } from '../models/DealerOrderRequest.js';
 import { dealerSchema }             from '../models/Dealer.js';
 import { salesOrderSchema }         from '../models/SalesOrder.js';
 import { createAndSendNotification } from '../services/firebaseNotificationService.js';
+import { seNotificationSchema }      from '../SalesExecutiveAppBackend/models/SENotification.js';
+import { userSchema }                from '../models/User.js';
 
 const getModels = (db) => ({
   DealerOrderRequest: db.models.DealerOrderRequest || db.model('DealerOrderRequest', dealerOrderRequestSchema),
   Dealer:             db.models.Dealer             || db.model('Dealer',             dealerSchema),
   SalesOrder:         db.models.SalesOrder         || db.model('SalesOrder',         salesOrderSchema),
+  SENotification:     db.models.SENotification     || db.model('SENotification',     seNotificationSchema),
+  User:               db.models.User               || db.model('User',               userSchema),
 });
+
+// Helper: notify the SE user who submitted the request
+const notifySE = async (db, seUserId, type, title, message, data = {}) => {
+  try {
+    const { SENotification, User } = getModels(db);
+    const notif = await SENotification.create({ user: seUserId, type, title, message, data, priority: 'high' });
+    // Push to SE's FCM token
+    const seUser = await User.findById(seUserId).select('fcmToken').lean();
+    if (seUser?.fcmToken) {
+      const { sendPushNotification } = await import('../services/firebaseNotificationService.js');
+      await sendPushNotification({
+        token: seUser.fcmToken,
+        title,
+        body: message,
+        data: { type, notificationId: notif._id.toString(), ...Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])) },
+      });
+    }
+  } catch (e) {
+    console.error('notifySE error (non-fatal):', e.message);
+  }
+};
 
 // ── GET /api/dealer-order-requests?company=jain-impex ───────────────────────
 export const listOrderRequests = async (req, res) => {
@@ -26,6 +51,9 @@ export const listOrderRequests = async (req, res) => {
 
     const query = {};
     if (status && status !== 'All') query.status = status;
+    // Source filter: 'Dealer', 'SE', or 'All' (default = Dealer for backward compat)
+    const sourceFilter = req.query.source || 'Dealer';
+    if (sourceFilter !== 'All') query.source = sourceFilter;
     if (search) {
       query.$or = [
         { requestNumber: { $regex: search, $options: 'i' } },
@@ -139,7 +167,7 @@ export const approveOrderRequest = async (req, res) => {
     request.approvedBy = req.user._id;
     await request.save();
 
-    // Send push notification to dealer
+    // Notify dealer (push)
     try {
       const { Dealer } = getModels(db);
       const dealer = await Dealer.findById(request.dealer).select('fcmToken').lean();
@@ -155,6 +183,15 @@ export const approveOrderRequest = async (req, res) => {
       });
     } catch (notifErr) {
       console.error('Notification error (non-fatal):', notifErr.message);
+    }
+
+    // Notify SE user (in-app + push)
+    if (request.createdBy) {
+      await notifySE(db, request.createdBy, 'order_request_approved',
+        '✅ Order Request Approved',
+        `Your request ${request.requestNumber} for ${request.dealerName} has been approved.`,
+        { requestId: request._id.toString(), requestNumber: request.requestNumber }
+      );
     }
 
     return res.json({ success: true, message: 'Request approved', request });
@@ -186,7 +223,7 @@ export const rejectOrderRequest = async (req, res) => {
     request.rejectionReason = reason;
     await request.save();
 
-    // Send push notification to dealer about rejection
+    // Notify dealer (push)
     try {
       const { Dealer } = getModels(db);
       const dealer = await Dealer.findById(request.dealer).select('fcmToken').lean();
@@ -202,6 +239,15 @@ export const rejectOrderRequest = async (req, res) => {
       });
     } catch (notifErr) {
       console.error('Notification error (non-fatal):', notifErr.message);
+    }
+
+    // Notify SE user (in-app + push)
+    if (request.createdBy) {
+      await notifySE(db, request.createdBy, 'order_request_rejected',
+        '❌ Order Request Rejected',
+        `Your request ${request.requestNumber} for ${request.dealerName} was rejected.${reason ? ` Reason: ${reason}` : ''}`,
+        { requestId: request._id.toString(), requestNumber: request.requestNumber, reason }
+      );
     }
 
     return res.json({ success: true, message: 'Request rejected', request });
@@ -236,6 +282,15 @@ export const linkSalesOrder = async (req, res) => {
     if (!request.salesOrders.map(String).includes(String(salesOrderId))) {
       request.salesOrders.push(salesOrderId);
       await request.save();
+    }
+
+    // Notify the SE who submitted the request (non-blocking)
+    if (request.createdBy) {
+      notifySE(db, request.createdBy, 'order_request_approved',
+        '📦 Sales Order Created',
+        `A Sales Order has been created for your request ${request.requestNumber} (${request.dealerName}). Order: ${so.orderNumber}`,
+        { requestId: request._id.toString(), requestNumber: request.requestNumber, salesOrderId: so._id.toString(), orderNumber: so.orderNumber }
+      ).catch(() => {});
     }
 
     return res.json({ success: true, message: 'Sales Order linked to request', request });
@@ -321,21 +376,31 @@ export const getPrefillData = async (req, res) => {
     return res.json({
       success: true,
       prefill: {
-        requestId:   request._id,
+        requestId:     request._id,
         requestNumber: request.requestNumber,
-        dealer:      dealer,
-        dealerId:    request.dealer,
-        dealerName:  request.dealerName,
-        dealerCode:  request.dealerCode,
-        products:    request.products.map(p => ({
+        source:        request.source || 'Dealer',
+        salesExecutiveName: request.salesExecutiveName || null,
+        dealer:        dealer,
+        dealerId:      request.dealer,
+        dealerName:    request.dealerName,
+        dealerCode:    request.dealerCode,
+        products:      request.products.map(p => ({
           productId:   p.product,
           productCode: p.productCode,
           productName: p.productName,
+          HSNCode:     p.HSNCode,
           quantity:    p.quantity,
+          unit:        p.unit,
           dealerPrice: p.dealerPrice,
           gst:         p.gst,
+          // Only pass SE's level discount choices — direct & dealer extra are auto-applied by invoice
+          selectedDiscountLevels: p.selectedDiscountLevels || [],
+          manualDiscountLevels:   p.manualDiscountLevels   || {},
+          // Store the discount mapping ID so the invoice can look up the correct discount
+          discountMappingId:      p.discountMappingId      || null,
         })),
-        notes: request.notes,
+        totalDiscount: request.totalDiscount || 0,
+        notes:         request.notes,
       },
     });
   } catch (error) {

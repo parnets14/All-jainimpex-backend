@@ -108,9 +108,11 @@ import seRoutePlanRoutes from './SalesExecutiveAppBackend/routes/routePlanRoutes
 import seDealerInsightsRoutes from './SalesExecutiveAppBackend/routes/dealerInsightsRoutes.js';
 import seDealerRoutes from './SalesExecutiveAppBackend/routes/dealerRoutes.js';
 import seSalesOrderRoutes from './SalesExecutiveAppBackend/routes/salesOrderRoutes.js';
+import seOrderRequestRoutes from './SalesExecutiveAppBackend/routes/orderRequestRoutes.js';
 import seCollectionRoutes from './SalesExecutiveAppBackend/routes/collectionRoutes.js';
 import seTargetRoutes from './SalesExecutiveAppBackend/routes/targetRoutes.js';
-import seExpenseRoutes from './SalesExecutiveAppBackend/routes/expenseRoutes.js';
+import seExpenseRoutes        from './SalesExecutiveAppBackend/routes/expenseRoutes.js';
+import seNotificationRoutes   from './SalesExecutiveAppBackend/routes/notificationRoutes.js';
 
 // Delivery Executive App Routes
 import deAuthRoutes from './DeliveryExecutiveAppBackend/routes/authRoutes.js';
@@ -121,6 +123,9 @@ import deDeliveryHistoryRoutes from './DeliveryExecutiveAppBackend/routes/delive
 import deDeliveriesRoutes from './DeliveryExecutiveAppBackend/routes/deliveriesRoutes.js';
 import deNotificationRoutes from './DeliveryExecutiveAppBackend/routes/notificationRoutes.js';
 import deAdminDeliveryRoutes from './DeliveryExecutiveAppBackend/routes/adminDeliveryRoutes.js';
+
+// Seed controller
+import { seedTypesForAllCompanies } from './controllers/seedController.js';
 
 dotenv.config();
 
@@ -403,9 +408,11 @@ app.use('/api/se/route-plan', seRoutePlanRoutes);
 app.use('/api/se/dealer-insights', seDealerInsightsRoutes);
 app.use('/api/se/dealers', seDealerRoutes);
 app.use('/api/se/sales-orders', seSalesOrderRoutes);
+app.use('/api/se/order-requests', seOrderRequestRoutes);
 app.use('/api/se/collections', seCollectionRoutes);
 app.use('/api/se/targets', seTargetRoutes);
 app.use('/api/se/expenses', seExpenseRoutes);
+app.use('/api/se/notifications', seNotificationRoutes);
 console.log('✅ Sales Executive App routes registered at /api/se/*');
 
 // Delivery Executive App Routes (separate API prefix for DE app)
@@ -424,6 +431,10 @@ app.use('/api/de/deliveries', deDeliveryHistoryRoutes); // Mobile app uses /deli
 app.use('/api/admin/deliveries', deAdminDeliveryRoutes);
 console.log('✅ Delivery Executive App routes registered at /api/de/*');
 console.log('✅ Admin delivery routes registered at /api/admin/deliveries/*');
+
+// ── Seed route — seeds standard ClaimTypes & ExpenseTypes across all company DBs ──
+app.post('/api/admin/seed-types', protect, seedTypesForAllCompanies);
+console.log('✅ Seed route registered at POST /api/admin/seed-types');
 
 // Serve uploaded files statically - use absolute path
 const __filename = fileURLToPath(import.meta.url);

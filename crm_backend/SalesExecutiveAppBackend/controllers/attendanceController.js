@@ -1,4 +1,4 @@
-import Attendance from '../models/Attendance.js';
+import { getModels } from '../utils/getModels.js';
 import path from 'path';
 import fs from 'fs';
 
@@ -9,10 +9,10 @@ export const checkIn = async (req, res) => {
   try {
     const { latitude, longitude, address } = req.body;
     const userId = req.user._id;
+    const { SEAttendance } = getModels(req);
 
-    // Check if already checked in today
     const today = new Date().setHours(0, 0, 0, 0);
-    const existingAttendance = await Attendance.findOne({
+    const existingAttendance = await SEAttendance.findOne({
       user: userId,
       date: today,
     });
@@ -24,13 +24,11 @@ export const checkIn = async (req, res) => {
       });
     }
 
-    // Handle selfie upload
     let checkInSelfie = '';
     if (req.file) {
       checkInSelfie = `/uploads/selfies/${req.file.filename}`;
     }
 
-    // Create or update attendance
     const checkInTime = new Date();
     const attendanceData = {
       user: userId,
@@ -38,16 +36,15 @@ export const checkIn = async (req, res) => {
       checkInTime,
       checkInLocation: {
         type: 'Point',
-        coordinates: [parseFloat(longitude), parseFloat(latitude)], // [lng, lat]
+        coordinates: [parseFloat(longitude), parseFloat(latitude)],
         address: address || '',
       },
       checkInSelfie,
     };
 
-    // Check if late
     const checkInHour = checkInTime.getHours();
     const checkInMinute = checkInTime.getMinutes();
-    const lateThreshold = 9 * 60 + 30; // 9:30 AM
+    const lateThreshold = 9 * 60 + 30;
     const checkInMinutes = checkInHour * 60 + checkInMinute;
     
     if (checkInMinutes > lateThreshold) {
@@ -56,13 +53,13 @@ export const checkIn = async (req, res) => {
 
     let attendance;
     if (existingAttendance) {
-      attendance = await Attendance.findByIdAndUpdate(
+      attendance = await SEAttendance.findByIdAndUpdate(
         existingAttendance._id,
         attendanceData,
         { new: true }
       );
     } else {
-      attendance = await Attendance.create(attendanceData);
+      attendance = await SEAttendance.create(attendanceData);
     }
 
     res.status(200).json({
@@ -87,10 +84,10 @@ export const checkOut = async (req, res) => {
   try {
     const { latitude, longitude, address } = req.body;
     const userId = req.user._id;
+    const { SEAttendance } = getModels(req);
 
-    // Get today's attendance
     const today = new Date().setHours(0, 0, 0, 0);
-    const attendance = await Attendance.findOne({
+    const attendance = await SEAttendance.findOne({
       user: userId,
       date: today,
     });
@@ -109,17 +106,15 @@ export const checkOut = async (req, res) => {
       });
     }
 
-    // Handle selfie upload for checkout
     let checkOutSelfie = '';
     if (req.file) {
       checkOutSelfie = `/uploads/selfies/${req.file.filename}`;
     }
 
-    // Update check-out
     attendance.checkOutTime = new Date();
     attendance.checkOutLocation = {
       type: 'Point',
-      coordinates: [parseFloat(longitude), parseFloat(latitude)], // [lng, lat]
+      coordinates: [parseFloat(longitude), parseFloat(latitude)],
       address: address || '',
     };
     if (checkOutSelfie) {
@@ -150,8 +145,9 @@ export const getTodayAttendance = async (req, res) => {
   try {
     const userId = req.user._id;
     const today = new Date().setHours(0, 0, 0, 0);
+    const { SEAttendance } = getModels(req);
 
-    const attendance = await Attendance.findOne({
+    const attendance = await SEAttendance.findOne({
       user: userId,
       date: today,
     });
@@ -177,28 +173,24 @@ export const getAttendanceHistory = async (req, res) => {
   try {
     const userId = req.user._id;
     const { startDate, endDate, page = 1, limit = 30 } = req.query;
+    const { SEAttendance } = getModels(req);
 
     const query = { user: userId };
 
-    // Date filter
     if (startDate || endDate) {
       query.date = {};
-      if (startDate) {
-        query.date.$gte = new Date(startDate);
-      }
-      if (endDate) {
-        query.date.$lte = new Date(endDate);
-      }
+      if (startDate) query.date.$gte = new Date(startDate);
+      if (endDate) query.date.$lte = new Date(endDate);
     }
 
     const skip = (page - 1) * limit;
 
     const [attendances, total] = await Promise.all([
-      Attendance.find(query)
+      SEAttendance.find(query)
         .sort({ date: -1 })
         .skip(skip)
         .limit(parseInt(limit)),
-      Attendance.countDocuments(query),
+      SEAttendance.countDocuments(query),
     ]);
 
     res.status(200).json({
@@ -227,6 +219,7 @@ export const getAttendanceHistory = async (req, res) => {
 export const getAllAttendance = async (req, res) => {
   try {
     const { date, userId, startDate, endDate, page = 1, limit = 100 } = req.query;
+    const { SEAttendance, User } = getModels(req);
 
     const query = {};
 
@@ -247,42 +240,22 @@ export const getAllAttendance = async (req, res) => {
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    // Get all attendance from default DB
     const [attendances, total] = await Promise.all([
-      Attendance.find(query)
+      SEAttendance.find(query)
         .sort({ date: -1, checkInTime: -1 })
         .skip(skip)
         .limit(parseInt(limit))
         .lean(),
-      Attendance.countDocuments(query),
+      SEAttendance.countDocuments(query),
     ]);
 
-    // Get user info from the admin's company DB only
-    const { getCompanyConnection } = await import('../../config/multiDatabase.js');
-    const { userSchema } = await import('../../models/User.js');
-
-    // Use admin's company from token, fallback to searching all companies
-    const adminCompany = req.company;
-    const companiesToSearch = adminCompany
-      ? [adminCompany]
-      : ['jain-impex', 'ridhi', 'shree-jain-impex'];
-
-    const userMap = {};
+    // Get user info from the same company DB (already on req.dbConnection)
     const userIds = [...new Set(attendances.map(a => a.user?.toString()).filter(Boolean))];
+    const userMap = {};
 
-    for (const companyId of companiesToSearch) {
-      try {
-        const conn = getCompanyConnection(companyId);
-        const UserModel = conn.models.User || conn.model('User', userSchema);
-        if (userIds.length > 0) {
-          const users = await UserModel.find({ _id: { $in: userIds } }).select('name phone email').lean();
-          users.forEach(u => {
-            if (!userMap[u._id.toString()]) {
-              userMap[u._id.toString()] = u;
-            }
-          });
-        }
-      } catch (e) { /* silent */ }
+    if (userIds.length > 0) {
+      const users = await User.find({ _id: { $in: userIds } }).select('name phone email').lean();
+      users.forEach(u => { userMap[u._id.toString()] = u; });
     }
 
     // Attach user info — only include records where user was found in this company
@@ -291,7 +264,7 @@ export const getAllAttendance = async (req, res) => {
         ...a,
         user: userMap[a.user?.toString()] || null,
       }))
-      .filter(a => a.user !== null); // only show records for this company's SEs
+      .filter(a => a.user !== null);
 
     res.status(200).json({
       success: true,

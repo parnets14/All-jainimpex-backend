@@ -48,7 +48,7 @@ const initFirebase = () => {
 };
 
 // Send push notification to a single FCM token
-export const sendPushNotification = async ({ token, title, body, data = {} }) => {
+export const sendPushNotification = async ({ token, title, body, data = {}, channelId = 'se_notifications' }) => {
   if (!token) return { success: false, reason: 'no_token' };
   const app = initFirebase();
   if (!app) return { success: false, reason: 'firebase_not_initialized' };
@@ -63,10 +63,19 @@ export const sendPushNotification = async ({ token, title, body, data = {} }) =>
       android: {
         priority: 'high',
         notification: {
-          channelId: 'dealer_notifications',
+          channelId,          // se_notifications for SE app, dealer_notifications for Dealer app
           priority: 'high',
           defaultSound: true,
           defaultVibrateTimings: true,
+          sound: 'default',
+        },
+      },
+      apns: {
+        payload: {
+          aps: {
+            sound: 'default',
+            badge: 1,
+          },
         },
       },
     };

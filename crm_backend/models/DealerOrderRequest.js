@@ -11,12 +11,31 @@ const requestProductSchema = new mongoose.Schema({
   HSNCode:      { type: String },
   quantity:     { type: Number, required: true, min: 1 },
   unit:         { type: String },
-  dealerPrice:  { type: Number, default: 0 },   // sellingPrice from DealerPricing at request time
+  dealerPrice:  { type: Number, default: 0 },   // base sellingPrice from DealerPricing
   gst:          { type: Number, default: 0 },
-  totalPrice:   { type: Number, default: 0 },   // dealerPrice * qty (excl. GST)
+  totalPrice:   { type: Number, default: 0 },   // dealerPrice * qty (excl. GST, before discount)
   brand:        { type: String },
   category:     { type: String },
   subcategory:  { type: String },
+
+  // ── Discount fields ──────────────────────────────────────────────────────
+  discountMappingId:       { type: mongoose.Schema.Types.ObjectId, ref: 'DiscountMapping', default: null },
+  discountMappingName:     { type: String, default: '' },
+  directDiscountPct:       { type: Number, default: 0 },   // auto-applied, not limited by max
+  selectedDiscountLevels:  [{ type: String }],             // level names chosen by SE
+  manualDiscountLevels:    { type: mongoose.Schema.Types.Mixed, default: {} }, // { levelName: enteredPct }
+  levelDiscountPct:        { type: Number, default: 0 },   // sum of selected level %s
+  dealerExtraDiscountPct:  { type: Number, default: 0 },   // from dealer.extraDiscounts
+  totalDiscountPct:        { type: Number, default: 0 },   // direct + level + extra
+  discountAmount:          { type: Number, default: 0 },   // ₹ discount on this line
+  finalPrice:              { type: Number, default: 0 },   // after discount, before GST
+  gstAmount:               { type: Number, default: 0 },   // GST on finalPrice
+  lineTotal:               { type: Number, default: 0 },   // finalPrice + gstAmount
+
+  // Warehouse
+  warehouseId:   { type: String, default: '' },
+  warehouseName: { type: String, default: '' },
+  isOutOfStock:  { type: Boolean, default: false },
 }, { _id: false });
 
 const dealerOrderRequestSchema = new mongoose.Schema({
@@ -39,9 +58,10 @@ const dealerOrderRequestSchema = new mongoose.Schema({
   products: [requestProductSchema],
 
   // Totals (calculated at request time, for reference only)
-  grossAmount: { type: Number, default: 0 },
-  totalGst:    { type: Number, default: 0 },
-  totalAmount: { type: Number, default: 0 },
+  grossAmount:         { type: Number, default: 0 },
+  totalDiscount:       { type: Number, default: 0 },   // total ₹ discount across all products
+  totalGst:            { type: Number, default: 0 },
+  totalAmount:         { type: Number, default: 0 },   // after discount + GST
 
   // Dealer note
   notes: { type: String, trim: true },
@@ -53,6 +73,22 @@ const dealerOrderRequestSchema = new mongoose.Schema({
     default: 'Pending',
     index: true,
   },
+
+  // Source: which app submitted this request
+  source: {
+    type: String,
+    enum: ['Dealer', 'SE'],   // SE = Sales Executive App
+    default: 'Dealer',
+    index: true,
+  },
+
+  // Sales Executive who submitted (only for source: 'SE')
+  salesExecutive: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+  },
+  salesExecutiveName: { type: String, default: null },
 
   // Admin actions
   rejectionReason: { type: String, trim: true },
@@ -76,11 +112,11 @@ const dealerOrderRequestSchema = new mongoose.Schema({
   timestamps: true,
 });
 
-// Auto-generate request number: DOR-YYYY-NNNN
-dealerOrderRequestSchema.statics.generateRequestNumber = async function () {
-  const year = new Date().getFullYear();
-  const prefix = `DOR-${year}-`;
-  const last = await this.findOne({ requestNumber: { $regex: `^${prefix}` } })
+// Auto-generate request number: DOR-YYYY-NNNN (dealer) or SER-YYYY-NNNN (SE)
+dealerOrderRequestSchema.statics.generateRequestNumber = async function (source = 'Dealer') {
+  const year   = new Date().getFullYear();
+  const prefix = source === 'SE' ? `SER-${year}-` : `DOR-${year}-`;
+  const last   = await this.findOne({ requestNumber: { $regex: `^${prefix}` } })
     .sort({ requestNumber: -1 });
   let next = 1;
   if (last) {

@@ -2,6 +2,7 @@ import express from 'express';
 import {
   getDealers,
   getProducts,
+  getProductFilters,
   createSalesOrder,
   getMySalesOrders,
   getSalesOrderById,
@@ -20,6 +21,9 @@ router.get('/dealers', getDealers);
 
 // Get warehouses (must be before /:id route)
 router.get('/warehouses', getWarehouses);
+
+// Get product filter options (brands, categories, subcategories)
+router.get('/product-filters', getProductFilters);
 
 // Get products with pricing and stock
 router.get('/products', getProducts);

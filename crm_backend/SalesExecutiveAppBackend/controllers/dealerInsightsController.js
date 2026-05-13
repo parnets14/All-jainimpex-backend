@@ -1,197 +1,266 @@
 import mongoose from 'mongoose';
-import Dealer from '../../models/Dealer.js';
-import DealerLedger from '../../models/DealerLedger.js';
-import DealerInvoice from '../../models/DealerInvoice.js';
-import DealerPayment from '../../models/DealerPayment.js';
-import CreditNote from '../../models/CreditNote.js';
-import Product from '../../models/Product.js';
-import ProductRecommendation from '../../models/ProductRecommendation.js';
+import { dealerSchema }                from '../../models/Dealer.js';
+import { dealerLedgerSchema }          from '../../models/DealerLedger.js';
+import { dealerInvoiceSchema }         from '../../models/DealerInvoice.js';
+import { dealerPaymentSchema }         from '../../models/DealerPayment.js';
+import { creditNoteSchema }            from '../../models/CreditNote.js';
+import { productSchema }               from '../../models/Product.js';
+import { productRecommendationSchema } from '../../models/ProductRecommendation.js';
+import { regionSchema }                from '../../models/Region.js';
+import { routeSchema }                 from '../../models/Route.js';
+import { brandSchema }                 from '../../models/Brand.js';
+import { categorySchema }              from '../../models/Category.js';
+import { subcategorySchema }           from '../../models/Subcategory.js';
+import { dealerCategorySchema }        from '../../models/DealerCategory.js';
 
-// Get complete dealer insights
+// Helper — get or create model on a specific connection
+const m = (conn, name, schema) => conn.models[name] || conn.model(name, schema);
+
+// ── Get all models from company connection ────────────────────────────────────
+const getModels = (conn) => ({
+  Dealer:                m(conn, 'Dealer',                dealerSchema),
+  DealerLedger:          m(conn, 'DealerLedger',          dealerLedgerSchema),
+  DealerInvoice:         m(conn, 'DealerInvoice',         dealerInvoiceSchema),
+  DealerPayment:         m(conn, 'DealerPayment',         dealerPaymentSchema),
+  CreditNote:            m(conn, 'CreditNote',            creditNoteSchema),
+  Product:               m(conn, 'Product',               productSchema),
+  ProductRecommendation: m(conn, 'ProductRecommendation', productRecommendationSchema),
+  Region:                m(conn, 'Region',                regionSchema),
+  Route:                 m(conn, 'Route',                 routeSchema),
+  Brand:                 m(conn, 'Brand',                 brandSchema),
+  Category:              m(conn, 'Category',              categorySchema),
+  Subcategory:           m(conn, 'Subcategory',           subcategorySchema),
+  DealerCategory:        m(conn, 'DealerCategory',        dealerCategorySchema),
+});
+
+// ── GET /api/se/dealer-insights/:dealerId ─────────────────────────────────────
 export const getDealerInsights = async (req, res) => {
   try {
     const { dealerId } = req.params;
+    const models = getModels(req.dbConnection);
+    const { Dealer, DealerLedger, DealerInvoice, DealerPayment, CreditNote,
+            Product, ProductRecommendation } = models;
 
-    console.log('📊 Fetching dealer insights for:', dealerId);
+    console.log(`📊 Fetching dealer insights for: ${dealerId} in ${req.company}`);
 
-    // Get dealer details
-    const dealer = await Dealer.findById(dealerId);
+    const dealer = await Dealer.findById(dealerId)
+      .populate('regionId', 'name')
+      .populate('routeId', 'name')
+      .populate('allowedBrands', 'name')
+      .populate('allowedCategories', 'name')
+      .populate('allowedSubcategories', 'name')
+      .lean();
+
     if (!dealer) {
-      console.log('❌ Dealer not found:', dealerId);
-      return res.status(404).json({
-        success: false,
-        message: 'Dealer not found'
-      });
+      return res.status(404).json({ success: false, message: 'Dealer not found' });
     }
 
     console.log('✅ Dealer found:', dealer.name);
 
-    // 1. Calculate Outstanding & Credit Status
-    const outstandingData = await calculateOutstanding(dealerId, dealer);
+    // Run all calculations in parallel — each receives the models it needs
+    const [outstandingData, ageingData, lastPurchaseData, purchaseHistoryData,
+           schemePointsData, recommendationsData] = await Promise.all([
+      calculateOutstanding(dealerId, dealer, { DealerInvoice }),
+      calculateAgeing(dealerId, { DealerLedger }),
+      getLastPurchase(dealerId, { DealerInvoice, Product }),
+      getPurchaseHistory(dealerId, { DealerInvoice }),
+      calculateSchemePoints(dealerId, { DealerLedger }),
+      getProductRecommendations(dealerId, { ProductRecommendation, Product }),
+    ]);
 
-    // 2. Calculate Ageing Analysis
-    const ageingData = await calculateAgeing(dealerId);
-
-    // 3. Get Last Purchase
-    const lastPurchaseData = await getLastPurchase(dealerId);
-
-    // 4. Get Purchase History
-    const purchaseHistoryData = await getPurchaseHistory(dealerId);
-
-    // 5. Calculate Scheme Points
-    const schemePointsData = await calculateSchemePoints(dealerId);
-
-    // 6. Get Product Recommendations
-    const recommendationsData = await getProductRecommendations(dealerId);
-
-    // Compile complete insights
     const insights = {
       dealer: {
-        id: dealer._id,
-        code: dealer.code,
-        name: dealer.name,
+        id:            dealer._id,
+        code:          dealer.code,
+        name:          dealer.name,
         contactPerson: dealer.contactPerson,
-        phone: dealer.phone,
-        email: dealer.email
+        phone:         dealer.phone,
+        email:         dealer.email,
+        address:       dealer.address,
+        altAddress:    dealer.altAddress,
+        city:          dealer.location?.addressComponents?.city || '',
+        state:         dealer.location?.addressComponents?.state || '',
+        location:      dealer.location,
+        dealerType:    dealer.dealerType,
+        gst:           dealer.gst,
+        pan:           dealer.pan,
+        aadhar:        dealer.aadhar,
+        creditLimit:   dealer.creditLimit,
+        creditDays:    dealer.creditDays,
+        creditDaysRegular: dealer.creditDaysRegular,
+        creditDaysCD:  dealer.creditDaysCD,
+        salesTarget:   dealer.salesTarget,
+        advanceBalance: dealer.advanceBalance,
+        isActive:      dealer.isActive,
+        totalOrders:   dealer.totalOrders,
+        totalValue:    dealer.totalValue,
+        region:        dealer.regionId,
+        route:         dealer.routeId,
+        allowedBrands:       dealer.allowedBrands,
+        allowedCategories:   dealer.allowedCategories,
+        allowedSubcategories: dealer.allowedSubcategories,
+        extraDiscounts: dealer.extraDiscounts || [],
+        image:         dealer.image,
+        createdAt:     dealer.createdAt,
       },
-      outstanding: outstandingData,
-      ageing: ageingData,
-      lastPurchase: lastPurchaseData,
+      outstanding:     outstandingData,
+      ageing:          ageingData,
+      lastPurchase:    lastPurchaseData,
       purchaseHistory: purchaseHistoryData,
-      schemePoints: schemePointsData,
+      schemePoints:    schemePointsData,
       recommendations: recommendationsData,
-      lastUpdated: new Date()
+      lastUpdated:     new Date(),
     };
 
-    res.json({
-      success: true,
-      insights
-    });
+    res.json({ success: true, insights });
 
   } catch (error) {
     console.error('Get dealer insights error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch dealer insights',
-      error: error.message
+      error: error.message,
     });
   }
 };
 
-// Helper: Calculate Outstanding
-async function calculateOutstanding(dealerId, dealer) {
+// ── GET /api/se/dealer-insights/:dealerId/profile ─────────────────────────────
+// Full dealer profile — all fields from Dealer master
+export const getDealerProfile = async (req, res) => {
   try {
-    const dealerObjectId = new mongoose.Types.ObjectId(dealerId);
+    const { dealerId } = req.params;
+    const { Dealer, Region, Route } = getModels(req.dbConnection);
 
-    // Get all non-cancelled invoices with their payment status
+    const dealer = await Dealer.findById(dealerId)
+      .populate('regionId',  'name')
+      .populate('routeId',   'name')
+      .populate('allowedBrands',        'name')
+      .populate('allowedCategories',    'name')
+      .populate('allowedSubcategories', 'name')
+      .populate('dealerCategory',       'name')
+      .lean();
+
+    if (!dealer) {
+      return res.status(404).json({ success: false, message: 'Dealer not found' });
+    }
+
+    res.json({ success: true, dealer });
+  } catch (error) {
+    console.error('getDealerProfile error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ── Helper: Calculate Outstanding ────────────────────────────────────────────
+async function calculateOutstanding(dealerId, dealer, { DealerInvoice }) {
+  try {
+    const dealerObjectId = new mongoose.Types.ObjectId(String(dealerId));
+
     const invoices = await DealerInvoice.find({
       dealer: dealerObjectId,
-      status: { $ne: 'Cancelled' } // Include all except cancelled
-    }).select('totalAmount paidAmount invoiceDate dueDate creditDays paymentStatus');
+      status: { $ne: 'Cancelled' },
+      isDeleted: { $ne: true },
+    }).select('totalAmount paidAmount pendingAmount invoiceDate dueDate creditDays paymentStatus');
 
-    // Calculate outstanding from invoices (totalAmount - paidAmount)
-    let totalOutstanding = 0;
-    let totalInvoiced = 0;
-    let totalPaid = 0;
-    let totalCreditDaysLeft = 0;
-    let unpaidInvoicesCount = 0;
+    const now = new Date();
+    let totalOutstanding = 0, totalInvoiced = 0, totalPaid = 0;
+    let totalCreditDaysLeft = 0, unpaidCount = 0;
+    let overdueCount = 0, overdueAmount = 0;
+    let nearExpiryCount = 0, nearExpiryAmount = 0; // Due within 7 days
 
-    invoices.forEach(invoice => {
-      const invoiceAmount = invoice.totalAmount || 0;
-      const paidAmount = invoice.paidAmount || 0;
-      const outstanding = invoiceAmount - paidAmount;
-
-      totalInvoiced += invoiceAmount;
-      totalPaid += paidAmount;
+    invoices.forEach(inv => {
+      const outstanding = inv.pendingAmount != null
+        ? inv.pendingAmount
+        : ((inv.totalAmount || 0) - (inv.paidAmount || 0));
+      totalInvoiced    += inv.totalAmount || 0;
+      totalPaid        += inv.paidAmount  || 0;
       totalOutstanding += outstanding;
 
-      // Calculate credit days left for unpaid/partially paid invoices
-      if (outstanding > 0 && invoice.dueDate) {
-        const daysLeft = Math.ceil((new Date(invoice.dueDate) - new Date()) / (1000 * 60 * 60 * 24));
+      if (outstanding > 0 && inv.dueDate) {
+        const daysLeft = Math.ceil((new Date(inv.dueDate) - now) / 86400000);
         totalCreditDaysLeft += daysLeft;
-        unpaidInvoicesCount++;
+        unpaidCount++;
+
+        if (daysLeft < 0) {
+          // Overdue
+          overdueCount++;
+          overdueAmount += outstanding;
+        } else if (daysLeft <= 7) {
+          // Near to expiry (due within 7 days)
+          nearExpiryCount++;
+          nearExpiryAmount += outstanding;
+        }
       }
     });
 
-    const creditLimit = dealer.creditLimit || 0;
-    const creditDays = dealer.creditDays || 0;
-
-    // Calculate credit utilization
+    const creditLimit        = dealer.creditLimit || 0;
     const utilizationPercent = creditLimit > 0 ? (totalOutstanding / creditLimit) * 100 : 0;
+    const avgCreditDaysLeft  = unpaidCount > 0
+      ? Math.round(totalCreditDaysLeft / unpaidCount)
+      : (dealer.creditDays || 0);
 
-    // Calculate average credit days left
-    const avgCreditDaysLeft = unpaidInvoicesCount > 0 
-      ? Math.round(totalCreditDaysLeft / unpaidInvoicesCount) 
-      : creditDays;
-
-    // Determine status
     let status = 'safe';
-    if (utilizationPercent >= 90 || avgCreditDaysLeft < 0) {
-      status = 'critical';
-    } else if (utilizationPercent >= 70 || avgCreditDaysLeft < 5) {
-      status = 'warning';
-    }
+    if (utilizationPercent >= 90 || avgCreditDaysLeft < 0) status = 'critical';
+    else if (utilizationPercent >= 70 || avgCreditDaysLeft < 5) status = 'warning';
 
     console.log('💰 Outstanding calculation:', {
-      totalInvoiced,
-      totalPaid,
-      totalOutstanding,
-      utilizationPercent: Math.round(utilizationPercent),
-      creditLimit,
-      status
+      totalInvoiced, totalPaid, totalOutstanding,
+      utilizationPercent: Math.round(utilizationPercent), creditLimit, status,
+      overdueCount, overdueAmount, nearExpiryCount, nearExpiryAmount,
     });
 
     return {
-      total: Math.max(0, totalOutstanding), // Ensure non-negative
+      total:              Math.max(0, totalOutstanding),
       creditLimit,
-      creditDays,
-      creditDaysLeft: avgCreditDaysLeft,
-      utilizationPercent: Math.max(0, Math.round(utilizationPercent)), // Ensure non-negative
+      creditDays:         dealer.creditDays || 0,
+      creditDaysRegular:  dealer.creditDaysRegular || 0,
+      creditDaysCD:       dealer.creditDaysCD || 0,
+      creditDaysLeft:     avgCreditDaysLeft,
+      utilizationPercent: Math.max(0, Math.round(utilizationPercent)),
       status,
-      entriesCount: invoices.length
+      entriesCount:       invoices.length,
+      // Overdue & Near Expiry breakdown
+      overdue: {
+        count:  overdueCount,
+        amount: overdueAmount,
+      },
+      nearExpiry: {
+        count:  nearExpiryCount,
+        amount: nearExpiryAmount,
+      },
     };
   } catch (error) {
     console.error('Calculate outstanding error:', error);
     return {
-      total: 0,
-      creditLimit: dealer.creditLimit || 0,
+      total: 0, creditLimit: dealer.creditLimit || 0,
       creditDays: dealer.creditDays || 0,
+      creditDaysRegular: dealer.creditDaysRegular || 0,
+      creditDaysCD: dealer.creditDaysCD || 0,
       creditDaysLeft: dealer.creditDays || 0,
-      utilizationPercent: 0,
-      status: 'safe',
-      entriesCount: 0
+      utilizationPercent: 0, status: 'safe', entriesCount: 0,
+      overdue: { count: 0, amount: 0 },
+      nearExpiry: { count: 0, amount: 0 },
     };
   }
 }
 
-// Helper: Calculate Ageing
-async function calculateAgeing(dealerId) {
+// ── Helper: Calculate Ageing ──────────────────────────────────────────────────
+async function calculateAgeing(dealerId, { DealerLedger }) {
   try {
     const ledgerEntries = await DealerLedger.find({
       dealer: dealerId,
-      runningBalance: { $gt: 0 }
+      runningBalance: { $gt: 0 },
     });
 
-    const ageing = {
-      '0-30': 0,
-      '31-60': 0,
-      '61-90': 0,
-      '90+': 0
-    };
+    const ageing = { '0-30': 0, '31-60': 0, '61-90': 0, '90+': 0 };
 
     ledgerEntries.forEach(entry => {
-      const days = entry.agingDays || 0;
+      const days   = entry.agingDays || 0;
       const amount = entry.runningBalance;
-
-      if (days <= 30) {
-        ageing['0-30'] += amount;
-      } else if (days <= 60) {
-        ageing['31-60'] += amount;
-      } else if (days <= 90) {
-        ageing['61-90'] += amount;
-      } else {
-        ageing['90+'] += amount;
-      }
+      if      (days <= 30) ageing['0-30']  += amount;
+      else if (days <= 60) ageing['31-60'] += amount;
+      else if (days <= 90) ageing['61-90'] += amount;
+      else                 ageing['90+']   += amount;
     });
 
     return ageing;
@@ -201,294 +270,167 @@ async function calculateAgeing(dealerId) {
   }
 }
 
-// Helper: Get Last Purchase
-async function getLastPurchase(dealerId) {
+// ── Helper: Get Last Purchase ─────────────────────────────────────────────────
+async function getLastPurchase(dealerId, { DealerInvoice, Product }) {
   try {
-    const dealerObjectId = new mongoose.Types.ObjectId(dealerId);
-    
+    const dealerObjectId = new mongoose.Types.ObjectId(String(dealerId));
     console.log('🔍 Searching for last purchase for dealer:', dealerId);
-    
-    // First, check if any invoices exist
-    const invoiceCount = await DealerInvoice.countDocuments({
-      dealer: dealerObjectId
-    });
-    
-    console.log(`📊 Total invoices for dealer: ${invoiceCount}`);
-    
-    // Get the last created invoice regardless of status
+
     const lastInvoice = await DealerInvoice.findOne({
       dealer: dealerObjectId,
-      status: { $ne: 'Cancelled' } // Exclude only cancelled invoices
+      status: { $ne: 'Cancelled' },
     })
-      .sort({ createdAt: -1 }) // Sort by creation date, not invoice date
+      .sort({ createdAt: -1 })
       .populate('items.product', 'itemName productCode')
       .lean();
 
     if (!lastInvoice) {
-      console.log('⚠️ No invoices found for dealer:', dealerId);
-      return {
-        date: null,
-        invoiceNumber: null,
-        products: [],
-        totalValue: 0,
-        daysSinceLastPurchase: null
-      };
+      return { date: null, invoiceNumber: null, products: [], totalValue: 0, daysSinceLastPurchase: null };
     }
 
-    const daysSince = Math.floor((new Date() - new Date(lastInvoice.invoiceDate)) / (1000 * 60 * 60 * 24));
+    const daysSince = Math.floor((new Date() - new Date(lastInvoice.invoiceDate)) / 86400000);
 
-    console.log('🛒 Last purchase found:', {
-      invoiceNumber: lastInvoice.invoiceNumber,
-      date: lastInvoice.invoiceDate,
-      status: lastInvoice.status,
-      itemsCount: lastInvoice.items?.length || 0,
-      totalAmount: lastInvoice.totalAmount,
-      daysSince
-    });
-
-    // Extract products from items
-    const products = (lastInvoice.items || []).slice(0, 5).map(item => {
-      console.log('📦 Item:', {
-        productName: item.productName,
-        productCode: item.productCode,
-        quantity: item.quantity,
-        totalPrice: item.totalPrice
-      });
-      
-      return {
-        name: item.productName || item.product?.itemName || 'Unknown Product',
-        code: item.productCode || item.product?.productCode || 'N/A',
-        quantity: item.quantity || 0,
-        value: item.totalPrice || (item.quantity * item.unitPrice) || 0
-      };
-    });
+    const products = (lastInvoice.items || []).slice(0, 5).map(item => ({
+      name:     item.productName || item.product?.itemName || 'Unknown',
+      code:     item.productCode || item.product?.productCode || 'N/A',
+      quantity: item.quantity || 0,
+      value:    item.totalPrice || (item.quantity * item.unitPrice) || 0,
+    }));
 
     return {
-      date: lastInvoice.invoiceDate,
-      invoiceNumber: lastInvoice.invoiceNumber,
+      date:                  lastInvoice.invoiceDate,
+      invoiceNumber:         lastInvoice.invoiceNumber,
       products,
-      totalValue: lastInvoice.totalAmount || 0,
-      daysSinceLastPurchase: daysSince
+      totalValue:            lastInvoice.totalAmount || 0,
+      daysSinceLastPurchase: daysSince,
     };
   } catch (error) {
     console.error('❌ Get last purchase error:', error);
-    return {
-      date: null,
-      invoiceNumber: null,
-      products: [],
-      totalValue: 0,
-      daysSinceLastPurchase: null
-    };
+    return { date: null, invoiceNumber: null, products: [], totalValue: 0, daysSinceLastPurchase: null };
   }
 }
 
-// Helper: Get Purchase History
-async function getPurchaseHistory(dealerId) {
+// ── Helper: Get Purchase History ──────────────────────────────────────────────
+async function getPurchaseHistory(dealerId, { DealerInvoice }) {
   try {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const dealerObjectId = new mongoose.Types.ObjectId(String(dealerId));
+    const now = new Date();
+    const d30 = new Date(now); d30.setDate(d30.getDate() - 30);
+    const d60 = new Date(now); d60.setDate(d60.getDate() - 60);
+    const d90 = new Date(now); d90.setDate(d90.getDate() - 90);
 
-    const sixtyDaysAgo = new Date();
-    sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
-
-    const ninetyDaysAgo = new Date();
-    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
-
-    // Convert dealerId to ObjectId for aggregation
-    const dealerObjectId = new mongoose.Types.ObjectId(dealerId);
-
-    // Get invoices for different periods (exclude only cancelled)
     const [last30, last60, last90, totalOrders] = await Promise.all([
       DealerInvoice.aggregate([
-        {
-          $match: {
-            dealer: dealerObjectId,
-            invoiceDate: { $gte: thirtyDaysAgo },
-            status: { $ne: 'Cancelled' }
-          }
-        },
-        { $group: { _id: null, total: { $sum: '$totalAmount' }, count: { $sum: 1 } } }
+        { $match: { dealer: dealerObjectId, invoiceDate: { $gte: d30 }, status: { $ne: 'Cancelled' } } },
+        { $group: { _id: null, total: { $sum: '$totalAmount' }, count: { $sum: 1 } } },
       ]),
       DealerInvoice.aggregate([
-        {
-          $match: {
-            dealer: dealerObjectId,
-            invoiceDate: { $gte: sixtyDaysAgo },
-            status: { $ne: 'Cancelled' }
-          }
-        },
-        { $group: { _id: null, total: { $sum: '$totalAmount' }, count: { $sum: 1 } } }
+        { $match: { dealer: dealerObjectId, invoiceDate: { $gte: d60 }, status: { $ne: 'Cancelled' } } },
+        { $group: { _id: null, total: { $sum: '$totalAmount' }, count: { $sum: 1 } } },
       ]),
       DealerInvoice.aggregate([
-        {
-          $match: {
-            dealer: dealerObjectId,
-            invoiceDate: { $gte: ninetyDaysAgo },
-            status: { $ne: 'Cancelled' }
-          }
-        },
-        { $group: { _id: null, total: { $sum: '$totalAmount' }, count: { $sum: 1 } } }
+        { $match: { dealer: dealerObjectId, invoiceDate: { $gte: d90 }, status: { $ne: 'Cancelled' } } },
+        { $group: { _id: null, total: { $sum: '$totalAmount' }, count: { $sum: 1 } } },
       ]),
-      DealerInvoice.countDocuments({
-        dealer: dealerObjectId,
-        status: { $ne: 'Cancelled' }
-      })
+      DealerInvoice.countDocuments({ dealer: dealerObjectId, status: { $ne: 'Cancelled' } }),
     ]);
 
     const last30Total = last30[0]?.total || 0;
-    const last60Total = last60[0]?.total || 0;
-    const last90Total = last90[0]?.total || 0;
     const last30Count = last30[0]?.count || 0;
 
-    const averageOrderValue = last30Count > 0 ? last30Total / last30Count : 0;
-
     return {
-      last30Days: last30Total,
-      last60Days: last60Total,
-      last90Days: last90Total,
-      averageOrderValue: Math.round(averageOrderValue),
-      totalOrders
+      last30Days:         last30Total,
+      last60Days:         last60[0]?.total || 0,
+      last90Days:         last90[0]?.total || 0,
+      averageOrderValue:  last30Count > 0 ? Math.round(last30Total / last30Count) : 0,
+      totalOrders,
     };
   } catch (error) {
     console.error('Get purchase history error:', error);
-    return {
-      last30Days: 0,
-      last60Days: 0,
-      last90Days: 0,
-      averageOrderValue: 0,
-      totalOrders: 0
-    };
+    return { last30Days: 0, last60Days: 0, last90Days: 0, averageOrderValue: 0, totalOrders: 0 };
   }
 }
 
-// Helper: Calculate Scheme Points
-async function calculateSchemePoints(dealerId) {
+// ── Helper: Calculate Scheme Points ──────────────────────────────────────────
+async function calculateSchemePoints(dealerId, { DealerLedger }) {
   try {
-    const dealerObjectId = new mongoose.Types.ObjectId(dealerId);
+    const dealerObjectId = new mongoose.Types.ObjectId(String(dealerId));
     const pointsData = await DealerLedger.aggregate([
       { $match: { dealer: dealerObjectId } },
-      {
-        $group: {
-          _id: null,
-          totalEarned: { $sum: '$pointsEarned' },
-          totalRedeemed: { $sum: '$pointsRedeemed' }
-        }
-      }
+      { $group: { _id: null, totalEarned: { $sum: '$pointsEarned' }, totalRedeemed: { $sum: '$pointsRedeemed' } } },
     ]);
 
-    const earned = pointsData[0]?.totalEarned || 0;
+    const earned   = pointsData[0]?.totalEarned   || 0;
     const redeemed = pointsData[0]?.totalRedeemed || 0;
-    const available = earned - redeemed;
 
-    // TODO: Get actual schemes from SchemeTarget model (to be created)
-    // For now, return sample scheme structure
-    return {
-      totalEarned: earned,
-      totalRedeemed: redeemed,
-      availablePoints: available,
-      schemes: [] // Will be populated from SchemeTarget model
-    };
+    return { totalEarned: earned, totalRedeemed: redeemed, availablePoints: earned - redeemed, schemes: [] };
   } catch (error) {
     console.error('Calculate scheme points error:', error);
-    return {
-      totalEarned: 0,
-      totalRedeemed: 0,
-      availablePoints: 0,
-      schemes: []
-    };
+    return { totalEarned: 0, totalRedeemed: 0, availablePoints: 0, schemes: [] };
   }
 }
 
-// Helper: Get Product Recommendations
-async function getProductRecommendations(dealerId) {
+// ── Helper: Get Product Recommendations ──────────────────────────────────────
+async function getProductRecommendations(dealerId, { ProductRecommendation, Product }) {
   try {
-    const dealerObjectId = new mongoose.Types.ObjectId(dealerId);
-    
-    // First, get manual recommendations from database
-    const manualRecommendations = await ProductRecommendation.find({
+    const dealerObjectId = new mongoose.Types.ObjectId(String(dealerId));
+
+    const recs = await ProductRecommendation.find({
       dealer: dealerObjectId,
       status: 'Active',
       $or: [
         { validUntil: { $exists: false } },
         { validUntil: null },
-        { validUntil: { $gte: new Date() } }
-      ]
+        { validUntil: { $gte: new Date() } },
+      ],
     })
       .populate('product', 'itemName productCode')
       .sort({ priority: 1 })
       .limit(10)
       .lean();
-    
-    // Format manual recommendations
-    const recommendations = manualRecommendations.map(rec => ({
-      product: rec.product._id,
-      productName: rec.product.itemName || rec.productName,
-      productCode: rec.product.productCode || rec.productCode,
-      reason: rec.reason,
-      priority: rec.priority,
-      suggestedAction: rec.suggestedAction,
-      lastOrderedDate: null,
-      isManual: true
-    }));
-    
-    console.log(`📦 Found ${recommendations.length} manual recommendations for dealer`);
-    
-    return recommendations;
 
+    return recs.map(rec => ({
+      product:       rec.product?._id,
+      productName:   rec.product?.itemName  || rec.productName,
+      productCode:   rec.product?.productCode || rec.productCode,
+      reason:        rec.reason,
+      priority:      rec.priority,
+      suggestedAction: rec.suggestedAction,
+      isManual:      true,
+    }));
   } catch (error) {
     console.error('Get product recommendations error:', error);
     return [];
   }
 }
 
-// Get only outstanding summary (lightweight)
+// ── GET /api/se/dealer-insights/:dealerId/outstanding ─────────────────────────
 export const getOutstandingSummary = async (req, res) => {
   try {
     const { dealerId } = req.params;
+    const { Dealer, DealerInvoice } = getModels(req.dbConnection);
 
     const dealer = await Dealer.findById(dealerId);
-    if (!dealer) {
-      return res.status(404).json({
-        success: false,
-        message: 'Dealer not found'
-      });
-    }
+    if (!dealer) return res.status(404).json({ success: false, message: 'Dealer not found' });
 
-    const outstandingData = await calculateOutstanding(dealerId, dealer);
-
-    res.json({
-      success: true,
-      outstanding: outstandingData
-    });
-
+    const outstandingData = await calculateOutstanding(dealerId, dealer, { DealerInvoice });
+    res.json({ success: true, outstanding: outstandingData });
   } catch (error) {
     console.error('Get outstanding summary error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch outstanding summary',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// Get only ageing analysis
+// ── GET /api/se/dealer-insights/:dealerId/ageing ──────────────────────────────
 export const getAgeingAnalysis = async (req, res) => {
   try {
     const { dealerId } = req.params;
+    const { DealerLedger } = getModels(req.dbConnection);
 
-    const ageingData = await calculateAgeing(dealerId);
-
-    res.json({
-      success: true,
-      ageing: ageingData
-    });
-
+    const ageingData = await calculateAgeing(dealerId, { DealerLedger });
+    res.json({ success: true, ageing: ageingData });
   } catch (error) {
     console.error('Get ageing analysis error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch ageing analysis',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 };

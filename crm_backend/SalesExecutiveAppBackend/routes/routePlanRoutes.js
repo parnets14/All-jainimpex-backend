@@ -6,9 +6,15 @@ import protectAdmin from '../middleware/protectAdmin.js';
 const router = express.Router();
 
 // Admin routes (Web CRM)
-router.get('/admin/all', protectAdmin, routePlanController.getAllRoutePlans);
-router.post('/admin/create', protectAdmin, routePlanController.createRoutePlan);
-router.put('/admin/:id', protectAdmin, routePlanController.updateRoutePlan);
+// NEW: Enhanced route plan management (must come before /:id routes)
+router.get('/admin/route-dealers/:routeId', protectAdmin, routePlanController.getRouteDealers);
+router.post('/admin/auto-generate',         protectAdmin, routePlanController.autoGenerateRoutePlans);
+router.post('/admin/optimize-order',        protectAdmin, routePlanController.optimizeDealerOrder);
+
+router.get('/admin/all',    protectAdmin, routePlanController.getAllRoutePlans);
+router.get('/admin/:id',    protectAdmin, routePlanController.getRoutePlanById);
+router.post('/admin/create',protectAdmin, routePlanController.createRoutePlan);
+router.put('/admin/:id',    protectAdmin, routePlanController.updateRoutePlan);
 router.delete('/admin/:id', protectAdmin, routePlanController.deleteRoutePlan);
 
 // Mobile app routes

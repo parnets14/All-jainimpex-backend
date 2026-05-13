@@ -110,4 +110,7 @@ attendanceSchema.statics.getTodayAttendance = async function(userId) {
   });
 };
 
+// Export schema for multi-database support
+export { attendanceSchema };
+
 export default mongoose.model('SEAttendance', attendanceSchema);

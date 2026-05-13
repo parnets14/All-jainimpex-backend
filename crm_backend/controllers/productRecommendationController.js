@@ -55,53 +55,60 @@ export const getAllRecommendations = async (req, res) => {
   }
 };
 
-// Create recommendation
+// Create recommendation (supports single productId or multiple productIds)
 export const createRecommendation = async (req, res) => {
   try {
     const { ProductRecommendation, Dealer, Product } = getModels(req.dbConnection);
-    const { dealerId, productId, reason, priority, suggestedAction, validUntil, notes } = req.body;
+    const { dealerId, productId, productIds, reason, priority, suggestedAction, validUntil, notes } = req.body;
     
-    // Validate dealer and product
-    const [dealer, product] = await Promise.all([
-      Dealer.findById(dealerId),
-      Product.findById(productId)
-    ]);
+    // Support both single and multiple products
+    const ids = productIds && productIds.length > 0 ? productIds : (productId ? [productId] : []);
     
+    if (ids.length === 0) {
+      return res.status(400).json({ success: false, message: 'At least one product is required' });
+    }
+
+    // Validate dealer
+    const dealer = await Dealer.findById(dealerId);
     if (!dealer) {
-      return res.status(404).json({
-        success: false,
-        message: 'Dealer not found'
-      });
+      return res.status(404).json({ success: false, message: 'Dealer not found' });
     }
     
-    if (!product) {
-      return res.status(404).json({
-        success: false,
-        message: 'Product not found'
-      });
+    // Validate all products
+    const products = await Product.find({ _id: { $in: ids } });
+    if (products.length !== ids.length) {
+      return res.status(404).json({ success: false, message: 'One or more products not found' });
     }
     
-    const recommendation = await ProductRecommendation.create({
-      dealer: dealerId,
-      product: productId,
-      productName: product.itemName,
-      productCode: product.productCode,
-      reason,
-      priority: priority || 3,
-      suggestedAction: suggestedAction || 'Introduce',
-      validUntil,
-      notes,
-      createdBy: req.user._id
-    });
+    // Create one recommendation per product
+    const created = [];
+    for (const product of products) {
+      const recommendation = await ProductRecommendation.create({
+        dealer: dealerId,
+        product: product._id,
+        productName: product.itemName,
+        productCode: product.productCode,
+        reason,
+        priority: priority || 3,
+        suggestedAction: suggestedAction || 'Introduce',
+        validUntil,
+        notes,
+        createdBy: req.user._id
+      });
+      created.push(recommendation);
+    }
     
-    const populated = await ProductRecommendation.findById(recommendation._id)
+    // Populate the last one for response
+    const populated = await ProductRecommendation.findById(created[created.length - 1]._id)
       .populate('dealer', 'name code')
       .populate('product', 'itemName productCode')
       .populate('createdBy', 'name');
     
     res.status(201).json({
       success: true,
-      recommendation: populated
+      message: `${created.length} recommendation${created.length > 1 ? 's' : ''} created`,
+      recommendation: populated,
+      count: created.length
     });
   } catch (error) {
     console.error('Create recommendation error:', error);

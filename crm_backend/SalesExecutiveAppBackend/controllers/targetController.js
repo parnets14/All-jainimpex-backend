@@ -1,8 +1,22 @@
-import Target from '../models/Target.js';
-import User from '../../models/User.js';
-import SalesOrder from '../../models/SalesOrder.js';
-import Collection from '../models/Collection.js';
-import RoutePlan from '../models/RoutePlan.js';
+import { getModels } from '../utils/getModels.js';
+
+// Helper: notify the SE about their target
+const notifySE = async (req, seUserId, type, title, message, data = {}) => {
+  try {
+    const { SENotification, User } = getModels(req);
+    const notif = await SENotification.create({ user: seUserId, type, title, message, data, priority: 'high' });
+    const seUser = await User.findById(seUserId).select('fcmToken').lean();
+    if (seUser?.fcmToken) {
+      const { sendPushNotification } = await import('../../services/firebaseNotificationService.js');
+      await sendPushNotification({
+        token: seUser.fcmToken, title, body: message,
+        data: { type, notificationId: notif._id.toString(), ...Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])) },
+      });
+    }
+  } catch (e) {
+    console.error('notifySE (target) error (non-fatal):', e.message);
+  }
+};
 
 // Create target (Admin)
 export const createTarget = async (req, res) => {
@@ -16,10 +30,10 @@ export const createTarget = async (req, res) => {
       incentive,
       notes
     } = req.body;
+    const { User, Target } = getModels(req);
 
     console.log('📊 Creating target for:', salesExecutive);
 
-    // Get sales executive details
     const seUser = await User.findById(salesExecutive);
     if (!seUser) {
       return res.status(404).json({
@@ -28,7 +42,6 @@ export const createTarget = async (req, res) => {
       });
     }
 
-    // Check for overlapping targets
     const existingTarget = await Target.findOne({
       salesExecutive,
       targetType,
@@ -65,6 +78,13 @@ export const createTarget = async (req, res) => {
 
     console.log(`✅ Target created: ${target.targetNumber}`);
 
+    // Notify the SE that a target has been assigned to them
+    notifySE(req, salesExecutive, 'target_assigned',
+      '🎯 New Target Assigned',
+      `A new ${targetType} target has been assigned to you. Period: ${new Date(startDate).toLocaleDateString('en-IN')} – ${new Date(endDate).toLocaleDateString('en-IN')}`,
+      { targetId: target._id.toString(), targetNumber: target.targetNumber, targetType }
+    );
+
     res.status(201).json({
       success: true,
       message: 'Target created successfully',
@@ -92,6 +112,7 @@ export const getAllTargets = async (req, res) => {
       page = 1,
       limit = 20
     } = req.query;
+    const { Target } = getModels(req);
 
     console.log('📊 Fetching targets (Admin)');
 
@@ -145,6 +166,7 @@ export const getMyTargets = async (req, res) => {
   try {
     const { status, targetType } = req.query;
     const salesExecutive = req.user._id;
+    const { Target } = getModels(req);
 
     console.log('📊 Fetching my targets:', req.user.name);
 
@@ -177,6 +199,7 @@ export const getCurrentTargets = async (req, res) => {
   try {
     const salesExecutive = req.user._id;
     const today = new Date();
+    const { Target } = getModels(req);
 
     console.log('📊 Fetching current targets:', req.user.name);
 
@@ -189,10 +212,9 @@ export const getCurrentTargets = async (req, res) => {
 
     // Calculate achievements for current targets
     for (let target of targets) {
-      await calculateTargetAchievement(target._id);
+      await calculateTargetAchievement(target._id, req);
     }
 
-    // Fetch updated targets
     const updatedTargets = await Target.find({
       _id: { $in: targets.map(t => t._id) }
     }).lean();
@@ -213,9 +235,11 @@ export const getCurrentTargets = async (req, res) => {
   }
 };
 
-// Calculate target achievement
-export const calculateTargetAchievement = async (targetId) => {
+// Calculate target achievement — accepts req for company-specific DB access
+export const calculateTargetAchievement = async (targetId, req) => {
   try {
+    const { Target, SalesOrder, Collection, RoutePlan } = getModels(req);
+
     const target = await Target.findById(targetId);
     if (!target) return;
 
@@ -223,14 +247,12 @@ export const calculateTargetAchievement = async (targetId) => {
 
     console.log(`🔄 Calculating achievement for target: ${target.targetNumber}`);
 
-    // Calculate sales amount and order count
-    // Only count orders with status Confirmed or above (not Pending, Cancelled, Rejected)
     const salesData = await SalesOrder.aggregate([
       {
         $match: {
           createdBy: salesExecutive,
           createdAt: { $gte: startDate, $lte: endDate },
-          status: { $in: ['Confirmed', 'Processing', 'Shipped', 'Delivered', 'Completed'] }
+          status: { $in: ['Pending', 'Confirmed', 'Processing', 'In Transit', 'Delivered'] }
         }
       },
       {
@@ -242,7 +264,6 @@ export const calculateTargetAchievement = async (targetId) => {
       }
     ]);
 
-    // Calculate collection amount
     const collectionData = await Collection.aggregate([
       {
         $match: {
@@ -259,7 +280,6 @@ export const calculateTargetAchievement = async (targetId) => {
       }
     ]);
 
-    // Calculate visit count
     const visitData = await RoutePlan.aggregate([
       {
         $match: {
@@ -267,14 +287,8 @@ export const calculateTargetAchievement = async (targetId) => {
           date: { $gte: startDate, $lte: endDate }
         }
       },
-      {
-        $unwind: '$visits'
-      },
-      {
-        $match: {
-          'visits.status': 'Completed'
-        }
-      },
+      { $unwind: '$dealers' },
+      { $match: { 'dealers.status': 'visited' } },
       {
         $group: {
           _id: null,
@@ -290,7 +304,6 @@ export const calculateTargetAchievement = async (targetId) => {
       visitCount: visitData[0]?.visitCount || 0
     };
 
-    // Calculate percentages
     achievement.salesPercentage = target.targets.salesAmount > 0 
       ? Math.round((achievement.salesAmount / target.targets.salesAmount) * 100) 
       : 0;
@@ -307,7 +320,6 @@ export const calculateTargetAchievement = async (targetId) => {
       ? Math.round((achievement.visitCount / target.targets.visitCount) * 100) 
       : 0;
 
-    // Calculate overall percentage (average of all metrics)
     const percentages = [
       achievement.salesPercentage,
       achievement.orderPercentage,
@@ -319,7 +331,6 @@ export const calculateTargetAchievement = async (targetId) => {
       ? Math.round(percentages.reduce((a, b) => a + b, 0) / percentages.length)
       : 0;
 
-    // Calculate incentive earned
     let incentiveEarned = 0;
     if (target.incentive.enabled && achievement.overallPercentage >= target.incentive.minAchievement) {
       if (target.incentive.type === 'Fixed') {
@@ -336,7 +347,6 @@ export const calculateTargetAchievement = async (targetId) => {
       }
     }
 
-    // Update target
     await Target.findByIdAndUpdate(targetId, {
       achievement,
       'incentive.earned': incentiveEarned,
@@ -357,7 +367,7 @@ export const triggerCalculation = async (req, res) => {
   try {
     const { id } = req.params;
     
-    const achievement = await calculateTargetAchievement(id);
+    const achievement = await calculateTargetAchievement(id, req);
     
     res.json({
       success: true,
@@ -377,6 +387,8 @@ export const triggerCalculation = async (req, res) => {
 // Get target statistics (Admin)
 export const getTargetStats = async (req, res) => {
   try {
+    const { Target } = getModels(req);
+
     console.log('📊 Fetching target statistics');
 
     const stats = await Target.aggregate([
@@ -421,6 +433,7 @@ export const updateTarget = async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
+    const { Target } = getModels(req);
 
     console.log('📊 Updating target:', id);
 
@@ -438,6 +451,13 @@ export const updateTarget = async (req, res) => {
     }
 
     console.log(`✅ Target updated: ${target.targetNumber}`);
+
+    // Notify the SE that their target was updated
+    notifySE(req, target.salesExecutive, 'target_assigned',
+      '📝 Target Updated',
+      `Your ${target.targetType} target ${target.targetNumber} has been updated by admin.`,
+      { targetId: target._id.toString(), targetNumber: target.targetNumber }
+    );
 
     res.json({
       success: true,
@@ -458,6 +478,7 @@ export const updateTarget = async (req, res) => {
 export const deleteTarget = async (req, res) => {
   try {
     const { id } = req.params;
+    const { Target } = getModels(req);
 
     console.log('📊 Deleting target:', id);
 

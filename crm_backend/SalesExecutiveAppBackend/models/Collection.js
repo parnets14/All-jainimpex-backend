@@ -20,7 +20,7 @@ const collectionSchema = new mongoose.Schema({
   paymentMode: {
     type: String,
     required: true,
-    enum: ['Cash', 'Cheque', 'NEFT', 'Bank Transfer']
+    enum: ['Cash', 'Cheque', 'NEFT', 'Bank Transfer', 'Online Transfer', 'UPI']
   },
   // Cheque details
   chequeNumber: String,
@@ -43,6 +43,22 @@ const collectionSchema = new mongoose.Schema({
   },
   // Notes
   notes: String,
+  // Voucher reference (set when admin creates voucher from this collection)
+  voucherId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Voucher'
+  },
+  voucherNumber: String,
+  voucherCreatedAt: Date,
+  voucherCreatedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  // Cash split flag (set by SE app when amount > 10000 cash)
+  cashSplitRequired: {
+    type: Boolean,
+    default: false
+  },
   // Audit fields
   collectedBy: {
     type: mongoose.Schema.Types.ObjectId,

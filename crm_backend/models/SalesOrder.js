@@ -57,6 +57,16 @@ const productSchema = new mongoose.Schema({
     type: Number,
     default: null
   },
+  // SE order: level names chosen by the sales executive (e.g. ["Executive Discount"])
+  selectedDiscountLevels: {
+    type: [String],
+    default: [],
+  },
+  // SE order: manual percentages given by SE per level (e.g. { "Executive Discount": 3 })
+  manualDiscountLevels: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {},
+  },
   // Applied discount information
   appliedDiscount: {
     discountId: {

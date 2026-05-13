@@ -4,7 +4,8 @@ import {
   getCollectionByIdAdmin,
   approveCollection,
   rejectCollection,
-  getCollectionStats
+  getCollectionStats,
+  createVoucherFromCollection
 } from '../controllers/collectionController.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { attachCompanyDB } from '../middleware/companyMiddleware.js';
@@ -29,5 +30,8 @@ router.put('/:id/approve', approveCollection);
 
 // Reject collection
 router.put('/:id/reject', rejectCollection);
+
+// Create voucher from approved collection
+router.post('/:id/create-voucher', createVoucherFromCollection);
 
 export default router;

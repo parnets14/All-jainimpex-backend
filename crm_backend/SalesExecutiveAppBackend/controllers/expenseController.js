@@ -1,14 +1,13 @@
-import Claim from '../../models/Claim.js';
-import ClaimType from '../../models/ClaimType.js';
+import { getModels } from '../utils/getModels.js';
 
 // Create claim (Sales Executive)
 export const createExpense = async (req, res) => {
   try {
     const { type, amount, person, description } = req.body;
+    const { Claim, ClaimType } = getModels(req);
 
     console.log('💰 Creating claim:', { type, amount, person });
 
-    // Validate claim type exists
     const claimType = await ClaimType.findById(type);
     if (!claimType) {
       return res.status(404).json({
@@ -17,10 +16,8 @@ export const createExpense = async (req, res) => {
       });
     }
 
-    // Handle document upload
     let document = null;
     if (req.file) {
-      // Save web-accessible path (e.g., /uploads/expenses/document-xxx.jpg)
       const webPath = `/uploads/expenses/${req.file.filename}`;
       document = {
         filename: req.file.filename,
@@ -37,14 +34,13 @@ export const createExpense = async (req, res) => {
       person,
       description,
       document,
-      status: 'pending', // Sales Executive claims start as pending
+      status: 'pending',
       paymentStatus: 'unpaid',
       createdBy: req.user._id
     });
 
     await claim.save();
 
-    // Populate type for response
     await claim.populate('type', 'name description maxAmount');
 
     console.log(`✅ Claim created: ${claim._id}`);
@@ -69,6 +65,7 @@ export const getMyExpenses = async (req, res) => {
   try {
     const { status, paymentStatus, startDate, endDate } = req.query;
     const createdBy = req.user._id;
+    const { Claim } = getModels(req);
 
     console.log('💰 Fetching my claims:', req.user.name);
 
@@ -109,6 +106,7 @@ export const getExpenseDetails = async (req, res) => {
   try {
     const { id } = req.params;
     const createdBy = req.user._id;
+    const { Claim } = getModels(req);
 
     const claim = await Claim.findOne({ _id: id, createdBy })
       .populate('type', 'name description maxAmount')
@@ -139,6 +137,8 @@ export const getExpenseDetails = async (req, res) => {
 // Get claim types (Sales Executive)
 export const getExpenseTypes = async (req, res) => {
   try {
+    const { ClaimType } = getModels(req);
+
     const claimTypes = await ClaimType.find({ isActive: true })
       .select('name description maxAmount')
       .sort({ name: 1 })
@@ -164,6 +164,7 @@ export const getExpenseTypes = async (req, res) => {
 export const getMyExpenseStats = async (req, res) => {
   try {
     const createdBy = req.user._id;
+    const { Claim } = getModels(req);
 
     const stats = await Claim.aggregate([
       { $match: { createdBy } },
