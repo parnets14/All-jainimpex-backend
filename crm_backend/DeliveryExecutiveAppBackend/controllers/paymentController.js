@@ -403,6 +403,7 @@ export const getPaymentById = async (req, res) => {
 // Verify payment (Admin - Web CRM)
 export const verifyPayment = async (req, res) => {
   try {
+    const { DeliveryPayment } = req.deModels;
     const { paymentId } = req.params;
     const { verificationStatus, verificationNotes } = req.body;
     const verifierId = req.user?.userId || req.user?._id;
@@ -455,6 +456,7 @@ export const verifyPayment = async (req, res) => {
 // Get all collections (Admin - Web CRM)
 export const getAllCollections = async (req, res) => {
   try {
+    const { DeliveryPayment } = req.deModels;
     const { 
       deliveryExecutive, 
       dealer,

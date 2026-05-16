@@ -136,6 +136,17 @@ export const createOrderRequest = async (req, res) => {
 
     console.log(`✅ SE order request created: ${request.requestNumber} by ${user.name}`);
 
+    // Notify admin via Firebase RTDB
+    try {
+      const { notifyNewOrderRequest } = await import('../../services/adminNotificationService.js');
+      const company = req.company || 'jain-impex';
+      notifyNewOrderRequest(company, {
+        dealerName: dealer.name,
+        orderNumber: request.requestNumber,
+        amount: request.totalAmount,
+      });
+    } catch (e) { /* non-blocking */ }
+
     res.status(201).json({
       success: true,
       message: 'Order request submitted for approval',

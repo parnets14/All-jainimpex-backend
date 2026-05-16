@@ -148,6 +148,17 @@ export const createOrder = async (req, res) => {
     });
 
     res.status(201).json({ success: true, message: 'Order created successfully', order: salesOrder });
+
+    // Notify admin (non-blocking)
+    try {
+      const { notifyNewOrderRequest } = await import('../../services/adminNotificationService.js');
+      const company = req.company || 'jain-impex';
+      notifyNewOrderRequest(company, {
+        dealerName: dealer.name,
+        orderNumber,
+        amount: grossAmount + totalGst,
+      });
+    } catch (e) { /* non-blocking */ }
   } catch (error) {
     console.error('createOrder error:', error);
     res.status(500).json({ success: false, message: error.message });

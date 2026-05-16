@@ -38,6 +38,7 @@ const initFirebase = () => {
 
     firebaseApp = admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
+      databaseURL: 'https://jain-impex-default-rtdb.asia-southeast1.firebasedatabase.app',
     });
     console.log('✅ Firebase Admin SDK initialized');
     return firebaseApp;

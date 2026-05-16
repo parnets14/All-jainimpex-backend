@@ -680,6 +680,18 @@ export const createSalesOrder = async (req, res) => {
 
     console.log(`✅ Sales order created: ${salesOrder.orderNumber}`);
 
+    // Notify admin (non-blocking)
+    try {
+      const { notifyNewSalesOrder } = await import('../../services/adminNotificationService.js');
+      const company = req.company || 'jain-impex';
+      notifyNewSalesOrder(company, {
+        salesExecutive: req.user?.name || 'SE',
+        dealerName: salesOrder.dealerName || '',
+        orderNumber: salesOrder.orderNumber,
+        amount: salesOrder.totalAmount,
+      });
+    } catch (e) { /* non-blocking */ }
+
     res.status(201).json({
       success: true,
       message: 'Sales order created successfully',

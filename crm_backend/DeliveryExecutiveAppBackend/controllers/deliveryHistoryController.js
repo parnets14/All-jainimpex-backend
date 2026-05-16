@@ -1,10 +1,9 @@
-import DeliveryAssignment from '../models/DeliveryAssignment.js';
-import SalesOrder from '../../models/SalesOrder.js';
-import Dealer from '../../models/Dealer.js';
+const de = (req) => req.deModels;
 
 // Get delivery history (Mobile App & Web)
 export const getDeliveryHistory = async (req, res) => {
   try {
+    const { DeliveryAssignment } = de(req);
     const executiveId = req.user?.userId || req.user?._id;
     const { 
       page = 1, 
@@ -106,6 +105,7 @@ export const getDeliveryHistory = async (req, res) => {
 // Get delivery history statistics
 export const getDeliveryHistoryStats = async (req, res) => {
   try {
+    const { DeliveryAssignment } = de(req);
     const executiveId = req.user?.userId || req.user?._id;
     const { startDate, endDate } = req.query;
 

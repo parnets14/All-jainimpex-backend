@@ -160,4 +160,5 @@ deliveryPaymentSchema.methods.reject = async function(verifiedBy, notes) {
   await this.save();
 };
 
+export { deliveryPaymentSchema };
 export default mongoose.model('DeliveryPayment', deliveryPaymentSchema);

@@ -1,12 +1,11 @@
-import DeliveryAssignment from '../models/DeliveryAssignment.js';
-import User from '../../models/User.js';
-import SalesOrder from '../../models/SalesOrder.js';
-import Dealer from '../../models/Dealer.js';
 import Notification from '../models/Notification.js';
+
+const de = (req) => req.deModels;
 
 // Get confirmed orders that are not yet assigned (or all if showAssigned is true)
 export const getConfirmedOrders = async (req, res) => {
   try {
+    const { SalesOrder, DeliveryAssignment } = de(req);
     const { 
       page = 1, 
       limit = 10, 
@@ -65,10 +64,10 @@ export const getConfirmedOrders = async (req, res) => {
     // Include delivery address fields (deliveryLatitude, deliveryLongitude, etc.)
     let confirmedOrders = await SalesOrder.find(orderQuery)
       .select('orderNumber dealer dealerName dealerCode pinCode deliveryAddress deliveryCity deliveryArea deliveryPinCode deliveryLatitude deliveryLongitude region products orderDate deliveryDate totalAmount createdAt')
-      .populate('dealer', 'name code phone address')
+      .populate('dealer', 'name code phone address location')
       .populate('region', 'name')
       .populate('products.product', 'productCode itemName')
-      .sort({ createdAt: -1 })
+      .sort({ deliveryDate: 1, orderDate: 1, createdAt: -1 })
       .lean();
 
     console.log(`✅ Found ${confirmedOrders.length} confirmed orders`);
@@ -219,6 +218,7 @@ export const getConfirmedOrders = async (req, res) => {
 // Get all delivery executives
 export const getDeliveryExecutives = async (req, res) => {
   try {
+    const { DeliveryAssignment, User } = de(req);
     const executives = await User.find({
       role: 'delivery_executive',
       status: 'Active'
@@ -267,6 +267,7 @@ export const getDeliveryExecutives = async (req, res) => {
 // Assign orders to delivery executive
 export const assignOrders = async (req, res) => {
   try {
+    const { DeliveryAssignment, SalesOrder, User } = de(req);
     const { executiveId, orderIds, scheduledDate, correctedAddresses } = req.body;
 
     if (!executiveId || !orderIds || !Array.isArray(orderIds) || orderIds.length === 0) {
@@ -408,6 +409,40 @@ export const assignOrders = async (req, res) => {
       // Don't fail the assignment if notification fails
     }
 
+    // ─── Auto-create Route Plan for this executive + date ───────
+    try {
+      const { DeliveryRoute } = de(req);
+      const routeDate = new Date(scheduledDate);
+      routeDate.setHours(0, 0, 0, 0);
+
+      // Check if a route plan already exists for this executive + date
+      let existingRoute = await DeliveryRoute.findOne({
+        deliveryExecutive: executiveId,
+        date: routeDate,
+      });
+
+      if (existingRoute) {
+        // Add new assignments to existing route plan
+        const newAssignmentIds = assignments.map(a => a._id);
+        const existingIds = existingRoute.deliveries.map(id => id.toString());
+        const mergedIds = [...new Set([...existingIds, ...newAssignmentIds.map(id => id.toString())])];
+        existingRoute.deliveries = mergedIds;
+        await existingRoute.save();
+        console.log(`📍 Updated existing route plan with ${newAssignmentIds.length} new stops`);
+      } else {
+        // Create new route plan
+        await DeliveryRoute.create({
+          deliveryExecutive: executiveId,
+          date: routeDate,
+          deliveries: assignments.map(a => a._id),
+          status: 'draft',
+        });
+        console.log(`📍 Auto-created route plan for ${executiveId} on ${routeDate.toDateString()}`);
+      }
+    } catch (routeError) {
+      console.error('⚠️ Auto route plan creation failed (non-blocking):', routeError.message);
+    }
+
     res.status(201).json({
       success: true,
       message: `Successfully assigned ${assignments.length} orders`,
@@ -426,6 +461,7 @@ export const assignOrders = async (req, res) => {
 // Get all assignments (Admin - Web CRM)
 export const getAllAssignments = async (req, res) => {
   try {
+    const { DeliveryAssignment } = de(req);
     const { 
       deliveryExecutive,
       status, 
@@ -500,7 +536,7 @@ export const getAllAssignments = async (req, res) => {
           select: 'productCode itemName'
         }
       })
-      .populate('dealer', 'name phone address city area pinCode latitude longitude')
+      .populate('dealer', 'name phone address city area pinCode location')
       .populate('deliveryExecutive', 'name phone empId')
       .populate('assignedBy', 'name')
       .populate('rescheduleHistory.rescheduledBy', 'name')
@@ -534,6 +570,7 @@ export const getAllAssignments = async (req, res) => {
 // Get assignments for delivery executive
 export const getMyAssignments = async (req, res) => {
   try {
+    const { DeliveryAssignment } = de(req);
     const { 
       status, 
       date, 
@@ -595,7 +632,7 @@ export const getMyAssignments = async (req, res) => {
           select: 'productCode itemName'
         }
       })
-      .populate('dealer', 'name phone address city area pinCode latitude longitude')
+      .populate('dealer', 'name phone address city area pinCode location')
       .populate('deliveryExecutive', 'name phone empId')
       .populate('assignedBy', 'name')
       .populate('rescheduleHistory.rescheduledBy', 'name')
@@ -629,6 +666,7 @@ export const getMyAssignments = async (req, res) => {
 // Update assignment status
 export const updateAssignmentStatus = async (req, res) => {
   try {
+    const { DeliveryAssignment, SalesOrder } = de(req);
     const { assignmentId } = req.params;
     const { status, notes, location } = req.body;
 
@@ -708,6 +746,7 @@ export const updateAssignmentStatus = async (req, res) => {
 // Get all active executives (for admin)
 export const getActiveExecutives = async (req, res) => {
   try {
+    const { DeliveryAssignment, User } = de(req);
     console.log('📡 Fetching active delivery executives...');
     const executives = await User.find({
       role: 'delivery_executive',
@@ -796,6 +835,7 @@ export const getActiveExecutives = async (req, res) => {
 // Update location
 export const updateLocation = async (req, res) => {
   try {
+    const { User } = de(req);
     const { latitude, longitude, accuracy, speed } = req.body;
 
     if (!latitude || !longitude) {
@@ -861,17 +901,20 @@ export const updateLocation = async (req, res) => {
 
 // Helper function: Get coordinates for an order (priority: delivery > dealer)
 function getOrderCoordinates(order) {
-  // Priority: deliveryLatitude/Longitude (corrected address) > dealer coordinates
+  // Priority: deliveryLatitude/Longitude (corrected address) > dealer.location.coordinates
   if (order.deliveryLatitude && order.deliveryLongitude) {
     return {
       latitude: order.deliveryLatitude,
       longitude: order.deliveryLongitude
     };
   }
-  if (order.dealer && order.dealer.latitude && order.dealer.longitude) {
+  // Dealer coordinates stored at location.coordinates.lat / .lng
+  const dealerLat = order.dealer?.location?.coordinates?.lat || order.dealer?.latitude;
+  const dealerLng = order.dealer?.location?.coordinates?.lng || order.dealer?.longitude;
+  if (dealerLat && dealerLng) {
     return {
-      latitude: order.dealer.latitude,
-      longitude: order.dealer.longitude
+      latitude: dealerLat,
+      longitude: dealerLng
     };
   }
   return { latitude: null, longitude: null };
@@ -887,7 +930,8 @@ function getOrderAddress(order) {
 // Optimize route for selected orders
 export const optimizeRoute = async (req, res) => {
   try {
-    const { orderIds } = req.body;
+    const { SalesOrder } = de(req);
+    const { orderIds, executiveLocation } = req.body;
 
     if (!orderIds || !Array.isArray(orderIds) || orderIds.length === 0) {
       return res.status(400).json({
@@ -897,126 +941,193 @@ export const optimizeRoute = async (req, res) => {
     }
 
     // Get orders with dealer location information
-    // Include delivery address fields (deliveryLatitude, deliveryLongitude, etc.)
-    const orders = await SalesOrder.find({
-      _id: { $in: orderIds }
-    })
+    const orders = await SalesOrder.find({ _id: { $in: orderIds } })
       .select('_id orderNumber dealer dealerName dealerCode deliveryAddress deliveryCity deliveryArea deliveryPinCode deliveryLatitude deliveryLongitude pinCode products')
-      .populate('dealer', 'name address pinCode latitude longitude')
+      .populate('dealer', 'name address pinCode location')
       .lean();
-    
-    try {
-      console.log('🔍 Route optimization - Orders fetched:', orders.map(o => ({
-        orderNumber: o.orderNumber,
-        hasDeliveryCoords: !!(o.deliveryLatitude && o.deliveryLongitude),
-        deliveryLat: o.deliveryLatitude,
-        deliveryLng: o.deliveryLongitude,
-        hasDealerCoords: !!(o.dealer?.latitude && o.dealer?.longitude)
-      })));
-    } catch (logError) {
-      console.log('🔍 Route optimization - Orders fetched:', orders.length, 'orders');
-    }
 
     if (orders.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'No orders found',
+      return res.status(400).json({ success: false, message: 'No orders found' });
+    }
+
+    // Build waypoints with coordinates
+    // Dealer coordinates are at dealer.location.coordinates.lat / .lng
+    const waypoints = orders
+      .map((order) => {
+        const lat = order.deliveryLatitude || order.dealer?.location?.coordinates?.lat;
+        const lng = order.deliveryLongitude || order.dealer?.location?.coordinates?.lng;
+        return {
+          orderId: order._id,
+          orderNumber: order.orderNumber,
+          dealerName: order.dealerName || order.dealer?.name || 'Unknown',
+          dealerAddress: order.deliveryAddress || order.dealer?.location?.formattedAddress || order.dealer?.address || '',
+          latitude: lat || null,
+          longitude: lng || null,
+        };
+      })
+      .filter((wp) => wp.latitude && wp.longitude);
+
+    // If no coordinates available, fall back to alphabetical
+    if (waypoints.length === 0) {
+      const fallbackRoute = orders
+        .sort((a, b) => (a.dealerName || '').localeCompare(b.dealerName || ''))
+        .map((order, i) => ({
+          orderId: order._id,
+          orderNumber: order.orderNumber,
+          dealerName: order.dealerName || order.dealer?.name || 'Unknown',
+          dealerAddress: order.deliveryAddress || order.dealer?.address || '',
+          latitude: null,
+          longitude: null,
+          sequence: i + 1,
+        }));
+
+      return res.json({
+        success: true,
+        data: {
+          route: fallbackRoute,
+          totalOrders: fallbackRoute.length,
+          estimatedDistance: '0',
+          estimatedDuration: '0',
+          hasCoordinates: false,
+          polyline: null,
+          message: 'Route ordered alphabetically (no GPS coordinates available)',
+        },
       });
     }
 
-    // Separate orders with and without coordinates
-    // Check delivery coordinates first (corrected address), then dealer coordinates
-    const ordersWithLocation = orders.filter(order => {
-      // Priority: deliveryLatitude/Longitude (corrected) > dealer.latitude/longitude
-      const hasDeliveryCoords = order.deliveryLatitude && order.deliveryLongitude;
-      const hasDealerCoords = order.dealer && order.dealer.latitude && order.dealer.longitude;
-      const hasCoords = hasDeliveryCoords || hasDealerCoords;
-      
-      if (hasCoords) {
-        console.log(`✅ Order ${order.orderNumber} has coordinates:`, {
-          delivery: hasDeliveryCoords ? `${order.deliveryLatitude}, ${order.deliveryLongitude}` : 'none',
-          dealer: hasDealerCoords ? `${order.dealer.latitude}, ${order.dealer.longitude}` : 'none'
-        });
-      }
-      
-      return hasCoords;
-    });
+    // Use executive's current location as origin, or first waypoint
+    const origin = executiveLocation && executiveLocation.latitude
+      ? { latitude: executiveLocation.latitude, longitude: executiveLocation.longitude }
+      : { latitude: waypoints[0].latitude, longitude: waypoints[0].longitude };
 
-    const ordersWithoutLocation = orders.filter(order => {
-      // No coordinates in either delivery address or dealer
-      const hasDeliveryCoords = order.deliveryLatitude && order.deliveryLongitude;
-      const hasDealerCoords = order.dealer && order.dealer.latitude && order.dealer.longitude;
-      return !hasDeliveryCoords && !hasDealerCoords;
-    });
+    // Call Google Routes API v2 with optimizeWaypointOrder
+    const googleApiKey = process.env.GOOGLE_MAPS_API_KEY;
     
-    console.log(`📍 Route optimization summary: ${ordersWithLocation.length} with coordinates, ${ordersWithoutLocation.length} without`);
+    // Build the request body for Routes API v2
+    const routesRequestBody = {
+      origin: {
+        location: { latLng: { latitude: origin.latitude, longitude: origin.longitude } },
+      },
+      destination: {
+        // Last waypoint as destination (or back to origin for round trip)
+        location: { latLng: { latitude: waypoints[waypoints.length - 1].latitude, longitude: waypoints[waypoints.length - 1].longitude } },
+      },
+      intermediates: waypoints.slice(0, -1).map((wp) => ({
+        location: { latLng: { latitude: wp.latitude, longitude: wp.longitude } },
+      })),
+      travelMode: 'DRIVE',
+      routingPreference: 'TRAFFIC_AWARE',
+      optimizeWaypointOrder: true,
+      languageCode: 'en-IN',
+      units: 'METRIC',
+    };
 
-    let optimizedRoute = [];
-    let estimatedDistance = 0;
-    let hasCoordinates = false;
+    console.log('🗺️ Calling Google Routes API v2 with', waypoints.length, 'waypoints');
 
-    // If we have orders with coordinates, use nearest neighbor algorithm
-    if (ordersWithLocation.length > 0) {
-      optimizedRoute = optimizeRouteNearestNeighbor(ordersWithLocation);
-      estimatedDistance = calculateTotalDistance(optimizedRoute);
-      hasCoordinates = true;
-      
-      // Add orders without coordinates at the end
-      ordersWithoutLocation.forEach((order, index) => {
+    let optimizedOrder = null;
+    let totalDistanceMeters = 0;
+    let totalDurationSeconds = 0;
+    let encodedPolyline = null;
+
+    try {
+      const response = await fetch(
+        'https://routes.googleapis.com/directions/v2:computeRoutes',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Goog-Api-Key': googleApiKey,
+            'X-Goog-FieldMask': 'routes.optimizedIntermediateWaypointIndex,routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline,routes.legs.distanceMeters,routes.legs.duration,routes.legs.startLocation,routes.legs.endLocation',
+          },
+          body: JSON.stringify(routesRequestBody),
+        },
+      );
+
+      const data = await response.json();
+
+      if (data.routes && data.routes.length > 0) {
+        const route = data.routes[0];
+        optimizedOrder = route.optimizedIntermediateWaypointIndex || null;
+        totalDistanceMeters = route.distanceMeters || 0;
+        totalDurationSeconds = parseInt(route.duration?.replace('s', '') || '0');
+        encodedPolyline = route.polyline?.encodedPolyline || null;
+
+        console.log('✅ Google Routes API response:', {
+          optimizedOrder,
+          distance: `${(totalDistanceMeters / 1000).toFixed(1)} km`,
+          duration: `${Math.round(totalDurationSeconds / 60)} min`,
+        });
+      } else {
+        console.warn('⚠️ Google Routes API returned no routes:', data);
+        // Fall back to nearest neighbor if Google API fails
+        optimizedOrder = null;
+      }
+    } catch (apiError) {
+      console.error('❌ Google Routes API error:', apiError.message);
+      // Fall back to nearest neighbor
+      optimizedOrder = null;
+    }
+
+    // Build the final optimized route
+    let optimizedRoute;
+
+    if (optimizedOrder && optimizedOrder.length > 0) {
+      // Google gave us the optimal order
+      // optimizedOrder contains indices of intermediates in optimal order
+      const intermediateWaypoints = waypoints.slice(0, -1);
+      const lastWaypoint = waypoints[waypoints.length - 1];
+
+      optimizedRoute = optimizedOrder.map((originalIndex, newIndex) => ({
+        ...intermediateWaypoints[originalIndex],
+        sequence: newIndex + 1,
+      }));
+      // Add the destination (last waypoint)
+      optimizedRoute.push({ ...lastWaypoint, sequence: optimizedRoute.length + 1 });
+    } else {
+      // Fallback: nearest neighbor
+      optimizedRoute = optimizeRouteNearestNeighbor(
+        orders.filter((o) => (o.deliveryLatitude || o.dealer?.location?.coordinates?.lat)),
+      );
+      totalDistanceMeters = calculateTotalDistance(optimizedRoute) * 1000;
+      totalDurationSeconds = Math.round(totalDistanceMeters / 500); // ~30 km/h avg
+    }
+
+    // Add orders without coordinates at the end
+    const routeOrderIds = new Set(optimizedRoute.map((r) => r.orderId?.toString()));
+    orders.forEach((order) => {
+      if (!routeOrderIds.has(order._id.toString())) {
         optimizedRoute.push({
           orderId: order._id,
           orderNumber: order.orderNumber,
-          dealerName: order.dealerName || order.dealer?.name || 'Unknown Dealer',
-          dealerAddress: getOrderAddress(order),
+          dealerName: order.dealerName || order.dealer?.name || 'Unknown',
+          dealerAddress: order.deliveryAddress || order.dealer?.address || '',
           latitude: null,
           longitude: null,
-          sequence: optimizedRoute.length + 1
+          sequence: optimizedRoute.length + 1,
         });
-      });
-    } else {
-      // If no coordinates, use simple sequential ordering by dealer name
-      optimizedRoute = orders
-        .sort((a, b) => {
-          const nameA = (a.dealer?.name || a.dealerName || '').toLowerCase();
-          const nameB = (b.dealer?.name || b.dealerName || '').toLowerCase();
-          return nameA.localeCompare(nameB);
-        })
-        .map((order, index) => {
-          return {
-            orderId: order._id,
-            orderNumber: order.orderNumber,
-            dealerName: order.dealerName || order.dealer?.name || 'Unknown Dealer',
-            dealerAddress: getOrderAddress(order),
-            latitude: null,
-            longitude: null,
-            sequence: index + 1
-          };
-        });
-      
-      estimatedDistance = 0; // Cannot calculate without coordinates
-      hasCoordinates = false;
-    }
+      }
+    });
 
     res.json({
       success: true,
       data: {
         route: optimizedRoute,
         totalOrders: optimizedRoute.length,
-        estimatedDistance: estimatedDistance.toFixed(2),
-        hasCoordinates: hasCoordinates,
-        message: hasCoordinates 
-          ? 'Route optimized using GPS coordinates' 
-          : 'Route ordered alphabetically (GPS coordinates not available for distance calculation)'
+        estimatedDistance: (totalDistanceMeters / 1000).toFixed(2),
+        estimatedDuration: Math.round(totalDurationSeconds / 60),
+        hasCoordinates: true,
+        polyline: encodedPolyline,
+        message: optimizedOrder
+          ? `Route optimized by Google Routes API (${(totalDistanceMeters / 1000).toFixed(1)} km, ~${Math.round(totalDurationSeconds / 60)} min)`
+          : 'Route optimized using nearest-neighbor algorithm (Google API unavailable)',
       },
     });
   } catch (error) {
     console.error('❌ Optimize route error:', error);
-    console.error('Error stack:', error.stack);
     res.status(500).json({
       success: false,
       message: 'Failed to optimize route',
       error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 };
@@ -1130,6 +1241,7 @@ function calculateTotalDistance(route) {
 // Reassign delivery to different executive or date
 export const reassignDelivery = async (req, res) => {
   try {
+    const { DeliveryAssignment, User } = de(req);
     const { assignmentId } = req.params;
     const { executiveId, scheduledDate } = req.body;
 

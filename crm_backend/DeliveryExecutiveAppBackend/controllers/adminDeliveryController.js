@@ -1,9 +1,9 @@
-import DeliveryAssignment from '../models/DeliveryAssignment.js';
-import SalesOrder from '../../models/SalesOrder.js';
+const de = (req) => req.deModels;
 
 // Get all pending reschedule requests
 export const getPendingReschedules = async (req, res) => {
   try {
+    const { DeliveryAssignment } = de(req);
     const { page = 1, limit = 20 } = req.query;
     
     const assignments = await DeliveryAssignment.find({
@@ -45,6 +45,7 @@ export const getPendingReschedules = async (req, res) => {
 // Approve reschedule request
 export const approveReschedule = async (req, res) => {
   try {
+    const { DeliveryAssignment } = de(req);
     const { assignmentId } = req.params;
     const { approvedDate, notes } = req.body;
 
@@ -130,6 +131,7 @@ export const approveReschedule = async (req, res) => {
 // Reject reschedule request
 export const rejectReschedule = async (req, res) => {
   try {
+    const { DeliveryAssignment } = de(req);
     const { assignmentId } = req.params;
     const { reason } = req.body;
 
@@ -233,6 +235,7 @@ export const getFailedDeliveries = async (req, res) => {
 // Reassign delivery
 export const reassignDelivery = async (req, res) => {
   try {
+    const { DeliveryAssignment, User } = de(req);
     const { assignmentId } = req.params;
     const { newExecutiveId, newDate, reason } = req.body;
 
@@ -303,6 +306,7 @@ export const reassignDelivery = async (req, res) => {
 // Edit reschedule date (before approval)
 export const editRescheduleDate = async (req, res) => {
   try {
+    const { DeliveryAssignment } = de(req);
     const { assignmentId } = req.params;
     const { newDate } = req.body;
 

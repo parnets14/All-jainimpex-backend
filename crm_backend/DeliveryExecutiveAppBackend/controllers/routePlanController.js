@@ -1,12 +1,11 @@
-import DeliveryRoute from '../models/DeliveryRoute.js';
-import DeliveryAssignment from '../models/DeliveryAssignment.js';
-import User from '../../models/User.js';
-import SalesOrder from '../../models/SalesOrder.js';
 import Notification from '../models/Notification.js';
+
+const de = (req) => req.deModels;
 
 // Get all route plans (Admin - Web CRM)
 export const getAllRoutePlans = async (req, res) => {
   try {
+    const { DeliveryRoute } = de(req);
     const { 
       deliveryExecutive, 
       status, 
@@ -96,6 +95,7 @@ export const getAllRoutePlans = async (req, res) => {
 // Get route plan by ID (Admin - Web CRM)
 export const getRoutePlanById = async (req, res) => {
   try {
+    const { DeliveryRoute } = de(req);
     const { routeId } = req.params;
 
     const routePlan = await DeliveryRoute.findById(routeId)
@@ -146,6 +146,7 @@ export const getRoutePlanById = async (req, res) => {
 // Get today's route plan (Mobile App)
 export const getTodayRoutePlan = async (req, res) => {
   try {
+    const { DeliveryRoute } = de(req);
     const executiveId = req.user.userId || req.user._id;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -206,6 +207,7 @@ export const getTodayRoutePlan = async (req, res) => {
 // Start route (Mobile App)
 export const startRoute = async (req, res) => {
   try {
+    const { DeliveryRoute } = de(req);
     const executiveId = req.user.userId || req.user._id;
     const { routeId, location } = req.body;
 
@@ -253,6 +255,7 @@ export const startRoute = async (req, res) => {
 // End route (Mobile App)
 export const endRoute = async (req, res) => {
   try {
+    const { DeliveryRoute } = de(req);
     const executiveId = req.user.userId || req.user._id;
     const { routeId, totalDistance } = req.body;
 
@@ -303,6 +306,7 @@ export const endRoute = async (req, res) => {
 // Create route plan from assignments (Admin - Web CRM)
 export const createRoutePlanFromAssignments = async (req, res) => {
   try {
+    const { DeliveryRoute, DeliveryAssignment, User } = de(req);
     const { deliveryExecutive, date, assignmentIds, optimize = true } = req.body;
 
     if (!deliveryExecutive || !date || !assignmentIds || !Array.isArray(assignmentIds) || assignmentIds.length === 0) {

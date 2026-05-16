@@ -72,6 +72,18 @@ export const createCollection = async (req, res) => {
 
     console.log(`✅ Collection created: ${collection.collectionNumber}`);
 
+    // Notify admin (non-blocking)
+    try {
+      const { notifyPaymentCollected } = await import('../../services/adminNotificationService.js');
+      const company = req.company || 'jain-impex';
+      notifyPaymentCollected(company, {
+        salesExecutive: user.name,
+        dealerName: dealer.name,
+        amount: collection.amount,
+        mode: collection.paymentMode,
+      });
+    } catch (e) { /* non-blocking */ }
+
     res.status(201).json({
       success: true,
       message: 'Collection recorded successfully',

@@ -90,4 +90,5 @@ deliveryRouteSchema.methods.getStatistics = function() {
   };
 };
 
+export { deliveryRouteSchema };
 export default mongoose.model('DeliveryRoute', deliveryRouteSchema);

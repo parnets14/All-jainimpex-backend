@@ -1,180 +1,222 @@
-import User from '../../models/User.js';
-import { generateToken } from '../../utils/jwtUtils.js';
+import { getCompanyConnection } from '../../config/multiDatabase.js';
+import { userSchema } from '../../models/User.js';
+import { generateToken as generateJWT } from '../../utils/jwtUtils.js';
 
 // Store OTPs temporarily (in production, use Redis)
 const otpStore = new Map();
 
+// All company databases to search
+const COMPANIES = [
+  {
+    id: 'jain-impex',
+    dbKey: 'jain-impex',
+    name: 'Jain Impex',
+    tagline: 'Sanitary Ware & Plumbing Products',
+  },
+  {
+    id: 'ridhi',
+    dbKey: 'ridhi',
+    name: 'Ridhi Build Mart',
+    tagline: 'Premium Plumbing Products',
+  },
+  {
+    id: 'shree-jain-impex',
+    dbKey: 'shree-jain-impex',
+    name: 'Shree Jain Impex',
+    tagline: 'Complete Sanitary & Plumbing Solutions',
+  },
+];
+
 // Generate 6-digit OTP
-const generateOTP = () => {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+const generateOTP = () =>
+  Math.floor(100000 + Math.random() * 900000).toString();
+
+const generateToken = (id, company) => generateJWT(id, company);
+
+// Helper — get User model for a company DB
+const getUserModel = (dbKey) => {
+  const conn = getCompanyConnection(dbKey);
+  return conn.models.User || conn.model('User', userSchema);
 };
 
-// Login - Send OTP
+// @desc    Send OTP — searches all company DBs for the phone number
+// @route   POST /api/de/auth/login
+// @access  Public
 export const login = async (req, res) => {
   try {
     const { phone } = req.body;
 
     if (!phone) {
-      return res.status(400).json({
-        success: false,
-        message: 'Phone number is required'
-      });
+      return res.status(400).json({ success: false, message: 'Phone number is required' });
     }
 
-    // Find user with delivery_executive role
-    const user = await User.findOne({ 
-      phone, 
-      role: 'delivery_executive',
-      status: 'Active'
-    });
+    // Search all company databases for this phone + delivery_executive role
+    const foundIn = [];
+    for (const company of COMPANIES) {
+      try {
+        const User = getUserModel(company.dbKey);
+        const user = await User.findOne({ phone, role: 'delivery_executive', status: 'Active' });
+        if (user) {
+          foundIn.push({ company, userId: user._id });
+        }
+      } catch (err) {
+        console.warn(`Could not search ${company.dbKey}:`, err.message);
+      }
+    }
 
-    if (!user) {
+    if (foundIn.length === 0) {
       return res.status(404).json({
         success: false,
-        message: 'Delivery executive not found with this phone number'
+        message: 'No active Delivery Executive account found with this phone number',
       });
     }
 
     // Generate OTP
     const otp = generateOTP();
-    
-    // Store OTP with 5 minute expiry
+    const expiresAt = Date.now() + 5 * 60 * 1000;
+
+    // Store OTP with all companies this user belongs to
     otpStore.set(phone, {
       otp,
-      expiresAt: Date.now() + 5 * 60 * 1000,
-      userId: user._id
+      expiresAt,
+      companies: foundIn, // [{ company, userId }]
     });
 
-    // Log OTP to console for testing
     console.log('='.repeat(50));
     console.log('📱 DELIVERY EXECUTIVE LOGIN OTP');
     console.log('='.repeat(50));
     console.log(`Phone: ${phone}`);
     console.log(`OTP: ${otp}`);
-    console.log(`User: ${user.name}`);
+    console.log(`Found in: ${foundIn.map(f => f.company.id).join(', ')}`);
     console.log(`Expires in: 5 minutes`);
     console.log('='.repeat(50));
 
-    // In production, send SMS here
-    // await sendSMS(phone, `Your OTP is: ${otp}`);
-
-    res.json({
+    res.status(200).json({
       success: true,
       message: 'OTP sent successfully',
-      // For testing - show OTP in response
-      otp: otp,
-      expiresIn: '5 minutes'
+      otp, // Remove in production
+      phone,
     });
-
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to send OTP',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Failed to send OTP', error: error.message });
   }
 };
 
-// Verify OTP and Login
+// @desc    Verify OTP — returns company list if multiple, or auto-logs in if single
+// @route   POST /api/de/auth/verify-otp
+// @access  Public
 export const verifyOTP = async (req, res) => {
   try {
-    const { phone, otp } = req.body;
+    const { phone, otp, companyId } = req.body;
 
     if (!phone || !otp) {
-      return res.status(400).json({
-        success: false,
-        message: 'Phone number and OTP are required'
-      });
+      return res.status(400).json({ success: false, message: 'Phone and OTP are required' });
     }
 
-    // Check if OTP exists
-    const otpData = otpStore.get(phone);
-
-    if (!otpData) {
-      return res.status(400).json({
-        success: false,
-        message: 'OTP not found or expired. Please request a new OTP'
-      });
+    const storedData = otpStore.get(phone);
+    if (!storedData) {
+      return res.status(400).json({ success: false, message: 'OTP expired or not found. Please request a new OTP' });
     }
 
-    // Check if OTP is expired
-    if (Date.now() > otpData.expiresAt) {
+    if (Date.now() > storedData.expiresAt) {
       otpStore.delete(phone);
-      return res.status(400).json({
-        success: false,
-        message: 'OTP has expired. Please request a new OTP'
+      return res.status(400).json({ success: false, message: 'OTP has expired. Please request a new OTP' });
+    }
+
+    if (storedData.otp !== otp) {
+      return res.status(400).json({ success: false, message: 'Invalid OTP' });
+    }
+
+    const { companies } = storedData;
+
+    // If multiple companies and no companyId selected yet → ask frontend to pick
+    if (companies.length > 1 && !companyId) {
+      return res.status(200).json({
+        success: true,
+        requiresSelection: true,
+        companies: companies.map(({ company }) => ({
+          id: company.id,
+          name: company.name,
+          tagline: company.tagline,
+        })),
       });
     }
 
-    // Verify OTP
-    if (otpData.otp !== otp) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid OTP'
-      });
+    // Determine which company to log into
+    let target;
+    if (companyId) {
+      target = companies.find(c => c.company.id === companyId);
+      if (!target) {
+        return res.status(400).json({ success: false, message: 'Invalid company selection' });
+      }
+    } else {
+      // Single company — auto select
+      target = companies[0];
     }
 
-    // OTP is valid, get user
-    const user = await User.findById(otpData.userId).select('-password');
+    // Clear OTP
+    otpStore.delete(phone);
+
+    // Get user from the selected company DB
+    const User = getUserModel(target.company.dbKey);
+    const user = await User.findById(target.userId).select('-password');
 
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
+      return res.status(404).json({ success: false, message: 'User not found' });
     }
 
     // Update last login
     user.lastLogin = new Date();
     await user.save();
 
-    // Clear OTP
-    otpStore.delete(phone);
+    // Generate token scoped to this company
+    const token = generateToken(user._id, target.company.dbKey);
 
-    // Generate JWT token using shared utility (ensures same JWT_SECRET)
-    const token = generateToken(user._id);
-    
-    console.log('🔐 Token generated using shared utility');
-    console.log('🔐 Token length:', token.length);
-    console.log('🔐 JWT_SECRET used:', process.env.JWT_SECRET ? 'from env' : 'fallback');
+    console.log('✅ Delivery Executive Login Successful:', user.name, '| Company:', target.company.id);
 
-    console.log('✅ Delivery Executive Login Successful:', user.name);
-
-    res.json({
+    res.status(200).json({
       success: true,
       message: 'Login successful',
       token,
+      // Return ALL companies user belongs to (for switch-company feature)
+      companies: companies.map(({ company }) => ({
+        id: company.id,
+        name: company.name,
+        tagline: company.tagline,
+      })),
+      company: {
+        id: target.company.id,
+        name: target.company.name,
+        tagline: target.company.tagline,
+      },
       user: {
         id: user._id,
         name: user.name,
-        phone: user.phone,
         email: user.email,
+        phone: user.phone,
         role: user.role,
-        location: user.location
-      }
+        location: user.location,
+        company: target.company.id,
+      },
     });
-
   } catch (error) {
     console.error('Verify OTP error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to verify OTP',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Failed to verify OTP', error: error.message });
   }
 };
 
-// Get current user profile
+// @desc    Get current user profile
+// @route   GET /api/de/auth/me
+// @access  Private
 export const getProfile = async (req, res) => {
   try {
-    const user = await User.findById(req.user.userId).select('-password');
+    const company = req.company || 'jain-impex';
+    const User = getUserModel(company);
+    const user = await User.findById(req.user.userId || req.user._id).select('-password');
 
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
+      return res.status(404).json({ success: false, message: 'User not found' });
     }
 
     res.json({
@@ -186,35 +228,19 @@ export const getProfile = async (req, res) => {
         email: user.email,
         role: user.role,
         location: user.location,
-        lastLogin: user.lastLogin
-      }
+        lastLogin: user.lastLogin,
+        company,
+      },
     });
-
   } catch (error) {
     console.error('Get profile error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get profile',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Failed to get profile', error: error.message });
   }
 };
 
-// Logout
+// @desc    Logout
+// @route   POST /api/de/auth/logout
+// @access  Private
 export const logout = async (req, res) => {
-  try {
-    // In a real app, you might want to blacklist the token
-    // For now, just return success
-    res.json({
-      success: true,
-      message: 'Logged out successfully'
-    });
-  } catch (error) {
-    console.error('Logout error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to logout',
-      error: error.message
-    });
-  }
+  res.status(200).json({ success: true, message: 'Logged out successfully' });
 };

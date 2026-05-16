@@ -40,6 +40,17 @@ const deliveryAssignmentSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  otpGeneratedAt: {
+    type: Date
+  },
+  otpResendCount: {
+    type: Number,
+    default: 0
+  },
+  otpAttempts: {
+    type: Number,
+    default: 0
+  },
   deliveryTime: {
     type: Date
   },
@@ -48,6 +59,17 @@ const deliveryAssignmentSchema = new mongoose.Schema({
   }],
   failureReason: {
     type: String
+  },
+  failureDetails: {
+    reason: String,
+    note: String,
+    images: [String],
+    failedAt: Date,
+    failedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    location: {
+      latitude: Number,
+      longitude: Number
+    }
   },
   rescheduleReason: {
     type: String
@@ -135,6 +157,23 @@ const deliveryAssignmentSchema = new mongoose.Schema({
   },
   paymentCollectedAt: {
     type: Date
+  },
+  // Admin confirmation fields
+  adminConfirmed: {
+    type: Boolean,
+    default: false
+  },
+  adminConfirmedAt: {
+    type: Date
+  },
+  adminConfirmedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  adminRejection: {
+    reason: String,
+    rejectedAt: Date,
+    rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   }
 }, {
   timestamps: true
@@ -180,4 +219,5 @@ deliveryAssignmentSchema.methods.reschedule = async function(newDate, reason) {
   await this.save();
 };
 
+export { deliveryAssignmentSchema };
 export default mongoose.model('DeliveryAssignment', deliveryAssignmentSchema);

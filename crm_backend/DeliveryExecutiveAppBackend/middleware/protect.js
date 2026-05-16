@@ -1,5 +1,12 @@
 import { verifyToken } from '../../utils/jwtUtils.js';
-import User from '../../models/User.js';
+import { getCompanyConnection } from '../../config/multiDatabase.js';
+import { userSchema } from '../../models/User.js';
+
+// Helper — get User model for a company DB
+const getUserModel = (dbKey) => {
+  const conn = getCompanyConnection(dbKey);
+  return conn.models.User || conn.model('User', userSchema);
+};
 
 export const protect = async (req, res, next) => {
   try {
@@ -10,14 +17,7 @@ export const protect = async (req, res, next) => {
       token = req.headers.authorization.split(' ')[1];
     }
 
-    // Log token status for debugging (only in development)
-    if (process.env.NODE_ENV !== 'production') {
-      console.log(`🔐 DE Auth check - URL: ${req.method} ${req.path}`);
-      console.log(`🔐 Token present: ${!!token}, Token length: ${token ? token.length : 0}`);
-    }
-
     if (!token) {
-      console.log('❌ No token found in request');
       return res.status(401).json({
         success: false,
         message: 'Not authorized. Please login'
@@ -36,7 +36,11 @@ export const protect = async (req, res, next) => {
       });
     }
 
-    // Get user from token
+    // Extract company from token (multi-company support)
+    const company = decoded.company || 'jain-impex';
+
+    // Get user from the correct company database
+    const User = getUserModel(company);
     const user = await User.findById(decoded.userId).select('-password');
 
     if (!user) {
@@ -54,14 +58,15 @@ export const protect = async (req, res, next) => {
       });
     }
 
-    // Attach user to request (matching format used in other parts of the app)
+    // Attach user and company to request
     req.user = {
       userId: user._id,
-      _id: user._id, // Also add _id for compatibility
+      _id: user._id,
       role: user.role,
       phone: user.phone,
       name: user.name
     };
+    req.company = company;
 
     next();
   } catch (error) {
