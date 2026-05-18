@@ -158,6 +158,17 @@ const deliveryAssignmentSchema = new mongoose.Schema({
   paymentCollectedAt: {
     type: Date
   },
+  paymentSkipped: {
+    type: Boolean,
+    default: false
+  },
+  paymentSkipReason: {
+    type: String,
+    default: null
+  },
+  paymentSkippedAt: {
+    type: Date
+  },
   // Admin confirmation fields
   adminConfirmed: {
     type: Boolean,

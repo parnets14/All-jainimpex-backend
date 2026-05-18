@@ -4,6 +4,7 @@ import { userSchema } from '../../models/User.js';
 import { dealerSchema } from '../../models/Dealer.js';
 import { productSchema } from '../../models/Product.js';
 import { regionSchema } from '../../models/Region.js';
+import { notificationSchema } from '../../models/Notification.js';
 import { deliveryAssignmentSchema } from '../models/DeliveryAssignment.js';
 import { deliveryPaymentSchema } from '../models/DeliveryPayment.js';
 import { deliveryRouteSchema } from '../models/DeliveryRoute.js';
@@ -44,5 +45,6 @@ export function getDeModels(req) {
     Dealer: model('Dealer', dealerSchema),
     Product: model('Product', productSchema),
     Region: model('Region', regionSchema),
+    Notification: model('Notification', notificationSchema),
   };
 }

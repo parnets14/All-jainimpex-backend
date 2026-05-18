@@ -166,7 +166,7 @@ export const getTodayRoutePlan = async (req, res) => {
           path: 'salesOrder',
           populate: {
             path: 'dealer',
-            select: 'name code address phone deliveryAddress deliveryCity deliveryPinCode'
+            select: 'name code address phone location deliveryAddress deliveryCity deliveryPinCode'
           }
         }
       })
@@ -176,7 +176,7 @@ export const getTodayRoutePlan = async (req, res) => {
           path: 'salesOrder',
           populate: {
             path: 'dealer',
-            select: 'name code address phone deliveryAddress deliveryCity deliveryPinCode'
+            select: 'name code address phone location deliveryAddress deliveryCity deliveryPinCode'
           }
         }
       })

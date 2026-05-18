@@ -86,8 +86,8 @@ export const requestDeliveryOTP = async (req, res) => {
     if (dealer?.fcmToken) {
       await sendPushNotification({
         token: dealer.fcmToken,
-        title: '🔑 Delivery OTP',
-        body: `Your OTP for Order #${assignment.salesOrder?.orderNumber || ''} is: ${otp}. Share with delivery person.`,
+        title: `🔑 OTP: ${otp}`,
+        body: `Order #${assignment.salesOrder?.orderNumber || ''} — Share this OTP with delivery person`,
         data: {
           type: 'delivery_otp',
           otp: otp,
@@ -99,6 +99,23 @@ export const requestDeliveryOTP = async (req, res) => {
       console.log(`📱 OTP ${otp} sent to dealer ${dealer.name} via FCM`);
     } else {
       console.log(`⚠️ Dealer ${dealer?.name} has no FCM token — OTP generated but not pushed`);
+    }
+
+    // Save notification to dealer's Notification collection (so it shows in-app)
+    try {
+      const { Notification } = de(req);
+      await Notification.create({
+        dealer: dealer._id,
+        type: 'delivery_otp',
+        title: `🔑 Delivery OTP: ${otp}`,
+        message: `Your OTP for Order #${assignment.salesOrder?.orderNumber || ''} is ${otp}. Share this code with the delivery person to confirm receipt.`,
+        orderNumber: assignment.salesOrder?.orderNumber || null,
+        priority: 'high',
+        metadata: { otp, assignmentId },
+      });
+      console.log(`💾 OTP notification saved to dealer DB`);
+    } catch (dbErr) {
+      console.error('⚠️ Failed to save OTP notification to DB (non-blocking):', dbErr.message);
     }
 
     res.json({

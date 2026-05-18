@@ -39,6 +39,55 @@ router.post('/location', protect, attachDeModels, updateLocation);
 router.post('/optimize-route', protect, attachDeModels, optimizeRoute);
 router.put('/:assignmentId/reassign', protect, attachDeModels, reassignDelivery);
 
+// ─── Admin: Change delivery date ─────────────────────────────
+router.put('/assignment/:assignmentId/change-date', protectAdmin, attachDeModels, async (req, res) => {
+  try {
+    const { DeliveryAssignment, DeliveryRoute } = req.deModels;
+    const { assignmentId } = req.params;
+    const { newDate } = req.body;
+
+    if (!newDate) return res.status(400).json({ success: false, message: 'New date is required' });
+
+    const assignment = await DeliveryAssignment.findById(assignmentId);
+    if (!assignment) return res.status(404).json({ success: false, message: 'Assignment not found' });
+
+    const oldDate = assignment.scheduledDate;
+    assignment.scheduledDate = new Date(newDate);
+    await assignment.save();
+
+    // Update route plan — remove from old date's plan, add to new date's plan
+    const executiveId = assignment.deliveryExecutive;
+    const newDateStart = new Date(newDate); newDateStart.setHours(0, 0, 0, 0);
+
+    // Remove from old route plan
+    if (oldDate) {
+      const oldDateStart = new Date(oldDate); oldDateStart.setHours(0, 0, 0, 0);
+      const oldDateEnd = new Date(oldDateStart); oldDateEnd.setDate(oldDateEnd.getDate() + 1);
+      await DeliveryRoute.updateOne(
+        { deliveryExecutive: executiveId, date: { $gte: oldDateStart, $lt: oldDateEnd } },
+        { $pull: { deliveries: assignmentId } }
+      );
+    }
+
+    // Add to new route plan (create if doesn't exist)
+    const newDateEnd = new Date(newDateStart); newDateEnd.setDate(newDateEnd.getDate() + 1);
+    let newRoute = await DeliveryRoute.findOne({ deliveryExecutive: executiveId, date: { $gte: newDateStart, $lt: newDateEnd } });
+    if (newRoute) {
+      if (!newRoute.deliveries.includes(assignmentId)) {
+        newRoute.deliveries.push(assignmentId);
+        await newRoute.save();
+      }
+    } else {
+      await DeliveryRoute.create({ deliveryExecutive: executiveId, date: newDateStart, deliveries: [assignmentId], status: 'draft' });
+    }
+
+    res.json({ success: true, message: `Delivery date changed to ${new Date(newDate).toLocaleDateString('en-IN')}` });
+  } catch (error) {
+    console.error('Change date error:', error);
+    res.status(500).json({ success: false, message: 'Failed to change date', error: error.message });
+  }
+});
+
 // ─── Admin: Cancel assignment ────────────────────────────────
 router.delete('/assignment/:assignmentId/cancel', protectAdmin, attachDeModels, async (req, res) => {
   try {

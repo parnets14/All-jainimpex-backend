@@ -135,8 +135,11 @@ export const getConfirmedOrders = async (req, res) => {
     // Format orders for frontend
     const formattedOrders = filteredOrders.map(order => {
       const dealer = order.dealer || {};
-      // Use delivery address if available (corrected), otherwise use dealer address
+      // Priority: 1. Corrected delivery address on SalesOrder, 2. Current dealer address (location.formattedAddress), 3. dealer.address
       const hasDeliveryAddress = order.deliveryAddress || order.deliveryCity || order.deliveryPinCode;
+      const currentDealerAddress = dealer.location?.formattedAddress || dealer.address || '';
+      const currentDealerCity = dealer.location?.addressComponents?.city || '';
+      const currentDealerPinCode = dealer.location?.addressComponents?.postalCode || '';
       const orderIdStr = order._id?.toString();
       const assignment = assignmentMap.get(orderIdStr);
       
@@ -146,22 +149,22 @@ export const getConfirmedOrders = async (req, res) => {
         dealerName: order.dealerName || dealer.name || 'Unknown Dealer',
         dealerCode: order.dealerCode || dealer.code || '',
         dealerPhone: dealer.phone || '',
-        // Use corrected delivery address if available, otherwise use dealer address
+        // Priority: corrected delivery address > current dealer address
         dealerAddress: hasDeliveryAddress 
-          ? (order.deliveryAddress || dealer.address || '')
-          : (dealer.address || ''),
+          ? (order.deliveryAddress || currentDealerAddress)
+          : currentDealerAddress,
         dealerCity: hasDeliveryAddress 
-          ? (order.deliveryCity || '')
-          : '',
+          ? (order.deliveryCity || currentDealerCity)
+          : currentDealerCity,
         dealerArea: hasDeliveryAddress 
           ? (order.deliveryArea || '')
           : '',
         dealerPinCode: hasDeliveryAddress 
-          ? (order.deliveryPinCode || order.pinCode || '')
-          : (order.pinCode || ''),
-        // Include GPS coordinates if available
-        latitude: order.deliveryLatitude || null,
-        longitude: order.deliveryLongitude || null,
+          ? (order.deliveryPinCode || order.pinCode || currentDealerPinCode)
+          : (order.pinCode || currentDealerPinCode),
+        // Include GPS coordinates - prefer delivery coords, then current dealer coords
+        latitude: order.deliveryLatitude || dealer.location?.coordinates?.lat || null,
+        longitude: order.deliveryLongitude || dealer.location?.coordinates?.lng || null,
         dealerId: dealer._id || order.dealer,
         region: order.region?.name || '',
         itemCount: order.products?.length || 0,
@@ -700,24 +703,18 @@ export const updateAssignmentStatus = async (req, res) => {
 
     if (status === 'in_transit') {
       assignment.deliveryTime = new Date();
-      // Update SalesOrder status to "In Transit"
+      // Update SalesOrder to "In Transit" so dealer can see delivery is on the way
       await SalesOrder.findByIdAndUpdate(assignment.salesOrder, {
         status: 'In Transit'
       });
-      console.log('✅ Updated SalesOrder status to "In Transit"');
+      console.log('✅ Assignment status → in_transit, SalesOrder → In Transit');
     } else if (status === 'delivered') {
       assignment.deliveryTime = new Date();
-      // Update SalesOrder status to "Delivered"
-      await SalesOrder.findByIdAndUpdate(assignment.salesOrder, {
-        status: 'Delivered'
-      });
-      console.log('✅ Updated SalesOrder status to "Delivered"');
+      // Do NOT update SalesOrder — admin confirms delivery separately via Delivery Monitoring
+      console.log('✅ Assignment status → delivered (awaiting admin confirmation)');
     } else if (status === 'rescheduled') {
-      // Update SalesOrder status to "Rescheduled"
-      await SalesOrder.findByIdAndUpdate(assignment.salesOrder, {
-        status: 'Rescheduled'
-      });
-      console.log('✅ Updated SalesOrder status to "Rescheduled"');
+      // Do NOT update SalesOrder — admin handles via Delivery Monitoring
+      console.log('✅ Assignment status → rescheduled (SalesOrder unchanged)');
     } else if (status === 'failed') {
       // Update SalesOrder status to "Missing" (failed delivery)
       await SalesOrder.findByIdAndUpdate(assignment.salesOrder, {
