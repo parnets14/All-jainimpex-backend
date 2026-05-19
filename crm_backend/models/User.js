@@ -157,6 +157,11 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: null,
   },
+  // Single-session enforcement — only one device can be logged in at a time
+  activeSessionId: {
+    type: String,
+    default: null,
+  },
 }, {
   timestamps: true
 });

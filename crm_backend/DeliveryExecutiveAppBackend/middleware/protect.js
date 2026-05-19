@@ -58,6 +58,15 @@ export const protect = async (req, res, next) => {
       });
     }
 
+    // Single-session enforcement: check if this token's session is still valid
+    if (decoded.sessionId && user.activeSessionId && decoded.sessionId !== user.activeSessionId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Session expired. You have been logged in on another device.',
+        code: 'SESSION_REPLACED'
+      });
+    }
+
     // Attach user and company to request
     req.user = {
       userId: user._id,

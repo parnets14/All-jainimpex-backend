@@ -166,14 +166,19 @@ export const verifyOTP = async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // Update last login
+    // Generate unique session ID for single-session enforcement
+    const crypto = await import('crypto');
+    const sessionId = crypto.randomUUID();
+
+    // Update last login and session ID
     user.lastLogin = new Date();
+    user.activeSessionId = sessionId;
     await user.save();
 
-    // Generate token scoped to this company
-    const token = generateToken(user._id, target.company.dbKey);
+    // Generate token scoped to this company (includes sessionId)
+    const token = generateToken(user._id, target.company.dbKey, sessionId);
 
-    console.log('✅ Delivery Executive Login Successful:', user.name, '| Company:', target.company.id);
+    console.log('✅ Delivery Executive Login Successful:', user.name, '| Company:', target.company.id, '| Session:', sessionId.substring(0, 8));
 
     res.status(200).json({
       success: true,

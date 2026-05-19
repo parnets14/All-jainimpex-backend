@@ -4,7 +4,7 @@ import jwt from 'jsonwebtoken';
 const JWT_SECRET = process.env.JWT_SECRET || 'your-fallback-secret-key-for-development-only';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '30d'; // 30 days for persistent login
 
-export const generateToken = (userId, company) => {
+export const generateToken = (userId, company, sessionId = null) => {
   if (!JWT_SECRET) {
     throw new Error('JWT_SECRET is not defined');
   }
@@ -13,15 +13,18 @@ export const generateToken = (userId, company) => {
     throw new Error('Company identifier is required for token generation');
   }
 
-  return jwt.sign(
-    { 
-      userId,
-      company, // Include company in token
-      timestamp: Date.now()
-    },
-    JWT_SECRET,
-    { expiresIn: JWT_EXPIRES_IN }
-  );
+  const payload = { 
+    userId,
+    company,
+    timestamp: Date.now()
+  };
+
+  // Include sessionId if provided (for single-session enforcement)
+  if (sessionId) {
+    payload.sessionId = sessionId;
+  }
+
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 };
 
 export const verifyToken = (token) => {
