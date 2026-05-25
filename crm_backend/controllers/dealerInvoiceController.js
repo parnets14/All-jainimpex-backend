@@ -313,81 +313,121 @@ export const calculateDiscountsAndPoints = async (req, res) => {
       });
     }
 
+    // Get dealer type for discount filtering
+    let dealerType = null;
+    if (dealerId) {
+      const dealer = await Dealer.findById(dealerId).select('dealerType');
+      dealerType = dealer?.dealerType || null;
+    }
+
     const processedItems = [];
 
     for (const item of items) {
       const product = await Product.findById(item.productId)
         .populate("brand", "name")
         .populate("category", "name")
-        .populate("subcategory", "name");
+        .populate("subcategory", "name")
+        .populate("subcategory1", "name")
+        .populate("subcategory2", "name");
 
       if (!product) {
         continue;
       }
 
-      // Find applicable discounts
-      const discounts = await DiscountMapping.find({
-        mappingType: "sales",
-        status: "Approved",
-        brand: product.brand._id,
-        category: product.category._id,
-        subcategory: product.subcategory._id,
-        validFrom: { $lte: new Date() },
-        validTo: { $gte: new Date() }
-      }).populate("brand category subcategory", "name");
+      // Use the proper findApplicableDiscounts method from DiscountMapping
+      const applicableDiscounts = await DiscountMapping.findApplicableDiscounts(
+        item.productId, 'sales', dealerType, req.dbConnection
+      );
 
-      // Calculate discount amount
-      let totalDiscountPercentage = 0;
+      // MRP = product.mrp or unitPrice × (1 + gst/100)
+      const mrpPerUnit = product.mrp || (product.unitPrice * (1 + (product.gst || 0) / 100));
+      const grossAmount = item.quantity * mrpPerUnit;
+
+      // Build discount breakdown and calculate sequentially
+      let currentAmount = grossAmount;
+      let totalDiscountAmount = 0;
+      let directDiscountPercentage = 0;
       let appliedDiscounts = [];
 
-      if (discounts.length > 0) {
-        // Use the highest discount percentage
-        const maxDiscount = discounts.reduce((max, discount) => {
-          const maxLevelDiscount = Math.max(...discount.levels.map(level => level.discountPercentage));
-          return maxLevelDiscount > max ? maxLevelDiscount : max;
-        }, 0);
+      if (applicableDiscounts.length > 0) {
+        const discount = applicableDiscounts[0]; // Use highest priority discount
 
-        totalDiscountPercentage = maxDiscount;
-        
-        // Store applied discounts
-        appliedDiscounts = discounts.map(discount => ({
-          discountId: discount._id,
-          discountName: `${discount.brand.name} - ${discount.category.name} - ${discount.subcategory.name}`,
-          discountValue: maxDiscount,
-          discountType: "percentage"
-        }));
-      }
-
-      // Find applicable points
-      const points = await Points.find({
-        type: "sale",
-        brand: product.brand._id,
-        category: product.category._id,
-        subcategory: product.subcategory._id
-      });
-
-      let pointsEarned = 0;
-      if (points.length > 0) {
-        const point = points[0]; // Use first matching point rule
-        if (point.calculationType === "amount") {
-          const amountAfterDiscount = (item.quantity * item.unitPrice) * (1 - totalDiscountPercentage / 100);
-          pointsEarned = Math.floor(amountAfterDiscount / point.inputValue) * point.points;
-        } else if (point.calculationType === "units") {
-          pointsEarned = Math.floor(item.quantity / point.inputValue) * point.points;
+        // 1. Apply direct discount first (sequentially)
+        if (discount.directDiscountPercentage && discount.directDiscountPercentage > 0) {
+          directDiscountPercentage = discount.directDiscountPercentage;
+          const directAmt = currentAmount * (directDiscountPercentage / 100);
+          currentAmount -= directAmt;
+          totalDiscountAmount += directAmt;
         }
+
+        // 2. Apply each level discount sequentially
+        const levelBreakdown = [];
+        if (discount.levels && discount.levels.length > 0) {
+          for (const level of discount.levels) {
+            if (level.discountPercentage > 0) {
+              const levelAmt = currentAmount * (level.discountPercentage / 100);
+              currentAmount -= levelAmt;
+              totalDiscountAmount += levelAmt;
+              levelBreakdown.push({
+                levelName: level.levelName,
+                discountPercentage: level.discountPercentage
+              });
+            }
+          }
+        }
+
+        appliedDiscounts = [{
+          discountId: discount._id,
+          discountName: discount.discountName,
+          discountValue: directDiscountPercentage,
+          discountType: discount.discountType,
+          directDiscountPercentage: directDiscountPercentage,
+          levels: levelBreakdown,
+          targetType: discount.targetType,
+          maxDiscountPercentage: discount.maxDiscountPercentage
+        }];
       }
+
+      // Calculate effective discount percentage (for display)
+      const effectiveDiscountPct = grossAmount > 0 
+        ? parseFloat(((totalDiscountAmount / grossAmount) * 100).toFixed(2))
+        : 0;
+
+      // Final amount already includes GST (MRP based)
+      const finalAmount = parseFloat(currentAmount.toFixed(2));
+      
+      // Reverse-calculate GST for tax display
+      const gstRate = product.gst || 0;
+      const gstAmount = gstRate > 0 
+        ? parseFloat((finalAmount - finalAmount / (1 + gstRate / 100)).toFixed(2))
+        : 0;
+
+      // Points calculation
+      let pointsEarned = 0;
+      // Points logic can remain as-is or be updated later
 
       processedItems.push({
         product: product._id,
         productCode: product.productCode,
         productName: product.itemName,
         HSNCode: product.HSNCode,
+        unit: product.unit,
+        alternateUnit: product.alternateUnit,
+        alternateUnitQuantity: product.alternateUnitQuantity,
+        category: product.category?.name || '',
+        subcategory: product.subcategory?.name || '',
+        brand: product.brand?.name || '',
         quantity: item.quantity,
-        unitPrice: item.unitPrice,
-        gst: product.gst || 0,
-        discountPercentage: totalDiscountPercentage,
+        unitPrice: product.unitPrice,
+        mrp: mrpPerUnit,
+        gst: gstRate,
+        gstAmount: gstAmount,
+        discountPercentage: directDiscountPercentage,
+        discountAmount: parseFloat(totalDiscountAmount.toFixed(2)),
+        effectiveDiscountPercentage: effectiveDiscountPct,
         appliedDiscounts,
         pointsEarned,
+        totalPrice: finalAmount,
         warehouse: item.warehouseId,
         warehouseName: item.warehouseName
       });
@@ -738,8 +778,10 @@ export const createDealerInvoice = async (req, res) => {
     // const invoiceNumber = await generateInvoiceNumber(); // REMOVED
 
     // Create invoice data as DRAFT
+    // NOTE: Do NOT set invoiceNumber for drafts — leaving it undefined allows
+    // the sparse unique index to permit multiple drafts without conflict
     const invoiceData = {
-      invoiceNumber: null, // No number for drafts
+      // invoiceNumber is intentionally omitted (undefined) for drafts
       invoiceDate: null,   // No date for drafts
       isDraft: true,       // Mark as draft
       status: "Draft",     // Set status to Draft
@@ -918,6 +960,24 @@ export const createDealerInvoice = async (req, res) => {
     });
   } catch (error) {
     console.error("Create dealer invoice error:", error);
+    
+    // Handle duplicate key error on invoiceNumber (null) — fix stale non-sparse index
+    if (error.code === 11000 && error.keyPattern?.invoiceNumber) {
+      try {
+        console.log('🔧 Fixing stale invoiceNumber index (dropping non-sparse and recreating as sparse)...');
+        const collection = req.dbConnection.collection('dealerinvoices');
+        await collection.dropIndex('invoiceNumber_1');
+        await collection.createIndex({ invoiceNumber: 1 }, { unique: true, sparse: true });
+        console.log('✅ Index fixed. Please retry creating the invoice.');
+        return res.status(409).json({
+          success: false,
+          message: "Database index was repaired. Please try creating the invoice again."
+        });
+      } catch (indexError) {
+        console.error('Failed to fix index:', indexError);
+      }
+    }
+    
     res.status(500).json({
       success: false,
       message: "Server error while creating dealer invoice"

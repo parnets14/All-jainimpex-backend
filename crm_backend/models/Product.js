@@ -114,6 +114,11 @@ const productSchema = new mongoose.Schema({
     min: 0,
     default: 0
   },
+  mrp: {
+    type: Number,
+    min: 0,
+    default: null  // MRP including GST (e.g., ₹840)
+  },
   unitPrice: {
     type: Number,
     required: true,
@@ -156,6 +161,12 @@ const productSchema = new mongoose.Schema({
 
 // Calculate total amount with GST before saving
 productSchema.pre('save', function(next) {
+  // If MRP is provided, calculate unitPrice from MRP (MRP is GST inclusive)
+  // unitPrice = MRP / (1 + GST/100)
+  if (this.mrp && this.gst !== undefined && this.gst > 0) {
+    this.unitPrice = parseFloat((this.mrp / (1 + this.gst / 100)).toFixed(2));
+  }
+
   // If unitPrice is provided but no rateSlabs exist, create a default rate slab
   if (this.unitPrice && (!this.rateSlabs || this.rateSlabs.length === 0)) {
     this.rateSlabs = [{
@@ -170,11 +181,15 @@ productSchema.pre('save', function(next) {
     slab.amount = slab.quantity * slab.rate;
   });
 
-  // Calculate total amount with GST using unitPrice (preferred) or first rate slab
-  const basePrice = this.unitPrice || (this.rateSlabs[0]?.rate) || 0;
-  if (basePrice && this.gst !== undefined) {
-    const gstAmount = basePrice * (this.gst / 100);
-    this.totalAmount = basePrice + gstAmount;
+  // totalAmount = MRP if available, otherwise calculate from unitPrice + GST
+  if (this.mrp) {
+    this.totalAmount = this.mrp;
+  } else {
+    const basePrice = this.unitPrice || (this.rateSlabs[0]?.rate) || 0;
+    if (basePrice && this.gst !== undefined) {
+      const gstAmount = basePrice * (this.gst / 100);
+      this.totalAmount = basePrice + gstAmount;
+    }
   }
 
   next();

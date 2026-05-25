@@ -46,7 +46,8 @@ export const createOrderRequest = async (req, res) => {
         if (!product) return null;
 
         const pricing = await DealerPricing.findOne({ product: item.productId, isActive: true });
-        const dealerPrice = pricing?.sellingPrice || product.rateSlabs?.[0]?.rate || 0;
+        // Use MRP (GST inclusive) as the base price
+        const dealerPrice = product.mrp || product.totalAmount || ((pricing?.sellingPrice || product.rateSlabs?.[0]?.rate || 0) * (1 + (product.gst || 0) / 100));
 
         // Use discount data passed from the cart (already calculated on client)
         const directDiscountPct      = item.directDiscountPct      || 0;
@@ -62,11 +63,39 @@ export const createOrderRequest = async (req, res) => {
 
         const totalDiscountPct = directDiscountPct + levelDiscountPct + dealerExtraDiscountPct;
 
-        const lineSubtotal   = dealerPrice * item.quantity;
-        const discountAmount = Math.round((lineSubtotal * totalDiscountPct / 100) * 100) / 100;
-        const finalPrice     = lineSubtotal - discountAmount;
-        const gstAmount      = Math.round((finalPrice * (product.gst || 0) / 100) * 100) / 100;
-        const lineTotal      = finalPrice + gstAmount;
+        // Apply discounts SEQUENTIALLY on MRP (not flat additive)
+        const lineSubtotal = dealerPrice * item.quantity;
+        let currentAmount = lineSubtotal;
+        let discountAmount = 0;
+
+        // 1. Direct discount
+        if (directDiscountPct > 0) {
+          const amt = currentAmount * (directDiscountPct / 100);
+          currentAmount -= amt;
+          discountAmount += amt;
+        }
+        // 2. Level discounts sequentially
+        Object.entries(manualDiscountLevels).forEach(([, pct]) => {
+          const p = parseFloat(pct) || 0;
+          if (p > 0) {
+            const amt = currentAmount * (p / 100);
+            currentAmount -= amt;
+            discountAmount += amt;
+          }
+        });
+        // 3. Dealer extra discount
+        if (dealerExtraDiscountPct > 0) {
+          const amt = currentAmount * (dealerExtraDiscountPct / 100);
+          currentAmount -= amt;
+          discountAmount += amt;
+        }
+
+        discountAmount = Math.round(discountAmount * 100) / 100;
+        const finalPrice = Math.round(currentAmount * 100) / 100;
+        // GST is reverse-calculated (MRP already includes GST)
+        const gstRate = product.gst || 0;
+        const gstAmount = gstRate > 0 ? Math.round((finalPrice - finalPrice / (1 + gstRate / 100)) * 100) / 100 : 0;
+        const lineTotal = finalPrice; // MRP after sequential discounts (GST already included)
 
         grossAmount += lineSubtotal;
         totalGst    += gstAmount;
@@ -110,7 +139,8 @@ export const createOrderRequest = async (req, res) => {
       return res.status(400).json({ success: false, message: 'No valid products found' });
     }
 
-    const totalAmount = grossAmount - totalDiscountAmt + totalGst;
+    // totalAmount = grossAmount - discount (GST already included in MRP, don't add)
+    const totalAmount = grossAmount - totalDiscountAmt;
 
     // Generate SER-YYYY-NNNN request number
     const requestNumber = await DealerOrderRequest.generateRequestNumber('SE');

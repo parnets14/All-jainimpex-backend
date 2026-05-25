@@ -46,12 +46,13 @@ export const createOrderRequest = async (req, res) => {
 
       if (!product) continue;
 
-      // Get dealer price from DealerPricing (snapshot at request time)
+      // Get dealer price — use MRP (GST inclusive)
       const pricing = await DealerPricing.findOne({ product: item.productId, isActive: true });
-      const dealerPrice = pricing?.sellingPrice || product.rateSlabs?.[0]?.rate || 0;
+      const dealerPrice = product.mrp || product.totalAmount || ((pricing?.sellingPrice || product.rateSlabs?.[0]?.rate || 0) * (1 + (product.gst || 0) / 100));
       const gstRate     = product.gst || 0;
       const lineTotal   = dealerPrice * item.quantity;
-      const lineGst     = (lineTotal * gstRate) / 100;
+      // GST is reverse-calculated (MRP already includes GST)
+      const lineGst     = gstRate > 0 ? lineTotal - lineTotal / (1 + gstRate / 100) : 0;
 
       grossAmount += lineTotal;
       totalGst    += lineGst;
@@ -87,7 +88,7 @@ export const createOrderRequest = async (req, res) => {
       products:    productLines,
       grossAmount,
       totalGst,
-      totalAmount: grossAmount + totalGst,
+      totalAmount: grossAmount, // MRP already includes GST, no need to add
       notes,
       status:      'Pending',
       requestDate: new Date(),

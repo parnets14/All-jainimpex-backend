@@ -167,11 +167,16 @@ async function getPricingForProduct(product, models, dealerType = null) {
   let dealerPrice = 0;
 
   if (dealerPricing) {
-    mrp         = dealerPricing.mrp || dealerPricing.sellingPrice;
-    dealerPrice = dealerPricing.sellingPrice;
+    // Use product.mrp (set in Product Master) as the authoritative MRP
+    // Fall back to dealerPricing.mrp, then product.totalAmount
+    mrp         = product.mrp || dealerPricing.mrp || product.totalAmount || (dealerPricing.sellingPrice * (1 + (product.gst || 0) / 100));
+    dealerPrice = mrp; // Start with MRP (GST inclusive) — discount will be applied on MRP
+    console.log(`📊 MRP for ${product.itemName}: product.mrp=${product.mrp}, dealerPricing.mrp=${dealerPricing.mrp}, totalAmount=${product.totalAmount}, sellingPrice=${dealerPricing.sellingPrice}, FINAL mrp=${mrp}`);
   } else {
-    mrp         = product.rateSlabs?.length > 0 ? product.rateSlabs[0].rate : (product.totalAmount || 0);
+    // No DealerPricing record — use product.mrp or product.totalAmount
+    mrp         = product.mrp || product.totalAmount || (product.rateSlabs?.length > 0 ? product.rateSlabs[0].rate * (1 + (product.gst || 0) / 100) : 0);
     dealerPrice = mrp;
+    console.log(`📊 MRP for ${product.itemName} (no pricing): product.mrp=${product.mrp}, totalAmount=${product.totalAmount}, FINAL mrp=${mrp}`);
   }
 
   // Build discount query — match by product hierarchy (only include non-null refs)
@@ -235,21 +240,21 @@ async function getPricingForProduct(product, models, dealerType = null) {
     }
   });
 
-  // Use the higher of direct or level discount
-  const effectiveDiscount = Math.max(directDiscountPct, maxDiscount);
-  if (effectiveDiscount > 0) {
-    console.log(`💰 Applying ${effectiveDiscount}% discount to ${product.itemName}: ${dealerPrice} → ${dealerPrice * (1 - effectiveDiscount / 100)}`);
-    dealerPrice = dealerPrice * (1 - effectiveDiscount / 100);
+  // For dealer app: only apply DIRECT discount automatically
+  // Level-based discounts are selected manually during invoice/order creation
+  if (directDiscountPct > 0) {
+    console.log(`💰 Applying ${directDiscountPct}% direct discount to ${product.itemName}: ${dealerPrice} → ${dealerPrice * (1 - directDiscountPct / 100)}`);
+    dealerPrice = dealerPrice * (1 - directDiscountPct / 100);
   }
 
   return {
     mrp:                  Math.round(mrp * 100) / 100,
     dealerPrice:          Math.round(dealerPrice * 100) / 100,
-    originalDealerPrice:  Math.round((dealerPricing?.sellingPrice || mrp) * 100) / 100,
+    originalDealerPrice:  Math.round(mrp * 100) / 100, // MRP before discount (GST inclusive)
     purchasePrice:        dealerPricing?.purchasePrice || 0,
-    hasOffer:             effectiveDiscount > 0,
-    discountPercentage:   effectiveDiscount,
-    directDiscountPercentage: directDiscountPct,  // ← explicit direct discount for display
+    hasOffer:             directDiscountPct > 0,
+    discountPercentage:   directDiscountPct,
+    directDiscountPercentage: directDiscountPct,
     discount:             appliedDiscount,
   };
 }

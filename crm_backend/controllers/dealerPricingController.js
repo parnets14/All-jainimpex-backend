@@ -410,6 +410,21 @@ export const createOrUpdateDealerPricing = async (req, res) => {
     await pricing.populate('product', 'itemName productCode brand category subcategory');
     await pricing.populate('lastPurchaseSupplier', 'name companyName');
 
+    // Sync MRP to Product model when DealerPricing mrp changes
+    if (mrp !== undefined && mrp > 0) {
+      try {
+        const productToUpdate = await Product.findById(productId);
+        if (productToUpdate && productToUpdate.mrp !== mrp) {
+          productToUpdate.mrp = mrp;
+          await productToUpdate.save(); // This triggers Product pre-save which recalculates unitPrice
+          console.log(`📊 Product.mrp synced: ${productId} → MRP ₹${mrp}`);
+        }
+      } catch (syncError) {
+        console.error('Error syncing Product.mrp:', syncError);
+        // Don't fail the main operation
+      }
+    }
+
     res.json({
       success: true,
       message: 'Dealer pricing saved successfully',
@@ -436,7 +451,7 @@ export const createOrUpdateDealerPricing = async (req, res) => {
 // @access  Private
 export const updateDealerPricing = async (req, res) => {
   try {
-    const { DealerPricing, DealerPricingHistory } = getModels(req.dbConnection);
+    const { DealerPricing, DealerPricingHistory, Product } = getModels(req.dbConnection);
     const { id } = req.params;
     const { sellingPrice, purchasePrice, mrp, notes, isActive } = req.body;
 
@@ -481,6 +496,20 @@ export const updateDealerPricing = async (req, res) => {
 
     await pricing.populate('product', 'itemName productCode brand category subcategory');
     await pricing.populate('lastPurchaseSupplier', 'name companyName');
+
+    // Sync MRP to Product model when DealerPricing mrp changes
+    if (mrp !== undefined && mrp > 0) {
+      try {
+        const productToUpdate = await Product.findById(pricing.product._id || pricing.product);
+        if (productToUpdate && productToUpdate.mrp !== mrp) {
+          productToUpdate.mrp = mrp;
+          await productToUpdate.save();
+          console.log(`📊 Product.mrp synced: ${pricing.product._id || pricing.product} → MRP ₹${mrp}`);
+        }
+      } catch (syncError) {
+        console.error('Error syncing Product.mrp:', syncError);
+      }
+    }
 
     res.json({
       success: true,
@@ -577,6 +606,19 @@ export const bulkUpdateDealerPricing = async (req, res) => {
         }
 
         results.push({ productId, success: true, pricing: pricing._id });
+
+        // Sync MRP to Product model when DealerPricing mrp changes
+        if (mrp !== undefined && mrp > 0) {
+          try {
+            const productToSync = await Product.findById(productId);
+            if (productToSync && productToSync.mrp !== mrp) {
+              productToSync.mrp = mrp;
+              await productToSync.save();
+            }
+          } catch (syncError) {
+            console.error(`Error syncing Product.mrp for ${productId}:`, syncError);
+          }
+        }
       } catch (error) {
         errors.push({ productId: update.productId, error: error.message });
       }
@@ -743,7 +785,7 @@ export const previewBulkChanges = async (req, res) => {
     }
 
     // Get matching products
-    const products = await Product.find(productFilter).select('_id itemName productCode rateSlabs');
+    const products = await Product.find(productFilter).select('_id itemName productCode rateSlabs mrp totalAmount gst');
     const productIds = products.map(p => p._id);
 
     if (productIds.length === 0) {
@@ -790,12 +832,21 @@ export const previewBulkChanges = async (req, res) => {
       let currentPrice = 0;
       let priceSource = '';
 
-      // Determine current price
-      if (existingPricing && existingPricing.sellingPrice > 0) {
-        currentPrice = existingPricing.sellingPrice;
+      // Determine current price — use MRP (GST inclusive)
+      if (product.mrp && product.mrp > 0) {
+        currentPrice = product.mrp;
+        priceSource = 'Product MRP';
+      } else if (product.totalAmount && product.totalAmount > 0) {
+        currentPrice = product.totalAmount;
+        priceSource = 'Product TotalAmount';
+      } else if (existingPricing && existingPricing.sellingPrice > 0) {
+        // Fallback: calculate MRP from sellingPrice + GST
+        const gstRate = product.gst || 18;
+        currentPrice = existingPricing.sellingPrice * (1 + gstRate / 100);
         priceSource = 'DealerPricing';
       } else if (product.rateSlabs && product.rateSlabs.length > 0 && product.rateSlabs[0].rate > 0) {
-        currentPrice = product.rateSlabs[0].rate;
+        const gstRate = product.gst || 18;
+        currentPrice = product.rateSlabs[0].rate * (1 + gstRate / 100);
         priceSource = 'RateSlab';
       }
 
@@ -921,6 +972,7 @@ export const applyBulkChanges = async (req, res) => {
 
         let currentPrice = 0;
         let isNewPricingRecord = false;
+        let productGst = 0;
 
         if (!pricing) {
           // Check if product has rate slabs
@@ -929,24 +981,39 @@ export const applyBulkChanges = async (req, res) => {
             errors.push({ productId, error: 'Product not found' });
             continue;
           }
+          productGst = product.gst || 18;
 
-          if (product.rateSlabs && product.rateSlabs.length > 0 && product.rateSlabs[0].rate > 0) {
-            // Create new DealerPricing record from rate slab
-            currentPrice = product.rateSlabs[0].rate;
-            pricing = new DealerPricing({
-              product: productId,
-              sellingPrice: currentPrice,
-              purchasePrice: 0, // Will be updated when actual purchase happens
-              isActive: true,
-              createdBy: req.user._id
-            });
-            isNewPricingRecord = true;
-          } else {
+          // Use MRP as current price
+          if (product.mrp && product.mrp > 0) {
+            currentPrice = product.mrp;
+          } else if (product.totalAmount && product.totalAmount > 0) {
+            currentPrice = product.totalAmount;
+          } else if (product.rateSlabs && product.rateSlabs.length > 0 && product.rateSlabs[0].rate > 0) {
+            currentPrice = product.rateSlabs[0].rate * (1 + productGst / 100);
+          }
+
+          if (currentPrice <= 0) {
             errors.push({ productId, error: 'No pricing or rate slab found' });
             continue;
           }
+
+          // Create new DealerPricing record
+          const basePrice = parseFloat((currentPrice / (1 + productGst / 100)).toFixed(2));
+          pricing = new DealerPricing({
+            product: productId,
+            sellingPrice: basePrice,
+            mrp: currentPrice,
+            purchasePrice: 0,
+            isActive: true,
+            createdBy: req.user._id
+          });
+          isNewPricingRecord = true;
         } else {
-          currentPrice = pricing.sellingPrice;
+          // Get product GST for calculations
+          const product = await Product.findById(productId).select('gst mrp totalAmount');
+          productGst = product?.gst || 18;
+          // Use MRP as current price
+          currentPrice = product?.mrp || product?.totalAmount || (pricing.sellingPrice * (1 + productGst / 100));
         }
 
         let newPrice;
@@ -972,13 +1039,26 @@ export const applyBulkChanges = async (req, res) => {
         newPrice = Math.round(newPrice * 100) / 100;
 
         if (applyImmediately) {
-          // Apply immediately
+          // Apply immediately — newPrice is the new MRP
           const oldPrice = currentPrice;
-          pricing.sellingPrice = newPrice;
+          const newBasePrice = parseFloat((newPrice / (1 + productGst / 100)).toFixed(2));
+          pricing.sellingPrice = newBasePrice; // Base price (excl. GST)
+          pricing.mrp = newPrice; // MRP (incl. GST)
           pricing.updatedBy = req.user._id;
           
           // Save the pricing record (new or existing)
           await pricing.save();
+
+          // Also update Product.mrp
+          try {
+            const productToSync = await Product.findById(productId);
+            if (productToSync) {
+              productToSync.mrp = newPrice;
+              await productToSync.save(); // Triggers pre-save to recalculate unitPrice
+            }
+          } catch (syncErr) {
+            console.error(`Error syncing Product.mrp for ${productId}:`, syncErr);
+          }
 
           // Log price change
           await DealerPricingHistory.logPriceChange({
@@ -1491,7 +1571,7 @@ export const getComprehensivePricing = async (req, res) => {
     const pricingRecords = await DealerPricing.find(filter)
       .populate({
         path: 'product',
-        select: 'itemName productCode brand category subcategory',
+        select: 'itemName productCode brand category subcategory gst mrp totalAmount',
         populate: [
           { path: 'brand', select: 'name' },
           { path: 'category', select: 'name' },
@@ -1555,7 +1635,7 @@ export const getComprehensivePricing = async (req, res) => {
           // Add comprehensive discount summary
           pricingObj.discountSummary = {
             sales: {
-              hasDiscount: pricingObj.hasDirectDiscount,
+              hasDiscount: pricingObj.hasDirectDiscount || (pricingObj.maxDiscountPercentage > 0),
               directPercentage: pricingObj.directDiscountPercentage,
               maxPercentage: pricingObj.maxDiscountPercentage,
               source: pricingObj.salesDiscountSource,

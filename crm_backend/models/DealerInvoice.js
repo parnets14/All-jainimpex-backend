@@ -70,6 +70,12 @@ const invoiceItemSchema = new mongoose.Schema({
     targetType: String,
     maxDiscountPercentage: Number
   }],
+  mrp: {
+    type: Number,
+    min: 0,
+    default: null,
+    comment: 'MRP per unit (GST inclusive). When set, used as base for discount calculations instead of unitPrice + GST'
+  },
   pointsEarned: {
     type: Number,
     default: 0
@@ -272,56 +278,84 @@ dealerInvoiceSchema.pre("save", function(next) {
     this.dueDate = dueDate;
   }
 
-  // Calculate financial amounts (only if not already provided)
-  if (this.subtotal === undefined || this.subtotal === 0) {
-    this.subtotal = this.items.reduce((sum, item) => {
-      return sum + (item.quantity * item.unitPrice);
-    }, 0);
-  }
-
-  if (this.totalDiscount === undefined || this.totalDiscount === 0) {
-    this.totalDiscount = this.items.reduce((sum, item) => {
-      return sum + (item.discountAmount || 0);
-    }, 0);
-  }
-
-  if (this.totalGst === undefined || this.totalGst === 0) {
-    this.totalGst = this.items.reduce((sum, item) => {
-      return sum + (item.gstAmount || 0);
-    }, 0);
-  }
-
-  if (this.totalPoints === undefined || this.totalPoints === 0) {
-    this.totalPoints = this.items.reduce((sum, item) => {
-      return sum + (item.pointsEarned || 0);
-    }, 0);
-  }
-
-  // Always calculate totalAmount from the current values
-  this.totalAmount = this.subtotal - this.totalDiscount + this.totalGst;
-
+  // NOTE: Financial totals are calculated AFTER the sequential discount hook below
+  // (see the second pre-save hook which handles item calculations and then totals)
   next();
 });
 
-// Pre-save for item calculations
+// Pre-save for item calculations — Sequential discount on MRP (GST inclusive)
 dealerInvoiceSchema.pre("save", function(next) {
   this.items.forEach(item => {
-    const baseAmount = item.quantity * item.unitPrice;
+    // Determine MRP per unit (GST inclusive price used as discount base):
+    // 1. If item.mrp is explicitly set → use it directly (post-migration: mrp IS the GST-inclusive price)
+    // 2. Otherwise → calculate from unitPrice + GST (legacy behavior for pre-migration data)
+    const mrpPerUnit = item.mrp && item.mrp > 0
+      ? item.mrp
+      : item.unitPrice * (1 + (item.gst || 0) / 100);
+    const grossAmount = item.quantity * mrpPerUnit; // Total MRP for all units
     
-    // IMPORTANT: Include dealer extra discount in total discount calculation
-    const totalDiscountPercentage = (item.discountPercentage || 0) + (item.dealerExtraDiscount || 0);
-    const discountAmount = (baseAmount * totalDiscountPercentage) / 100;
+    // Apply discounts SEQUENTIALLY (not flat additive)
+    // Order: Direct discount first, then each level discount, then dealer extra
+    let currentAmount = grossAmount;
+    let totalDiscountAmount = 0;
     
-    // Calculate GST on amount AFTER discount (not on original subtotal)
-    const amountAfterDiscount = baseAmount - discountAmount;
-    item.gstAmount = (amountAfterDiscount * item.gst) / 100;
+    // 1. Apply direct/base discount percentage
+    if (item.discountPercentage && item.discountPercentage > 0) {
+      const discAmt = currentAmount * (item.discountPercentage / 100);
+      currentAmount -= discAmt;
+      totalDiscountAmount += discAmt;
+    }
     
-    // Final total = amount after discount + GST
-    item.totalPrice = amountAfterDiscount + item.gstAmount;
+    // 2. Apply each level discount sequentially (from appliedDiscounts levels)
+    if (item.appliedDiscounts && item.appliedDiscounts.length > 0) {
+      for (const discount of item.appliedDiscounts) {
+        if (discount.levels && discount.levels.length > 0) {
+          for (const level of discount.levels) {
+            if (level.discountPercentage && level.discountPercentage > 0) {
+              const levelAmt = currentAmount * (level.discountPercentage / 100);
+              currentAmount -= levelAmt;
+              totalDiscountAmount += levelAmt;
+            }
+          }
+        }
+      }
+    }
     
-    // Store the discount amount (including dealer extra)
-    item.discountAmount = discountAmount;
+    // 3. Apply dealer extra discount (if any)
+    if (item.dealerExtraDiscount && item.dealerExtraDiscount > 0) {
+      const extraAmt = currentAmount * (item.dealerExtraDiscount / 100);
+      currentAmount -= extraAmt;
+      totalDiscountAmount += extraAmt;
+    }
+    
+    // Final amount already includes GST (since MRP includes GST)
+    item.totalPrice = parseFloat(currentAmount.toFixed(2));
+    item.discountAmount = parseFloat(totalDiscountAmount.toFixed(2));
+    
+    // Reverse-calculate GST amount for tax breakdown display
+    // GST portion = finalAmount - finalAmount / (1 + gst/100)
+    const gstRate = item.gst || 0;
+    if (gstRate > 0) {
+      item.gstAmount = parseFloat((currentAmount - currentAmount / (1 + gstRate / 100)).toFixed(2));
+    } else {
+      item.gstAmount = 0;
+    }
   });
+
+  // Calculate invoice-level totals from the processed items
+  // subtotal = MRP × qty for all items (GST inclusive)
+  this.subtotal = this.items.reduce((sum, item) => {
+    const mrpPerUnit = item.mrp && item.mrp > 0 ? item.mrp : item.unitPrice * (1 + (item.gst || 0) / 100);
+    return sum + (item.quantity * mrpPerUnit);
+  }, 0);
+
+  this.totalDiscount = this.items.reduce((sum, item) => sum + (item.discountAmount || 0), 0);
+  this.totalGst = this.items.reduce((sum, item) => sum + (item.gstAmount || 0), 0);
+  this.totalPoints = this.items.reduce((sum, item) => sum + (item.pointsEarned || 0), 0);
+
+  // totalAmount = sum of item totalPrices (MRP after sequential discounts, GST already included)
+  this.totalAmount = this.items.reduce((sum, item) => sum + (item.totalPrice || 0), 0);
+
   next();
 });
 

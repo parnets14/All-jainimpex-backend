@@ -436,6 +436,37 @@ console.log('✅ Admin delivery routes registered at /api/admin/deliveries/*');
 app.post('/api/admin/seed-types', protect, seedTypesForAllCompanies);
 console.log('✅ Seed route registered at POST /api/admin/seed-types');
 
+// Migration: Fix MRP for products (run once per company)
+app.post('/api/admin/migrate-mrp', protect, async (req, res) => {
+  try {
+    const company = req.body?.company || req.query?.company || 'jain-impex';
+    const { getCompanyConnection } = await import('./config/multiDatabase.js');
+    const { productSchema } = await import('./models/Product.js');
+    
+    const db = getCompanyConnection(company);
+    const Product = db.models.Product || db.model('Product', productSchema);
+    
+    const products = await Product.find({ mrp: { $in: [null, undefined, 0] } }).lean();
+    let updated = 0;
+    
+    for (const product of products) {
+      if (!product.unitPrice || product.unitPrice <= 0) continue;
+      const mrp = product.unitPrice;
+      const gst = product.gst || 0;
+      const newUnitPrice = gst > 0 ? parseFloat((mrp / (1 + gst / 100)).toFixed(2)) : mrp;
+      
+      await Product.updateOne({ _id: product._id }, { $set: { mrp, unitPrice: newUnitPrice, totalAmount: mrp } });
+      updated++;
+    }
+    
+    console.log(`✅ MRP Migration for "${company}": ${updated}/${products.length} products updated`);
+    res.json({ success: true, message: `MRP migration completed for ${company}. Updated ${updated} products.` });
+  } catch (error) {
+    console.error('Migration error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // Serve uploaded files statically - use absolute path
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);

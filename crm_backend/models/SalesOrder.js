@@ -332,14 +332,23 @@ const salesOrderSchema = new mongoose.Schema({
 
 // Pre-save middleware to calculate product amounts first, then order totals
 salesOrderSchema.pre("save", function(next) {
-  // STEP 1: Calculate product-level amounts first
-  // IMPORTANT: Respect existing discountAmount on each product
+  // STEP 1: Calculate product-level amounts — unitPrice IS MRP (GST inclusive after migration)
   this.products.forEach(product => {
+    // unitPrice is already MRP (GST inclusive) — don't add GST again
     const baseAmount = product.quantity * product.unitPrice;
+    
+    // Apply discount on MRP-based amount
     const discAmt = product.discountAmount || 0;
-    const discountedBase = baseAmount - discAmt;
-    product.gstAmount = (discountedBase * product.gst) / 100;
-    product.totalPrice = discountedBase + product.gstAmount;
+    const finalAmount = baseAmount - discAmt;
+    
+    // Final amount already includes GST
+    product.totalPrice = parseFloat(finalAmount.toFixed(2));
+    
+    // Reverse-calculate GST for tax display
+    const gstRate = product.gst || 0;
+    product.gstAmount = gstRate > 0 
+      ? parseFloat((finalAmount - finalAmount / (1 + gstRate / 100)).toFixed(2))
+      : 0;
   });
 
   // STEP 2: Calculate due date
@@ -349,7 +358,7 @@ salesOrderSchema.pre("save", function(next) {
     this.dueDate = dueDate;
   }
 
-  // STEP 3: Calculate order-level amounts using updated product amounts
+  // STEP 3: Calculate order-level amounts
   this.grossAmount = this.products.reduce((sum, product) => {
     return sum + (product.quantity * product.unitPrice);
   }, 0);
@@ -363,7 +372,9 @@ salesOrderSchema.pre("save", function(next) {
     return sum + (product.discountAmount || 0);
   }, 0);
 
-  this.totalAmount = this.grossAmount + this.totalGst - this.discountAmount;
+  this.totalAmount = this.products.reduce((sum, product) => {
+    return sum + product.totalPrice;
+  }, 0);
 
   next();
 });

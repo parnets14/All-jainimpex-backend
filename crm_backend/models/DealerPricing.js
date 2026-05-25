@@ -322,7 +322,9 @@ dealerPricingSchema.methods.updateSalesDiscountInfo = async function(dealerType 
     if (applicableDiscounts && applicableDiscounts.length > 0) {
       const discount = applicableDiscounts[0]; // Use highest priority discount
       
-      this.hasDirectDiscount = discount.directDiscountPercentage > 0;
+      // hasDirectDiscount = true when ANY applicable discount exists (direct, level_based, or both)
+      // This indicates the product has a sales discount mapping, regardless of type
+      this.hasDirectDiscount = true;
       this.directDiscountPercentage = discount.directDiscountPercentage || 0;
       this.maxDiscountPercentage = discount.maxDiscountPercentage || discount.directDiscountPercentage || 0;
       

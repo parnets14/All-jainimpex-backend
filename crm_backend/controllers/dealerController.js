@@ -1134,7 +1134,12 @@ export const getDealerAccessibleProducts = async (req, res) => {
       const allowedCategoryIds = dealer.allowedCategories.map(cat => 
         typeof cat === 'object' ? cat._id.toString() : cat.toString()
       );
-      if (allowedCategoryIds.includes(categoryId)) {
+      const allowedBrandIds = dealer.allowedBrands?.map(b => 
+        typeof b === 'object' ? b._id.toString() : b.toString()
+      ) || [];
+      
+      // Allow if: category is explicitly allowed OR dealer has brand-level access (which implies all categories under that brand)
+      if (allowedCategoryIds.includes(categoryId) || allowedBrandIds.length > 0) {
         productFilter.category = categoryId;
       } else {
         return res.status(403).json({
@@ -1148,7 +1153,12 @@ export const getDealerAccessibleProducts = async (req, res) => {
       const allowedSubcategoryIds = dealer.allowedSubcategories.map(sub => 
         typeof sub === 'object' ? sub._id.toString() : sub.toString()
       );
-      if (allowedSubcategoryIds.includes(subcategoryId)) {
+      const allowedBrandIds = dealer.allowedBrands?.map(b => 
+        typeof b === 'object' ? b._id.toString() : b.toString()
+      ) || [];
+      
+      // Allow if explicitly allowed OR dealer has brand-level access
+      if (allowedSubcategoryIds.includes(subcategoryId) || allowedBrandIds.length > 0) {
         productFilter.subcategory = subcategoryId;
       } else {
         return res.status(403).json({
@@ -1381,6 +1391,9 @@ export const getDealerOutstanding = async (req, res) => {
     const lastPayment = ledgerEntries
       .filter(entry => entry.creditAmount > 0)
       .sort((a, b) => new Date(b.entryDate) - new Date(a.entryDate))[0];
+
+    const lastPaymentDate = lastPayment?.entryDate || null;
+    const lastPaymentAmount = lastPayment?.creditAmount || 0;
 
     // Determine payment status
     let paymentStatusType = 'current';

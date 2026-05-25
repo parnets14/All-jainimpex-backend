@@ -223,19 +223,21 @@ export const createSupplierInvoice = async (req, res) => {
         // Recalculate item totals on backend
         const quantity = item.quantity || 0;
         const unitPrice = item.unitPrice || 0;
-        const baseAmount = quantity * unitPrice;
+        const baseAmount = quantity * unitPrice; // MRP × qty (GST inclusive)
         
         const directDiscountAmount = item.purchaseDiscount?.directDiscountAmount || 0;
+        const supplierExtraDiscountAmount = item.purchaseDiscount?.supplierExtraDiscountAmount || 0;
         const floatingDiscountAmount = item.purchaseDiscount?.floatingDiscountAmount || 0;
-        const totalDiscountAmount = directDiscountAmount + floatingDiscountAmount;
+        const totalDiscountAmount = directDiscountAmount + supplierExtraDiscountAmount + floatingDiscountAmount;
         
-        const subtotalAfterDiscount = baseAmount - totalDiscountAmount;
-        const gstAmount = (subtotalAfterDiscount * (item.gst || 0)) / 100;
-        const totalPrice = subtotalAfterDiscount + gstAmount;
+        const afterAllDiscounts = baseAmount - totalDiscountAmount; // Final payable amount
+        // GST is just for reference — extract from inclusive final amount
+        const gstPercentage = item.gst || 0;
+        const gstAmount = gstPercentage > 0 ? afterAllDiscounts - afterAllDiscounts / (1 + gstPercentage / 100) : 0;
         
         // Accumulate totals
         calculatedSubtotal += baseAmount;
-        calculatedTotalDirectDiscount += directDiscountAmount;
+        calculatedTotalDirectDiscount += (directDiscountAmount + supplierExtraDiscountAmount);
         calculatedTotalFloatingDiscount += floatingDiscountAmount;
         calculatedTotalGst += gstAmount;
         
@@ -252,6 +254,8 @@ export const createSupplierInvoice = async (req, res) => {
           purchaseDiscount: item.purchaseDiscount || {
             directDiscountPercentage: 0,
             directDiscountAmount: 0,
+            supplierExtraDiscountPercentage: 0,
+            supplierExtraDiscountAmount: 0,
             floatingDiscountPercentage: 0,
             floatingDiscountAmount: 0,
             totalDiscountPercentage: 0,
@@ -261,8 +265,8 @@ export const createSupplierInvoice = async (req, res) => {
           // Legacy discount fields
           discountPercentage: item.discountPercentage || 0,
           discountAmount: item.discountAmount || 0,
-          subtotal: subtotalAfterDiscount,
-          totalPrice: totalPrice,
+          subtotal: baseAmount, // Raw qty × MRP (before any discount)
+          totalPrice: afterAllDiscounts, // Final amount after all discounts
           warehouse: item.warehouseId,
           warehouseName: item.warehouseName
         };
@@ -275,7 +279,7 @@ export const createSupplierInvoice = async (req, res) => {
         floatingDiscount: calculatedTotalFloatingDiscount,
         totalDiscount: calculatedTotalDirectDiscount + calculatedTotalFloatingDiscount,
         gst: calculatedTotalGst,
-        total: calculatedSubtotal - (calculatedTotalDirectDiscount + calculatedTotalFloatingDiscount) + calculatedTotalGst
+        total: calculatedSubtotal - (calculatedTotalDirectDiscount + calculatedTotalFloatingDiscount)
       });
     } else {
       // Fallback: calculate from GRN data (legacy behavior)
@@ -318,7 +322,8 @@ export const createSupplierInvoice = async (req, res) => {
     const totalFloatingDiscount = calculatedTotalFloatingDiscount;
     const totalDiscount = calculatedTotalDirectDiscount + calculatedTotalFloatingDiscount;
     const totalGst = calculatedTotalGst;
-    const calculatedTotalAmount = calculatedSubtotal - totalDiscount + calculatedTotalGst;
+    // MRP already includes GST, so total = subtotal - discount (GST is already embedded)
+    const calculatedTotalAmount = calculatedSubtotal - totalDiscount;
     const totalAmount = calculatedTotalAmount;
     const grandTotal = calculatedTotalAmount;
 

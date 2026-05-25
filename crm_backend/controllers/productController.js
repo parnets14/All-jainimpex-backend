@@ -54,6 +54,9 @@ export const getProducts = async (req, res) => {
 
     // Enhanced search filter - searches across multiple fields
     if (search) {
+      // Escape regex special characters to prevent regex errors
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&');
+      
       // First, try to find matching categories, subcategories, and brands by name
       const [
         matchingCategories,
@@ -65,33 +68,14 @@ export const getProducts = async (req, res) => {
         matchingExtended4,
         matchingExtended5,
       ] = await Promise.all([
-        Category.find({ name: { $regex: search, $options: "i" } }).select(
-          "_id"
-        ),
-        Subcategory.find({ name: { $regex: search, $options: "i" } }).select(
-          "_id"
-        ),
-        Brand.find({ name: { $regex: search, $options: "i" } }).select("_id"),
-        ExtendedSubcategory.find({
-          name: { $regex: search, $options: "i" },
-          level: 1,
-        }).select("_id"),
-        ExtendedSubcategory.find({
-          name: { $regex: search, $options: "i" },
-          level: 2,
-        }).select("_id"),
-        ExtendedSubcategory.find({
-          name: { $regex: search, $options: "i" },
-          level: 3,
-        }).select("_id"),
-        ExtendedSubcategory.find({
-          name: { $regex: search, $options: "i" },
-          level: 4,
-        }).select("_id"),
-        ExtendedSubcategory.find({
-          name: { $regex: search, $options: "i" },
-          level: 5,
-        }).select("_id"),
+        Category.find({ name: { $regex: escapedSearch, $options: "i" } }).select("_id"),
+        Subcategory.find({ name: { $regex: escapedSearch, $options: "i" } }).select("_id"),
+        Brand.find({ name: { $regex: escapedSearch, $options: "i" } }).select("_id"),
+        ExtendedSubcategory.find({ name: { $regex: escapedSearch, $options: "i" }, level: 1 }).select("_id"),
+        ExtendedSubcategory.find({ name: { $regex: escapedSearch, $options: "i" }, level: 2 }).select("_id"),
+        ExtendedSubcategory.find({ name: { $regex: escapedSearch, $options: "i" }, level: 3 }).select("_id"),
+        ExtendedSubcategory.find({ name: { $regex: escapedSearch, $options: "i" }, level: 4 }).select("_id"),
+        ExtendedSubcategory.find({ name: { $regex: escapedSearch, $options: "i" }, level: 5 }).select("_id"),
       ]);
 
       const categoryIds = matchingCategories.map((c) => c._id);
@@ -104,11 +88,11 @@ export const getProducts = async (req, res) => {
       const extended5Ids = matchingExtended5.map((e) => e._id);
 
       filter.$or = [
-        { productCode: { $regex: search, $options: "i" } },
-        { itemName: { $regex: search, $options: "i" } },
-        { aliasName: { $regex: search, $options: "i" } },
-        { description: { $regex: search, $options: "i" } },
-        { HSNCode: { $regex: search, $options: "i" } },
+        { productCode: { $regex: escapedSearch, $options: "i" } },
+        { itemName: { $regex: escapedSearch, $options: "i" } },
+        { aliasName: { $regex: escapedSearch, $options: "i" } },
+        { description: { $regex: escapedSearch, $options: "i" } },
+        { HSNCode: { $regex: escapedSearch, $options: "i" } },
         ...(categoryIds.length > 0 ? [{ category: { $in: categoryIds } }] : []),
         ...(subcategoryIds.length > 0
           ? [{ subcategory: { $in: subcategoryIds } }]
@@ -611,6 +595,7 @@ export const updateProduct = async (req, res) => {
       salesType, // FIX: Added missing salesType
       productType, // FIX: Added missing productType
       internalRate,
+      mrp, // MRP (GST inclusive price)
     } = req.body;
 
     // Convert empty productCode to undefined for auto-generation
@@ -711,6 +696,7 @@ export const updateProduct = async (req, res) => {
     product.alternateUnit = alternateUnit;
     product.alternateUnitQuantity = alternateUnitQuantity;
     product.unitPrice = unitPrice;
+    product.mrp = mrp !== undefined ? mrp : product.mrp; // Update MRP if provided
     product.gst = gst;
     product.brand = brand;
     product.category = category;
