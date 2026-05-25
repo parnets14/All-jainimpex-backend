@@ -517,10 +517,60 @@ export const updateSupplierInvoice = async (req, res) => {
       }
     }
 
+    // Process items if provided (map frontend field names to schema field names)
+    let updateData = { ...req.body };
+    if (updateData.items && updateData.items.length > 0) {
+      updateData.items = updateData.items.map(item => {
+        const quantity = item.quantity || 0;
+        const unitPrice = item.unitPrice || 0;
+        const baseAmount = quantity * unitPrice;
+        
+        const directDiscountAmount = item.purchaseDiscount?.directDiscountAmount || 0;
+        const supplierExtraDiscountAmount = item.purchaseDiscount?.supplierExtraDiscountAmount || 0;
+        const floatingDiscountAmount = item.purchaseDiscount?.floatingDiscountAmount || 0;
+        const totalDiscountAmount = directDiscountAmount + supplierExtraDiscountAmount + floatingDiscountAmount;
+        const afterAllDiscounts = baseAmount - totalDiscountAmount;
+        const gstPercentage = item.gst || 0;
+        const gstAmount = gstPercentage > 0 ? afterAllDiscounts - afterAllDiscounts / (1 + gstPercentage / 100) : 0;
+
+        return {
+          product: item.productId || item.product,
+          productCode: item.productCode,
+          productName: item.productName,
+          HSNCode: item.HSNCode,
+          quantity: quantity,
+          unitPrice: unitPrice,
+          gst: gstPercentage,
+          gstAmount: gstAmount,
+          purchaseDiscount: item.purchaseDiscount || {},
+          discountPercentage: item.discountPercentage || 0,
+          discountAmount: item.discountAmount || 0,
+          subtotal: baseAmount,
+          totalPrice: afterAllDiscounts,
+          warehouse: item.warehouseId || item.warehouse,
+          warehouseName: item.warehouseName
+        };
+      });
+      
+      // Recalculate totals from items
+      const calculatedSubtotal = updateData.items.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
+      const calculatedTotalDiscount = updateData.items.reduce((sum, item) => {
+        const pd = item.purchaseDiscount || {};
+        return sum + (pd.directDiscountAmount || 0) + (pd.supplierExtraDiscountAmount || 0) + (pd.floatingDiscountAmount || 0);
+      }, 0);
+      const calculatedTotalGst = updateData.items.reduce((sum, item) => sum + (item.gstAmount || 0), 0);
+      
+      updateData.subtotal = calculatedSubtotal;
+      updateData.totalDiscount = calculatedTotalDiscount;
+      updateData.totalGst = calculatedTotalGst;
+      updateData.totalAmount = calculatedSubtotal - calculatedTotalDiscount;
+      updateData.grandTotal = calculatedSubtotal - calculatedTotalDiscount;
+    }
+
     // Update the supplier invoice
     const updatedInvoice = await SupplierInvoice.findByIdAndUpdate(
       id,
-      req.body,
+      updateData,
       { 
         new: true, 
         runValidators: true 

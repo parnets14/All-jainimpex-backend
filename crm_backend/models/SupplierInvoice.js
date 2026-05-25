@@ -40,6 +40,17 @@ const supplierInvoiceItemSchema = new mongoose.Schema({
       default: 0,
       min: 0
     },
+    supplierExtraDiscountPercentage: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100
+    },
+    supplierExtraDiscountAmount: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
     floatingDiscountPercentage: {
       type: Number,
       default: 0,
