@@ -388,43 +388,42 @@ export const createSupplierInvoice = async (req, res) => {
 
     console.log(`GRN ${grn.grnNo} marked as invoiced and locked for editing`);
 
-    // Create supplier ledger entry for the invoice
-    try {
-      // Get the last entry for this supplier to calculate running balance
-      const lastEntry = await SupplierLedger.findOne(
-        { supplier: supplierId },
-        {},
-        { sort: { 'createdAt': -1 } }
-      );
-      
-      let previousBalance = 0;
-      if (lastEntry) {
-        previousBalance = lastEntry.runningBalance;
+    // Create supplier ledger entry if invoice is created directly as "Approved"
+    if (supplierInvoice.status === "Approved") {
+      try {
+        const existingEntry = await SupplierLedger.findOne({ invoice: supplierInvoice._id });
+        if (!existingEntry) {
+          const lastEntry = await SupplierLedger.findOne(
+            { supplier: supplierId },
+            {},
+            { sort: { 'createdAt': -1 } }
+          );
+          let previousBalance = lastEntry ? lastEntry.runningBalance : 0;
+          
+          const ledgerEntry = new SupplierLedger({
+            supplier: supplierId,
+            supplierName: supplier.name,
+            supplierCode: supplier.code,
+            entryDate: supplierInvoice.invoiceDate,
+            transactionType: "Invoice",
+            invoice: supplierInvoice._id,
+            invoiceNumber: supplierInvoice.invoiceNumber,
+            invoiceValue: totalAmount,
+            debitAmount: totalAmount,
+            creditAmount: 0,
+            runningBalance: previousBalance + totalAmount,
+            description: `Purchase Invoice ${supplierInvoice.invoiceNumber} approved`,
+            creditDays: supplierInvoice.creditDays || 0,
+            dueDate: supplierInvoice.dueDate,
+            createdBy: req.user._id
+          });
+          
+          await ledgerEntry.save();
+          console.log(`✅ Created supplier ledger entry on create-as-approved: ${supplierInvoice.invoiceNumber}, Amount: ₹${totalAmount}`);
+        }
+      } catch (ledgerError) {
+        console.error("⚠️ Error creating ledger entry on create-as-approved:", ledgerError.message);
       }
-      
-      const ledgerEntry = new SupplierLedger({
-        supplier: supplierId,
-        supplierName: supplier.name,
-        supplierCode: supplier.code,
-        entryDate: supplierInvoice.invoiceDate,
-        transactionType: "Invoice",
-        invoice: supplierInvoice._id,
-        invoiceNumber: supplierInvoice.invoiceNumber,
-        invoiceValue: supplierInvoice.totalAmount,
-        debitAmount: supplierInvoice.totalAmount,
-        creditAmount: 0,
-        runningBalance: previousBalance + supplierInvoice.totalAmount,
-        description: `Invoice ${supplierInvoice.invoiceNumber}`,
-        creditDays: supplierInvoice.creditDays || 0,
-        dueDate: supplierInvoice.dueDate,
-        createdBy: req.user._id
-      });
-      
-      await ledgerEntry.save();
-      console.log(`Created supplier ledger entry for invoice: ${supplierInvoice.invoiceNumber}`);
-    } catch (ledgerError) {
-      console.error("Error creating supplier ledger entry for invoice:", ledgerError);
-      // Don't fail the invoice creation if ledger entry fails
     }
 
     // Populate the created invoice for response
@@ -583,6 +582,70 @@ export const updateSupplierInvoice = async (req, res) => {
       .populate("items.warehouse", "name")
       .populate("createdBy", "name email");
 
+    // Create ledger entry if status changed to Approved
+    if (updateData.status === "Approved" && supplierInvoice.status !== "Approved") {
+      try {
+        const { SupplierLedger, Supplier } = getModels(req.dbConnection);
+        const supplierId = updatedInvoice.supplier?._id || supplierInvoice.supplier;
+        const supplier = await Supplier.findById(supplierId);
+        
+        // Check if ledger entry already exists
+        const existingEntry = await SupplierLedger.findOne({ invoice: id });
+        if (!existingEntry) {
+          // Calculate correct amount from items
+          let correctTotalAmount = updatedInvoice.totalAmount || supplierInvoice.totalAmount;
+          if (updatedInvoice.items && updatedInvoice.items.length > 0) {
+            let subtotal = 0;
+            let totalDiscount = 0;
+            updatedInvoice.items.forEach(item => {
+              const sub = (item.quantity || 0) * (item.unitPrice || 0);
+              subtotal += sub;
+              const directPct = item.purchaseDiscount?.directDiscountPercentage || 0;
+              const extraPct = item.purchaseDiscount?.supplierExtraDiscountPercentage || 0;
+              const floatingPct = item.purchaseDiscount?.floatingDiscountPercentage || 0;
+              const directAmt = (sub * directPct) / 100;
+              const afterDir = sub - directAmt;
+              const extraAmt = (afterDir * extraPct) / 100;
+              const afterExt = afterDir - extraAmt;
+              const floatingAmt = (afterExt * floatingPct) / 100;
+              totalDiscount += directAmt + extraAmt + floatingAmt;
+            });
+            correctTotalAmount = subtotal - totalDiscount;
+          }
+          
+          const lastEntry = await SupplierLedger.findOne(
+            { supplier: supplierId },
+            {},
+            { sort: { 'createdAt': -1 } }
+          );
+          let previousBalance = lastEntry ? lastEntry.runningBalance : 0;
+          
+          const ledgerEntry = new SupplierLedger({
+            supplier: supplierId,
+            supplierName: supplier?.name || updatedInvoice.supplierName,
+            supplierCode: supplier?.code || updatedInvoice.supplierCode,
+            entryDate: updatedInvoice.invoiceDate || new Date(),
+            transactionType: "Invoice",
+            invoice: updatedInvoice._id,
+            invoiceNumber: updatedInvoice.invoiceNumber,
+            invoiceValue: correctTotalAmount,
+            debitAmount: correctTotalAmount,
+            creditAmount: 0,
+            runningBalance: previousBalance + correctTotalAmount,
+            description: `Purchase Invoice ${updatedInvoice.invoiceNumber} approved`,
+            creditDays: updatedInvoice.creditDays || 0,
+            dueDate: updatedInvoice.dueDate,
+            createdBy: req.user._id
+          });
+          
+          await ledgerEntry.save();
+          console.log(`✅ Created supplier ledger entry on update-approval: ${updatedInvoice.invoiceNumber}, Amount: ₹${correctTotalAmount}`);
+        }
+      } catch (ledgerError) {
+        console.error("⚠️ Error creating ledger entry on update-approval:", ledgerError.message);
+      }
+    }
+
     res.json({
       success: true,
       message: "Supplier invoice updated successfully",
@@ -613,7 +676,7 @@ export const updateSupplierInvoice = async (req, res) => {
 // @access  Private
 export const updateSupplierInvoiceStatus = async (req, res) => {
   try {
-    const { SupplierInvoice } = getModels(req.dbConnection);
+    const { SupplierInvoice, SupplierLedger, Supplier } = getModels(req.dbConnection);
     const { status, remarks } = req.body;
     const { id } = req.params;
 
@@ -662,7 +725,69 @@ export const updateSupplierInvoiceStatus = async (req, res) => {
         await createSupplierInvoiceEntry(supplierInvoice, req.dbConnection, req.user._id);
       } catch (accountingError) {
         console.error('⚠️ Failed to create automatic journal entry (non-critical):', accountingError.message);
-        // Don't fail the invoice approval if journal entry fails
+      }
+      
+      // Create supplier ledger entry on approval
+      try {
+        const { SupplierLedger, Supplier } = getModels(req.dbConnection);
+        const supplierId = supplierInvoice.supplier;
+        const supplier = await Supplier.findById(supplierId);
+        
+        // Check if ledger entry already exists for this invoice (avoid duplicates)
+        const existingEntry = await SupplierLedger.findOne({ invoice: supplierInvoice._id });
+        if (!existingEntry) {
+          // Calculate correct totalAmount from items using sequential percentages
+          let correctTotalAmount = supplierInvoice.totalAmount;
+          if (supplierInvoice.items && supplierInvoice.items.length > 0) {
+            let subtotal = 0;
+            let totalDiscount = 0;
+            supplierInvoice.items.forEach(item => {
+              const sub = (item.quantity || 0) * (item.unitPrice || 0);
+              subtotal += sub;
+              const directPct = item.purchaseDiscount?.directDiscountPercentage || 0;
+              const extraPct = item.purchaseDiscount?.supplierExtraDiscountPercentage || 0;
+              const floatingPct = item.purchaseDiscount?.floatingDiscountPercentage || 0;
+              const directAmt = (sub * directPct) / 100;
+              const afterDir = sub - directAmt;
+              const extraAmt = (afterDir * extraPct) / 100;
+              const afterExt = afterDir - extraAmt;
+              const floatingAmt = (afterExt * floatingPct) / 100;
+              totalDiscount += directAmt + extraAmt + floatingAmt;
+            });
+            correctTotalAmount = subtotal - totalDiscount;
+          }
+          
+          const lastEntry = await SupplierLedger.findOne(
+            { supplier: supplierId },
+            {},
+            { sort: { 'createdAt': -1 } }
+          );
+          
+          let previousBalance = lastEntry ? lastEntry.runningBalance : 0;
+          
+          const ledgerEntry = new SupplierLedger({
+            supplier: supplierId,
+            supplierName: supplier?.name || supplierInvoice.supplierName,
+            supplierCode: supplier?.code || supplierInvoice.supplierCode,
+            entryDate: supplierInvoice.invoiceDate,
+            transactionType: "Invoice",
+            invoice: supplierInvoice._id,
+            invoiceNumber: supplierInvoice.invoiceNumber,
+            invoiceValue: correctTotalAmount,
+            debitAmount: correctTotalAmount,
+            creditAmount: 0,
+            runningBalance: previousBalance + correctTotalAmount,
+            description: `Purchase Invoice ${supplierInvoice.invoiceNumber} approved`,
+            creditDays: supplierInvoice.creditDays || 0,
+            dueDate: supplierInvoice.dueDate,
+            createdBy: req.user._id
+          });
+          
+          await ledgerEntry.save();
+          console.log(`✅ Created supplier ledger entry for approved invoice: ${supplierInvoice.invoiceNumber}, Amount: ₹${correctTotalAmount}`);
+        }
+      } catch (ledgerError) {
+        console.error("⚠️ Error creating supplier ledger entry on approval:", ledgerError.message);
       }
     }
 
@@ -696,7 +821,7 @@ export const updateSupplierInvoiceStatus = async (req, res) => {
 // @access  Private
 export const deleteSupplierInvoice = async (req, res) => {
   try {
-    const { SupplierInvoice, GRN } = getModels(req.dbConnection);
+    const { SupplierInvoice, GRN, SupplierLedger } = getModels(req.dbConnection);
     const { id } = req.params;
 
     // Find the supplier invoice
@@ -725,6 +850,16 @@ export const deleteSupplierInvoice = async (req, res) => {
         status: 'Received' // Reset to Received status
       });
       console.log(`GRN unlocked after deleting draft invoice ${supplierInvoice.invoiceNumber}`);
+    }
+
+    // Delete any associated supplier ledger entries (shouldn't exist for Draft, but clean up just in case)
+    try {
+      const deletedLedger = await SupplierLedger.deleteMany({ invoice: id });
+      if (deletedLedger.deletedCount > 0) {
+        console.log(`Deleted ${deletedLedger.deletedCount} orphaned ledger entries for invoice ${supplierInvoice.invoiceNumber}`);
+      }
+    } catch (ledgerError) {
+      console.error("Error cleaning up ledger entries:", ledgerError.message);
     }
 
     // Delete the supplier invoice

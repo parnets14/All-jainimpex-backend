@@ -840,18 +840,22 @@ export const getLastPurchasePrice = async (req, res) => {
   try {
     const { productId } = req.params;
     const { supplierId } = req.query; // Optional: filter by supplier
+    
+    // Import mongoose for ObjectId conversion
+    const mongoose = await import('mongoose');
+    const productObjectId = new mongoose.default.Types.ObjectId(productId);
 
     console.log("🔍 [START] Getting last purchase price for product:", productId);
 
     // Build match query
     const matchQuery = {
-      "lines.productId": productId,
+      "lines.productId": productObjectId,
       status: { $in: ["Approved", "Completed"] } // Only consider approved/completed orders
     };
 
     // If supplierId is provided, filter by supplier
     if (supplierId) {
-      matchQuery.supplierId = supplierId;
+      matchQuery.supplierId = new mongoose.default.Types.ObjectId(supplierId);
     }
 
     // Find the most recent purchase order containing this product
@@ -878,7 +882,7 @@ export const getLastPurchasePrice = async (req, res) => {
 
     // Find the specific line item for this product
     const productLine = lastPurchaseOrder.lines.find(
-      line => line.productId._id.toString() === productId
+      line => line.productId && line.productId._id && line.productId._id.toString() === productId
     );
 
     if (!productLine) {
@@ -903,7 +907,7 @@ export const getLastPurchasePrice = async (req, res) => {
     const last30DayOrders = await PurchaseOrder.aggregate([
       {
         $match: {
-          "lines.productId": productId,
+          "lines.productId": productObjectId,
           status: { $in: ["Approved", "Completed"] },
           orderDate: { $gte: thirtyDaysAgo }
         }
@@ -913,7 +917,7 @@ export const getLastPurchasePrice = async (req, res) => {
       },
       {
         $match: {
-          "lines.productId": productId
+          "lines.productId": productObjectId
         }
       },
       {
