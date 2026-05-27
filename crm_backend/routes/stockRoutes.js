@@ -18,6 +18,7 @@ import {
 } from '../controllers/stockController.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { attachCompanyDB } from '../middleware/companyMiddleware.js';
+import { logActivity } from '../middleware/activityLogMiddleware.js';
 
 const router = express.Router();
 
@@ -34,15 +35,15 @@ router.post('/recalculate-balances-test', recalculateStockBalances);
 
 router.use(protect);
 
-router.get('/', getStock);
-router.get('/alerts', getStockAlerts);
-router.get('/warehouses', getWarehouses);
-router.get('/transfers', getStockTransfers);
-router.get('/:productId/history', getStockHistory);
+router.get('/', logActivity("Stock Management", "Viewed stock list", "READ"), getStock);
+router.get('/alerts', logActivity("Stock Management", "Viewed stock alerts", "READ"), getStockAlerts);
+router.get('/warehouses', logActivity("Stock Management", "Viewed warehouses", "READ"), getWarehouses);
+router.get('/transfers', logActivity("Stock Management", "Viewed stock transfers", "READ"), getStockTransfers);
+router.get('/:productId/history', logActivity("Stock Management", "Viewed stock history", "READ"), getStockHistory);
 router.get('/:productId/debug', debugProductGRNs);
 router.get('/debug-movements/:productId/:warehouseId', debugStockMovements);
-router.post('/transfer', createStockTransfer);
-router.post('/migrate', migrateStockMovements);
-router.post('/recalculate-balances', recalculateStockBalances);
+router.post('/transfer', logActivity("Stock Management", "Created stock transfer", "CREATE"), createStockTransfer);
+router.post('/migrate', logActivity("Stock Management", "Migrated stock movements", "CREATE"), migrateStockMovements);
+router.post('/recalculate-balances', logActivity("Stock Management", "Recalculated stock balances", "UPDATE"), recalculateStockBalances);
 
 export default router;

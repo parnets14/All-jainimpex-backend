@@ -6,14 +6,15 @@ import {
   deleteClaimType,
 } from "../controllers/claimTypeController.js";
 import { protect } from "../middleware/authMiddleware.js";
+import { logActivity } from "../middleware/activityLogMiddleware.js";
 
 const router = express.Router();
 
-router.route("/").post(protect, createClaimType).get(protect, getClaimTypes);
+router.route("/").post(protect, logActivity("Claim Types", "Created new claim type", "CREATE"), createClaimType).get(protect, logActivity("Claim Types", "Viewed claim types list", "READ"), getClaimTypes);
 
 router
   .route("/:id")
-  .put(protect, updateClaimType)
-  .delete(protect, deleteClaimType);
+  .put(protect, logActivity("Claim Types", "Updated claim type", "UPDATE"), updateClaimType)
+  .delete(protect, logActivity("Claim Types", "Deleted claim type", "DELETE"), deleteClaimType);
 
 export default router;

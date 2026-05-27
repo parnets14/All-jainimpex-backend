@@ -2,6 +2,8 @@ import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
 import { supplierInvoiceSchema } from "../models/SupplierInvoice.js";
 import { dealerSchema } from "../models/Dealer.js";
 import { supplierSchema } from "../models/Supplier.js";
+import { dealerPricingSchema } from "../models/DealerPricing.js";
+import { productSchema } from "../models/Product.js";
 
 // Helper function to get models for the current company database
 const getModels = (dbConnection) => {
@@ -13,7 +15,11 @@ const getModels = (dbConnection) => {
     Dealer: dbConnection.models.Dealer || 
             dbConnection.model('Dealer', dealerSchema),
     Supplier: dbConnection.models.Supplier || 
-              dbConnection.model('Supplier', supplierSchema)
+              dbConnection.model('Supplier', supplierSchema),
+    DealerPricing: dbConnection.models.DealerPricing || 
+                   dbConnection.model('DealerPricing', dealerPricingSchema),
+    Product: dbConnection.models.Product || 
+             dbConnection.model('Product', productSchema)
   };
 };
 
@@ -22,7 +28,7 @@ const getModels = (dbConnection) => {
 // @access  Private
 export const getBillWiseProfitAnalysis = async (req, res) => {
   try {
-    const { DealerInvoice, SupplierInvoice, Dealer, Supplier } = getModels(req.dbConnection);
+    const { DealerInvoice, SupplierInvoice, Dealer, Supplier, DealerPricing } = getModels(req.dbConnection);
     const {
       page = 1,
       limit = 10,
@@ -47,8 +53,11 @@ export const getBillWiseProfitAnalysis = async (req, res) => {
     
     if (analysisType === 'dealer') {
       if (dealer) query.dealer = dealer;
+      // Show all invoices that have an invoice number (non-empty drafts)
+      query.invoiceNumber = { $ne: null, $exists: true };
     } else {
       if (supplier) query.supplier = supplier;
+      query.invoiceNumber = { $ne: null, $exists: true };
     }
 
     // Add search functionality
@@ -69,6 +78,7 @@ export const getBillWiseProfitAnalysis = async (req, res) => {
     if (analysisType === 'dealer') {
       invoices = await DealerInvoice.find(query)
         .populate('dealer', 'name code')
+        .populate('items.product', 'itemName productCode mrp')
         .sort({ invoiceDate: -1 })
         .skip(skip)
         .limit(limitNumber)
@@ -76,6 +86,7 @@ export const getBillWiseProfitAnalysis = async (req, res) => {
     } else {
       invoices = await SupplierInvoice.find(query)
         .populate('supplier', 'name code')
+        .populate('items.product', 'itemName productCode mrp')
         .sort({ invoiceDate: -1 })
         .skip(skip)
         .limit(limitNumber)
@@ -88,29 +99,119 @@ export const getBillWiseProfitAnalysis = async (req, res) => {
       : await SupplierInvoice.countDocuments(query);
 
     // Transform data to match the expected format
-    const transformedData = invoices.map(invoice => {
-      // Calculate profit using 30% margin assumption (as used in dealer performance)
-      const totalSalePrice = invoice.totalAmount || 0;
-      const totalDiscount = invoice.totalDiscount || 0;
-      const totalRevenue = totalSalePrice - totalDiscount;
-      const totalCost = totalRevenue * 0.7; // Assuming 30% margin
-      const totalProfit = totalRevenue - totalCost;
-      const profitMargin = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0;
+    const transformedData = [];
+    
+    for (const invoice of invoices) {
+      if (analysisType === 'dealer') {
+        // DEALER WISE: You sell to dealer
+        // Gross Revenue = totalAmount (what dealer pays at MRP, includes GST)
+        // Discount = totalDiscount (dealer discounts given)
+        // Net Revenue = totalAmount - totalDiscount = what dealer actually pays you
+        // Cost = purchase price × qty for each item (from last supplier invoice/PO)
+        // Profit = Net Revenue - Cost
+        
+        const grossRevenue = invoice.totalAmount || 0;
+        const totalDiscount = invoice.totalDiscount || 0;
+        const netRevenue = grossRevenue - totalDiscount;
+        
+        // Calculate cost from purchase prices
+        let totalCost = 0;
+        if (invoice.items && invoice.items.length > 0) {
+          for (const item of invoice.items) {
+            const qty = item.quantity || 0;
+            const productId = item.product?._id || item.product;
+            if (productId) {
+              const pricing = await DealerPricing.findOne({ product: productId, isActive: true }).lean();
+              if (pricing && pricing.purchasePrice > 0) {
+                totalCost += qty * pricing.purchasePrice;
+              } else {
+                // No purchase price available - use item's totalPrice as fallback (net selling)
+                // This means profit will be 0 for items without purchase price data
+                totalCost += item.totalPrice || (qty * (item.unitPrice || item.mrp || 0));
+              }
+            }
+          }
+        }
+        
+        // If no items or no cost calculated, estimate
+        if (totalCost === 0) {
+          totalCost = netRevenue; // No profit data available
+        }
+        
+        const totalProfit = netRevenue - totalCost;
+        const profitMargin = netRevenue > 0 ? (totalProfit / netRevenue) * 100 : 0;
 
-      return {
-        id: invoice._id,
-        billNo: invoice.invoiceNumber,
-        date: invoice.invoiceDate,
-        dealerName: analysisType === 'dealer' ? (invoice.dealer?.name || invoice.dealerName) : 'N/A',
-        supplierName: analysisType === 'supplier' ? (invoice.supplier?.name || invoice.supplierName) : 'N/A',
-        totalCost: Math.round(totalCost),
-        totalRevenue: Math.round(totalRevenue),
-        totalSalePrice: Math.round(totalSalePrice),
-        totalDiscount: Math.round(totalDiscount),
-        totalProfit: Math.round(totalProfit),
-        profitMargin: Math.round(profitMargin * 100) / 100
-      };
-    });
+        transformedData.push({
+          id: invoice._id,
+          billNo: invoice.invoiceNumber,
+          date: invoice.invoiceDate,
+          dealerName: invoice.dealer?.name || invoice.dealerName || 'N/A',
+          supplierName: 'N/A',
+          totalSalePrice: Math.round(grossRevenue),
+          totalDiscount: Math.round(totalDiscount),
+          totalRevenue: Math.round(netRevenue),
+          totalCost: Math.round(totalCost),
+          totalProfit: Math.round(totalProfit),
+          profitMargin: Math.round(profitMargin * 100) / 100
+        });
+        
+      } else {
+        // SUPPLIER WISE: You buy from supplier
+        // Gross Revenue = subtotal (qty × MRP before discounts)
+        // Discount = purchase discounts (direct + extra + floating)
+        // Net Revenue = what you actually paid the supplier (Gross - Discount)
+        // Cost = Net Revenue (this IS your cost)
+        // For supplier, we show: how much you saved via discounts
+        
+        let grossRevenue = 0;
+        let totalDiscount = 0;
+        
+        if (invoice.items && invoice.items.length > 0) {
+          for (const item of invoice.items) {
+            const qty = item.quantity || 0;
+            const mrp = item.unitPrice || 0;
+            grossRevenue += qty * mrp;
+          }
+          // Recalculate discount from percentages (sequential)
+          for (const item of invoice.items) {
+            const qty = item.quantity || 0;
+            const mrp = item.unitPrice || 0;
+            const sub = qty * mrp;
+            const directPct = item.purchaseDiscount?.directDiscountPercentage || 0;
+            const extraPct = item.purchaseDiscount?.supplierExtraDiscountPercentage || 0;
+            const floatingPct = item.purchaseDiscount?.floatingDiscountPercentage || 0;
+            const directAmt = (sub * directPct) / 100;
+            const afterDir = sub - directAmt;
+            const extraAmt = (afterDir * extraPct) / 100;
+            const afterExt = afterDir - extraAmt;
+            const floatingAmt = (afterExt * floatingPct) / 100;
+            totalDiscount += directAmt + extraAmt + floatingAmt;
+          }
+        } else {
+          grossRevenue = invoice.subtotal || invoice.totalAmount || 0;
+          totalDiscount = invoice.totalDiscount || 0;
+        }
+        
+        const netPaid = grossRevenue - totalDiscount; // What you actually paid
+        // For supplier: "profit" = savings from discounts
+        const savings = totalDiscount;
+        const savingsMargin = grossRevenue > 0 ? (savings / grossRevenue) * 100 : 0;
+
+        transformedData.push({
+          id: invoice._id,
+          billNo: invoice.invoiceNumber,
+          date: invoice.invoiceDate,
+          dealerName: 'N/A',
+          supplierName: invoice.supplier?.name || invoice.supplierName || 'N/A',
+          totalSalePrice: Math.round(grossRevenue),
+          totalDiscount: Math.round(totalDiscount),
+          totalRevenue: Math.round(netPaid),
+          totalCost: Math.round(netPaid), // Cost = what you paid
+          totalProfit: Math.round(savings), // "Profit" = savings from discounts
+          profitMargin: Math.round(savingsMargin * 100) / 100
+        });
+      }
+    }
 
     // Calculate summary statistics
     const summaryStats = {
@@ -153,6 +254,7 @@ export const getBillWiseProfitAnalysis = async (req, res) => {
 // @access  Private
 export const getGroupedProfitAnalysis = async (req, res) => {
   try {
+    const { DealerInvoice, SupplierInvoice } = getModels(req.dbConnection);
     const {
       analysisType = 'dealer', // 'dealer' or 'supplier'
       startDate,

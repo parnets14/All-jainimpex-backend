@@ -8,6 +8,7 @@ import {
 } from '../controllers/dealerTypeController.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { attachCompanyDB } from '../middleware/companyMiddleware.js';
+import { logActivity } from '../middleware/activityLogMiddleware.js';
 
 const router = express.Router();
 
@@ -16,18 +17,18 @@ router.use(protect);
 router.use(attachCompanyDB);
 
 // Create a new dealer type
-router.post('/', createDealerType);
+router.post('/', logActivity("Dealer Type", "Created new dealer type", "CREATE"), createDealerType);
 
 // Get all dealer types with pagination and search
-router.get('/', getAllDealerTypes);
+router.get('/', logActivity("Dealer Type", "Viewed dealer types list", "READ"), getAllDealerTypes);
 
 // Get single dealer type by ID
-router.get('/:id', getDealerTypeById);
+router.get('/:id', logActivity("Dealer Type", "Viewed dealer type details", "READ"), getDealerTypeById);
 
 // Update dealer type
-router.put('/:id', updateDealerType);
+router.put('/:id', logActivity("Dealer Type", "Updated dealer type", "UPDATE"), updateDealerType);
 
 // Delete dealer type
-router.delete('/:id', deleteDealerType);
+router.delete('/:id', logActivity("Dealer Type", "Deleted dealer type", "DELETE"), deleteDealerType);
 
 export default router;

@@ -1,124 +1,118 @@
 import cron from 'node-cron';
-import ActivityLog from '../models/ActivityLog.js';
-import DownloadLog from '../models/DownloadLog.js';
+import { activityLogSchema } from '../models/ActivityLog.js';
+import { downloadLogSchema } from '../models/DownloadLog.js';
+import { getCompanyConnection } from '../config/multiDatabase.js';
 
-// Cron job to automatically cleanup old logs
+// Company list for multi-tenant cleanup
+const COMPANIES = ['jain-impex', 'ridhi', 'shree-jain-impex'];
+
+// Helper to get models for a specific company connection
+const getLogModels = (dbConnection) => {
+  return {
+    ActivityLog: dbConnection.models.ActivityLog || dbConnection.model('ActivityLog', activityLogSchema),
+    DownloadLog: dbConnection.models.DownloadLog || dbConnection.model('DownloadLog', downloadLogSchema)
+  };
+};
+
+// Cron job to automatically cleanup old logs for ALL companies
 // Runs every day at 2:00 AM to clean up logs older than 7 days
 const scheduleLogCleanup = () => {
   cron.schedule('0 2 * * *', async () => {
     try {
-      console.log('🧹 Running scheduled log cleanup...');
+      console.log('🧹 Running scheduled log cleanup for all companies...');
       
-      // Calculate cutoff date (7 days ago)
       const cutoffDate = new Date();
       cutoffDate.setDate(cutoffDate.getDate() - 7);
       
-      // Clean up activity logs older than 7 days
-      const activityResult = await ActivityLog.deleteMany({
-        timestamp: { $lt: cutoffDate }
-      });
+      let totalActivityDeleted = 0;
+      let totalDownloadDeleted = 0;
       
-      // Clean up download logs older than 7 days
-      const downloadResult = await DownloadLog.deleteMany({
-        timestamp: { $lt: cutoffDate }
-      });
+      for (const company of COMPANIES) {
+        try {
+          const connection = getCompanyConnection(company);
+          const { ActivityLog, DownloadLog } = getLogModels(connection);
+          
+          const activityResult = await ActivityLog.deleteMany({
+            timestamp: { $lt: cutoffDate }
+          });
+          
+          const downloadResult = await DownloadLog.deleteMany({
+            timestamp: { $lt: cutoffDate }
+          });
+          
+          totalActivityDeleted += activityResult.deletedCount;
+          totalDownloadDeleted += downloadResult.deletedCount;
+          
+          if (activityResult.deletedCount > 0 || downloadResult.deletedCount > 0) {
+            console.log(`  ✅ ${company}: Cleaned ${activityResult.deletedCount} activity + ${downloadResult.deletedCount} download logs`);
+          }
+        } catch (companyError) {
+          console.error(`  ❌ ${company}: Cleanup failed -`, companyError.message);
+        }
+      }
       
-      const totalCleaned = activityResult.deletedCount + downloadResult.deletedCount;
+      const totalCleaned = totalActivityDeleted + totalDownloadDeleted;
       
       if (totalCleaned > 0) {
-        console.log(`✅ Scheduled log cleanup completed:`);
-        console.log(`   - Activity logs cleaned: ${activityResult.deletedCount}`);
-        console.log(`   - Download logs cleaned: ${downloadResult.deletedCount}`);
-        console.log(`   - Total logs cleaned: ${totalCleaned}`);
+        console.log(`✅ Scheduled log cleanup completed: ${totalCleaned} total logs removed`);
       } else {
         console.log('✅ Scheduled log cleanup completed: No old logs to clean');
       }
       
-      // Log the cleanup activity
-      await ActivityLog.create({
-        user: null, // System activity
-        username: 'System',
-        module: 'System Maintenance',
-        activity: `Automatic log cleanup - Removed ${totalCleaned} old logs`,
-        action: 'DELETE',
-        details: {
-          activityLogsDeleted: activityResult.deletedCount,
-          downloadLogsDeleted: downloadResult.deletedCount,
-          cutoffDate: cutoffDate.toISOString(),
-          automated: true
-        },
-        status: 'SUCCESS'
-      });
-      
     } catch (error) {
       console.error('❌ Error in scheduled log cleanup:', error);
-      
-      // Log the failed cleanup
-      try {
-        await ActivityLog.create({
-          user: null,
-          username: 'System',
-          module: 'System Maintenance',
-          activity: 'Automatic log cleanup failed',
-          action: 'DELETE',
-          details: {
-            error: error.message,
-            automated: true
-          },
-          status: 'FAILED'
-        });
-      } catch (logError) {
-        console.error('❌ Failed to log cleanup error:', logError);
-      }
     }
   }, {
     scheduled: true,
-    timezone: "Asia/Kolkata" // Adjust timezone as needed
+    timezone: "Asia/Kolkata"
   });
   
-  console.log('🧹 Log cleanup cron job scheduled (daily at 2:00 AM IST)');
+  console.log('🧹 Log cleanup cron job scheduled (daily at 2:00 AM IST - all companies)');
 };
 
-// Manual function to cleanup logs (can be called from API)
-export const cleanupLogsManually = async (daysToKeep = 7) => {
-  try {
-    console.log(`🧹 Manual log cleanup triggered (keeping ${daysToKeep} days)...`);
-    
-    const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - daysToKeep);
-    
-    const activityResult = await ActivityLog.deleteMany({
-      timestamp: { $lt: cutoffDate }
-    });
-    
-    const downloadResult = await DownloadLog.deleteMany({
-      timestamp: { $lt: cutoffDate }
-    });
-    
-    const totalCleaned = activityResult.deletedCount + downloadResult.deletedCount;
-    
-    console.log(`✅ Manual log cleanup completed:`);
-    console.log(`   - Activity logs cleaned: ${activityResult.deletedCount}`);
-    console.log(`   - Download logs cleaned: ${downloadResult.deletedCount}`);
-    console.log(`   - Total logs cleaned: ${totalCleaned}`);
-    
-    return {
-      activityLogsDeleted: activityResult.deletedCount,
-      downloadLogsDeleted: downloadResult.deletedCount,
-      totalDeleted: totalCleaned
-    };
-  } catch (error) {
-    console.error('❌ Error in manual log cleanup:', error);
-    throw error;
-  }
+// Manual function to cleanup logs for a specific company connection
+export const cleanupLogsForConnection = async (dbConnection, daysToKeep = 7) => {
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - daysToKeep);
+  
+  const { ActivityLog, DownloadLog } = getLogModels(dbConnection);
+  
+  const activityResult = await ActivityLog.deleteMany({
+    timestamp: { $lt: cutoffDate }
+  });
+  
+  const downloadResult = await DownloadLog.deleteMany({
+    timestamp: { $lt: cutoffDate }
+  });
+  
+  return {
+    activityLogsDeleted: activityResult.deletedCount,
+    downloadLogsDeleted: downloadResult.deletedCount,
+    totalDeleted: activityResult.deletedCount + downloadResult.deletedCount
+  };
 };
 
-// Function to get log statistics
-export const getLogStatistics = async () => {
+// Clear ALL logs for a specific company connection (Clear All Data button)
+export const clearAllLogsForConnection = async (dbConnection) => {
+  const { ActivityLog, DownloadLog } = getLogModels(dbConnection);
+  
+  const activityResult = await ActivityLog.deleteMany({});
+  const downloadResult = await DownloadLog.deleteMany({});
+  
+  return {
+    activityLogsDeleted: activityResult.deletedCount,
+    downloadLogsDeleted: downloadResult.deletedCount,
+    totalDeleted: activityResult.deletedCount + downloadResult.deletedCount
+  };
+};
+
+// Function to get log statistics for a specific company connection
+export const getLogStatisticsForConnection = async (dbConnection) => {
   try {
-    const now = new Date();
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    
+    const { ActivityLog, DownloadLog } = getLogModels(dbConnection);
     
     const [
       totalActivityLogs,
@@ -155,7 +149,41 @@ export const getLogStatistics = async () => {
     };
   } catch (error) {
     console.error('❌ Error getting log statistics:', error);
-    // Return default stats if there's an error
+    return {
+      total: { activityLogs: 0, downloadLogs: 0, combined: 0 },
+      recent: { activityLogs: 0, downloadLogs: 0, combined: 0 },
+      old: { activityLogs: 0, downloadLogs: 0, combined: 0 }
+    };
+  }
+};
+
+// Legacy exports for backward compatibility
+export const cleanupLogsManually = async (daysToKeep = 7) => {
+  console.log(`🧹 Manual log cleanup triggered for all companies (keeping ${daysToKeep} days)...`);
+  let totalResult = { activityLogsDeleted: 0, downloadLogsDeleted: 0, totalDeleted: 0 };
+  
+  for (const company of COMPANIES) {
+    try {
+      const connection = getCompanyConnection(company);
+      const result = await cleanupLogsForConnection(connection, daysToKeep);
+      totalResult.activityLogsDeleted += result.activityLogsDeleted;
+      totalResult.downloadLogsDeleted += result.downloadLogsDeleted;
+      totalResult.totalDeleted += result.totalDeleted;
+    } catch (error) {
+      console.error(`  ❌ ${company}: Manual cleanup failed -`, error.message);
+    }
+  }
+  
+  console.log(`✅ Manual cleanup completed: ${totalResult.totalDeleted} total logs removed`);
+  return totalResult;
+};
+
+export const getLogStatistics = async () => {
+  // Return stats for first company as default (legacy)
+  try {
+    const connection = getCompanyConnection(COMPANIES[0]);
+    return await getLogStatisticsForConnection(connection);
+  } catch (error) {
     return {
       total: { activityLogs: 0, downloadLogs: 0, combined: 0 },
       recent: { activityLogs: 0, downloadLogs: 0, combined: 0 },

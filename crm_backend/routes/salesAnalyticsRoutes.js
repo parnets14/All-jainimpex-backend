@@ -3,11 +3,12 @@ import mongoose from 'mongoose';
 import SalesOrder from '../models/SalesOrder.js';
 import DealerInvoice from '../models/DealerInvoice.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { logActivity } from '../middleware/activityLogMiddleware.js';
 
 const router = express.Router();
 
 // Get product sales analytics for multiple products (30-day sales)
-router.get('/products', protect, async (req, res) => {
+router.get('/products', protect, logActivity("Sales Analytics", "Viewed product sales analytics", "READ"), async (req, res) => {
   try {
     // Handle both productIds and productIds[] formats (axios sends arrays as productIds[])
     let productIds = req.query.productIds || req.query['productIds[]'];
@@ -95,7 +96,7 @@ router.get('/products', protect, async (req, res) => {
 });
 
 // Get detailed sales analytics for a single product
-router.get('/product-details', protect, async (req, res) => {
+router.get('/product-details', protect, logActivity("Sales Analytics", "Viewed detailed product analytics", "READ"), async (req, res) => {
   try {
     const { productId, warehouseId, period, startDate, endDate } = req.query;
     

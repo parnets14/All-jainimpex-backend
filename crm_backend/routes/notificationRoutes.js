@@ -4,6 +4,7 @@ import {
   createDealerNotification
 } from '../controllers/notificationController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { logActivity } from '../middleware/activityLogMiddleware.js';
 
 const router = express.Router();
 
@@ -11,10 +12,10 @@ const router = express.Router();
 router.use(protect);
 
 // Create notification (general)
-router.post('/', createNotification);
+router.post('/', logActivity("Notifications", "Created notification", "CREATE"), createNotification);
 
 // Create notification for specific dealer
-router.post('/dealer/:dealerId', createDealerNotification);
+router.post('/dealer/:dealerId', logActivity("Notifications", "Created dealer notification", "CREATE"), createDealerNotification);
 
 export default router;
 

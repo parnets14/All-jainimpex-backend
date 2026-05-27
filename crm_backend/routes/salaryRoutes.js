@@ -4,6 +4,7 @@ import Employee from "../models/Employee.js";
 import Attendance from "../models/Attendance.js";
 import { protect } from "../middleware/authMiddleware.js";
 import { generateSalaryPDF } from "../utils/pdfGenerator.js";
+import { logActivity } from "../middleware/activityLogMiddleware.js";
 
 // Import direct salary processing functions
 import {
@@ -198,7 +199,7 @@ const calculateSalary = async (employee, month, year) => {
 };
 
 // Generate salary slip for an employee (Direct processing)
-router.post("/generate", protect, async (req, res) => {
+router.post("/generate", protect, logActivity("Salary Management", "Generated salary slip", "CREATE"), async (req, res) => {
   try {
     const { employeeId, month, year } = req.body;
 
@@ -240,7 +241,7 @@ router.post("/generate", protect, async (req, res) => {
 });
 
 // Generate salary slips for all employees (Direct processing)
-router.post("/generate-all", protect, async (req, res) => {
+router.post("/generate-all", protect, logActivity("Salary Management", "Generated all salary slips", "CREATE"), async (req, res) => {
   try {
     const { month, year } = req.body;
     const employees = await Employee.find({ status: "Active" });
@@ -325,7 +326,7 @@ router.post("/generate-all", protect, async (req, res) => {
 });
 
 // Get processing status
-router.get("/queue-status", protect, async (req, res) => {
+router.get("/queue-status", protect, logActivity("Salary Management", "Viewed queue status", "READ"), async (req, res) => {
   try {
     const status = await getQueueStatus();
     res.json({
@@ -342,7 +343,7 @@ router.get("/queue-status", protect, async (req, res) => {
 });
 
 // Trigger monthly salary generation
-router.post("/generate-monthly", protect, async (req, res) => {
+router.post("/generate-monthly", protect, logActivity("Salary Management", "Triggered monthly salary generation", "CREATE"), async (req, res) => {
   try {
     const { month, year } = req.body;
 
@@ -437,7 +438,7 @@ router.post("/generate-monthly", protect, async (req, res) => {
 });
 
 // Get salary slips with filtering
-router.get("/slips", protect, async (req, res) => {
+router.get("/slips", protect, logActivity("Salary Management", "Viewed salary slips list", "READ"), async (req, res) => {
   try {
     const { employeeId, month, year, page = 1, limit = 10, status } = req.query;
 
@@ -474,7 +475,7 @@ router.get("/slips", protect, async (req, res) => {
 });
 
 // Get specific salary slip
-router.get("/slip/:id", protect, async (req, res) => {
+router.get("/slip/:id", protect, logActivity("Salary Management", "Viewed salary slip details", "READ"), async (req, res) => {
   try {
     const salarySlip = await SalarySlip.findById(req.params.id)
       .populate(
@@ -504,7 +505,7 @@ router.get("/slip/:id", protect, async (req, res) => {
 });
 
 // Update salary slip status (mark as paid)
-router.patch("/slip/:id/status", protect, async (req, res) => {
+router.patch("/slip/:id/status", protect, logActivity("Salary Management", "Updated salary slip status", "UPDATE"), async (req, res) => {
   try {
     const { status } = req.body;
 
@@ -539,7 +540,7 @@ router.patch("/slip/:id/status", protect, async (req, res) => {
 });
 
 // View salary slip PDF in browser
-router.get("/slip/:id/view", protect, async (req, res) => {
+router.get("/slip/:id/view", protect, logActivity("Salary Management", "Viewed salary slip PDF", "READ"), async (req, res) => {
   try {
     const salarySlip = await SalarySlip.findById(req.params.id).populate(
       "employeeId",
@@ -569,7 +570,7 @@ router.get("/slip/:id/view", protect, async (req, res) => {
 });
 
 // Download salary slip PDF
-router.get("/slip/:id/download", protect, async (req, res) => {
+router.get("/slip/:id/download", protect, logActivity("Salary Management", "Downloaded salary slip PDF", "READ"), async (req, res) => {
   try {
     const salarySlip = await SalarySlip.findById(req.params.id).populate(
       "employeeId",
@@ -913,7 +914,7 @@ const generateSalarySlipHTML = (salarySlip) => {
 };
 
 // Delete all salary slips (for development/testing)
-router.delete("/clear-all", protect, async (req, res) => {
+router.delete("/clear-all", protect, logActivity("Salary Management", "Cleared all salary slips", "DELETE"), async (req, res) => {
   try {
     // Only allow admin users to delete all data
     if (req.user.role !== "admin") {
@@ -941,7 +942,7 @@ router.delete("/clear-all", protect, async (req, res) => {
 });
 
 // Get salary statistics
-router.get("/stats", protect, async (req, res) => {
+router.get("/stats", protect, logActivity("Salary Management", "Viewed salary statistics", "READ"), async (req, res) => {
   try {
     const currentMonth = new Date().getMonth() + 1;
     const currentYear = new Date().getFullYear();
@@ -986,7 +987,7 @@ router.get("/stats", protect, async (req, res) => {
 });
 
 // Test route to create sample salary data
-router.post("/test-generate", protect, async (req, res) => {
+router.post("/test-generate", protect, logActivity("Salary Management", "Generated test salary data", "CREATE"), async (req, res) => {
   try {
     const employees = await Employee.find({ status: "Active" }).limit(3);
     const currentMonth = new Date().getMonth() + 1;

@@ -9,6 +9,7 @@ import {
 import { protect } from "../middleware/authMiddleware.js";
 import { requirePermission } from "../middleware/authMiddleware.js";
 import { attachCompanyDB } from "../middleware/companyMiddleware.js";
+import { logActivity } from "../middleware/activityLogMiddleware.js";
 
 const router = express.Router();
 
@@ -17,19 +18,21 @@ router.use(protect);
 router.use(attachCompanyDB);
 
 // Subcategory routes - READ operations (no permission check)
-router.get("/", getSubcategories);
-router.get("/:id/change-parent-preview", getSubcategoryParentChangePreview);
+router.get("/", logActivity("Subcategory Management", "Viewed subcategories list", "READ"), getSubcategories);
+router.get("/:id/change-parent-preview", logActivity("Subcategory Management", "Viewed parent change preview", "READ"), getSubcategoryParentChangePreview);
 
 // Subcategory WRITE operations (require permissions)
 router.put(
   "/:id/change-parent",
   requirePermission("categories.update"),
+  logActivity("Subcategory Management", "Changed subcategory parent", "UPDATE"),
   changeSubcategoryParent
 );
-router.put("/:id", requirePermission("categories.update"), updateSubcategory);
+router.put("/:id", requirePermission("categories.update"), logActivity("Subcategory Management", "Updated subcategory", "UPDATE"), updateSubcategory);
 router.delete(
   "/:id",
   requirePermission("categories.delete"),
+  logActivity("Subcategory Management", "Deleted subcategory", "DELETE"),
   deleteSubcategory
 );
 

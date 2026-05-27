@@ -11,6 +11,7 @@ import {
 import { protect } from "../middleware/authMiddleware.js";
 import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 import { generalLimiter } from "../middleware/rateLimit.js";
+import { logActivity } from "../middleware/activityLogMiddleware.js";
 
 const router = express.Router();
 
@@ -21,19 +22,15 @@ router.use(generalLimiter);
 router.use(protect);
 router.use(attachCompanyDB);
 
-router.route("/")
-  .get(getWarehouses)
-  .post(createWarehouse);
+router.get("/", logActivity("Warehouse Management", "Viewed warehouses list", "READ"), getWarehouses);
+router.post("/", logActivity("Warehouse Management", "Created new warehouse", "CREATE"), createWarehouse);
 
-router.route("/stats/summary")
-  .get(getWarehouseStats);
+router.get("/stats/summary", logActivity("Warehouse Management", "Viewed warehouse statistics", "READ"), getWarehouseStats);
 
-router.route("/region/:regionId")
-  .get(getWarehousesByRegion);
+router.get("/region/:regionId", logActivity("Warehouse Management", "Viewed warehouses by region", "READ"), getWarehousesByRegion);
 
-router.route("/:id")
-  .get(getWarehouse)
-  .put(updateWarehouse)
-  .delete(deleteWarehouse);
+router.get("/:id", logActivity("Warehouse Management", "Viewed warehouse details", "READ"), getWarehouse);
+router.put("/:id", logActivity("Warehouse Management", "Updated warehouse", "UPDATE"), updateWarehouse);
+router.delete("/:id", logActivity("Warehouse Management", "Deleted warehouse", "DELETE"), deleteWarehouse);
 
 export default router;

@@ -3,11 +3,12 @@ import Attendance from "../models/Attendance.js";
 import Leave from "../models/Leave.js";
 import Employee from "../models/Employee.js";
 import { protect } from "../middleware/authMiddleware.js";
+import { logActivity } from "../middleware/activityLogMiddleware.js";
 
 const router = express.Router();
 
 // Punch In
-router.post("/punch-in", protect, async (req, res) => {
+router.post("/punch-in", protect, logActivity("Attendance", "Punched in", "CREATE"), async (req, res) => {
   try {
     const { employeeId, location, faceVerified } = req.body;
 
@@ -65,7 +66,7 @@ router.post("/punch-in", protect, async (req, res) => {
 });
 
 // Punch Out
-router.post("/punch-out", protect, async (req, res) => {
+router.post("/punch-out", protect, logActivity("Attendance", "Punched out", "CREATE"), async (req, res) => {
   try {
     const { employeeId, location, faceVerified } = req.body;
 
@@ -115,7 +116,7 @@ router.post("/punch-out", protect, async (req, res) => {
 });
 
 // Get today's attendance
-router.get("/today", protect, async (req, res) => {
+router.get("/today", protect, logActivity("Attendance", "Viewed today's attendance", "READ"), async (req, res) => {
   try {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -138,7 +139,7 @@ router.get("/today", protect, async (req, res) => {
 });
 
 // Get attendance with filters and auto-absent
-router.get("/", protect, async (req, res) => {
+router.get("/", protect, logActivity("Attendance", "Viewed attendance list", "READ"), async (req, res) => {
   try {
     const {
       startDate,
@@ -362,7 +363,7 @@ router.get("/", protect, async (req, res) => {
 });
 
 // Apply for leave
-router.post("/leave", protect, async (req, res) => {
+router.post("/leave", protect, logActivity("Attendance", "Applied for leave", "CREATE"), async (req, res) => {
   try {
     const { employeeId, startDate, endDate, leaveType, reason } = req.body;
 
@@ -426,7 +427,7 @@ router.post("/leave", protect, async (req, res) => {
 });
 
 // Get individual employee attendance details
-router.get("/employee/:employeeId/details", protect, async (req, res) => {
+router.get("/employee/:employeeId/details", protect, logActivity("Attendance", "Viewed employee attendance details", "READ"), async (req, res) => {
   try {
     const { employeeId } = req.params;
     const { period = "month", startDate, endDate } = req.query;
@@ -550,7 +551,7 @@ router.get("/employee/:employeeId/details", protect, async (req, res) => {
 });
 
 // Get attendance statistics
-router.get("/stats", protect, async (req, res) => {
+router.get("/stats", protect, logActivity("Attendance", "Viewed attendance statistics", "READ"), async (req, res) => {
   try {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -602,7 +603,7 @@ router.get("/stats", protect, async (req, res) => {
 });
 
 // Test route to create sample attendance data
-router.post("/test-data", protect, async (req, res) => {
+router.post("/test-data", protect, logActivity("Attendance", "Created test attendance data", "CREATE"), async (req, res) => {
   try {
     const employees = await Employee.find({ status: "Active" }).limit(3);
     const today = new Date();

@@ -11,6 +11,7 @@ import {
 } from '../controllers/purchaseDiscountController.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { attachCompanyDB } from '../middleware/companyMiddleware.js';
+import { logActivity } from '../middleware/activityLogMiddleware.js';
 
 const router = express.Router();
 
@@ -25,23 +26,21 @@ router.use(attachCompanyDB);
 router.use(protect);
 
 // Get filter options
-router.get('/filter-options', getFilterOptions);
+router.get('/filter-options', logActivity("Purchase Discount", "Viewed filter options", "READ"), getFilterOptions);
 
 // Get applicable discounts for product and supplier
-router.get('/applicable/:productId/:supplierId', getApplicableDiscounts);
+router.get('/applicable/:productId/:supplierId', logActivity("Purchase Discount", "Viewed applicable discounts", "READ"), getApplicableDiscounts);
 
 // CRUD routes
-router.route('/')
-  .get(getPurchaseDiscounts)
-  .post(createPurchaseDiscount);
+router.get('/', logActivity("Purchase Discount", "Viewed purchase discounts list", "READ"), getPurchaseDiscounts);
+router.post('/', logActivity("Purchase Discount", "Created new purchase discount", "CREATE"), createPurchaseDiscount);
 
-router.route('/:id')
-  .get(getPurchaseDiscount)
-  .put(updatePurchaseDiscount)
-  .delete(deletePurchaseDiscount);
+router.get('/:id', logActivity("Purchase Discount", "Viewed purchase discount details", "READ"), getPurchaseDiscount);
+router.put('/:id', logActivity("Purchase Discount", "Updated purchase discount", "UPDATE"), updatePurchaseDiscount);
+router.delete('/:id', logActivity("Purchase Discount", "Deleted purchase discount", "DELETE"), deletePurchaseDiscount);
 
 // Approval route
-router.put('/:id/approve', approvePurchaseDiscount);
+router.put('/:id/approve', logActivity("Purchase Discount", "Approved purchase discount", "UPDATE"), approvePurchaseDiscount);
 
 // Debug: Log available routes
 console.log('📋 Purchase Discount Routes registered:');
