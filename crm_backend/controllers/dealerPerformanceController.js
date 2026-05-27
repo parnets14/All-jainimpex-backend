@@ -2,9 +2,16 @@ import { dealerPerformanceSchema } from "../models/DealerPerformance.js";
 import { dealerSchema } from "../models/Dealer.js";
 import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
 import { creditNoteSchema } from "../models/CreditNote.js";
+import { dealerPricingSchema } from "../models/DealerPricing.js";
 
 // Helper function to get models for the current company database
 const getModels = (dbConnection) => {
+  // Import dealer payment schema dynamically to avoid circular deps
+  let DealerPayment;
+  try {
+    DealerPayment = dbConnection.models.DealerPayment;
+  } catch(e) {}
+  
   return {
     DealerPerformance: dbConnection.models.DealerPerformance || 
                        dbConnection.model('DealerPerformance', dealerPerformanceSchema),
@@ -13,7 +20,10 @@ const getModels = (dbConnection) => {
     DealerInvoice: dbConnection.models.DealerInvoice || 
                    dbConnection.model('DealerInvoice', dealerInvoiceSchema),
     CreditNote: dbConnection.models.CreditNote || 
-                dbConnection.model('CreditNote', creditNoteSchema)
+                dbConnection.model('CreditNote', creditNoteSchema),
+    DealerPricing: dbConnection.models.DealerPricing || 
+                   dbConnection.model('DealerPricing', dealerPricingSchema),
+    DealerPayment
   };
 };
 
@@ -546,7 +556,7 @@ export const generateDealerPerformance = async (req, res) => {
       // Only create performance record if dealer has sales
       if (netSales > 0) {
         // Calculate scheme points (assuming 10% of sales as scheme)
-        const schemeEarned = Math.round(netSales * 0.1);
+        // Scheme earned = actual points from invoices (calculated below)
 
         // Determine discount level based on sales
         let discountLevel = "Level 1";
@@ -572,7 +582,7 @@ export const generateDealerPerformance = async (req, res) => {
                 existing.amount += item.totalPrice || 0;
                 existing.points += Math.round((item.totalPrice || 0) * 0.1);
               } else {
-                const costPrice = (item.totalPrice || 0) * 0.7; // Assuming 30% margin
+                const costPrice = (item.totalPrice || 0); // Will use real pricing when available
                 const profit = (item.totalPrice || 0) - costPrice;
                 productMap.set(productKey, {
                   name: productKey,
@@ -596,9 +606,8 @@ export const generateDealerPerformance = async (req, res) => {
           ? products.reduce((sum, product) => sum + product.profitMargin, 0) / products.length
           : 0;
 
-        // Calculate additional financial metrics
-        // Paid amount should come from credit notes (payments), not invoice status
-        const paid = currentPeriodCreditNotes.reduce((sum, cn) => sum + (cn.creditAmount || 0), 0);
+        // Calculate paid amount from invoice paidAmount field
+        const paid = currentPeriodInvoices.reduce((sum, inv) => sum + (inv.paidAmount || 0), 0);
         
         const outstanding = netSales - paid;
         
@@ -633,8 +642,8 @@ export const generateDealerPerformance = async (req, res) => {
           products,
           totalProfit,
           averageProfitMargin,
-          customerSatisfaction: Math.random() * 2 + 3, // Random between 3-5
-          returnRate: Math.random() * 5, // Random between 0-5%
+          customerSatisfaction: 0, // No random data
+          returnRate: returnsPercentage, // Use actual returns data
           // New comprehensive metrics
           paid,
           outstanding,
