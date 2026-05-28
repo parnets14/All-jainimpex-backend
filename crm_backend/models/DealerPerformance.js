@@ -152,8 +152,7 @@ const dealerPerformanceSchema = new mongoose.Schema({
   targetAchieved: {
     type: Number,
     default: 0,
-    min: 0,
-    max: 100
+    min: 0
   },
   returnsPercentage: {
     type: Number,

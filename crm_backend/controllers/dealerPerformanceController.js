@@ -537,11 +537,23 @@ export const generateDealerPerformance = async (req, res) => {
         growthPercentage = 100; // 100% growth if no previous sales but current sales exist
       }
 
-      // Calculate target achievement (assuming target is 10% more than previous period)
-      const targetSales = previousPeriodSales * 1.1; // 10% growth target
+      // Calculate target achievement using dealer's annual salesTarget
+      // Divide annual target by period to get period target
+      const annualTarget = dealer.salesTarget || 0;
+      let periodTarget = 0;
+      if (annualTarget > 0) {
+        switch (normalizedPeriod) {
+          case 'Daily': periodTarget = annualTarget / 365; break;
+          case 'Weekly': periodTarget = annualTarget / 52; break;
+          case 'Monthly': periodTarget = annualTarget / 12; break;
+          case 'Quarterly': periodTarget = annualTarget / 4; break;
+          case 'Yearly': periodTarget = annualTarget; break;
+          default: periodTarget = annualTarget / 12;
+        }
+      }
       let targetAchieved = 0;
-      if (targetSales > 0) {
-        targetAchieved = (netSales / targetSales) * 100;
+      if (periodTarget > 0) {
+        targetAchieved = (netSales / periodTarget) * 100;
       }
 
       console.log(`  - Current Sales: ${netSales}, Previous Sales: ${previousPeriodSales}`);
@@ -565,8 +577,8 @@ export const generateDealerPerformance = async (req, res) => {
         if (netSales >= 4000000) discountLevel = "Level 4";
         if (netSales >= 5000000) discountLevel = "Level 5";
 
-        // Calculate performance percentage (simplified calculation)
-        const performance = Math.min(100, Math.round((netSales / 1000000) * 20));
+        // Performance = how well they're doing (capped at 100 for the field)
+        const performance = Math.min(100, Math.round(targetAchieved));
 
         // Create product breakdown from invoices
         const products = [];
@@ -633,7 +645,7 @@ export const generateDealerPerformance = async (req, res) => {
           category: dealer.category || "Sanitary & Plumbing",
           quantity: totalQuantity,
           sales: netSales,
-          schemeEarned,
+          schemeEarned: totalPoints,
           discountLevel,
           performance,
           rank: 0, // Will be calculated after sorting
