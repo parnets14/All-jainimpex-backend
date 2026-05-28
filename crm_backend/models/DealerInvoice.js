@@ -295,28 +295,41 @@ dealerInvoiceSchema.pre("save", function(next) {
     const grossAmount = item.quantity * mrpPerUnit; // Total MRP for all units
     
     // Apply discounts SEQUENTIALLY (not flat additive)
-    // Order: Direct discount first, then each level discount, then dealer extra
+    // Order: Direct discount first, then each selected level discount, then dealer extra
     let currentAmount = grossAmount;
     let totalDiscountAmount = 0;
     
-    // 1. Apply direct/base discount percentage
-    if (item.discountPercentage && item.discountPercentage > 0) {
-      const discAmt = currentAmount * (item.discountPercentage / 100);
+    // Get the applied discount mapping details
+    const appliedDiscount = item.appliedDiscounts?.[0];
+    
+    // 1. Apply direct discount first (from the discount mapping)
+    const directDiscountPct = (appliedDiscount?.discountType === 'both' || appliedDiscount?.discountType === 'direct')
+      ? (appliedDiscount?.directDiscountPercentage || 0)
+      : 0;
+    
+    if (directDiscountPct > 0) {
+      const discAmt = currentAmount * (directDiscountPct / 100);
       currentAmount -= discAmt;
       totalDiscountAmount += discAmt;
     }
     
-    // 2. Apply each level discount sequentially (from appliedDiscounts levels)
-    if (item.appliedDiscounts && item.appliedDiscounts.length > 0) {
-      for (const discount of item.appliedDiscounts) {
-        if (discount.levels && discount.levels.length > 0) {
-          for (const level of discount.levels) {
-            if (level.discountPercentage && level.discountPercentage > 0) {
-              const levelAmt = currentAmount * (level.discountPercentage / 100);
-              currentAmount -= levelAmt;
-              totalDiscountAmount += levelAmt;
-            }
-          }
+    // 2. Apply each SELECTED level discount sequentially
+    const selectedLevels = item.selectedDiscountLevels || [];
+    const manualLevels = item.manualDiscountLevels instanceof Map 
+      ? Object.fromEntries(item.manualDiscountLevels) 
+      : (item.manualDiscountLevels || {});
+    const allLevels = appliedDiscount?.levels || [];
+    
+    if (selectedLevels.length > 0) {
+      for (const levelName of selectedLevels) {
+        const levelDef = allLevels.find(l => l.levelName === levelName);
+        const pct = manualLevels[levelName] !== undefined 
+          ? Number(manualLevels[levelName]) 
+          : (levelDef?.discountPercentage || 0);
+        if (pct > 0) {
+          const levelAmt = currentAmount * (pct / 100);
+          currentAmount -= levelAmt;
+          totalDiscountAmount += levelAmt;
         }
       }
     }

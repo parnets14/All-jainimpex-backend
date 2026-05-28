@@ -1115,7 +1115,17 @@ OR wait for stock to arrive and this order will be auto-processed.`,
     // Handle stock management based on status changes (only for in-stock orders)
     if (!salesOrder.isOutOfStock) {
       if (status === "Confirmed" && originalStatus !== "Confirmed") {
-        // Block stock for confirmed orders
+        // Block stock for confirmed orders - but check if already blocked
+        const existingBlock = await StockMovement.findOne({
+          referenceNo: salesOrder.orderNumber,
+          referenceType: 'SALE',
+          type: 'OUT',
+          remarks: { $regex: /Stock Blocked/ }
+        });
+        
+        if (existingBlock) {
+          console.log(`Stock already blocked for order ${salesOrder.orderNumber} - skipping duplicate block`);
+        } else {
         console.log("Blocking stock for confirmed order");
         for (const product of salesOrder.products) {
           if (product.warehouse) {
@@ -1145,6 +1155,7 @@ OR wait for stock to arrive and this order will be auto-processed.`,
             console.log(`Blocked ${product.quantity} units of product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
           }
         }
+        } // end if !existingBlock
       } else if (status === "Delivered") {
         // Handle delivered orders - either from Confirmed or directly from Pending
         console.log(`Order delivered - ${originalStatus === "Confirmed" ? "unblocking and permanently reducing stock" : "permanently reducing stock"}`);

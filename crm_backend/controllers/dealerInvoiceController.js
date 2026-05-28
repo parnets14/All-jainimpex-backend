@@ -477,24 +477,28 @@ export const createDealerInvoice = async (req, res) => {
     } = req.body;
     
     // ── RECALCULATE AND VALIDATE TOTALS ──────────────────────────────────
-    // Don't trust frontend calculations - recalculate on backend
+    // All calculations are MRP-based (GST inclusive). unitPrice is just reference (base price before GST).
+    // Discounts are applied sequentially on MRP. totalAmount = sum of item finals after discounts.
+    // GST is reverse-calculated from the final amount for display only.
     let calculatedSubtotal = 0;
     let calculatedTotalDiscount = 0;
     let calculatedTotalGst = 0;
+    let calculatedTotalAmount = 0;
     
     if (items && items.length > 0) {
       items.forEach(item => {
         const quantity = item.quantity || 0;
-        const unitPrice = item.unitPrice || 0;
-        const baseAmount = quantity * unitPrice;
+        // Use mrp (GST inclusive) for subtotal, NOT unitPrice (which is base price for reference only)
+        const mrp = item.mrp || item.unitPrice || 0;
+        const grossAmount = quantity * mrp;
         
-        calculatedSubtotal += baseAmount;
+        calculatedSubtotal += grossAmount;
         calculatedTotalDiscount += (item.discountAmount || 0);
         calculatedTotalGst += (item.gstAmount || 0);
+        // totalAmount = sum of each item's final amount (MRP after sequential discounts)
+        calculatedTotalAmount += (item.totalPrice || (grossAmount - (item.discountAmount || 0)));
       });
     }
-    
-    const calculatedTotalAmount = calculatedSubtotal - calculatedTotalDiscount + calculatedTotalGst;
     
     // Log calculation comparison
     console.log('💰 Total Calculation Comparison:');
@@ -502,6 +506,10 @@ export const createDealerInvoice = async (req, res) => {
     console.log('  Backend:', { subtotal: calculatedSubtotal, discount: calculatedTotalDiscount, gst: calculatedTotalGst, total: calculatedTotalAmount });
     
     // Use backend calculations (more reliable)
+    // subtotal = MRP × Qty (GST inclusive gross)
+    // totalDiscount = sum of sequential discount amounts
+    // totalGst = reverse-calculated GST from final amounts (for display only)
+    // totalAmount = subtotal - totalDiscount (since MRP already includes GST, no need to add GST back)
     const subtotal = calculatedSubtotal;
     const totalDiscount = calculatedTotalDiscount;
     const totalGst = calculatedTotalGst;
