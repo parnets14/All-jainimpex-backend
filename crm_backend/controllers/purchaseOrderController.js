@@ -960,3 +960,69 @@ export const getLastPurchasePrice = async (req, res) => {
     });
   }
 };
+
+// Get 6-month sales quantity for a product from DealerInvoice
+// Uses the company-specific DB connection (multi-tenant aware)
+export const get6MonthSalesQty = async (req, res) => {
+  try {
+    const { productId } = req.params;
+
+    if (!productId) {
+      return res.status(400).json({ success: false, message: 'Product ID is required' });
+    }
+
+    // Import schema lazily to avoid circular dep issues
+    const { dealerInvoiceSchema } = await import('../models/DealerInvoice.js');
+    const conn = req.dbConnection;
+    const DealerInvoice = conn.models.DealerInvoice || conn.model('DealerInvoice', dealerInvoiceSchema);
+
+    const mongoose = await import('mongoose');
+    const productObjectId = new mongoose.default.Types.ObjectId(productId.toString());
+
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+    const result = await DealerInvoice.aggregate([
+      {
+        $match: {
+          invoiceDate: { $gte: sixMonthsAgo },
+          isDraft: false,
+          isDeleted: { $ne: true },
+          status: { $in: ['Approved', 'Dispatched', 'Delivered'] }
+        }
+      },
+      { $unwind: '$items' },
+      {
+        $match: {
+          'items.product': productObjectId
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalQuantity: { $sum: '$items.quantity' }
+        }
+      }
+    ]);
+
+    const totalQuantity = result.length > 0 ? result[0].totalQuantity : 0;
+
+    console.log(`📊 6-month sales qty for ${productId}: ${totalQuantity}`);
+
+    return res.json({
+      success: true,
+      data: {
+        productId,
+        totalQuantity,
+        period: '6months'
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error fetching 6-month sales qty:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error fetching 6-month sales quantity',
+      error: error.message
+    });
+  }
+};
