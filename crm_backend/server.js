@@ -86,6 +86,7 @@ import collectionRoutes from './routes/collectionRoutes.js';
 import invoicePrintTemplateRoutes from './routes/invoicePrintTemplateRoutes.js';
 import salesAnalyticsRoutes from './routes/salesAnalyticsRoutes.js';
 import dealerOrderRequestRoutes from './routes/dealerOrderRequestRoutes.js';
+import appSettingsRoutes from './routes/appSettingsRoutes.js';
 
 // Dealer App Routes
 import appAuthRoutes from './app/routes/authRoutes.js';
@@ -346,6 +347,7 @@ app.use('/api/purchase-wishlists', purchaseWishlistRoutes);
 app.use('/api/sales-orders', salesOrderRoutes);
 app.use('/api/sales-analytics', salesAnalyticsRoutes);
 app.use('/api/dealer-order-requests', dealerOrderRequestRoutes);
+app.use('/api/settings', appSettingsRoutes);
 app.use('/api/cheques', chequeRoutes);
 app.use('/api/dealer-invoices', dealerInvoiceRoutes);
 app.use('/api/invoice-print-templates', invoicePrintTemplateRoutes);

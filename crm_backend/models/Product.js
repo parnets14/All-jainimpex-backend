@@ -24,7 +24,7 @@ const productSchema = new mongoose.Schema({
   },
   HSNCode: {
     type: String,
-    required: [true, 'HSN Code is required'],
+    required: false,
     trim: true
   },
   itemName: {
