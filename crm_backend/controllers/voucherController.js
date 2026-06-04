@@ -329,16 +329,16 @@ export const createPaymentVoucher = async (req, res) => {
       voucherDate: new Date(voucherDate),
       financialYear: getFinancialYear(new Date(voucherDate)),
       partyType,
-      partyId,
-      partyName,
+      partyId: partyId || null,                  // prevent empty string cast error
+      partyName: partyName || null,
       transactionMode,
-      bankAccount,
+      bankAccount: bankAccount || null,          // prevent empty string cast error
       bankAccountName: bankAccount ? (await BankAccount.findById(bankAccount))?.accountName : null,
-      chequeNumber,
+      chequeNumber: chequeNumber || null,
       chequeDate: chequeDate ? new Date(chequeDate) : null,
       chequeStatus: chequeNumber ? 'Pending' : null,
-      upiTransactionId,
-      referenceNumber,
+      upiTransactionId: upiTransactionId || null,
+      referenceNumber: referenceNumber || null,
       totalAmount,
       allocationType: allocationType || 'OnAccount',
       allocations: allocations || [],
@@ -880,23 +880,29 @@ export const getBalances = async (req, res) => {
  */
 const updateAccountBalance = async (voucherType, transactionMode, bankAccountId, amount, dbConnection) => {
   const { BankAccount, CashAccount } = getModels(dbConnection);
+  // Ensure amount is a number (req.body values arrive as strings)
+  const numAmount = parseFloat(amount) || 0;
   
   if (transactionMode === 'Cash') {
     const cashAccount = await CashAccount.getCashAccount();
     if (voucherType === 'Receipt') {
-      cashAccount.currentBalance += amount;
+      cashAccount.currentBalance = (cashAccount.currentBalance || 0) + numAmount;
     } else if (voucherType === 'Payment') {
-      cashAccount.currentBalance -= amount;
+      cashAccount.currentBalance = (cashAccount.currentBalance || 0) - numAmount;
     }
     cashAccount.lastUpdated = new Date();
     await cashAccount.save();
-  } else if (transactionMode === 'Bank' && bankAccountId) {
+  } else if (
+    // All non-cash modes (Bank, Cheque, UPI, NEFT, RTGS, Card, Internal) go to/from the bank account
+    ['Bank', 'Cheque', 'UPI', 'NEFT', 'RTGS', 'Card', 'Internal'].includes(transactionMode) &&
+    bankAccountId
+  ) {
     const bankAccount = await BankAccount.findById(bankAccountId);
     if (bankAccount) {
       if (voucherType === 'Receipt') {
-        bankAccount.currentBalance += amount;
+        bankAccount.currentBalance = (bankAccount.currentBalance || 0) + numAmount;
       } else if (voucherType === 'Payment') {
-        bankAccount.currentBalance -= amount;
+        bankAccount.currentBalance = (bankAccount.currentBalance || 0) - numAmount;
       }
       bankAccount.updatedAt = new Date();
       await bankAccount.save();

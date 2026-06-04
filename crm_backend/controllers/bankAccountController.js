@@ -316,3 +316,153 @@ export const updateCashAccount = async (req, res) => {
     });
   }
 };
+
+/**
+ * Recalculate bank account balance from vouchers
+ * POST /api/bank-accounts/:id/recalculate
+ * 
+ * Rebuilds currentBalance = openingBalance + sum(receipts) - sum(payments)
+ * from all posted vouchers linked to this bank account.
+ * Fixes stale balances caused by old bug where UPI/Cheque/NEFT/RTGS
+ * vouchers didn't update currentBalance.
+ */
+export const recalculateBankBalance = async (req, res) => {
+  try {
+    const { BankAccount } = getModels(req.dbConnection);
+    const { voucherSchema } = await import('../models/Voucher.js');
+    const Voucher = req.dbConnection.models.Voucher || req.dbConnection.model('Voucher', voucherSchema);
+
+    const bankAccount = await BankAccount.findById(req.params.id);
+    if (!bankAccount) {
+      return res.status(404).json({ success: false, message: 'Bank account not found' });
+    }
+
+    const NON_CASH_MODES = ['Bank', 'Cheque', 'UPI', 'NEFT', 'RTGS', 'Card', 'Internal'];
+
+    // Sum all posted receipts to this bank account
+    const receiptAgg = await Voucher.aggregate([
+      {
+        $match: {
+          bankAccount: bankAccount._id,
+          status: 'Posted',
+          voucherType: 'Receipt',
+          transactionMode: { $in: NON_CASH_MODES }
+        }
+      },
+      { $group: { _id: null, total: { $sum: '$totalAmount' } } }
+    ]);
+
+    // Sum all posted payments from this bank account
+    const paymentAgg = await Voucher.aggregate([
+      {
+        $match: {
+          bankAccount: bankAccount._id,
+          status: 'Posted',
+          voucherType: 'Payment',
+          transactionMode: { $in: NON_CASH_MODES }
+        }
+      },
+      { $group: { _id: null, total: { $sum: '$totalAmount' } } }
+    ]);
+
+    // Sum contra: if toAccountId == this bank, it's a credit; if fromAccountId == this bank, it's a debit
+    const contraToAgg = await Voucher.aggregate([
+      {
+        $match: {
+          status: 'Posted',
+          voucherType: 'Contra',
+          toAccountType: 'Bank',
+          toAccountId: bankAccount._id
+        }
+      },
+      { $group: { _id: null, total: { $sum: '$totalAmount' } } }
+    ]);
+    const contraFromAgg = await Voucher.aggregate([
+      {
+        $match: {
+          status: 'Posted',
+          voucherType: 'Contra',
+          fromAccountType: 'Bank',
+          fromAccountId: bankAccount._id
+        }
+      },
+      { $group: { _id: null, total: { $sum: '$totalAmount' } } }
+    ]);
+
+    const totalReceipts = (receiptAgg[0]?.total || 0) + (contraToAgg[0]?.total || 0);
+    const totalPayments = (paymentAgg[0]?.total || 0) + (contraFromAgg[0]?.total || 0);
+    const newBalance = (bankAccount.openingBalance || 0) + totalReceipts - totalPayments;
+
+    const oldBalance = bankAccount.currentBalance;
+    bankAccount.currentBalance = parseFloat(newBalance.toFixed(2));
+    bankAccount.updatedAt = new Date();
+    await bankAccount.save();
+
+    console.log(`✅ Recalculated balance for ${bankAccount.accountName}: ₹${oldBalance} → ₹${newBalance.toFixed(2)}`);
+
+    res.json({
+      success: true,
+      message: `Balance recalculated successfully`,
+      data: {
+        accountName: bankAccount.accountName,
+        openingBalance: bankAccount.openingBalance,
+        totalReceipts: parseFloat(totalReceipts.toFixed(2)),
+        totalPayments: parseFloat(totalPayments.toFixed(2)),
+        oldBalance: parseFloat(oldBalance.toFixed(2)),
+        newBalance: parseFloat(newBalance.toFixed(2))
+      }
+    });
+
+  } catch (error) {
+    console.error('Error recalculating bank balance:', error);
+    res.status(500).json({ success: false, message: 'Error recalculating balance', error: error.message });
+  }
+};
+
+/**
+ * Recalculate cash account balance from vouchers
+ * POST /api/bank-accounts/recalculate-cash
+ */
+export const recalculateCashBalance = async (req, res) => {
+  try {
+    const { CashAccount } = getModels(req.dbConnection);
+    const { voucherSchema } = await import('../models/Voucher.js');
+    const Voucher = req.dbConnection.models.Voucher || req.dbConnection.model('Voucher', voucherSchema);
+
+    const cashAccount = await CashAccount.getCashAccount();
+
+    const receiptAgg = await Voucher.aggregate([
+      { $match: { status: 'Posted', voucherType: 'Receipt', transactionMode: 'Cash' } },
+      { $group: { _id: null, total: { $sum: '$totalAmount' } } }
+    ]);
+    const paymentAgg = await Voucher.aggregate([
+      { $match: { status: 'Posted', voucherType: 'Payment', transactionMode: 'Cash' } },
+      { $group: { _id: null, total: { $sum: '$totalAmount' } } }
+    ]);
+
+    const totalReceipts = receiptAgg[0]?.total || 0;
+    const totalPayments = paymentAgg[0]?.total || 0;
+    const newBalance = (cashAccount.openingBalance || 0) + totalReceipts - totalPayments;
+
+    const oldBalance = cashAccount.currentBalance;
+    cashAccount.currentBalance = parseFloat(newBalance.toFixed(2));
+    cashAccount.lastUpdated = new Date();
+    await cashAccount.save();
+
+    res.json({
+      success: true,
+      message: 'Cash balance recalculated successfully',
+      data: {
+        openingBalance: cashAccount.openingBalance || 0,
+        totalReceipts: parseFloat(totalReceipts.toFixed(2)),
+        totalPayments: parseFloat(totalPayments.toFixed(2)),
+        oldBalance: parseFloat(oldBalance.toFixed(2)),
+        newBalance: parseFloat(newBalance.toFixed(2))
+      }
+    });
+
+  } catch (error) {
+    console.error('Error recalculating cash balance:', error);
+    res.status(500).json({ success: false, message: 'Error recalculating cash balance', error: error.message });
+  }
+};
