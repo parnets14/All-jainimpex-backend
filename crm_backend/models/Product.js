@@ -229,16 +229,26 @@ productSchema.pre('save', async function(next) {
         const brandInitial = brandDoc.name.substring(0, 1).toUpperCase();
         const categoryInitial = categoryDoc.name.substring(0, 1).toUpperCase();
         const subcategoryInitial = subcategoryDoc.name.substring(0, 1).toUpperCase();
+        const prefix = `${brandInitial}${categoryInitial}${subcategoryInitial}`;
         
-        // Count existing products with same brand, category, and subcategory
+        // Count existing products with same brand, category, and subcategory as starting point
         const count = await Product.countDocuments({
           brand: this.brand,
           category: this.category,
           subcategory: this.subcategory
         });
         
-        const postfix = String(count + 1).padStart(3, '0');
-        this.productCode = `${brandInitial}${categoryInitial}${subcategoryInitial}${postfix}`;
+        // Find a unique code — loop until no collision
+        let candidate;
+        let seq = count + 1;
+        // Limit to 1000 iterations to avoid infinite loop
+        for (let attempts = 0; attempts < 1000; attempts++) {
+          candidate = `${prefix}${String(seq).padStart(3, '0')}`;
+          const existing = await Product.findOne({ productCode: candidate }).select('_id').lean();
+          if (!existing) break;
+          seq++;
+        }
+        this.productCode = candidate;
       } else {
         // If related documents don't exist, generate a simple code
         console.warn('Cannot auto-generate product code - related documents not found. Brand/Category/Subcategory must exist first.');
