@@ -1,14 +1,32 @@
 // Fallback salary processing without Redis
-import Employee from "../models/Employee.js";
-import SalarySlip from "../models/SalarySlip.js";
-import Attendance from "../models/Attendance.js";
-import { generateSalaryPDF } from "../utils/pdfGenerator.js";
+import { employeeSchema } from "../models/Employee.js";
+import { salarySlipSchema } from "../models/SalarySlip.js";
+import { attendanceSchema } from "../models/Attendance.js";
 import path from "path";
-import fs from "fs";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Resolve company-scoped models from a database connection
+const getModels = (dbConnection) => {
+  if (!dbConnection) {
+    throw new Error(
+      "Database connection is required for salary processing (multi-company)"
+    );
+  }
+  return {
+    Employee:
+      dbConnection.models.Employee ||
+      dbConnection.model("Employee", employeeSchema),
+    SalarySlip:
+      dbConnection.models.SalarySlip ||
+      dbConnection.model("SalarySlip", salarySlipSchema),
+    Attendance:
+      dbConnection.models.Attendance ||
+      dbConnection.model("Attendance", attendanceSchema),
+  };
+};
 
 // Direct salary calculation without queue
 export const generateSalarySlipDirect = async (
@@ -16,9 +34,11 @@ export const generateSalarySlipDirect = async (
   month,
   year,
   generatedBy,
-  type = "manual"
+  type = "manual",
+  dbConnection
 ) => {
   try {
+    const { Employee, SalarySlip, Attendance } = getModels(dbConnection);
     console.log(
       `Processing salary for employee ${employeeId}, ${month}/${year} (${type})`
     );
@@ -93,8 +113,11 @@ export const generateSalarySlipDirect = async (
           ) {
             presentDays++;
           } else if (attendanceRecord.status === "Leave") {
-            leaveDays++;
-            presentDays++; // Count leave as present for salary calculation
+            // Unpaid leave is not paid; all other leave types count as paid
+            if (attendanceRecord.leaveType !== "Unpaid Leave") {
+              leaveDays++;
+              presentDays++; // Paid leave counts as present for salary
+            }
           }
         }
       }
@@ -113,6 +136,9 @@ export const generateSalarySlipDirect = async (
     let calculatedTDS = 0;
     let grossSalary = 0;
     let netSalary = 0;
+    let lopDays = 0; // Loss-of-pay days (unpaid leave + unauthorized absence)
+    let lopAmount = 0; // Amount deducted for LOP (fixed salary only)
+    const paidLeaveDays = leaveDays; // leaveDays already excludes Unpaid Leave
 
     if (employee.salaryType === "fixed" || !employee.salaryType) {
       // For fixed salary, use the stored salary components with proper null checks
@@ -138,16 +164,26 @@ export const generateSalarySlipDirect = async (
         calculatedConveyance +
         calculatedMedical +
         calculatedSpecial;
+
+      // Loss of Pay: deduct full-month gross per-day for every unpaid-leave /
+      // unauthorized-absent weekday. Paid leave is protected (counted present).
+      lopDays = Math.max(0, absentDays);
+      if (workingDays > 0 && lopDays > 0) {
+        const perDaySalary = grossSalary / workingDays;
+        lopAmount = parseFloat((perDaySalary * lopDays).toFixed(2));
+      }
     } else if (employee.salaryType === "daily") {
       // For daily wage with proper null checks
       const dailyRate = parseFloat(employee.basicSalary) || 0;
-      calculatedBasic = dailyRate * presentDays;
+      calculatedBasic = dailyRate * presentDays; // paid leave already in presentDays
 
       grossSalary = calculatedBasic;
       calculatedPF = grossSalary * 0.12; // 12% PF
       calculatedTDS = grossSalary > 50000 ? grossSalary * 0.05 : 0; // 5% TDS if salary > 50k
+      // Absent / unpaid-leave days are simply unpaid for daily wage (no separate deduction)
+      lopDays = Math.max(0, absentDays);
     } else if (employee.salaryType === "hourly") {
-      // For hourly wage - calculate total hours worked
+      // For hourly wage - calculate total hours actually worked from punches
       const totalHours = attendance.reduce((total, record) => {
         if (
           (record.status === "Present" || record.status === "Late") &&
@@ -166,23 +202,28 @@ export const generateSalarySlipDirect = async (
       }, 0);
 
       const hourlyRate = parseFloat(employee.basicSalary) || 0;
-      calculatedBasic = hourlyRate * totalHours;
+      // Approved paid leave is compensated at a standard 8 hours/day
+      const paidLeaveHours = paidLeaveDays * 8;
+      calculatedBasic = hourlyRate * (totalHours + paidLeaveHours);
       grossSalary = calculatedBasic;
 
       calculatedPF = grossSalary * 0.12;
       calculatedTDS = grossSalary > 50000 ? grossSalary * 0.05 : 0;
+      lopDays = Math.max(0, absentDays);
     }
 
     // Ensure all values are numbers and not NaN
     calculatedPF = isNaN(calculatedPF) ? 0 : calculatedPF;
     calculatedTDS = isNaN(calculatedTDS) ? 0 : calculatedTDS;
     grossSalary = isNaN(grossSalary) ? 0 : grossSalary;
+    lopAmount = isNaN(lopAmount) ? 0 : lopAmount;
 
     const totalDeductions =
       calculatedPF +
       (parseFloat(employee.professionalTax) || 0) +
       calculatedTDS +
-      (parseFloat(employee.otherDeductions) || 0);
+      (parseFloat(employee.otherDeductions) || 0) +
+      lopAmount;
 
     netSalary = grossSalary - totalDeductions;
 
@@ -215,6 +256,10 @@ export const generateSalarySlipDirect = async (
       netSalary: netSalary || 0,
       workingDays,
       daysWorked: presentDays,
+      absentDays: Math.max(0, absentDays),
+      leaveDays: paidLeaveDays,
+      lopDays: lopDays || 0,
+      lopAmount: lopAmount || 0,
       hoursWorked:
         attendance.reduce((total, record) => {
           if (
@@ -271,7 +316,8 @@ export const addSalaryJob = async (
   month,
   year,
   generatedBy,
-  type = "manual"
+  type = "manual",
+  dbConnection
 ) => {
   // Process directly without queue
   return await generateSalarySlipDirect(
@@ -279,7 +325,8 @@ export const addSalaryJob = async (
     month,
     year,
     generatedBy,
-    type
+    type,
+    dbConnection
   );
 };
 
@@ -287,9 +334,11 @@ export const addBulkSalaryJobs = async (
   month,
   year,
   generatedBy,
-  type = "manual"
+  type = "manual",
+  dbConnection
 ) => {
   try {
+    const { Employee } = getModels(dbConnection);
     const employees = await Employee.find({ status: "Active" });
     const results = [];
 
@@ -300,7 +349,8 @@ export const addBulkSalaryJobs = async (
           month,
           year,
           generatedBy,
-          type
+          type,
+          dbConnection
         );
         results.push(result);
       } catch (error) {

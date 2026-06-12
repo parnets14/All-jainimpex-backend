@@ -13,6 +13,7 @@ import { dealerInvoiceSchema } from '../models/DealerInvoice.js';
 import { supplierInvoiceSchema } from '../models/SupplierInvoice.js';
 import { journalVoucherSchema } from '../models/JournalVoucher.js';
 import { accountMasterSchema } from '../models/AccountMaster.js';
+import { financialYearClosingSchema } from '../models/FinancialYearClosing.js';
 
 const getModels = (dbConnection) => {
   return {
@@ -30,8 +31,32 @@ const getModels = (dbConnection) => {
     DealerInvoice: dbConnection.models.DealerInvoice || dbConnection.model('DealerInvoice', dealerInvoiceSchema),
     SupplierInvoice: dbConnection.models.SupplierInvoice || dbConnection.model('SupplierInvoice', supplierInvoiceSchema),
     JournalVoucher: dbConnection.models.JournalVoucher || dbConnection.model('JournalVoucher', journalVoucherSchema),
-    AccountMaster: dbConnection.models.AccountMaster || dbConnection.model('AccountMaster', accountMasterSchema)
+    AccountMaster: dbConnection.models.AccountMaster || dbConnection.model('AccountMaster', accountMasterSchema),
+    FinancialYearClosing: dbConnection.models.FinancialYearClosing || dbConnection.model('FinancialYearClosing', financialYearClosingSchema)
   };
+};
+
+// ─── financial year helpers (India: Apr 1 – Mar 31) ──────────────────────────
+
+/** "2025-26" -> Date(2025, 3, 1) i.e. 1 April 2025 */
+const getFYStartDate = (fy) => {
+  const startYear = parseInt(fy.split('-')[0], 10);
+  return new Date(startYear, 3, 1, 0, 0, 0, 0);
+};
+
+/** "2025-26" -> Date(2026, 2, 31 23:59:59) i.e. 31 March 2026 */
+const getFYEndDate = (fy) => {
+  const startYear = parseInt(fy.split('-')[0], 10);
+  return new Date(startYear + 1, 2, 31, 23, 59, 59, 999);
+};
+
+/** Date -> financial year string "2025-26" */
+const fyStringFromDate = (date) => {
+  const y = date.getFullYear();
+  const m = date.getMonth() + 1;
+  return m >= 4
+    ? `${y}-${(y + 1).toString().slice(2)}`
+    : `${y - 1}-${y.toString().slice(2)}`;
 };
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -91,13 +116,26 @@ async function aggregateJournalEntries(reportDate, dbConnection) {
 
 // ─── main controller ─────────────────────────────────────────────────────────
 
-export const generateBalanceSheet = async (req, res) => {
-  try {
+// ─── core computation (reusable by generate + close) ─────────────────────────
+async function computeBalanceSheetData(req) {
     const models = getModels(req.dbConnection);
     const { CashAccount, BankAccount, DealerLedger, SupplierLedger, StockMovement, 
-            SupplierInvoice, DealerInvoice, Expense, Cheque, Capital, Loan, FixedAsset, AccountMaster } = models;
+            SupplierInvoice, DealerInvoice, Expense, Cheque, Capital, Loan, FixedAsset, AccountMaster,
+            FinancialYearClosing } = models;
     const { asOfDate, financialYear } = req.query;
     const reportDate = asOfDate ? new Date(asOfDate) : new Date();
+
+    // Determine the financial year being reported (from param or reportDate)
+    const reportFY = financialYear || fyStringFromDate(reportDate);
+    const fyStartDate = getFYStartDate(reportFY);
+
+    // Look up the most recent prior-year closing for opening balances / retained earnings
+    const priorClosing = await FinancialYearClosing.findOne({
+      fyEndDate: { $lt: fyStartDate },
+      status: 'Closed'
+    }).sort({ fyEndDate: -1 });
+    const priorRetainedEarnings = priorClosing?.retainedEarnings || 0;
+    const openingBalances = priorClosing?.closingBalances || null;
 
     // ── 1. CASH & BANK ────────────────────────────────────────────────────────
     const cashAccount = await CashAccount.getCashAccount();
@@ -218,10 +256,11 @@ export const generateBalanceSheet = async (req, res) => {
       { $group: { _id: null, totalGst: { $sum: '$totalGst' } } }
     ]);
     const gstCollected = gstSalesAgg[0]?.totalGst || 0;
-    // GST Payable = GST collected on sales - GST input credit from purchases
-    // Also add any journal adjustments for GST
+    // GST Payable = gross GST collected on sales (output tax).
+    // GST input credit from purchases is shown SEPARATELY as a current asset,
+    // so we must NOT net it here (that would double-count). Add JV GST adjustments.
     const jvGstPayable = (jvGroups['GST Payable']?.credit || 0) - (jvGroups['GST Payable']?.debit || 0);
-    const gstPayable = Math.max(0, gstCollected - gstInputCredit + jvGstPayable);
+    const gstPayable = Math.max(0, gstCollected + jvGstPayable);
 
     // ── 11. OUTSTANDING EXPENSES ──────────────────────────────────────────────
     const pendingExpAgg = await Expense.aggregate([
@@ -277,7 +316,9 @@ export const generateBalanceSheet = async (req, res) => {
     const totalCapital = capitalFromModel + capitalFromMaster + jvCapital + jvReserves;
 
     // ── 16. PROFIT / LOSS ─────────────────────────────────────────────────────
-    // Revenue = NET sales (excluding GST — GST goes to GST Payable liability)
+    // Revenue = NET TAXABLE sales (GST-EXCLUSIVE).
+    // Dealer invoice subtotal is MRP×qty (GST INCLUSIVE), so we subtract GST collected
+    // to get the taxable value. GST portion is booked separately under GST Payable.
     // Only count approved invoices (not drafts, not deleted, not cancelled)
     const revenueAgg = await DealerInvoice.aggregate([
       { $match: {
@@ -288,9 +329,14 @@ export const generateBalanceSheet = async (req, res) => {
       }},
       { $group: { _id: null, subtotal: { $sum: '$subtotal' }, totalDiscount: { $sum: '$totalDiscount' } } }
     ]);
-    const netSales = (revenueAgg[0]?.subtotal || 0) - (revenueAgg[0]?.totalDiscount || 0);
+    // netSalesInclGst = MRP-based sales after discount (GST inclusive)
+    const netSalesInclGst = (revenueAgg[0]?.subtotal || 0) - (revenueAgg[0]?.totalDiscount || 0);
+    // Subtract GST to get GST-exclusive taxable revenue for P&L
+    const netSales = netSalesInclGst - gstCollected;
 
-    // Cost of goods = supplier invoice net (excluding GST)
+    // Cost of Goods SOLD (not total purchases):
+    //   COGS = Opening Stock + Net Purchases (GST-excl) − Closing Inventory
+    // Supplier invoice subtotal is GST-EXCLUSIVE (base cost).
     const costAgg = await SupplierInvoice.aggregate([
       { $match: {
         invoiceDate: { $lte: reportDate },
@@ -298,7 +344,11 @@ export const generateBalanceSheet = async (req, res) => {
       }},
       { $group: { _id: null, subtotal: { $sum: '$subtotal' }, totalDiscount: { $sum: '$totalDiscount' } } }
     ]);
-    const costOfGoods = (costAgg[0]?.subtotal || 0) - (costAgg[0]?.totalDiscount || 0);
+    const netPurchases = (costAgg[0]?.subtotal || 0) - (costAgg[0]?.totalDiscount || 0);
+    // Closing inventory (inventoryValue) is held as an asset; subtract it so it
+    // is not double-counted as both an asset and an expense.
+    // (Opening stock is assumed 0 / carried in inventoryValue baseline.)
+    const costOfGoods = netPurchases - inventoryValue;
 
     // Approved expenses
     const expAgg = await Expense.aggregate([
@@ -318,21 +368,32 @@ export const generateBalanceSheet = async (req, res) => {
     const grossProfit = totalRevenue - totalCost;
     const profitLoss = grossProfit - totalExpenses - jvDirectExp - jvIndirectExp;
 
-    const totalEquity = totalCapital + profitLoss;
+    // Split cumulative profit into prior-year Retained Earnings + Current-year P&L.
+    // Total equity is unchanged (capital + cumulative profit) so the sheet still balances.
+    // priorRetainedEarnings comes from the most recent closed financial year (0 if none closed).
+    const retainedEarnings = priorRetainedEarnings;
+    const currentYearProfitLoss = profitLoss - priorRetainedEarnings;
+
+    const totalEquity = totalCapital + retainedEarnings + currentYearProfitLoss;
 
     // ── BALANCE CHECK ─────────────────────────────────────────────────────────
     const balanceDifference = totalAssets - (totalLiabilities + totalEquity);
     const isBalanced = Math.abs(balanceDifference) < 1;
 
     // ── RESPONSE ──────────────────────────────────────────────────────────────
-    res.status(200).json({
-      success: true,
-      message: 'Balance sheet generated successfully',
-      data: {
+    return {
         reportDate,
-        financialYear: financialYear || 'Current',
+        financialYear: reportFY,
+        fyStartDate,
         generatedAt: new Date(),
         generatedBy: req.user?._id,
+
+        // Opening balances carried forward from the prior closed financial year (null if none)
+        openingBalances: openingBalances ? {
+          ...openingBalances,
+          fromFinancialYear: priorClosing.financialYear,
+          closingDate: priorClosing.fyEndDate
+        } : null,
 
         assets: {
           currentAssets: {
@@ -381,8 +442,16 @@ export const generateBalanceSheet = async (req, res) => {
             journalAdjustments: jvCapital + jvReserves,
             accounts: capitalDocs.map(c => ({ ownerName: c.ownerName, type: c.capitalType, balance: c.currentBalance }))
           },
+          retainedEarnings: {
+            amount: retainedEarnings,
+            fromFinancialYear: priorClosing?.financialYear || null,
+            note: priorClosing
+              ? `Accumulated profit carried forward from ${priorClosing.financialYear}`
+              : 'No prior year closed — retained earnings is 0'
+          },
           profitLoss: {
-            amount: profitLoss,
+            amount: currentYearProfitLoss,
+            cumulativeProfitLoss: profitLoss,
             netSales: totalRevenue,
             costOfGoods: totalCost,
             grossProfit,
@@ -416,9 +485,14 @@ export const generateBalanceSheet = async (req, res) => {
           grossProfitMargin:  totalRevenue > 0 ? (grossProfit / totalRevenue * 100).toFixed(2) : '0.00',
           netProfitMargin:    totalRevenue > 0 ? (profitLoss / totalRevenue * 100).toFixed(2) : '0.00'
         }
-      }
-    });
+      };
+}
 
+// ─── Express handler: generate balance sheet ─────────────────────────────────
+export const generateBalanceSheet = async (req, res) => {
+  try {
+    const data = await computeBalanceSheetData(req);
+    res.status(200).json({ success: true, message: 'Balance sheet generated successfully', data });
   } catch (error) {
     console.error('❌ Balance sheet error:', error);
     res.status(500).json({
@@ -427,6 +501,138 @@ export const generateBalanceSheet = async (req, res) => {
       error: error.message,
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
+  }
+};
+
+// ─── Close a financial year (snapshot closing balances → next year opening) ──
+export const closeFinancialYear = async (req, res) => {
+  try {
+    const { FinancialYearClosing } = getModels(req.dbConnection);
+    const { financialYear } = req.body;
+
+    if (!financialYear || !/^\d{4}-\d{2}$/.test(financialYear)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid financialYear is required, e.g. "2025-26"'
+      });
+    }
+
+    // Prevent double-closing
+    const existing = await FinancialYearClosing.findOne({ financialYear, status: 'Closed' });
+    if (existing) {
+      return res.status(400).json({
+        success: false,
+        message: `Financial year ${financialYear} is already closed. Reopen it first to recalculate.`
+      });
+    }
+
+    const fyEndDate = getFYEndDate(financialYear);
+
+    // Compute the balance sheet AS OF the FY end date
+    const data = await computeBalanceSheetData({
+      dbConnection: req.dbConnection,
+      user: req.user,
+      query: { asOfDate: fyEndDate.toISOString(), financialYear }
+    });
+
+    // Cumulative profit up to FY end (this is the new retained earnings)
+    const retainedEarnings = data.equity.profitLoss.cumulativeProfitLoss;
+    // This year's own profit = retained now − retained before this year
+    const netProfit = data.equity.profitLoss.amount;
+
+    const closing = await FinancialYearClosing.create({
+      financialYear,
+      fyStartDate: getFYStartDate(financialYear),
+      fyEndDate,
+      netProfit,
+      retainedEarnings,
+      closingBalances: {
+        cashInHand:         data.assets.currentAssets.cashInHand.amount,
+        bankBalances:       data.assets.currentAssets.bankBalances.amount,
+        accountsReceivable: data.assets.currentAssets.accountsReceivable.amount,
+        accountsPayable:    data.liabilities.currentLiabilities.accountsPayable.amount,
+        inventory:          data.assets.currentAssets.inventory.amount,
+        fixedAssets:        data.assets.fixedAssets.netValue,
+        capital:            data.equity.capital.amount,
+        gstPayable:         data.liabilities.currentLiabilities.gstPayable.amount,
+        loans:              data.liabilities.longTermLiabilities.loans.amount
+      },
+      snapshot: data,
+      closedBy: req.user?._id,
+      closedAt: new Date(),
+      notes: req.body.notes || ''
+    });
+
+    res.status(201).json({
+      success: true,
+      message: `Financial year ${financialYear} closed successfully`,
+      data: {
+        financialYear: closing.financialYear,
+        netProfit: closing.netProfit,
+        retainedEarnings: closing.retainedEarnings,
+        closingBalances: closing.closingBalances,
+        isBalanced: data.summary.isBalanced,
+        balanceDifference: data.summary.balanceDifference
+      }
+    });
+  } catch (error) {
+    console.error('❌ Close financial year error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to close financial year',
+      error: error.message
+    });
+  }
+};
+
+// ─── List all financial year closings ────────────────────────────────────────
+export const getFinancialYearClosings = async (req, res) => {
+  try {
+    const { FinancialYearClosing } = getModels(req.dbConnection);
+    const closings = await FinancialYearClosing.find()
+      .sort({ fyEndDate: -1 })
+      .select('-snapshot')   // exclude bulky snapshot from list
+      .populate('closedBy', 'name email');
+    res.status(200).json({ success: true, data: closings });
+  } catch (error) {
+    console.error('❌ Get financial year closings error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch closings', error: error.message });
+  }
+};
+
+// ─── Reopen a closed financial year (super admin) ────────────────────────────
+export const reopenFinancialYear = async (req, res) => {
+  try {
+    const { FinancialYearClosing } = getModels(req.dbConnection);
+    const { financialYear } = req.params;
+
+    const closing = await FinancialYearClosing.findOne({ financialYear, status: 'Closed' });
+    if (!closing) {
+      return res.status(404).json({ success: false, message: `No closed record found for ${financialYear}` });
+    }
+
+    // Block reopening if a later year is already closed (must reopen in reverse order)
+    const laterClosed = await FinancialYearClosing.findOne({
+      fyStartDate: { $gt: closing.fyStartDate },
+      status: 'Closed'
+    });
+    if (laterClosed) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot reopen ${financialYear} — a later year (${laterClosed.financialYear}) is still closed. Reopen the latest year first.`
+      });
+    }
+
+    // Hard-delete so it can be cleanly re-closed later
+    await FinancialYearClosing.deleteOne({ _id: closing._id });
+
+    res.status(200).json({
+      success: true,
+      message: `Financial year ${financialYear} reopened. You can now re-close it to recalculate.`
+    });
+  } catch (error) {
+    console.error('❌ Reopen financial year error:', error);
+    res.status(500).json({ success: false, message: 'Failed to reopen financial year', error: error.message });
   }
 };
 

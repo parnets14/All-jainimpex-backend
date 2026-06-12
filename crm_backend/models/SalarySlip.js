@@ -34,6 +34,10 @@ const salarySlipSchema = new mongoose.Schema({
   netSalary: Number,
   workingDays: Number,
   daysWorked: Number,
+  absentDays: Number,
+  leaveDays: Number,
+  lopDays: Number,
+  lopAmount: Number,
   hoursWorked: Number,
   salaryType: {
     type: String,

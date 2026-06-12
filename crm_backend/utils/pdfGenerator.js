@@ -102,7 +102,16 @@ export const generateSalaryPDF = (salary) => {
           `Days Worked: ${salary.daysWorked}/${salary.workingDays}`,
           col2,
           employeeTop + 55
-        );
+        )
+        .fontSize(8)
+        .text(
+          `Paid Leave: ${salary.leaveDays || 0}  |  Absent/LOP: ${
+            salary.lopDays || 0
+          }`,
+          col2,
+          employeeTop + 68
+        )
+        .fontSize(9);
 
       // Salary breakdown table
       const tableTop = employeeTop + 100;
@@ -166,6 +175,7 @@ export const generateSalaryPDF = (salary) => {
         ["Professional Tax", salary.professionalTax],
         ["Tax Deducted at Source (TDS)", salary.tds],
         ["Other Deductions", salary.otherDeductions],
+        [`Loss of Pay (${salary.lopDays || 0} days)`, salary.lopAmount],
       ];
 
       deductions.forEach(([label, amount]) => {

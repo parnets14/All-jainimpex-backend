@@ -531,7 +531,8 @@ export const createSalesOrder = async (req, res) => {
     
     const orderGrossAmount = tempValidatedProducts.reduce((sum, p) => sum + p.effectiveBaseAmount, 0);
     const orderTotalGst = tempValidatedProducts.reduce((sum, p) => sum + p.gstAmount, 0);
-    const orderTotalAmount = orderGrossAmount + orderTotalGst;
+    // effectiveBaseAmount is MRP after discount (GST already included) — don't add GST again
+    const orderTotalAmount = orderGrossAmount;
 
     console.log(`💰 Credit Limit Calculation - In-Stock Products Only:`, {
       totalProducts: products.length,
@@ -570,6 +571,16 @@ export const createSalesOrder = async (req, res) => {
 
     // Validate and process each product
     const validatedProducts = [];
+
+    // Resolve the company's single (default) warehouse — used for out-of-stock
+    // lines so incoming stock (GRN or manual adjustment) can auto-update them.
+    let defaultWarehouse = null;
+    if (isOutOfStock || products.some(it => !it.warehouse || it.warehouse === "No Stock")) {
+      defaultWarehouse =
+        (await Warehouse.findOne({ isActive: true, status: "active" }).sort({ createdAt: 1 })) ||
+        (await Warehouse.findOne({ isActive: true }).sort({ createdAt: 1 })) ||
+        (await Warehouse.findOne({}).sort({ createdAt: 1 }));
+    }
 
     for (const item of products) {
       // Validate product exists
@@ -624,8 +635,11 @@ export const createSalesOrder = async (req, res) => {
         console.warn(`⚠️ discountAmount (${rawDiscountAmt}) exceeded baseAmount (${baseAmount}) for product ${product.itemName} — capped to baseAmount`);
       }
       const discountedBase = baseAmount - discountAmt;
-      const gstAmount = (discountedBase * gst) / 100;
-      const totalPrice = discountedBase + gstAmount;
+      // unitPrice IS MRP (GST inclusive) — reverse-calculate GST, do NOT add on top
+      const gstAmount = gst > 0
+        ? parseFloat((discountedBase - discountedBase / (1 + gst / 100)).toFixed(2))
+        : 0;
+      const totalPrice = discountedBase;
 
       // Build product object
       validatedProducts.push({
@@ -639,8 +653,12 @@ export const createSalesOrder = async (req, res) => {
         gstAmount: gstAmount,
         totalPrice: totalPrice,
         salesType: product.salesType || 'Regular Sale', // Add salesType from product
-        warehouse: item.warehouse === "No Stock" ? null : item.warehouse, // Set to null if "No Stock"
-        warehouseName: item.warehouse === "No Stock" ? "No Stock" : item.warehouseName,
+        warehouse: (item.warehouse && item.warehouse !== "No Stock")
+          ? item.warehouse
+          : (defaultWarehouse?._id || null), // Out-of-stock lines get the single default warehouse for stock tracking
+        warehouseName: (item.warehouse && item.warehouse !== "No Stock")
+          ? item.warehouseName
+          : "No Stock",
         discountPercentage: item.discountPercentage || 0,
         discountAmount: discountAmt,
         discountType: item.discountType || null,
@@ -653,7 +671,8 @@ export const createSalesOrder = async (req, res) => {
     const grossAmount = validatedProducts.reduce((sum, product) => sum + (product.quantity * product.unitPrice), 0);
     const totalGst = validatedProducts.reduce((sum, product) => sum + product.gstAmount, 0);
     const discountAmount = validatedProducts.reduce((sum, product) => sum + (product.discountAmount || 0), 0);
-    const totalAmount = grossAmount + totalGst - discountAmount;
+    // MRP is GST inclusive — total = gross − discount (GST already inside, not added)
+    const totalAmount = grossAmount - discountAmount;
 
     // Calculate due date
     let dueDate = null;
@@ -1844,7 +1863,8 @@ export const updateSalesOrder = async (req, res) => {
 
         const newGrossAmount = updatedValidatedProducts.reduce((sum, p) => sum + p.effectiveBaseAmount, 0);
         const newTotalGst = updatedValidatedProducts.reduce((sum, p) => sum + p.gstAmount, 0);
-        const newTotalAmount = newGrossAmount + newTotalGst;
+        // effectiveBaseAmount is MRP after discount (GST already included) — don't add GST again
+        const newTotalAmount = newGrossAmount;
         const originalOrderAmount = salesOrder.totalAmount || 0;
         
         console.log(`💰 Order Amount Comparison:`, {
@@ -2171,8 +2191,11 @@ export const updateSalesOrder = async (req, res) => {
         const rawDiscAmt = p.discountAmount || 0;
         const discAmt = Math.min(rawDiscAmt, baseAmount);
         const discountedBase = baseAmount - discAmt;
-        const gstAmt = (discountedBase * (p.gst || 0)) / 100;
-        const totalPrice = discountedBase + gstAmt;
+        // unitPrice IS MRP (GST inclusive) — reverse-calculate GST, do NOT add on top
+        const gstAmt = (p.gst || 0) > 0
+          ? parseFloat((discountedBase - discountedBase / (1 + (p.gst || 0) / 100)).toFixed(2))
+          : 0;
+        const totalPrice = discountedBase;
 
         recalcGross += baseAmount;
         recalcGst += gstAmt;
@@ -2184,7 +2207,8 @@ export const updateSalesOrder = async (req, res) => {
       req.body.grossAmount = recalcGross;
       req.body.totalGst = recalcGst;
       req.body.discountAmount = recalcDiscount;
-      req.body.totalAmount = recalcGross + recalcGst - recalcDiscount;
+      // MRP is GST inclusive — total = gross − discount (GST already inside)
+      req.body.totalAmount = recalcGross - recalcDiscount;
     }
 
     const updatedOrder = await SalesOrder.findByIdAndUpdate(
@@ -2919,6 +2943,16 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
   // Validate and process each product
   const validatedProducts = [];
 
+  // Resolve the company's single (default) warehouse — used for out-of-stock
+  // lines so incoming stock (GRN or manual adjustment) can auto-update them.
+  let defaultWarehouse = null;
+  if (isOutOfStock || products.some(it => !it.warehouse || it.warehouse === "No Stock")) {
+    defaultWarehouse =
+      (await Warehouse.findOne({ isActive: true, status: "active" }).sort({ createdAt: 1 })) ||
+      (await Warehouse.findOne({ isActive: true }).sort({ createdAt: 1 })) ||
+      (await Warehouse.findOne({}).sort({ createdAt: 1 }));
+  }
+
   for (const item of products) {
     // Validate product exists
     const product = await Product.findById(item.product);
@@ -2963,8 +2997,11 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
       console.warn(`⚠️ discountAmount (${rawDiscountAmt}) exceeded baseAmount (${baseAmount}) for product ${product.itemName} — capped`);
     }
     const discountedBase = baseAmount - discountAmt;
-    const gstAmount = (discountedBase * gst) / 100;
-    const totalPrice = discountedBase + gstAmount;
+    // unitPrice IS MRP (GST inclusive) — reverse-calculate GST, do NOT add on top
+    const gstAmount = gst > 0
+      ? parseFloat((discountedBase - discountedBase / (1 + gst / 100)).toFixed(2))
+      : 0;
+    const totalPrice = discountedBase;
 
     // Build product object
     validatedProducts.push({
@@ -2978,8 +3015,16 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
       gstAmount: gstAmount,
       totalPrice: totalPrice,
       salesType: item.salesType || product.salesType || 'Regular Sale', // Add salesType from item or product
-      warehouse: item.warehouse === "No Stock" ? null : item.warehouse,
-      warehouseName: item.warehouse === "No Stock" ? "No Stock" : item.warehouseName,
+      warehouse: (item.warehouse && item.warehouse !== "No Stock")
+        ? item.warehouse
+        : (defaultWarehouse?._id || null), // Out-of-stock lines get the single default warehouse for stock tracking
+      warehouseName: (item.warehouse && item.warehouse !== "No Stock")
+        ? item.warehouseName
+        : "No Stock",
+      // Stock tracking fields (so status shows correctly + can auto-update on stock arrival)
+      stockStatus: isOutOfStock ? 'waiting' : 'available',
+      availableQuantity: isOutOfStock ? 0 : item.quantity,
+      stockCheckedAt: new Date(),
       // Copy discount fields if present
       discountPercentage: item.discountPercentage || 0,
       discountAmount: discountAmt,
@@ -2993,7 +3038,8 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
   const grossAmount = validatedProducts.reduce((sum, product) => sum + (product.quantity * product.unitPrice), 0);
   const totalGst = validatedProducts.reduce((sum, product) => sum + product.gstAmount, 0);
   const discountAmount = validatedProducts.reduce((sum, product) => sum + (product.discountAmount || 0), 0);
-  const totalAmount = grossAmount + totalGst - discountAmount;
+  // MRP is GST inclusive — total = gross − discount (GST already inside, not added)
+  const totalAmount = grossAmount - discountAmount;
 
   // Determine initial status (declare before credit limit check)
   let initialStatus = status || "Pending";
@@ -3009,11 +3055,11 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
   let creditOverlimitData = undefined;
   if (dealerData.creditLimit && dealerData.creditLimit > 0) {
     // Calculate amount for IN-STOCK products only
-    const inStockProducts = validatedProducts.filter(p => p.warehouse !== null);
+    const inStockProducts = validatedProducts.filter(p => p.stockStatus === 'available');
     const inStockGrossAmount = inStockProducts.reduce((sum, product) => sum + (product.quantity * product.unitPrice), 0);
     const inStockTotalGst = inStockProducts.reduce((sum, product) => sum + product.gstAmount, 0);
     const inStockDiscountAmount = inStockProducts.reduce((sum, product) => sum + (product.discountAmount || 0), 0);
-    const inStockTotalAmount = inStockGrossAmount + inStockTotalGst - inStockDiscountAmount;
+    const inStockTotalAmount = inStockGrossAmount - inStockDiscountAmount; // MRP incl GST
     
     console.log(`� Credit Limit Calculation - In-eStock Products Only:`, {
       totalProducts: validatedProducts.length,
@@ -3093,7 +3139,16 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
     createdBy: userId,
     isOutOfStock: isOutOfStock || false,
     stockValidation: stockValidation || [],
-    creditOverlimit: creditOverlimitData // Add credit overlimit data
+    creditOverlimit: creditOverlimitData, // Add credit overlimit data
+    // Initialize order-level stock status (fixes "Unknown" display + enables tracking)
+    orderStockStatus: {
+      totalProducts: validatedProducts.length,
+      availableProducts: isOutOfStock ? 0 : validatedProducts.length,
+      partialProducts: 0,
+      waitingProducts: isOutOfStock ? validatedProducts.length : 0,
+      overallStatus: isOutOfStock ? 'waiting' : 'ready',
+      lastChecked: new Date()
+    }
   });
 
   // Automatically set 15-day expiry for Pending orders

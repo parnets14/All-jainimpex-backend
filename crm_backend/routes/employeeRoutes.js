@@ -17,10 +17,9 @@ import { logActivity } from '../middleware/activityLogMiddleware.js';
 
 const router = express.Router();
 
-// All routes are protected
+// All routes are protected and company-scoped
 router.use(protect);
 router.use(attachCompanyDB);
-router.use(protect);
 
 // Get employee statistics
 router.get('/stats', requirePermission('employees.view'), logActivity("Employee Management", "Viewed employee statistics", "READ"), getEmployeeStats);
