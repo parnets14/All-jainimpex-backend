@@ -248,7 +248,8 @@ export const createGRN = async (req, res) => {
       // No validation check - accept whatever quantity is received
       
       const acceptedQuantity = item.receivedQuantity - (item.damageQuantity || 0);
-      const itemTotal = acceptedQuantity * poLine.price * (1 + poLine.gst / 100);
+      // poLine.price is the MRP (GST-INCLUSIVE) — do NOT add GST on top.
+      const itemTotal = acceptedQuantity * poLine.price;
 
       grnItems.push({
         productId: item.productId,

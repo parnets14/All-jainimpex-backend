@@ -294,8 +294,9 @@ export const createSupplierInvoice = async (req, res) => {
         }
 
         const baseAmount = grnItem.acceptedQuantity * grnItem.unitPrice;
-        const gstAmount = (baseAmount * grnItem.gst) / 100;
-        const totalPrice = baseAmount + gstAmount;
+        // unitPrice is MRP (GST-INCLUSIVE) — extract embedded GST, don't add on top.
+        const gstAmount = grnItem.gst > 0 ? baseAmount - baseAmount / (1 + grnItem.gst / 100) : 0;
+        const totalPrice = baseAmount;
 
         invoiceItems.push({
           product: grnItem.productId,

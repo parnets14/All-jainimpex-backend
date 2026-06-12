@@ -68,7 +68,7 @@ const pct = (val, total) => (total > 0 ? ((val / total) * 100).toFixed(2) : '0.0
  * Returns Map<productId_string, avgCost>
  */
 async function buildWeightedAvgCost(reportDate, dbConnection) {
-  const { GRN } = getModels(dbConnection);
+  const { GRN, StockMovement } = getModels(dbConnection);
   const grns = await GRN.find({
     grnDate: { $lte: reportDate },
     status: { $nin: ['Cancelled'] }
@@ -82,6 +82,22 @@ async function buildWeightedAvgCost(reportDate, dbConnection) {
       map[pid].totalQty += item.acceptedQuantity || 0;
       map[pid].totalCost += (item.acceptedQuantity || 0) * (item.unitPrice || 0);
     }
+  }
+
+  // Fold in opening stock so valuation matches Tally's average-cost method
+  // (avg cost = total inward value / total inward qty, where opening balance
+  // is treated as the first inward). Only OPENING movements that carry a cost
+  // rate are included.
+  const openingMovements = await StockMovement.find({
+    referenceType: 'OPENING',
+    rate: { $ne: null },
+    date: { $lte: reportDate }
+  }).lean();
+  for (const mv of openingMovements) {
+    const pid = mv.productId.toString();
+    if (!map[pid]) map[pid] = { totalQty: 0, totalCost: 0 };
+    map[pid].totalQty += mv.quantity || 0;
+    map[pid].totalCost += (mv.quantity || 0) * (mv.rate || 0);
   }
 
   const result = {};

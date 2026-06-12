@@ -173,30 +173,35 @@ const purchaseOrderSchema = new mongoose.Schema({
 // In PurchaseOrder.js - Update the pre-save hook
 purchaseOrderSchema.pre('save', function(next) {
   try {
+    // MRP/price is GST-INCLUSIVE. subtotal = gross inclusive amount.
     this.subtotal = this.lines.reduce((sum, line) => {
       const quantity = Number(line.quantity) || 0;
       const price = Number(line.price) || 0;
       return sum + (quantity * price);
     }, 0);
-    
+
+    // GST is already embedded in the inclusive price — reverse-calculate it
+    // (do NOT add it on top).
     this.gstTotal = this.lines.reduce((sum, line) => {
       const quantity = Number(line.quantity) || 0;
       const price = Number(line.price) || 0;
       const gstRate = Number(line.gst) || 0;
       const lineSubtotal = quantity * price;
-      return sum + (lineSubtotal * (gstRate / 100));
+      const embeddedGst = gstRate > 0 ? lineSubtotal - lineSubtotal / (1 + gstRate / 100) : 0;
+      return sum + embeddedGst;
     }, 0);
-    
-    this.total = this.subtotal + this.gstTotal;
-    
+
+    // Total equals the inclusive subtotal (GST already embedded).
+    this.total = this.subtotal;
+
     // Update line totals and ensure all required fields are set
     this.lines.forEach(line => {
       const quantity = Number(line.quantity) || 0;
       const price = Number(line.price) || 0;
-      const gstRate = Number(line.gst) || 0;
-      
-      line.total = (quantity * price) * (1 + gstRate / 100);
-      
+
+      // Line total is the GST-inclusive amount (no GST added on top).
+      line.total = quantity * price;
+
       // Ensure the new fields have default values if not set
       line.lastPrice = Number(line.lastPrice) || 0;
       line.currentPrice = Number(line.currentPrice) || 0;

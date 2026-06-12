@@ -167,15 +167,19 @@ export const createSupplierInvoiceEntry = async (invoice, dbConnection, userId) 
     
     const entries = [];
     
-    // Handle both gstAmount and totalGst field names
+    // Handle both gstAmount and totalGst field names (embedded GST, reverse-calculated)
     const gstAmount = invoice.gstAmount || invoice.totalGst || 0;
-    
-    // Debit: Purchase Account (Subtotal without GST)
+
+    // totalAmount is GST-INCLUSIVE (MRP-based). Split it for double-entry:
+    //   Purchase Account (base, GST-exclusive) + GST Input Credit (embedded GST) = Creditors (inclusive)
+    const purchaseBase = (invoice.totalAmount || 0) - gstAmount;
+
+    // Debit: Purchase Account (base value, excluding embedded GST)
     entries.push({
       accountId: purchaseAccount._id,
       accountName: purchaseAccount.accountName,
       accountGroup: purchaseAccount.accountGroup,
-      debit: invoice.subtotal || invoice.totalAmount,
+      debit: purchaseBase,
       credit: 0,
       narration: `Purchase from ${invoice.supplierName || 'Supplier'} - Invoice ${invoice.invoiceNumber}`
     });

@@ -365,6 +365,23 @@ export const getStock = async (req, res) => {
         });
       });
 
+      // Fold opening stock into the weighted-average cost (Tally treats the
+      // opening balance as the first inward). Only OPENING movements carrying a
+      // cost rate contribute; this matches buildWeightedAvgCost in the balance sheet.
+      stockMovements.forEach(movement => {
+        if (movement.referenceType !== 'OPENING') return;
+        if (movement.rate == null) return;
+        if (!movement.warehouseId) return;
+        const whId = movement.warehouseId.toString();
+        if (!warehouseStock[whId]) return; // entry created during movement processing
+        const qty = movement.quantity || 0;
+        warehouseStock[whId].totalAcceptedQty += qty;
+        warehouseStock[whId].weightedPriceSum += qty * (movement.rate || 0);
+        warehouseStock[whId].totalValue += qty * (movement.rate || 0);
+        // Keep the weighted GST average consistent (use the product's GST rate)
+        warehouseStock[whId].weightedGSTSum += qty * (product.gst || 0);
+      });
+
       // Now get current stock levels from stock movements for each warehouse
       for (const warehouseId of Object.keys(warehouseStock)) {
         try {

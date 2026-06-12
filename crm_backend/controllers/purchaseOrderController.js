@@ -127,10 +127,10 @@ export const createPurchaseOrder = async (req, res) => {
       line.last30DayPurchaseQuantity = line.last30DayPurchaseQuantity || 0;
 
       // Calculate line total (this will be recalculated in pre-save hook, but ensure it exists)
+      // price/MRP is GST-INCLUSIVE — do NOT add GST on top.
       const quantity = Number(line.quantity) || 0;
       const price = Number(line.price) || 0;
-      const gstRate = Number(line.gst) || 0;
-      line.total = quantity * price * (1 + gstRate / 100);
+      line.total = quantity * price;
 
       console.log("📝 [PRODUCT_VALIDATION] Line:", {
         productId: line.productId,
@@ -169,7 +169,8 @@ export const createPurchaseOrder = async (req, res) => {
       createdBy: req.user._id,
     };
 
-    // Calculate totals manually before creating the document
+    // Calculate totals manually before creating the document.
+    // price/MRP is GST-INCLUSIVE — GST is embedded, reverse-calculate it.
     let subtotal = 0;
     let gstTotal = 0;
 
@@ -180,10 +181,11 @@ export const createPurchaseOrder = async (req, res) => {
 
       const lineSubtotal = quantity * price;
       subtotal += lineSubtotal;
-      gstTotal += lineSubtotal * (gstRate / 100);
+      gstTotal += gstRate > 0 ? lineSubtotal - lineSubtotal / (1 + gstRate / 100) : 0;
     });
 
-    const total = subtotal + gstTotal;
+    // MRP already includes GST → total equals the inclusive subtotal.
+    const total = subtotal;
 
     // Add calculated totals to purchase order data
     purchaseOrderData.subtotal = subtotal;
