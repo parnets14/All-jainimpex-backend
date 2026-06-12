@@ -7,6 +7,8 @@ import { grnSchema } from "../models/GRN.js";
 import { stockMovementSchema } from "../models/Stock.js";
 import { salesOrderSchema } from "../models/SalesOrder.js";
 import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
+import { dealerPricingSchema } from "../models/DealerPricing.js";
+import { productPriceListHistorySchema } from "../models/ProductPriceListHistory.js";
 import StockMovementService from "../services/stockMovementService.js";
 import mongoose from "mongoose";
 
@@ -22,6 +24,8 @@ const getModels = (dbConnection) => {
     StockMovement: dbConnection.models.StockMovement || dbConnection.model('StockMovement', stockMovementSchema),
     SalesOrder: dbConnection.models.SalesOrder || dbConnection.model('SalesOrder', salesOrderSchema),
     DealerInvoice: dbConnection.models.DealerInvoice || dbConnection.model('DealerInvoice', dealerInvoiceSchema),
+    DealerPricing: dbConnection.models.DealerPricing || dbConnection.model('DealerPricing', dealerPricingSchema),
+    ProductPriceListHistory: dbConnection.models.ProductPriceListHistory || dbConnection.model('ProductPriceListHistory', productPriceListHistorySchema),
   };
 };
 
@@ -1272,5 +1276,242 @@ export const getProductsByBrand = async (req, res) => {
       success: false,
       message: "Server error while fetching products by brand",
     });
+  }
+};
+
+// @desc    Get price list (productCode, name, internalRate, mrp, direct discount)
+// @route   GET /api/products/price-list
+// @access  Private
+export const getPriceList = async (req, res) => {
+  try {
+    const { Product, Category, Subcategory, Brand, DealerPricing } = getModels(req.dbConnection);
+
+    const {
+      page = 1,
+      limit = 50,
+      search,
+      brand,
+      category,
+      subcategory,
+    } = req.query;
+
+    const filter = {};
+
+    if (search) {
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\\/]/g, "\\$&");
+      const [matchingCategories, matchingSubcategories, matchingBrands] = await Promise.all([
+        Category.find({ name: { $regex: escapedSearch, $options: "i" } }).select("_id"),
+        Subcategory.find({ name: { $regex: escapedSearch, $options: "i" } }).select("_id"),
+        Brand.find({ name: { $regex: escapedSearch, $options: "i" } }).select("_id"),
+      ]);
+      filter.$or = [
+        { productCode: { $regex: escapedSearch, $options: "i" } },
+        { itemName: { $regex: escapedSearch, $options: "i" } },
+        { aliasName: { $regex: escapedSearch, $options: "i" } },
+        ...(matchingCategories.length ? [{ category: { $in: matchingCategories.map(c => c._id) } }] : []),
+        ...(matchingSubcategories.length ? [{ subcategory: { $in: matchingSubcategories.map(s => s._id) } }] : []),
+        ...(matchingBrands.length ? [{ brand: { $in: matchingBrands.map(b => b._id) } }] : []),
+      ];
+    }
+
+    if (brand) filter.brand = brand;
+    if (category) filter.category = category;
+    if (subcategory) filter.subcategory = subcategory;
+
+    const total = await Product.countDocuments(filter);
+
+    const products = await Product.find(filter)
+      .select("productCode itemName internalRate mrp gst unitPrice rateSlabs brand category subcategory")
+      .populate("brand", "name")
+      .populate("category", "name")
+      .populate("subcategory", "name")
+      .sort({ itemName: 1 })
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit))
+      .lean();
+
+    // Batch-join the direct discount from DealerPricing (1 query, not N+1)
+    const productIds = products.map((p) => p._id);
+    const pricingRecords = await DealerPricing.find({
+      product: { $in: productIds },
+      isActive: true,
+    })
+      .select("product directDiscountPercentage hasDirectDiscount")
+      .lean();
+    const discountByProduct = new Map();
+    for (const pr of pricingRecords) {
+      discountByProduct.set(pr.product.toString(), pr.directDiscountPercentage || 0);
+    }
+
+    const data = products.map((p) => {
+      // MRP fallback: stored mrp, else GST-inclusive from rateSlab/unitPrice
+      const mrp =
+        p.mrp ||
+        (p.rateSlabs?.[0]?.rate || p.unitPrice || 0) * (1 + (p.gst || 0) / 100);
+      return {
+        _id: p._id,
+        productCode: p.productCode || "",
+        productName: p.itemName || "",
+        internalRate: p.internalRate || "",
+        mrp: parseFloat((mrp || 0).toFixed(2)),
+        gst: p.gst || 0,
+        directDiscount: discountByProduct.get(p._id.toString()) || 0,
+        brandName: p.brand?.name || "",
+        categoryName: p.category?.name || "",
+        subcategoryName: p.subcategory?.name || "",
+      };
+    });
+
+    res.json({
+      success: true,
+      data,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / parseInt(limit)),
+        totalItems: total,
+        itemsPerPage: parseInt(limit),
+      },
+    });
+  } catch (error) {
+    console.error("Get price list error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Update a price-list field (itemName, internalRate, mrp) with audit history
+// @route   PATCH /api/products/price-list/:id
+// @access  Private
+export const updatePriceListItem = async (req, res) => {
+  try {
+    const { Product, DealerPricing, ProductPriceListHistory } = getModels(req.dbConnection);
+    const { itemName, internalRate, mrp } = req.body;
+
+    const product = await Product.findById(req.params.id);
+    if (!product) {
+      return res.status(404).json({ success: false, message: "Product not found" });
+    }
+
+    const changes = [];
+    const historyDocs = [];
+
+    // itemName
+    if (itemName !== undefined && itemName !== null) {
+      const newName = String(itemName).trim();
+      if (!newName) {
+        return res.status(400).json({ success: false, message: "Product name cannot be empty" });
+      }
+      if (newName !== (product.itemName || "")) {
+        historyDocs.push({ field: "itemName", oldValue: product.itemName || "", newValue: newName });
+        product.itemName = newName;
+        changes.push("itemName");
+      }
+    }
+
+    // internalRate
+    if (internalRate !== undefined) {
+      const newRate = internalRate === null || internalRate === "" ? null : String(internalRate).trim();
+      if ((newRate || "") !== (product.internalRate || "")) {
+        historyDocs.push({ field: "internalRate", oldValue: product.internalRate || "", newValue: newRate || "" });
+        product.internalRate = newRate;
+        changes.push("internalRate");
+      }
+    }
+
+    // mrp
+    let mrpChanged = false;
+    if (mrp !== undefined && mrp !== null && mrp !== "") {
+      const newMrp = parseFloat(mrp);
+      if (isNaN(newMrp) || newMrp < 0) {
+        return res.status(400).json({ success: false, message: "MRP must be a valid non-negative number" });
+      }
+      if (newMrp !== (product.mrp || 0)) {
+        historyDocs.push({ field: "mrp", oldValue: product.mrp || 0, newValue: newMrp });
+        product.mrp = newMrp;
+        changes.push("mrp");
+        mrpChanged = true;
+      }
+    }
+
+    if (changes.length === 0) {
+      return res.json({ success: true, message: "No changes detected", product });
+    }
+
+    await product.save();
+
+    // Keep DealerPricing in sync when MRP changes (MRP is GST-inclusive →
+    // recompute base selling price), mirroring the dealer-pricing screen.
+    if (mrpChanged) {
+      const pricing = await DealerPricing.findOne({ product: product._id, isActive: true });
+      if (pricing) {
+        pricing.mrp = product.mrp;
+        const gstRate = product.gst || 0;
+        pricing.sellingPrice = parseFloat((product.mrp / (1 + gstRate / 100)).toFixed(2));
+        await pricing.save();
+      }
+    }
+
+    // Write audit history (one row per changed field)
+    await ProductPriceListHistory.insertMany(
+      historyDocs.map((h) => ({
+        product: product._id,
+        productCode: product.productCode,
+        productName: product.itemName,
+        field: h.field,
+        oldValue: h.oldValue,
+        newValue: h.newValue,
+        changedBy: req.user?._id,
+        changedByName: req.user?.name || "",
+        changedAt: new Date(),
+      }))
+    );
+
+    res.json({
+      success: true,
+      message: "Price list updated successfully",
+      changedFields: changes,
+      product: {
+        _id: product._id,
+        productCode: product.productCode,
+        productName: product.itemName,
+        internalRate: product.internalRate || "",
+        mrp: product.mrp || 0,
+      },
+    });
+  } catch (error) {
+    console.error("Update price list item error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Get price-list edit history (optionally by product)
+// @route   GET /api/products/price-list/history
+// @access  Private
+export const getPriceListHistory = async (req, res) => {
+  try {
+    const { ProductPriceListHistory } = getModels(req.dbConnection);
+    const { productId, page = 1, limit = 50 } = req.query;
+
+    const filter = {};
+    if (productId) filter.product = productId;
+
+    const total = await ProductPriceListHistory.countDocuments(filter);
+    const history = await ProductPriceListHistory.find(filter)
+      .sort({ changedAt: -1 })
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit))
+      .lean();
+
+    res.json({
+      success: true,
+      data: history,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / parseInt(limit)),
+        totalItems: total,
+      },
+    });
+  } catch (error) {
+    console.error("Get price list history error:", error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };

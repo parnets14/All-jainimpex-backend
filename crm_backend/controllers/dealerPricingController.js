@@ -135,7 +135,7 @@ export const getDealerPricing = async (req, res) => {
     const pricingRecords = await DealerPricing.find(filter)
       .populate({
         path: 'product',
-        select: 'itemName productCode brand category subcategory',
+        select: 'itemName productCode brand category subcategory internalRate',
         populate: [
           { path: 'brand', select: 'name' },
           { path: 'category', select: 'name' },
@@ -169,39 +169,45 @@ export const getDealerPricing = async (req, res) => {
       });
     }
     
-    const enhancedRecords = await Promise.all(
-      validRecords.map(async (pricing) => {
-        const pricingObj = pricing.toObject();
-        
-        // Get scheduled changes
-        try {
-          const scheduledChanges = await DealerPricingSchedule.find({
-            product: pricing.product._id,
-            status: 'Scheduled',
-            isActive: true
-          }).sort({ effectiveDate: 1 }).limit(1);
+    const enhancedRecords = await (async () => {
+      // Batch the schedule + history lookups (was N+1: 2 queries per record).
+      const productIds = validRecords.map((p) => p.product._id);
 
-          if (scheduledChanges.length > 0) {
-            pricingObj.nextScheduledChange = scheduledChanges[0];
-          }
-
-          // Get recent price history
-          const priceHistory = await DealerPricingHistory.find({
-            product: pricing.product._id
-          })
+      const [allSchedules, allHistory] = await Promise.all([
+        DealerPricingSchedule.find({
+          product: { $in: productIds },
+          status: 'Scheduled',
+          isActive: true,
+        }).sort({ effectiveDate: 1 }),
+        DealerPricingHistory.find({ product: { $in: productIds } })
           .populate('changedBy', 'name')
-          .sort({ changeDate: -1 })
-          .limit(3);
+          .sort({ changeDate: -1 }),
+      ]);
 
-          pricingObj.recentPriceHistory = priceHistory;
-        } catch (error) {
-          console.error('Error fetching additional data for product:', pricing.product._id, error);
-          // Continue without additional data
+      const scheduleByProduct = new Map();
+      for (const s of allSchedules) {
+        const k = s.product.toString();
+        if (!scheduleByProduct.has(k)) scheduleByProduct.set(k, s);
+      }
+      const historyByProduct = new Map();
+      for (const h of allHistory) {
+        const k = h.product.toString();
+        const arr = historyByProduct.get(k) || [];
+        if (arr.length < 3) {
+          arr.push(h);
+          historyByProduct.set(k, arr);
         }
+      }
 
+      return validRecords.map((pricing) => {
+        const pricingObj = pricing.toObject();
+        const pid = pricing.product._id.toString();
+        const nextScheduled = scheduleByProduct.get(pid);
+        if (nextScheduled) pricingObj.nextScheduledChange = nextScheduled;
+        pricingObj.recentPriceHistory = historyByProduct.get(pid) || [];
         return pricingObj;
-      })
-    );
+      });
+    })();
 
     res.json({
       success: true,
@@ -1571,7 +1577,7 @@ export const getComprehensivePricing = async (req, res) => {
     const pricingRecords = await DealerPricing.find(filter)
       .populate({
         path: 'product',
-        select: 'itemName productCode brand category subcategory gst mrp totalAmount',
+        select: 'itemName productCode brand category subcategory gst mrp totalAmount internalRate',
         populate: [
           { path: 'brand', select: 'name' },
           { path: 'category', select: 'name' },
@@ -1606,74 +1612,82 @@ export const getComprehensivePricing = async (req, res) => {
       });
     }
     
-    const enhancedRecords = await Promise.all(
-      validRecords.map(async (pricing) => {
-        const pricingObj = pricing.toObject();
-        
-        // Get scheduled changes
-        try {
-          const scheduledChanges = await DealerPricingSchedule.find({
-            product: pricing.product._id,
-            status: 'Scheduled',
-            isActive: true
-          }).sort({ effectiveDate: 1 }).limit(1);
+    const enhancedRecords = await (async () => {
+      // Batch the schedule + history lookups (was N+1: 2 queries per record).
+      const productIds = validRecords.map((p) => p.product._id);
 
-          if (scheduledChanges.length > 0) {
-            pricingObj.nextScheduledChange = scheduledChanges[0];
-          }
-
-          // Get recent price history
-          const priceHistory = await DealerPricingHistory.find({
-            product: pricing.product._id
-          })
+      const [allSchedules, allHistory] = await Promise.all([
+        DealerPricingSchedule.find({
+          product: { $in: productIds },
+          status: 'Scheduled',
+          isActive: true,
+        }).sort({ effectiveDate: 1 }),
+        DealerPricingHistory.find({ product: { $in: productIds } })
           .populate('changedBy', 'name')
-          .sort({ changeDate: -1 })
-          .limit(3);
+          .sort({ changeDate: -1 }),
+      ]);
 
-          pricingObj.recentPriceHistory = priceHistory;
-          
-          // Add comprehensive discount summary
-          pricingObj.discountSummary = {
-            sales: {
-              hasDiscount: pricingObj.hasDirectDiscount || (pricingObj.maxDiscountPercentage > 0),
-              directPercentage: pricingObj.directDiscountPercentage,
-              maxPercentage: pricingObj.maxDiscountPercentage,
-              source: pricingObj.salesDiscountSource,
-              sourceName: pricingObj.salesDiscountSourceName
-            },
-            purchase: {
-              hasDirectDiscount: pricingObj.purchaseDiscountInfo?.hasDirectDiscount || false,
-              directPercentage: pricingObj.purchaseDiscountInfo?.directDiscountPercentage || 0,
-              hasFloatingDiscount: pricingObj.purchaseDiscountInfo?.hasFloatingDiscount || false,
-              floatingMin: pricingObj.purchaseDiscountInfo?.floatingDiscountMin || 0,
-              floatingMax: pricingObj.purchaseDiscountInfo?.floatingDiscountMax || 0,
-              source: pricingObj.purchaseDiscountInfo?.discountSource,
-              sourceName: pricingObj.purchaseDiscountInfo?.discountSourceName
-            }
-          };
-          
-          // Add margin analysis
-          pricingObj.marginAnalysis = {
-            gross: pricingObj.grossMargin,
-            net: pricingObj.netMargin,
-            range: {
-              min: pricingObj.marginRange?.min || pricingObj.netMargin,
-              max: pricingObj.marginRange?.max || pricingObj.netMargin
-            },
-            effectivePrices: {
-              purchase: pricingObj.effectivePurchasePrice,
-              selling: pricingObj.effectiveSellingPrice
-            }
-          };
-          
-        } catch (error) {
-          console.error('Error fetching additional data for product:', pricing.product._id, error);
-          // Continue without additional data
+      // Group: first scheduled change per product, and up to 3 history rows per product
+      const scheduleByProduct = new Map();
+      for (const s of allSchedules) {
+        const k = s.product.toString();
+        if (!scheduleByProduct.has(k)) scheduleByProduct.set(k, s);
+      }
+      const historyByProduct = new Map();
+      for (const h of allHistory) {
+        const k = h.product.toString();
+        const arr = historyByProduct.get(k) || [];
+        if (arr.length < 3) {
+          arr.push(h);
+          historyByProduct.set(k, arr);
         }
+      }
+
+      return validRecords.map((pricing) => {
+        const pricingObj = pricing.toObject();
+        const pid = pricing.product._id.toString();
+
+        const nextScheduled = scheduleByProduct.get(pid);
+        if (nextScheduled) pricingObj.nextScheduledChange = nextScheduled;
+        pricingObj.recentPriceHistory = historyByProduct.get(pid) || [];
+
+        // Comprehensive discount summary
+        pricingObj.discountSummary = {
+          sales: {
+            hasDiscount: pricingObj.hasDirectDiscount || (pricingObj.maxDiscountPercentage > 0),
+            directPercentage: pricingObj.directDiscountPercentage,
+            maxPercentage: pricingObj.maxDiscountPercentage,
+            source: pricingObj.salesDiscountSource,
+            sourceName: pricingObj.salesDiscountSourceName
+          },
+          purchase: {
+            hasDirectDiscount: pricingObj.purchaseDiscountInfo?.hasDirectDiscount || false,
+            directPercentage: pricingObj.purchaseDiscountInfo?.directDiscountPercentage || 0,
+            hasFloatingDiscount: pricingObj.purchaseDiscountInfo?.hasFloatingDiscount || false,
+            floatingMin: pricingObj.purchaseDiscountInfo?.floatingDiscountMin || 0,
+            floatingMax: pricingObj.purchaseDiscountInfo?.floatingDiscountMax || 0,
+            source: pricingObj.purchaseDiscountInfo?.discountSource,
+            sourceName: pricingObj.purchaseDiscountInfo?.discountSourceName
+          }
+        };
+
+        // Margin analysis
+        pricingObj.marginAnalysis = {
+          gross: pricingObj.grossMargin,
+          net: pricingObj.netMargin,
+          range: {
+            min: pricingObj.marginRange?.min || pricingObj.netMargin,
+            max: pricingObj.marginRange?.max || pricingObj.netMargin
+          },
+          effectivePrices: {
+            purchase: pricingObj.effectivePurchasePrice,
+            selling: pricingObj.effectiveSellingPrice
+          }
+        };
 
         return pricingObj;
-      })
-    );
+      });
+    })();
 
     res.json({
       success: true,

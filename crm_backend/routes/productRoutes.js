@@ -10,7 +10,10 @@ import {
   getProductsByBrand,
   uploadProductImage,
   exportProductsToPDF,
-  exportProductsToExcel
+  exportProductsToExcel,
+  getPriceList,
+  updatePriceListItem,
+  getPriceListHistory
 } from '../controllers/productController.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { attachCompanyDB } from '../middleware/companyMiddleware.js';
@@ -54,6 +57,16 @@ router.post('/upload-image',
   logActivity("Product Management", "Uploaded product image", "CREATE"),
   uploadProductImage
 );
+
+// Price List routes — MUST be before /:id to avoid route conflicts
+router.route('/price-list')
+  .get(logActivity("Price List", "Viewed price list", "READ"), getPriceList);
+
+router.route('/price-list/history')
+  .get(logActivity("Price List", "Viewed price list history", "READ"), getPriceListHistory);
+
+router.route('/price-list/:id')
+  .patch(logActivity("Price List", "Updated price list item", "UPDATE"), updatePriceListItem);
 
 router.route('/:id')
   .get(logActivity("Product Management", "Viewed product details", "READ"), getProduct)

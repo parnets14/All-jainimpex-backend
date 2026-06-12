@@ -9,6 +9,7 @@ const productSchema = new mongoose.Schema({
   productCode: String,
   productName: String,
   HSNCode: String,
+  internalRate: String, // internal reference rate (never printed on invoice)
   quantity: {
     type: Number,
     required: true,
@@ -428,6 +429,15 @@ salesOrderSchema.post("save", async function(doc, next) {
   
   next();
 });
+
+// Indexes for dashboard listing, filtering and stock-status queries
+salesOrderSchema.index({ createdAt: -1 });
+salesOrderSchema.index({ dealer: 1, createdAt: -1 });
+salesOrderSchema.index({ status: 1, createdAt: -1 });
+salesOrderSchema.index({ isOutOfStock: 1, status: 1 });
+salesOrderSchema.index({ "orderStockStatus.overallStatus": 1, status: 1 });
+// Speeds up the stock-arrival lookup ($elemMatch on product + warehouse + stockStatus)
+salesOrderSchema.index({ status: 1, "products.product": 1, "products.warehouse": 1 });
 
 // Export schema for multi-database support
 export { salesOrderSchema };
