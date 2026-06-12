@@ -14,7 +14,7 @@ const productPriceListHistorySchema = new mongoose.Schema(
     productName: String,
     field: {
       type: String,
-      enum: ["itemName", "internalRate", "mrp"],
+      enum: ["itemName", "internalRate", "mrp", "openingStock"],
       required: true,
     },
     oldValue: { type: mongoose.Schema.Types.Mixed, default: null },

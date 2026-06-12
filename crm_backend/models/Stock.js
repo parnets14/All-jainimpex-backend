@@ -30,8 +30,14 @@ const stockMovementSchema = new mongoose.Schema({
   },
   referenceType: {
     type: String,
-    enum: ['GRN', 'SALE', 'ADJUSTMENT', 'TRANSFER', 'INVOICE', 'INVOICE_CANCELLATION'],
+    enum: ['GRN', 'SALE', 'ADJUSTMENT', 'TRANSFER', 'INVOICE', 'INVOICE_CANCELLATION', 'OPENING'],
     required: true
+  },
+  // Optional per-unit cost/valuation rate (used by opening stock & valuation).
+  // Does not affect existing quantity/balance logic.
+  rate: {
+    type: Number,
+    default: null
   },
   date: {
     type: Date,

@@ -13,7 +13,8 @@ import {
   exportProductsToExcel,
   getPriceList,
   updatePriceListItem,
-  getPriceListHistory
+  getPriceListHistory,
+  setOpeningStock
 } from '../controllers/productController.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { attachCompanyDB } from '../middleware/companyMiddleware.js';
@@ -67,6 +68,9 @@ router.route('/price-list/history')
 
 router.route('/price-list/:id')
   .patch(logActivity("Price List", "Updated price list item", "UPDATE"), updatePriceListItem);
+
+router.route('/price-list/:id/opening-stock')
+  .patch(logActivity("Price List", "Set opening stock", "UPDATE"), setOpeningStock);
 
 router.route('/:id')
   .get(logActivity("Product Management", "Viewed product details", "READ"), getProduct)

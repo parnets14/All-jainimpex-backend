@@ -9,6 +9,7 @@ import { salesOrderSchema } from "../models/SalesOrder.js";
 import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
 import { dealerPricingSchema } from "../models/DealerPricing.js";
 import { productPriceListHistorySchema } from "../models/ProductPriceListHistory.js";
+import { warehouseSchema } from "../models/Warehouse.js";
 import StockMovementService from "../services/stockMovementService.js";
 import mongoose from "mongoose";
 
@@ -26,6 +27,7 @@ const getModels = (dbConnection) => {
     DealerInvoice: dbConnection.models.DealerInvoice || dbConnection.model('DealerInvoice', dealerInvoiceSchema),
     DealerPricing: dbConnection.models.DealerPricing || dbConnection.model('DealerPricing', dealerPricingSchema),
     ProductPriceListHistory: dbConnection.models.ProductPriceListHistory || dbConnection.model('ProductPriceListHistory', productPriceListHistorySchema),
+    Warehouse: dbConnection.models.Warehouse || dbConnection.model('Warehouse', warehouseSchema),
   };
 };
 
@@ -1284,7 +1286,7 @@ export const getProductsByBrand = async (req, res) => {
 // @access  Private
 export const getPriceList = async (req, res) => {
   try {
-    const { Product, Category, Subcategory, Brand, DealerPricing } = getModels(req.dbConnection);
+    const { Product, Category, Subcategory, Brand, DealerPricing, StockMovement } = getModels(req.dbConnection);
 
     const {
       page = 1,
@@ -1343,6 +1345,20 @@ export const getPriceList = async (req, res) => {
       discountByProduct.set(pr.product.toString(), pr.directDiscountPercentage || 0);
     }
 
+    // Batch the current stock (latest running balance) per product in ONE
+    // aggregation — single warehouse per company so we take the latest movement.
+    const stockByProduct = new Map();
+    if (productIds.length > 0) {
+      const stockAgg = await StockMovement.aggregate([
+        { $match: { productId: { $in: productIds } } },
+        { $sort: { date: 1, createdAt: 1 } },
+        { $group: { _id: "$productId", balance: { $last: "$balance" } } },
+      ]);
+      for (const s of stockAgg) {
+        stockByProduct.set(s._id.toString(), s.balance || 0);
+      }
+    }
+
     const data = products.map((p) => {
       // MRP fallback: stored mrp, else GST-inclusive from rateSlab/unitPrice
       const mrp =
@@ -1356,6 +1372,7 @@ export const getPriceList = async (req, res) => {
         mrp: parseFloat((mrp || 0).toFixed(2)),
         gst: p.gst || 0,
         directDiscount: discountByProduct.get(p._id.toString()) || 0,
+        currentStock: stockByProduct.get(p._id.toString()) || 0,
         brandName: p.brand?.name || "",
         categoryName: p.category?.name || "",
         subcategoryName: p.subcategory?.name || "",
@@ -1512,6 +1529,126 @@ export const getPriceListHistory = async (req, res) => {
     });
   } catch (error) {
     console.error("Get price list history error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Set the opening stock (qty + cost/valuation rate) for a product.
+//          Seeds a single OPENING stock movement into the company's single
+//          warehouse, mirroring Tally's "Opening Balance" on a stock item.
+// @route   PATCH /api/products/price-list/:id/opening-stock
+// @access  Private
+export const setOpeningStock = async (req, res) => {
+  try {
+    const { Product, StockMovement, Warehouse, ProductPriceListHistory } = getModels(req.dbConnection);
+    const { quantity, rate, warehouseId } = req.body;
+
+    // Validate quantity
+    const qty = parseFloat(quantity);
+    if (isNaN(qty) || qty < 0) {
+      return res.status(400).json({ success: false, message: "Opening quantity must be a valid non-negative number" });
+    }
+
+    // Validate optional cost rate
+    let costRate = null;
+    if (rate !== undefined && rate !== null && rate !== "") {
+      costRate = parseFloat(rate);
+      if (isNaN(costRate) || costRate < 0) {
+        return res.status(400).json({ success: false, message: "Cost rate must be a valid non-negative number" });
+      }
+    }
+
+    const product = await Product.findById(req.params.id);
+    if (!product) {
+      return res.status(404).json({ success: false, message: "Product not found" });
+    }
+
+    // Resolve the warehouse: use the explicitly selected one if provided,
+    // otherwise fall back to the company's single (default) warehouse.
+    let defaultWarehouse = null;
+    if (warehouseId) {
+      defaultWarehouse = await Warehouse.findById(warehouseId);
+      if (!defaultWarehouse) {
+        return res.status(404).json({ success: false, message: "Selected warehouse not found" });
+      }
+    } else {
+      defaultWarehouse =
+        (await Warehouse.findOne({ isActive: true, status: "active" }).sort({ createdAt: 1 })) ||
+        (await Warehouse.findOne({ isActive: true }).sort({ createdAt: 1 })) ||
+        (await Warehouse.findOne({}).sort({ createdAt: 1 }));
+    }
+
+    if (!defaultWarehouse) {
+      return res.status(400).json({
+        success: false,
+        message: "No warehouse found. Please create a warehouse before setting opening stock.",
+      });
+    }
+
+    // Guard: opening balance can only be set once per product+warehouse.
+    // Further corrections must go through Stock Adjustment (audit trail).
+    const existingOpening = await StockMovement.findOne({
+      productId: product._id,
+      warehouseId: defaultWarehouse._id,
+      referenceType: "OPENING",
+    });
+    if (existingOpening) {
+      return res.status(409).json({
+        success: false,
+        message: "Opening stock is already set for this product. Use Stock Adjustment to correct the quantity.",
+      });
+    }
+
+    // Compute running balance and create the IN movement
+    const newBalance = await StockMovementService.calculateRunningBalance(
+      product._id,
+      defaultWarehouse._id,
+      qty,
+      null,
+      req.dbConnection
+    );
+
+    await StockMovement.create({
+      productId: product._id,
+      warehouseId: defaultWarehouse._id,
+      type: "IN",
+      quantity: qty,
+      balance: newBalance,
+      rate: costRate,
+      referenceNo: `OPENING-${product.productCode || product._id}`,
+      referenceType: "OPENING",
+      date: new Date(),
+      remarks: `Opening stock${costRate != null ? ` @ ₹${costRate}/unit` : ""}`,
+      createdBy: req.user?._id,
+    });
+
+    // Audit log
+    await ProductPriceListHistory.create({
+      product: product._id,
+      productCode: product.productCode,
+      productName: product.itemName,
+      field: "openingStock",
+      oldValue: 0,
+      newValue: costRate != null ? `${qty} @ ₹${costRate}` : `${qty}`,
+      changedBy: req.user?._id,
+      changedByName: req.user?.name || "",
+      changedAt: new Date(),
+    });
+
+    res.json({
+      success: true,
+      message: "Opening stock set successfully",
+      data: {
+        productId: product._id,
+        warehouseId: defaultWarehouse._id,
+        warehouseName: defaultWarehouse.name,
+        quantity: qty,
+        rate: costRate,
+        currentStock: newBalance,
+      },
+    });
+  } catch (error) {
+    console.error("Set opening stock error:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
