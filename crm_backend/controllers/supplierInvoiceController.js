@@ -5,6 +5,8 @@ import { supplierSchema } from "../models/Supplier.js";
 import { productSchema } from "../models/Product.js";
 import { purchaseOrderSchema } from "../models/PurchaseOrder.js";
 import { warehouseSchema } from "../models/Warehouse.js";
+import { assertPeriodOpen, handlePeriodLockError } from "../services/periodLockService.js";
+import { recordUpdate, recordStatusChange } from "../services/auditTrailService.js";
 import mongoose from "mongoose";
 
 const getModels = (dbConnection) => {
@@ -498,6 +500,10 @@ export const updateSupplierInvoice = async (req, res) => {
       });
     }
 
+    // Block edits to an invoice dated in a closed financial year
+    await assertPeriodOpen(req.dbConnection, supplierInvoice.invoiceDate, 'supplier invoice');
+    const beforeSnapshot = supplierInvoice.toObject();
+
     // Validate status transitions
     const { status, paymentStatus } = req.body;
     if (status) {
@@ -647,12 +653,23 @@ export const updateSupplierInvoice = async (req, res) => {
       }
     }
 
+    await recordUpdate(req.dbConnection, {
+      entity: 'SupplierInvoice',
+      entityId: updatedInvoice._id,
+      documentNumber: updatedInvoice.invoiceNumber,
+      before: beforeSnapshot,
+      after: updatedInvoice.toObject(),
+      fields: ['invoiceDate', 'creditDays', 'remarks', 'subtotal', 'totalGst', 'totalDiscount', 'totalAmount', 'grandTotal', 'status', 'dueDate'],
+      req,
+    });
+
     res.json({
       success: true,
       message: "Supplier invoice updated successfully",
       supplierInvoice: updatedInvoice
     });
   } catch (error) {
+    if (handlePeriodLockError(error, res)) return;
     console.error("Update Supplier Invoice Error:", error);
     
     if (error.name === 'ValidationError') {

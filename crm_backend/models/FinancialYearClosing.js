@@ -66,6 +66,16 @@ const financialYearClosingSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   },
+  reopenedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  reopenedAt: {
+    type: Date
+  },
+  reopenReason: {
+    type: String
+  },
   notes: String
 }, { timestamps: true });
 

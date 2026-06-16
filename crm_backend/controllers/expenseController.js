@@ -1,4 +1,6 @@
 import { expenseSchema } from "../models/Expense.js";
+import { isPeriodLocked } from "../services/periodLockService.js";
+import { recordCreate, recordUpdate } from "../services/auditTrailService.js";
 import asyncHandler from "express-async-handler";
 
 // Helper function to get models for the current company database
@@ -14,6 +16,12 @@ const getModels = (dbConnection) => {
 export const createExpense = asyncHandler(async (req, res) => {
   const { Expense } = getModels(req.dbConnection);
   const { date, type, amount, person, description } = req.body;
+
+  // Block expenses dated in a closed financial year
+  if (await isPeriodLocked(req.dbConnection, date || Date.now())) {
+    res.status(423);
+    throw new Error("Financial year is closed for this date. Ask a super-admin to reopen the year before adding this expense.");
+  }
 
   const expense = await Expense.create({
     date,
@@ -36,6 +44,23 @@ export const createExpense = asyncHandler(async (req, res) => {
   const populatedExpense = await Expense.findById(expense._id)
     .populate("type", "name")
     .populate("createdBy", "name email");
+
+  await recordCreate(req.dbConnection, {
+    entity: "Expense",
+    entityId: expense._id,
+    documentNumber: expense.voucherNumber || String(expense._id),
+    req,
+  });
+
+  // Auto-journalize the expense (Dr Expense / Cr Cash) for P&L + trial balance
+  try {
+    const { createExpenseEntry } = await import("../services/accountingService.js");
+    await createExpenseEntry(expense, req.dbConnection, req.user._id, {
+      expenseTypeName: populatedExpense?.type?.name,
+    });
+  } catch (accErr) {
+    console.error("⚠️ Failed to journalize expense (non-critical):", accErr.message);
+  }
 
   res.status(201).json({
     success: true,
@@ -143,6 +168,15 @@ export const updateExpense = asyncHandler(async (req, res) => {
     throw new Error("Expense not found");
   }
 
+  // Block edits when either the existing date or the new date is in a closed FY
+  if (
+    (await isPeriodLocked(req.dbConnection, expense.date)) ||
+    (date && (await isPeriodLocked(req.dbConnection, date)))
+  ) {
+    res.status(423);
+    throw new Error("Financial year is closed for this date. Ask a super-admin to reopen the year before editing this expense.");
+  }
+
   const updateData = {
     date,
     type,
@@ -161,12 +195,31 @@ export const updateExpense = asyncHandler(async (req, res) => {
     };
   }
 
+  // Capture before-values for the audit diff
+  const beforeSnapshot = {
+    date: expense.date,
+    type: expense.type,
+    amount: expense.amount,
+    person: expense.person,
+    description: expense.description,
+  };
+
   expense = await Expense.findByIdAndUpdate(req.params.id, updateData, {
     new: true,
     runValidators: true,
   })
     .populate("type", "name")
     .populate("createdBy", "name email");
+
+  await recordUpdate(req.dbConnection, {
+    entity: "Expense",
+    entityId: req.params.id,
+    documentNumber: String(req.params.id),
+    before: beforeSnapshot,
+    after: { date: updateData.date, type: updateData.type, amount: updateData.amount, person: updateData.person, description: updateData.description },
+    fields: ["date", "type", "amount", "person", "description"],
+    req,
+  });
 
   res.json({
     success: true,

@@ -5,6 +5,8 @@ import { dealerInvoiceSchema } from '../models/DealerInvoice.js';
 import { dealerLedgerSchema } from '../models/DealerLedger.js';
 import { paymentAllocationSchema } from '../models/PaymentAllocation.js';
 import { generateVoucherNumber, getFinancialYear } from '../services/voucherNumberService.js';
+import { assertPeriodOpen, handlePeriodLockError } from '../services/periodLockService.js';
+import { recordCancel } from '../services/auditTrailService.js';
 import { 
   splitCashPayment, 
   requiresCashSplitting, 
@@ -89,6 +91,9 @@ export const createReceiptVoucher = async (req, res) => {
         message: 'Amount must be greater than zero'
       });
     }
+
+    // Block posting into a closed financial year
+    await assertPeriodOpen(req.dbConnection, voucherDate, 'receipt voucher');
     
     // Validate cash transaction
     const validation = validateCashTransaction(totalAmount, transactionMode);
@@ -228,7 +233,17 @@ export const createReceiptVoucher = async (req, res) => {
     for (const voucher of createdVouchers) {
       await createDealerLedgerEntry(voucher, req.user._id, req.dbConnection);
     }
-    
+
+    // Post journal entries (skips Dealer/Supplier — owned by payment modules)
+    try {
+      const { createVoucherEntry } = await import('../services/accountingService.js');
+      for (const voucher of createdVouchers) {
+        await createVoucherEntry(voucher, req.dbConnection, req.user._id);
+      }
+    } catch (accErr) {
+      console.error('⚠️ Failed to post receipt voucher journal entry (non-critical):', accErr.message);
+    }
+
     // Update invoice status if allocated
     if (allocations && allocations.length > 0) {
       for (const allocation of allocations) {
@@ -253,6 +268,7 @@ export const createReceiptVoucher = async (req, res) => {
     });
     
   } catch (error) {
+    if (handlePeriodLockError(error, res)) return;
     console.error('=== ERROR CREATING RECEIPT VOUCHER ===');
     console.error('Error message:', error.message);
     console.error('Error stack:', error.stack);
@@ -299,6 +315,9 @@ export const createPaymentVoucher = async (req, res) => {
         message: 'Missing required fields'
       });
     }
+
+    // Block posting into a closed financial year
+    await assertPeriodOpen(req.dbConnection, voucherDate, 'payment voucher');
     
     // Validate cash transaction
     const validation = validateCashTransaction(totalAmount, transactionMode);
@@ -387,7 +406,17 @@ export const createPaymentVoucher = async (req, res) => {
     for (const voucher of createdVouchers) {
       await createDealerLedgerEntry(voucher, req.user._id, req.dbConnection);
     }
-    
+
+    // Post journal entries (skips Dealer/Supplier — owned by payment modules)
+    try {
+      const { createVoucherEntry } = await import('../services/accountingService.js');
+      for (const voucher of createdVouchers) {
+        await createVoucherEntry(voucher, req.dbConnection, req.user._id);
+      }
+    } catch (accErr) {
+      console.error('⚠️ Failed to post payment voucher journal entry (non-critical):', accErr.message);
+    }
+
     res.status(201).json({
       success: true,
       message: needsSplitting 
@@ -405,6 +434,7 @@ export const createPaymentVoucher = async (req, res) => {
     });
     
   } catch (error) {
+    if (handlePeriodLockError(error, res)) return;
     console.error('Error creating payment voucher:', error);
     res.status(500).json({
       success: false,
@@ -439,6 +469,9 @@ export const createContraVoucher = async (req, res) => {
         message: 'Missing required fields'
       });
     }
+
+    // Block posting into a closed financial year
+    await assertPeriodOpen(req.dbConnection, voucherDate, 'contra voucher');
     
     if (fromAccountType === toAccountType && fromAccountId === toAccountId) {
       return res.status(400).json({
@@ -526,6 +559,14 @@ export const createContraVoucher = async (req, res) => {
       }
     }
     
+    // Post journal entry for the transfer (Dr destination / Cr source)
+    try {
+      const { createVoucherEntry } = await import('../services/accountingService.js');
+      await createVoucherEntry(voucher, req.dbConnection, req.user._id);
+    } catch (accErr) {
+      console.error('⚠️ Failed to post contra voucher journal entry (non-critical):', accErr.message);
+    }
+
     res.status(201).json({
       success: true,
       message: 'Contra voucher created successfully',
@@ -533,6 +574,7 @@ export const createContraVoucher = async (req, res) => {
     });
     
   } catch (error) {
+    if (handlePeriodLockError(error, res)) return;
     console.error('Error creating contra voucher:', error);
     res.status(500).json({
       success: false,
@@ -725,6 +767,9 @@ export const cancelVoucher = async (req, res) => {
         message: 'Voucher is already cancelled'
       });
     }
+
+    // Block cancelling a voucher dated in a closed financial year
+    await assertPeriodOpen(req.dbConnection, voucher.voucherDate, 'voucher cancellation');
     
     // Update voucher status
     voucher.status = 'Cancelled';
@@ -742,6 +787,22 @@ export const cancelVoucher = async (req, res) => {
       voucher.totalAmount * multiplier,
       req.dbConnection
     );
+
+    await recordCancel(req.dbConnection, {
+      entity: 'Voucher',
+      entityId: voucher._id,
+      documentNumber: voucher.voucherNumber || voucher.voucherNo || '',
+      req,
+      reason: cancelReason,
+    });
+
+    // Cancel the linked journal entry, if any
+    try {
+      const { cancelVoucherEntry } = await import('../services/accountingService.js');
+      await cancelVoucherEntry(voucher._id, req.dbConnection, req.user._id, cancelReason);
+    } catch (accErr) {
+      console.error('⚠️ Failed to cancel voucher journal entry (non-critical):', accErr.message);
+    }
     
     res.status(200).json({
       success: true,
@@ -750,6 +811,7 @@ export const cancelVoucher = async (req, res) => {
     });
     
   } catch (error) {
+    if (handlePeriodLockError(error, res)) return;
     console.error('Error cancelling voucher:', error);
     res.status(500).json({
       success: false,

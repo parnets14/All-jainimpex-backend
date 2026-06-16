@@ -3,6 +3,7 @@ import { supplierInvoiceSchema } from "../models/SupplierInvoice.js";
 import { supplierSchema } from "../models/Supplier.js";
 import { productSchema } from "../models/Product.js";
 import { grnSchema } from "../models/GRN.js";
+import { assertPeriodOpen, handlePeriodLockError } from "../services/periodLockService.js";
 import mongoose from "mongoose";
 
 const getModels = (dbConnection) => {
@@ -159,6 +160,9 @@ export const createDebitNote = async (req, res) => {
       });
     }
 
+    // Block posting into a closed financial year
+    await assertPeriodOpen(req.dbConnection, req.body.debitNoteDate || Date.now(), 'debit note');
+
     // Get supplier details
     const supplier = await Supplier.findById(supplierId);
     if (!supplier) {
@@ -244,6 +248,7 @@ export const createDebitNote = async (req, res) => {
       debitNote: populatedDebitNote
     });
   } catch (error) {
+    if (handlePeriodLockError(error, res)) return;
     console.error("Create Debit Note Error:", error);
     
     if (error.code === 11000) {

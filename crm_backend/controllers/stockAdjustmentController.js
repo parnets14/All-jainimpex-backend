@@ -3,6 +3,7 @@ import { productSchema } from '../models/Product.js';
 import { warehouseSchema } from '../models/Warehouse.js';
 import StockMovementService from '../services/stockMovementService.js';
 import { stockMovementSchema } from '../models/Stock.js';
+import { assertPeriodOpen, handlePeriodLockError } from '../services/periodLockService.js';
 import mongoose from 'mongoose';
 
 const getModels = (dbConnection) => {
@@ -54,6 +55,9 @@ export const createStockAdjustment = async (req, res) => {
         message: 'Warehouse not found'
       });
     }
+
+    // Block stock adjustments dated in a closed financial year
+    await assertPeriodOpen(req.dbConnection, req.body.adjustmentDate || Date.now(), 'stock adjustment');
 
     // Validate products and get current stock levels
     const adjustmentItems = [];
@@ -180,6 +184,7 @@ export const createStockAdjustment = async (req, res) => {
 
   } catch (error) {
     await session.abortTransaction();
+    if (handlePeriodLockError(error, res)) return;
     console.error('Error creating stock adjustment:', error);
     res.status(500).json({
       success: false,

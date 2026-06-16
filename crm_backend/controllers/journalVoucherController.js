@@ -1,5 +1,7 @@
 import { journalVoucherSchema } from '../models/JournalVoucher.js';
 import { getFinancialYear } from '../services/voucherNumberService.js';
+import { assertPeriodOpen, handlePeriodLockError } from '../services/periodLockService.js';
+import { recordCancel, recordCreate } from '../services/auditTrailService.js';
 
 // Helper function to get models for the current company database
 const getModels = (dbConnection) => {
@@ -17,6 +19,9 @@ export const createJournalVoucher = async (req, res) => {
     if (!voucherDate || !entries || entries.length < 2) {
       return res.status(400).json({ success: false, message: 'voucherDate and at least 2 entries are required' });
     }
+
+    // Block posting into a closed financial year
+    await assertPeriodOpen(req.dbConnection, voucherDate, 'journal voucher');
 
     const totalDebit = entries.reduce((s, e) => s + (parseFloat(e.debit) || 0), 0);
     const totalCredit = entries.reduce((s, e) => s + (parseFloat(e.credit) || 0), 0);
@@ -40,8 +45,16 @@ export const createJournalVoucher = async (req, res) => {
 
     await voucher.save();
 
+    await recordCreate(req.dbConnection, {
+      entity: 'JournalVoucher',
+      entityId: voucher._id,
+      documentNumber: voucher.voucherNumber,
+      req,
+    });
+
     res.status(201).json({ success: true, message: 'Journal voucher created successfully', voucher });
   } catch (error) {
+    if (handlePeriodLockError(error, res)) return;
     console.error('Create journal voucher error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
@@ -112,14 +125,26 @@ export const cancelJournalVoucher = async (req, res) => {
     if (!voucher) return res.status(404).json({ success: false, message: 'Voucher not found' });
     if (voucher.status === 'Cancelled') return res.status(400).json({ success: false, message: 'Already cancelled' });
 
+    // Block cancelling a voucher that belongs to a closed financial year
+    await assertPeriodOpen(req.dbConnection, voucher.voucherDate, 'journal voucher cancellation');
+
     voucher.status = 'Cancelled';
     voucher.cancelledAt = new Date();
     voucher.cancelledBy = req.user._id;
     voucher.cancelReason = cancelReason;
     await voucher.save();
 
+    await recordCancel(req.dbConnection, {
+      entity: 'JournalVoucher',
+      entityId: voucher._id,
+      documentNumber: voucher.voucherNumber,
+      req,
+      reason: cancelReason,
+    });
+
     res.json({ success: true, message: 'Journal voucher cancelled', voucher });
   } catch (error) {
+    if (handlePeriodLockError(error, res)) return;
     res.status(500).json({ success: false, message: error.message });
   }
 };

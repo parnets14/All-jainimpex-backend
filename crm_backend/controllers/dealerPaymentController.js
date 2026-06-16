@@ -2,6 +2,7 @@ import { dealerPaymentSchema } from "../models/DealerPayment.js";
 import { dealerLedgerSchema } from "../models/DealerLedger.js";
 import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
 import { dealerSchema } from "../models/Dealer.js";
+import { assertPeriodOpen, handlePeriodLockError } from "../services/periodLockService.js";
 import mongoose from "mongoose";
 
 // Helper function to get models for the current company database
@@ -213,6 +214,9 @@ export const createDealerPayment = async (req, res) => {
 
     // No approval check needed - payments can be made for any invoice status
 
+    // Block posting into a closed financial year
+    await assertPeriodOpen(req.dbConnection, paymentDate || Date.now(), 'dealer payment');
+
     // Calculate remaining amount
     const paidAmount = invoice.paidAmount || 0;
     const remainingAmount = invoice.totalAmount - paidAmount;
@@ -285,6 +289,7 @@ export const createDealerPayment = async (req, res) => {
       payment: populatedPayment
     });
   } catch (error) {
+    if (handlePeriodLockError(error, res)) return;
     console.error("Create Dealer Payment Error:", error);
     res.status(500).json({
       success: false,
@@ -676,6 +681,9 @@ export const recordAdvancePayment = async (req, res) => {
       });
     }
 
+    // Block posting into a closed financial year
+    await assertPeriodOpen(req.dbConnection, paymentDate || Date.now(), 'advance payment');
+
     // Create advance payment data
     const paymentData = {
       dealer: dealerId,
@@ -742,6 +750,7 @@ export const recordAdvancePayment = async (req, res) => {
       payment: populatedPayment
     });
   } catch (error) {
+    if (handlePeriodLockError(error, res)) return;
     console.error("Record Advance Payment Error:", error);
     res.status(500).json({
       success: false,

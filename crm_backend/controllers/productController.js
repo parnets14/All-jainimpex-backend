@@ -1348,6 +1348,7 @@ export const getPriceList = async (req, res) => {
     // Batch the current stock (latest running balance) per product in ONE
     // aggregation — single warehouse per company so we take the latest movement.
     const stockByProduct = new Map();
+    const openingByProduct = new Map();
     if (productIds.length > 0) {
       const stockAgg = await StockMovement.aggregate([
         { $match: { productId: { $in: productIds } } },
@@ -1356,6 +1357,14 @@ export const getPriceList = async (req, res) => {
       ]);
       for (const s of stockAgg) {
         stockByProduct.set(s._id.toString(), s.balance || 0);
+      }
+      // Existing opening-stock movement (qty + cost rate) per product
+      const openingAgg = await StockMovement.find({
+        productId: { $in: productIds },
+        referenceType: "OPENING",
+      }).select("productId quantity rate").lean();
+      for (const o of openingAgg) {
+        openingByProduct.set(o.productId.toString(), { quantity: o.quantity || 0, rate: o.rate ?? null });
       }
     }
 
@@ -1373,6 +1382,7 @@ export const getPriceList = async (req, res) => {
         gst: p.gst || 0,
         directDiscount: discountByProduct.get(p._id.toString()) || 0,
         currentStock: stockByProduct.get(p._id.toString()) || 0,
+        openingStock: openingByProduct.get(p._id.toString()) || null,
         brandName: p.brand?.name || "",
         categoryName: p.category?.name || "",
         subcategoryName: p.subcategory?.name || "",
@@ -1585,17 +1595,66 @@ export const setOpeningStock = async (req, res) => {
       });
     }
 
-    // Guard: opening balance can only be set once per product+warehouse.
-    // Further corrections must go through Stock Adjustment (audit trail).
+    // If an opening balance already exists for this product+warehouse, EDIT it
+    // (adjust quantity by the delta so all running balances stay correct, and
+    // update the cost rate). Otherwise create a fresh opening movement.
     const existingOpening = await StockMovement.findOne({
       productId: product._id,
       warehouseId: defaultWarehouse._id,
       referenceType: "OPENING",
     });
+
+    let resultingStock;
+
     if (existingOpening) {
-      return res.status(409).json({
-        success: false,
-        message: "Opening stock is already set for this product. Use Stock Adjustment to correct the quantity.",
+      const oldQty = existingOpening.quantity || 0;
+      const delta = qty - oldQty;
+
+      // Shift every balance for this product+warehouse by the quantity delta
+      if (delta !== 0) {
+        await StockMovement.updateMany(
+          { productId: product._id, warehouseId: defaultWarehouse._id, _id: { $ne: existingOpening._id } },
+          { $inc: { balance: delta } }
+        );
+      }
+      // Update the opening movement itself (qty, rate, balance) via operators
+      await StockMovement.updateOne(
+        { _id: existingOpening._id },
+        {
+          $set: {
+            quantity: qty,
+            rate: costRate,
+            remarks: `Opening stock${costRate != null ? ` @ ₹${costRate}/unit` : ""}`,
+          },
+          $inc: { balance: delta },
+        }
+      );
+
+      resultingStock = await StockMovementService.getCurrentStock(product._id, defaultWarehouse._id, req.dbConnection);
+
+      await ProductPriceListHistory.create({
+        product: product._id,
+        productCode: product.productCode,
+        productName: product.itemName,
+        field: "openingStock",
+        oldValue: `${oldQty} @ ₹${existingOpening.rate ?? 0}`,
+        newValue: costRate != null ? `${qty} @ ₹${costRate}` : `${qty}`,
+        changedBy: req.user?._id,
+        changedByName: req.user?.name || "",
+        changedAt: new Date(),
+      });
+
+      return res.json({
+        success: true,
+        message: "Opening stock updated successfully",
+        data: {
+          productId: product._id,
+          warehouseId: defaultWarehouse._id,
+          warehouseName: defaultWarehouse.name,
+          quantity: qty,
+          rate: costRate,
+          currentStock: resultingStock,
+        },
       });
     }
 

@@ -2,6 +2,7 @@ import { supplierPaymentSchema } from "../models/SupplierPayment.js";
 import { supplierLedgerSchema } from "../models/SupplierLedger.js";
 import { supplierInvoiceSchema } from "../models/SupplierInvoice.js";
 import { supplierSchema } from "../models/Supplier.js";
+import { assertPeriodOpen, handlePeriodLockError } from "../services/periodLockService.js";
 import mongoose from "mongoose";
 
 const getModels = (dbConnection) => {
@@ -205,6 +206,9 @@ export const createSupplierPayment = async (req, res) => {
     // Calculate remaining amount
     const remainingAmount = invoice.totalAmount - (invoice.paidAmount || 0);
 
+    // Block posting into a closed financial year
+    await assertPeriodOpen(req.dbConnection, paymentDate, 'supplier payment');
+
     // Validate payment amount
     if (paymentAmount > remainingAmount) {
       return res.status(400).json({
@@ -287,6 +291,7 @@ export const createSupplierPayment = async (req, res) => {
       payment: populatedPayment
     });
   } catch (error) {
+    if (handlePeriodLockError(error, res)) return;
     console.error("Create Supplier Payment Error:", error);
     res.status(500).json({
       success: false,

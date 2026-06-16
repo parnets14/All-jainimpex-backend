@@ -219,6 +219,10 @@ export const createDealer = async (req, res) => {
       allowedExtendedSubcategories,
       // Dealer-Specific Extra Discounts
       extraDiscounts,
+      // Opening balance at go-live
+      openingBalance,
+      openingBalanceType,
+      openingBalanceDate,
     } = req.body;
 
     // Validate required fields
@@ -285,6 +289,10 @@ export const createDealer = async (req, res) => {
       allowedExtendedSubcategories: allowedExtendedSubcategories || [],
       // Dealer-Specific Extra Discounts
       extraDiscounts: extraDiscounts || [],
+      // Opening balance at go-live (migration)
+      openingBalance: parseFloat(openingBalance) || 0,
+      openingBalanceType: openingBalanceType === 'Cr' ? 'Cr' : 'Dr',
+      openingBalanceDate: openingBalanceDate ? new Date(openingBalanceDate) : null,
       // Documents will be handled separately via upload endpoint
       panDocument: [],
       aadharDocument: [],
@@ -294,6 +302,41 @@ export const createDealer = async (req, res) => {
     };
 
     const dealer = await Dealer.create(dealerData);
+
+    // Seed the opening balance (go-live migration): a dealer-ledger opening
+    // entry (so it flows into AR / aging / balance sheet) + a balancing JV.
+    const obAmount = parseFloat(openingBalance) || 0;
+    if (obAmount > 0) {
+      try {
+        const { DealerLedger } = getModels(req.dbConnection);
+        const obType = openingBalanceType === 'Cr' ? 'Cr' : 'Dr';
+        const obDate = openingBalanceDate ? new Date(openingBalanceDate) : new Date();
+
+        await DealerLedger.create({
+          dealer: dealer._id,
+          dealerName: dealer.name,
+          dealerCode: dealer.code,
+          entryDate: obDate,
+          transactionType: 'Opening Balance',
+          // Dr = dealer owes us (debit); Cr = we owe dealer / advance (credit)
+          debitAmount: obType === 'Dr' ? obAmount : 0,
+          creditAmount: obType === 'Cr' ? obAmount : 0,
+          runningBalance: 0, // computed by pre-save hook
+          description: `Opening Balance (${obType}) brought forward`,
+          status: 'Active',
+          createdBy: req.user._id,
+        });
+
+        const { createDealerOpeningEntry } = await import('../services/accountingService.js');
+        await createDealerOpeningEntry(
+          { dealer, amount: obAmount, type: obType, date: obDate },
+          req.dbConnection,
+          req.user._id
+        );
+      } catch (obErr) {
+        console.error('⚠️ Failed to seed dealer opening balance (non-critical):', obErr.message);
+      }
+    }
 
     // Update route dealer count if route is assigned
     if (routeId) {

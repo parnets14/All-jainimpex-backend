@@ -7,6 +7,7 @@ import { supplierSchema } from '../models/Supplier.js';
 import { warehouseSchema } from '../models/Warehouse.js';
 import { productSchema } from '../models/Product.js';
 import { userSchema } from '../models/User.js';
+import { assertPeriodOpen, handlePeriodLockError } from '../services/periodLockService.js';
 import mongoose from 'mongoose';
 
 // Helper function to get models from company-specific connection
@@ -216,6 +217,9 @@ export const createGRN = async (req, res) => {
       });
     }
 
+    // Block GRNs dated in a closed financial year
+    await assertPeriodOpen(req.dbConnection, req.body.grnDate || Date.now(), 'GRN');
+
     // Calculate totals and validate quantities with cumulative tracking
     let totalAmount = 0;
     const grnItems = [];
@@ -423,6 +427,7 @@ export const createGRN = async (req, res) => {
   } catch (error) {
     // Rollback transaction on error
     await session.abortTransaction();
+    if (handlePeriodLockError(error, res)) return;
     console.error('Create GRN error:', error);
     res.status(500).json({
       success: false,

@@ -200,6 +200,23 @@ const dealerSchema = new mongoose.Schema(
       default: 0,
       min: [0, "Advance balance cannot be negative"],
     },
+
+    // Opening balance at go-live (migration from previous books).
+    // Dr = dealer owes us (receivable); Cr = we owe the dealer (advance).
+    openingBalance: {
+      type: Number,
+      default: 0,
+      min: [0, "Opening balance cannot be negative"],
+    },
+    openingBalanceType: {
+      type: String,
+      enum: ["Dr", "Cr"],
+      default: "Dr",
+    },
+    openingBalanceDate: {
+      type: Date,
+      default: null,
+    },
     advancePayments: [{
       payment: {
         type: mongoose.Schema.Types.ObjectId,

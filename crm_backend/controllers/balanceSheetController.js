@@ -14,6 +14,7 @@ import { supplierInvoiceSchema } from '../models/SupplierInvoice.js';
 import { journalVoucherSchema } from '../models/JournalVoucher.js';
 import { accountMasterSchema } from '../models/AccountMaster.js';
 import { financialYearClosingSchema } from '../models/FinancialYearClosing.js';
+import { getClosedPeriods, isPeriodLocked } from '../services/periodLockService.js';
 
 const getModels = (dbConnection) => {
   return {
@@ -223,18 +224,20 @@ async function computeBalanceSheetData(req) {
     const jvOpeningStock = (jvGroups['Fixed Assets']?.debit || 0) - (jvGroups['Fixed Assets']?.credit || 0);
 
     // ── 7. FIXED ASSETS ───────────────────────────────────────────────────────
+    // Gross = purchase cost; Net = gross − accumulated depreciation (tracked on
+    // each asset, updated by the depreciation run). Depreciation JVs post to the
+    // 'Accumulated Depreciation' account, which is already reflected in the
+    // assets' accumulatedDepreciation — so we do NOT subtract it again here.
     const fixedAssets = await FixedAsset.find({ status: 'Active', purchaseDate: { $lte: reportDate } });
-    const fixedAssetsGross = fixedAssets.reduce((s, a) => s + (a.currentValue || 0), 0);
+    const fixedAssetsGross = fixedAssets.reduce((s, a) => s + (a.purchaseValue || 0), 0);
     const accumulatedDepreciation = fixedAssets.reduce((s, a) => s + (a.accumulatedDepreciation || 0), 0);
-    // Add journal depreciation entries
-    const jvDepreciation = jvGroups['Depreciation']?.debit || 0;
-    const netFixedAssets = fixedAssetsGross - accumulatedDepreciation - jvDepreciation + jvOpeningStock;
+    const netFixedAssets = fixedAssetsGross - accumulatedDepreciation + jvOpeningStock;
 
     const fixedAssetsByCategory = fixedAssets.reduce((acc, a) => {
       if (!acc[a.assetCategory]) acc[a.assetCategory] = { grossValue: 0, depreciation: 0, netValue: 0, count: 0 };
-      acc[a.assetCategory].grossValue += a.currentValue || 0;
+      acc[a.assetCategory].grossValue += a.purchaseValue || 0;
       acc[a.assetCategory].depreciation += a.accumulatedDepreciation || 0;
-      acc[a.assetCategory].netValue += (a.currentValue || 0) - (a.accumulatedDepreciation || 0);
+      acc[a.assetCategory].netValue += (a.purchaseValue || 0) - (a.accumulatedDepreciation || 0);
       acc[a.assetCategory].count += 1;
       return acc;
     }, {});
@@ -425,7 +428,6 @@ async function computeBalanceSheetData(req) {
           fixedAssets: {
             grossValue: fixedAssetsGross,
             accumulatedDepreciation,
-            journalDepreciation: jvDepreciation,
             netValue: netFixedAssets,
             pct: pct(netFixedAssets, totalAssets),
             byCategory: fixedAssetsByCategory
@@ -534,8 +536,8 @@ export const closeFinancialYear = async (req, res) => {
     }
 
     // Prevent double-closing
-    const existing = await FinancialYearClosing.findOne({ financialYear, status: 'Closed' });
-    if (existing) {
+    const existing = await FinancialYearClosing.findOne({ financialYear });
+    if (existing && existing.status === 'Closed') {
       return res.status(400).json({
         success: false,
         message: `Financial year ${financialYear} is already closed. Reopen it first to recalculate.`
@@ -556,7 +558,7 @@ export const closeFinancialYear = async (req, res) => {
     // This year's own profit = retained now − retained before this year
     const netProfit = data.equity.profitLoss.amount;
 
-    const closing = await FinancialYearClosing.create({
+    const closingPayload = {
       financialYear,
       fyStartDate: getFYStartDate(financialYear),
       fyEndDate,
@@ -574,10 +576,23 @@ export const closeFinancialYear = async (req, res) => {
         loans:              data.liabilities.longTermLiabilities.loans.amount
       },
       snapshot: data,
+      status: 'Closed',
       closedBy: req.user?._id,
       closedAt: new Date(),
       notes: req.body.notes || ''
-    });
+    };
+
+    let closing;
+    if (existing) {
+      // Re-close a previously reopened year (keeps the same record for audit)
+      Object.assign(existing, closingPayload);
+      existing.reopenedBy = undefined;
+      existing.reopenedAt = undefined;
+      existing.reopenReason = undefined;
+      closing = await existing.save();
+    } else {
+      closing = await FinancialYearClosing.create(closingPayload);
+    }
 
     res.status(201).json({
       success: true,
@@ -639,12 +654,16 @@ export const reopenFinancialYear = async (req, res) => {
       });
     }
 
-    // Hard-delete so it can be cleanly re-closed later
-    await FinancialYearClosing.deleteOne({ _id: closing._id });
+    // Mark as reopened (keep the record for audit instead of deleting)
+    closing.status = 'Reopened';
+    closing.reopenedBy = req.user?._id;
+    closing.reopenedAt = new Date();
+    closing.reopenReason = req.body?.reopenReason || req.body?.reason || '';
+    await closing.save();
 
     res.status(200).json({
       success: true,
-      message: `Financial year ${financialYear} reopened. You can now re-close it to recalculate.`
+      message: `Financial year ${financialYear} reopened. The period is now editable; re-close it to recalculate.`
     });
   } catch (error) {
     console.error('❌ Reopen financial year error:', error);
@@ -652,9 +671,31 @@ export const reopenFinancialYear = async (req, res) => {
   }
 };
 
-export const getBalanceSheetComparison = async (req, res) => {
-  res.status(200).json({ success: true, message: 'Comparison not yet implemented', data: {} });
+// ─── Period lock status (for the frontend to warn before submitting) ─────────
+export const getPeriodStatus = async (req, res) => {
+  try {
+    const { date } = req.query;
+    const closedPeriods = await getClosedPeriods(req.dbConnection);
+    let locked = false;
+    if (date) {
+      locked = await isPeriodLocked(req.dbConnection, date);
+    }
+    res.status(200).json({
+      success: true,
+      data: {
+        date: date || null,
+        locked,
+        closedPeriods,
+      },
+    });
+  } catch (error) {
+    console.error('❌ Get period status error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch period status', error: error.message });
+  }
 };
+
+export const getBalanceSheetComparison = async (req, res) => {
+  res.status(200).json({ success: true, message: 'Comparison not yet implemented', data: {} });};
 
 export const exportBalanceSheet = async (req, res) => {
   res.status(200).json({ success: true, message: 'Export not yet implemented', data: {} });

@@ -15,6 +15,8 @@ import { userSchema } from "../models/User.js";
 import { regionSchema } from "../models/Region.js";
 import { warehouseSchema } from "../models/Warehouse.js";
 import { sendPushNotification } from '../services/firebaseNotificationService.js';
+import { assertPeriodOpen, handlePeriodLockError } from '../services/periodLockService.js';
+import { recordUpdate, recordStatusChange, recordCancel } from '../services/auditTrailService.js';
 
 // Helper function to get models from company-specific connection
 const getModels = (dbConnection) => {
@@ -1408,6 +1410,18 @@ export const updateDealerInvoice = async (req, res) => {
     delete updateData.createdBy;
     delete updateData.createdAt;
 
+    // Load the current invoice for the period-lock check and audit diff
+    const beforeDoc = await DealerInvoice.findById(id).lean();
+    if (!beforeDoc) {
+      return res.status(404).json({
+        success: false,
+        message: "Dealer invoice not found"
+      });
+    }
+
+    // Block edits to an invoice dated in a closed financial year
+    await assertPeriodOpen(req.dbConnection, beforeDoc.invoiceDate, 'dealer invoice');
+
     const invoice = await DealerInvoice.findByIdAndUpdate(
       id,
       updateData,
@@ -1426,12 +1440,24 @@ export const updateDealerInvoice = async (req, res) => {
       });
     }
 
+    // Audit the field-level changes
+    await recordUpdate(req.dbConnection, {
+      entity: 'DealerInvoice',
+      entityId: invoice._id,
+      documentNumber: invoice.invoiceNumber,
+      before: beforeDoc,
+      after: { ...beforeDoc, ...updateData },
+      fields: Object.keys(updateData),
+      req,
+    });
+
     res.json({
       success: true,
       message: "Dealer invoice updated successfully",
       invoice
     });
   } catch (error) {
+    if (handlePeriodLockError(error, res)) return;
     console.error("Update dealer invoice error:", error);
     res.status(500).json({
       success: false,
@@ -1469,6 +1495,8 @@ export const updateInvoiceStatus = async (req, res) => {
       updateData.remarks = remarks;
     }
 
+    const beforeStatusDoc = await DealerInvoice.findById(id).select('status invoiceNumber').lean();
+
     const invoice = await DealerInvoice.findByIdAndUpdate(
       id,
       updateData,
@@ -1486,6 +1514,16 @@ export const updateInvoiceStatus = async (req, res) => {
         message: "Dealer invoice not found"
       });
     }
+
+    await recordStatusChange(req.dbConnection, {
+      entity: 'DealerInvoice',
+      entityId: invoice._id,
+      documentNumber: invoice.invoiceNumber,
+      oldStatus: beforeStatusDoc?.status,
+      newStatus: status,
+      reason: remarks || '',
+      req,
+    });
 
     res.json({
       success: true,
@@ -1583,6 +1621,9 @@ export const deleteDealerInvoice = async (req, res) => {
 
     console.log(`📄 Invoice ${invoice._id}, Status: ${invoice.status}, Draft: ${invoice.isDraft}`);
 
+    // Block deletion/cancellation of an invoice dated in a closed financial year
+    await assertPeriodOpen(req.dbConnection, invoice.invoiceDate, 'dealer invoice cancellation');
+
     // CASE 1: Delete Draft Invoice (permanently delete)
     if (invoice.status === "Draft" || invoice.isDraft) {
       console.log(`🗑️ Permanently deleting draft invoice ${invoice._id}`);
@@ -1601,6 +1642,14 @@ export const deleteDealerInvoice = async (req, res) => {
       await DealerInvoice.findByIdAndDelete(invoice._id).session(session);
       
       await session.commitTransaction();
+
+      await recordCancel(req.dbConnection, {
+        entity: 'DealerInvoice',
+        entityId: invoice._id,
+        documentNumber: invoice.invoiceNumber || 'DRAFT',
+        req,
+        reason: 'Draft invoice deleted',
+      });
       
       return res.json({
         success: true,
@@ -1751,6 +1800,14 @@ export const deleteDealerInvoice = async (req, res) => {
     
     console.log(`✅ Invoice ${invoice.invoiceNumber} cancelled successfully`);
 
+    await recordCancel(req.dbConnection, {
+      entity: 'DealerInvoice',
+      entityId: invoice._id,
+      documentNumber: invoice.invoiceNumber,
+      req,
+      reason: reason || 'No reason provided',
+    });
+
     return res.json({
       success: true,
       message: `Invoice ${invoice.invoiceNumber} cancelled successfully. Sales order released for new invoice.`,
@@ -1765,6 +1822,7 @@ export const deleteDealerInvoice = async (req, res) => {
     
   } catch (error) {
     await session.abortTransaction();
+    if (handlePeriodLockError(error, res)) return;
     console.error("Cancel dealer invoice error:", error);
     console.error("Error stack:", error.stack);
     res.status(500).json({

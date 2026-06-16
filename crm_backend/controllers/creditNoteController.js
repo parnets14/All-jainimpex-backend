@@ -2,6 +2,7 @@ import { creditNoteSchema } from "../models/CreditNote.js";
 import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
 import { dealerSchema } from "../models/Dealer.js";
 import { dealerLedgerSchema } from "../models/DealerLedger.js";
+import { assertPeriodOpen, handlePeriodLockError } from "../services/periodLockService.js";
 
 const getModels = (dbConnection) => {
   return {
@@ -41,6 +42,9 @@ export const createCreditNote = async (req, res) => {
         message: "Original invoice not found"
       });
     }
+
+    // Block posting into a closed financial year
+    await assertPeriodOpen(req.dbConnection, req.body.creditNoteDate || Date.now(), 'credit note');
 
     // Credit notes are for returns/adjustments only, not payments
     // Payment method is optional - only needed if credit note involves a refund
@@ -195,6 +199,7 @@ export const createCreditNote = async (req, res) => {
     });
 
   } catch (error) {
+    if (handlePeriodLockError(error, res)) return;
     console.error("Error creating credit note:", error);
     res.status(500).json({
       success: false,
