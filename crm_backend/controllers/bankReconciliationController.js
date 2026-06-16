@@ -88,35 +88,40 @@ export const getReconciliation = async (req, res) => {
     const to = toDate ? new Date(toDate) : new Date();
     to.setHours(23, 59, 59, 999);
 
-    // 1) Book balance as on `to` date = opening + credits up to date − debits up to date
+    // 1) Book balance as on `to` date = opening + credits up to date − debits up to date.
+    //    All transactions up to the statement date are part of the reconciliation so
+    //    the difference always ties out (an optional `from` only hides already-cleared
+    //    older rows from the worksheet — it never changes the maths).
     const allUpToDate = await buildBankTransactions(Voucher, bankAccountId, null, to);
     let bookBalance = round2(bank.openingBalance || 0);
     for (const t of allUpToDate) {
       bookBalance = round2(bookBalance + (t.direction === 'credit' ? t.amount : -t.amount));
     }
 
-    // 2) Transactions shown in the worksheet (within the chosen window)
-    const windowTxns = from
-      ? allUpToDate.filter((t) => new Date(t.date) >= from)
-      : allUpToDate;
-
-    // 3) Merge saved clearance state
+    // 2) Merge saved clearance state onto every transaction up to the statement date
     const recon = await BankReconciliation.findOne({ bankAccountId }).lean();
     const clearedMap = recon?.clearedItems || {};
-    const transactions = windowTxns.map((t) => ({
+    const withClearance = allUpToDate.map((t) => ({
       ...t,
       cleared: !!clearedMap[t.voucherId],
       clearedDate: clearedMap[t.voucherId]?.clearedDate || null,
     }));
 
-    // 4) Uncleared items shift the book balance towards the bank statement balance
+    // 3) Uncleared items shift the book balance towards the bank statement balance.
+    //    Computed over ALL items up to the statement date (not the display window).
     let unclearedDeposits = 0; // recorded receipts the bank hasn't credited yet
     let unclearedPayments = 0; // cheques issued the bank hasn't debited yet
-    for (const t of transactions) {
+    for (const t of withClearance) {
       if (t.cleared) continue;
       if (t.direction === 'credit') unclearedDeposits = round2(unclearedDeposits + t.amount);
       else unclearedPayments = round2(unclearedPayments + t.amount);
     }
+
+    // 4) Worksheet rows to display: hide already-cleared rows older than `from`,
+    //    but always keep every uncleared row so the difference is fully explained.
+    const transactions = withClearance.filter(
+      (t) => !from || !t.cleared || new Date(t.date) >= from
+    );
 
     // Expected bank statement balance:
     //   bank = book + unpresented payments − uncredited deposits
@@ -146,9 +151,9 @@ export const getReconciliation = async (req, res) => {
         isReconciled: difference != null && Math.abs(difference) < 0.01,
         transactions,
         summary: {
-          total: transactions.length,
-          cleared: transactions.filter((t) => t.cleared).length,
-          uncleared: transactions.filter((t) => !t.cleared).length,
+          total: withClearance.length,
+          cleared: withClearance.filter((t) => t.cleared).length,
+          uncleared: withClearance.filter((t) => !t.cleared).length,
         },
       },
     });
