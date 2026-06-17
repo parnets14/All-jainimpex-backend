@@ -114,6 +114,7 @@ export const getDealers = async (req, res) => {
       .limit(limitNumber)
       .skip(skip)
       .populate('regionId', 'name code')
+      .populate('routeId', 'name code')
       .populate('salesExecutiveId', 'name empId email')
       .populate('dealerCategory', 'name color description')
       .populate('allowedBrands', 'name description')
