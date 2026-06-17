@@ -10,16 +10,16 @@ const getModels = (dbConnection) => {
 const DEFAULT_ACCOUNTS = [
   { accountName: 'Capital Account',    accountGroup: 'Capital',           accountType: 'Equity',    openingBalanceType: 'Cr', isSystem: true },
   { accountName: 'Opening Stock',      accountGroup: 'Current Assets',    accountType: 'Asset',     openingBalanceType: 'Dr', isSystem: true },
-  { accountName: 'GST Payable',        accountGroup: 'Duties & Taxes',    accountType: 'Liability', openingBalanceType: 'Cr', isSystem: true },
-  { accountName: 'GST Input Credit',   accountGroup: 'Current Assets',    accountType: 'Asset',     openingBalanceType: 'Dr', isSystem: true },
+  { accountName: 'GST Payable',        accountGroup: 'GST Payable',       accountType: 'Liability', openingBalanceType: 'Cr', isSystem: true },
+  { accountName: 'GST Input Credit',   accountGroup: 'GST Input Credit',  accountType: 'Asset',     openingBalanceType: 'Dr', isSystem: true },
   { accountName: 'Purchase Account',   accountGroup: 'Purchase',          accountType: 'Expense',   openingBalanceType: 'Dr', isSystem: true },
   { accountName: 'Sales Account',      accountGroup: 'Sales',             accountType: 'Income',    openingBalanceType: 'Cr', isSystem: true },
   { accountName: 'Freight Charges',    accountGroup: 'Direct Expenses',   accountType: 'Expense',   openingBalanceType: 'Dr', isSystem: true },
   { accountName: 'Salary',             accountGroup: 'Indirect Expenses', accountType: 'Expense',   openingBalanceType: 'Dr', isSystem: true },
   { accountName: 'Cash Account',       accountGroup: 'Current Assets',    accountType: 'Asset',     openingBalanceType: 'Dr', isSystem: true },
   { accountName: 'Bank Account',       accountGroup: 'Current Assets',    accountType: 'Asset',     openingBalanceType: 'Dr', isSystem: true },
-  { accountName: 'Sundry Debtors',     accountGroup: 'Current Assets',    accountType: 'Asset',     openingBalanceType: 'Dr', isSystem: true },
-  { accountName: 'Sundry Creditors',   accountGroup: 'Current Liabilities', accountType: 'Liability', openingBalanceType: 'Cr', isSystem: true },
+  { accountName: 'Sundry Debtors',     accountGroup: 'Sundry Debtors',    accountType: 'Asset',     openingBalanceType: 'Dr', isSystem: true },
+  { accountName: 'Sundry Creditors',   accountGroup: 'Sundry Creditors',  accountType: 'Liability', openingBalanceType: 'Cr', isSystem: true },
   { accountName: 'Loan Account',       accountGroup: 'Loans & Liabilities', accountType: 'Liability', openingBalanceType: 'Cr', isSystem: true },
 ];
 

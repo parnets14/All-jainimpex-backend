@@ -6,7 +6,7 @@ const journalEntryLineSchema = new mongoose.Schema({
   accountGroup: {
     type: String,
     enum: [
-      'Capital', 'Loans & Liabilities', 'Current Liabilities',
+      'Capital', 'Reserves & Surplus', 'Loans & Liabilities', 'Current Liabilities',
       'Fixed Assets', 'Current Assets', 'Sales', 'Purchase',
       'Direct Expenses', 'Indirect Expenses', 'Duties & Taxes',
       'GST Payable', 'GST Input Credit', 'Sundry Debtors', 'Sundry Creditors', 'Other'

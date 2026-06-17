@@ -63,7 +63,7 @@ export const createTDSEntry = async (req, res) => {
     await assertPeriodOpen(req.dbConnection, dDate, 'TDS deduction');
 
     // Accounts: Dr Sundry Creditors (reduce payable) / Cr TDS Payable (govt liability)
-    const creditors = await getOrCreateAccount(AccountMaster, 'Sundry Creditors', 'Current Liabilities', 'Liability', 'Cr');
+    const creditors = await getOrCreateAccount(AccountMaster, 'Sundry Creditors', 'Sundry Creditors', 'Liability', 'Cr');
     const tdsPayable = await getOrCreateAccount(AccountMaster, 'TDS Payable', 'Duties & Taxes', 'Liability', 'Cr');
 
     const voucherNumber = await nextVoucherNumber(JournalVoucher, dDate);
