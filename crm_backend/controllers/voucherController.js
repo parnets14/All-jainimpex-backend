@@ -3,6 +3,8 @@ import { bankAccountSchema } from '../models/BankAccount.js';
 import { cashAccountSchema } from '../models/CashAccount.js';
 import { dealerInvoiceSchema } from '../models/DealerInvoice.js';
 import { dealerLedgerSchema } from '../models/DealerLedger.js';
+import { supplierLedgerSchema } from '../models/SupplierLedger.js';
+import { supplierInvoiceSchema } from '../models/SupplierInvoice.js';
 import { paymentAllocationSchema } from '../models/PaymentAllocation.js';
 import { generateVoucherNumber, getFinancialYear } from '../services/voucherNumberService.js';
 import { assertPeriodOpen, handlePeriodLockError } from '../services/periodLockService.js';
@@ -27,6 +29,10 @@ const getModels = (dbConnection) => {
                    dbConnection.model('DealerInvoice', dealerInvoiceSchema),
     DealerLedger: dbConnection.models.DealerLedger || 
                   dbConnection.model('DealerLedger', dealerLedgerSchema),
+    SupplierLedger: dbConnection.models.SupplierLedger || 
+                  dbConnection.model('SupplierLedger', supplierLedgerSchema),
+    SupplierInvoice: dbConnection.models.SupplierInvoice || 
+                   dbConnection.model('SupplierInvoice', supplierInvoiceSchema),
     PaymentAllocation: dbConnection.models.PaymentAllocation || 
                        dbConnection.model('PaymentAllocation', paymentAllocationSchema)
   };
@@ -234,6 +240,11 @@ export const createReceiptVoucher = async (req, res) => {
       await createDealerLedgerEntry(voucher, req.user._id, req.dbConnection);
     }
 
+    // Create supplier ledger entries for all vouchers (party = Supplier)
+    for (const voucher of createdVouchers) {
+      await createSupplierLedgerEntry(voucher, req.user._id, req.dbConnection);
+    }
+
     // Post journal entries (skips Dealer/Supplier — owned by payment modules)
     try {
       const { createVoucherEntry } = await import('../services/accountingService.js');
@@ -405,6 +416,11 @@ export const createPaymentVoucher = async (req, res) => {
     // Create dealer ledger entries for all vouchers
     for (const voucher of createdVouchers) {
       await createDealerLedgerEntry(voucher, req.user._id, req.dbConnection);
+    }
+
+    // Create supplier ledger entries for all vouchers (party = Supplier)
+    for (const voucher of createdVouchers) {
+      await createSupplierLedgerEntry(voucher, req.user._id, req.dbConnection);
     }
 
     // Post journal entries (skips Dealer/Supplier — owned by payment modules)
@@ -788,6 +804,34 @@ export const cancelVoucher = async (req, res) => {
       req.dbConnection
     );
 
+    // Reverse supplier ledger entry (if this was a supplier voucher)
+    if (voucher.partyType === 'Supplier' && voucher.partyId &&
+        ['Receipt', 'Payment'].includes(voucher.voucherType)) {
+      try {
+        const { SupplierLedger } = getModels(req.dbConnection);
+        const lastEntry = await SupplierLedger.findOne({ supplier: voucher.partyId })
+          .sort({ entryDate: -1, createdAt: -1 });
+        const previousBalance = lastEntry ? lastEntry.runningBalance : 0;
+        // Reverse the original sign: original Payment was credit, so reversal is debit
+        const debitAmount = voucher.voucherType === 'Payment' ? voucher.totalAmount : 0;
+        const creditAmount = voucher.voucherType === 'Receipt' ? voucher.totalAmount : 0;
+        await new SupplierLedger({
+          supplier: voucher.partyId,
+          supplierName: voucher.partyName,
+          entryDate: new Date(),
+          transactionType: 'Adjustment',
+          debitAmount,
+          creditAmount,
+          runningBalance: previousBalance + debitAmount - creditAmount,
+          description: `Reversal of cancelled voucher ${voucher.voucherNumber}`,
+          remarks: cancelReason,
+          createdBy: req.user._id
+        }).save();
+      } catch (revErr) {
+        console.error('⚠️ Failed to reverse supplier ledger entry (non-critical):', revErr.message);
+      }
+    }
+
     await recordCancel(req.dbConnection, {
       entity: 'Voucher',
       entityId: voucher._id,
@@ -1083,5 +1127,93 @@ const createDealerLedgerEntry = async (voucher, userId, dbConnection) => {
     console.error('❌ Error creating dealer ledger entry:', error);
     // Don't throw error - ledger entry failure shouldn't block voucher creation
     // But log it for debugging
+  }
+};
+
+/**
+ * Helper: Create supplier ledger entry for voucher
+ * Mirrors createDealerLedgerEntry, but for the Supplier side.
+ *
+ * Supplier ledger sign convention (matches SupplierInvoice/SupplierPayment):
+ *   runningBalance = prev + debit - credit   (positive = WE owe the supplier)
+ *   - Payment voucher  → we pay supplier   → creditAmount (reduces what we owe)
+ *   - Receipt voucher  → refund/advance in → debitAmount  (reduces supplier advance)
+ */
+const createSupplierLedgerEntry = async (voucher, userId, dbConnection) => {
+  const { SupplierLedger } = getModels(dbConnection);
+
+  try {
+    // Only create ledger entry if party is a Supplier
+    if (voucher.partyType !== 'Supplier' || !voucher.partyId) {
+      return;
+    }
+
+    console.log(`📝 Creating supplier ledger entry for voucher: ${voucher.voucherNumber}`);
+
+    // Get last ledger entry for running balance
+    const lastEntry = await SupplierLedger.findOne({ supplier: voucher.partyId })
+      .sort({ entryDate: -1, createdAt: -1 });
+    const previousBalance = lastEntry ? lastEntry.runningBalance : 0;
+
+    let debitAmount = 0;
+    let creditAmount = 0;
+    let description;
+
+    if (voucher.voucherType === 'Payment') {
+      // Payment made to supplier → reduces what we owe
+      creditAmount = voucher.totalAmount;
+      description = `Payment Made - ${voucher.voucherNumber}`;
+    } else if (voucher.voucherType === 'Receipt') {
+      // Money received from supplier (refund / advance settlement)
+      debitAmount = voucher.totalAmount;
+      description = `Payment Received - ${voucher.voucherNumber}`;
+    } else {
+      return; // Contra / other types do not touch supplier ledger
+    }
+    if (voucher.transactionMode) {
+      description += ` (${voucher.transactionMode})`;
+    }
+
+    const runningBalance = previousBalance + debitAmount - creditAmount;
+
+    // Map transaction mode to SupplierLedger payment method enum
+    // Valid: "Cash", "Cheque", "UPI", "Bank Transfer", "Debit Note", "Adjustment"
+    let paymentMethod = voucher.transactionMode;
+    if (['Bank', 'NEFT', 'RTGS'].includes(paymentMethod)) {
+      paymentMethod = 'Bank Transfer';
+    }
+    if (!['Cash', 'Cheque', 'UPI', 'Bank Transfer'].includes(paymentMethod)) {
+      paymentMethod = 'Bank Transfer';
+    }
+
+    const ledgerEntry = new SupplierLedger({
+      supplier: voucher.partyId,
+      supplierName: voucher.partyName,
+      entryDate: voucher.voucherDate,
+      transactionType: 'Payment',
+      paymentMade: creditAmount,
+      paymentMethod,
+      debitAmount,
+      creditAmount,
+      runningBalance,
+      description,
+      remarks: voucher.narration || '',
+      chequeDetails: voucher.chequeNumber ? {
+        chequeNo: voucher.chequeNumber,
+        chequeDate: voucher.chequeDate,
+        status: voucher.chequeStatus || 'Pending'
+      } : undefined,
+      upiDetails: voucher.upiTransactionId ? {
+        transactionId: voucher.upiTransactionId
+      } : undefined,
+      createdBy: userId
+    });
+
+    await ledgerEntry.save();
+    console.log(`✅ Supplier ledger entry created: ${ledgerEntry._id}`);
+
+  } catch (error) {
+    console.error('❌ Error creating supplier ledger entry:', error);
+    // Don't throw - ledger entry failure shouldn't block voucher creation
   }
 };

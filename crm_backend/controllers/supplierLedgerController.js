@@ -232,106 +232,92 @@ export const getSupplierLedgerBySupplier = async (req, res) => {
   try {
     const { SupplierLedger, Supplier } = getModels(req.dbConnection);
     const { supplierId } = req.params;
-    const { 
-      startDate, 
-      endDate, 
+    const {
+      startDate,
+      endDate,
       transactionType,
       page = 1,
       limit = 20,
-      sortBy = 'entryDate',
       sortOrder = 'asc'
     } = req.query;
 
-    // Build filter
-    const filter = { supplier: supplierId };
-    if (startDate || endDate) {
-      filter.entryDate = {};
-      if (startDate) filter.entryDate.$gte = new Date(startDate);
-      if (endDate) filter.entryDate.$lte = new Date(endDate);
-    }
-    if (transactionType) filter.transactionType = transactionType;
-
-    // Calculate pagination
     const pageNumber = parseInt(page);
     const limitNumber = parseInt(limit);
-    const skip = (pageNumber - 1) * limitNumber;
 
-    // Build sort object - first by date, then by transaction type (Invoice before Payment)
-    const sort = {};
-    sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
-    
-    // Add secondary sort by transaction type to ensure invoices come before payments on same date
-    sort.transactionType = 1; // 1 = Invoice, 2 = Payment, 3 = Debit Note, etc.
+    // Stable ordering: by date, then Invoice before Payment on the same day
+    const typeOrder = { 'Invoice': 1, 'Payment': 2, 'Debit Note': 3, 'Adjustment': 4, 'Opening Balance': 5 };
+    const sortByDateType = (a, b) => {
+      const da = new Date(a.entryDate); da.setHours(0, 0, 0, 0);
+      const db = new Date(b.entryDate); db.setHours(0, 0, 0, 0);
+      if (da.getTime() !== db.getTime()) return da - db;
+      return (typeOrder[a.transactionType] || 6) - (typeOrder[b.transactionType] || 6);
+    };
 
-    // Get total count for pagination
-    const total = await SupplierLedger.countDocuments(filter);
-
-    // Get paginated entries
-    const entries = await SupplierLedger.find(filter)
+    // ── 1. Load ALL entries for this supplier and recompute the running balance
+    //        in date order (NOT insertion order). This makes the balance correct
+    //        even when entries are backdated/added out of order. ──
+    const allEntries = (await SupplierLedger.find({ supplier: supplierId })
       .populate('invoice', 'invoiceNumber totalAmount invoiceDate items')
       .populate('debitNote', 'debitNoteNumber debitAmount debitNoteDate')
       .populate('createdBy', 'name email')
-      .sort(sort)
-      .skip(skip)
-      .limit(limitNumber);
+      .lean()).sort(sortByDateType);
 
-    // Custom sort to ensure invoices come before payments on same date
-    entries.sort((a, b) => {
-      // First sort by date
-      const dateA = new Date(a.entryDate);
-      const dateB = new Date(b.entryDate);
-      
-      if (dateA.getTime() !== dateB.getTime()) {
-        return sortOrder === 'desc' ? dateB - dateA : dateA - dateB;
-      }
-      
-      // If same date, sort by transaction type (Invoice before Payment)
-      const typeOrder = { 'Invoice': 1, 'Payment': 2, 'Debit Note': 3, 'Adjustment': 4, 'Opening Balance': 5 };
-      const orderA = typeOrder[a.transactionType] || 6;
-      const orderB = typeOrder[b.transactionType] || 6;
-      
-      return orderA - orderB;
+    let cumulative = 0;
+    allEntries.forEach(entry => {
+      cumulative += (entry.debitAmount || 0) - (entry.creditAmount || 0);
+      entry.runningBalance = cumulative; // override stored value with order-correct one
     });
 
-    // Get supplier information
-    const supplier = await Supplier.findById(supplierId);
-
-    // Calculate summary from ALL entries (not just current page)
-    const allEntries = await SupplierLedger.find({ supplier: supplierId })
-      .sort({ entryDate: 1 });
-    
-    // Apply same custom sorting to all entries
-    allEntries.sort((a, b) => {
-      // First sort by date
-      const dateA = new Date(a.entryDate);
-      const dateB = new Date(b.entryDate);
-      
-      if (dateA.getTime() !== dateB.getTime()) {
-        return dateA - dateB; // Always ascending for summary calculation
-      }
-      
-      // If same date, sort by transaction type (Invoice before Payment)
-      const typeOrder = { 'Invoice': 1, 'Payment': 2, 'Debit Note': 3, 'Adjustment': 4, 'Opening Balance': 5 };
-      const orderA = typeOrder[a.transactionType] || 6;
-      const orderB = typeOrder[b.transactionType] || 6;
-      
-      return orderA - orderB;
-    });
-    
+    // ── 2. Summary — closing balance derived from totals (order-independent) ──
+    const totalDebit = allEntries.reduce((s, e) => s + (e.debitAmount || 0), 0);
+    const totalCredit = allEntries.reduce((s, e) => s + (e.creditAmount || 0), 0);
     const summary = {
-      totalDebit: allEntries.reduce((sum, entry) => sum + (entry.debitAmount || 0), 0),
-      totalCredit: allEntries.reduce((sum, entry) => sum + (entry.creditAmount || 0), 0),
-      currentBalance: allEntries.length > 0 ? allEntries[allEntries.length - 1].runningBalance : 0,
-      totalInvoices: allEntries.filter(entry => entry.transactionType === 'Invoice').length,
-      totalPayments: allEntries.filter(entry => entry.transactionType === 'Payment').length
+      totalDebit,
+      totalCredit,
+      currentBalance: totalDebit - totalCredit, // positive = we owe the supplier
+      totalInvoices: allEntries.filter(e => e.transactionType === 'Invoice').length,
+      totalPayments: allEntries.filter(e => e.transactionType === 'Payment').length
     };
+
+    // ── 3. Apply display filters (date range + transaction type) ──
+    let displayEntries = allEntries;
+    if (startDate) {
+      const from = new Date(startDate);
+      displayEntries = displayEntries.filter(e => new Date(e.entryDate) >= from);
+    }
+    if (endDate) {
+      const to = new Date(endDate);
+      to.setHours(23, 59, 59, 999);
+      displayEntries = displayEntries.filter(e => new Date(e.entryDate) <= to);
+    }
+    if (transactionType) {
+      displayEntries = displayEntries.filter(e => e.transactionType === transactionType);
+    }
+
+    // Opening balance = running balance just before the first displayed entry's window
+    let openingBalance = 0;
+    if (startDate) {
+      const from = new Date(startDate);
+      openingBalance = allEntries
+        .filter(e => new Date(e.entryDate) < from)
+        .reduce((s, e) => s + (e.debitAmount || 0) - (e.creditAmount || 0), 0);
+    }
+
+    // ── 4. Sort direction for display + paginate in memory ──
+    if (sortOrder === 'desc') displayEntries = [...displayEntries].reverse();
+    const total = displayEntries.length;
+    const skip = (pageNumber - 1) * limitNumber;
+    const entries = displayEntries.slice(skip, skip + limitNumber);
+
+    const supplier = await Supplier.findById(supplierId);
 
     res.status(200).json({
       success: true,
       data: {
         supplier,
         entries,
-        summary
+        summary,
+        openingBalance
       },
       pagination: {
         currentPage: pageNumber,
@@ -430,15 +416,18 @@ export const getSupplierLedgerSummary = async (req, res) => {
     const entries = await SupplierLedger.find({ supplier: supplierId })
       .sort({ entryDate: 1 });
 
+    const totalDebit = entries.reduce((sum, entry) => sum + (entry.debitAmount || 0), 0);
+    const totalCredit = entries.reduce((sum, entry) => sum + (entry.creditAmount || 0), 0);
     const summary = {
-      totalDebit: entries.reduce((sum, entry) => sum + (entry.debitAmount || 0), 0),
-      totalCredit: entries.reduce((sum, entry) => sum + (entry.creditAmount || 0), 0),
-      currentBalance: entries.length > 0 ? entries[entries.length - 1].runningBalance : 0,
+      totalDebit,
+      totalCredit,
+      // Closing balance from totals (order-independent), positive = we owe supplier
+      currentBalance: totalDebit - totalCredit,
       totalInvoices: entries.filter(entry => entry.transactionType === 'Invoice').length,
       totalPayments: entries.filter(entry => entry.transactionType === 'Payment').length,
       overdueAmount: entries
         .filter(entry => entry.status === 'Overdue')
-        .reduce((sum, entry) => sum + entry.runningBalance, 0)
+        .reduce((sum, entry) => sum + ((entry.debitAmount || 0) - (entry.creditAmount || 0)), 0)
     };
 
     res.status(200).json({

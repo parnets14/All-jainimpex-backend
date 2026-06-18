@@ -1,13 +1,17 @@
-import { journalVoucherSchema } from '../models/JournalVoucher.js';
-import { accountMasterSchema } from '../models/AccountMaster.js';
+import { voucherSchema } from '../models/Voucher.js';
+import { cashAccountSchema } from '../models/CashAccount.js';
+import { bankAccountSchema } from '../models/BankAccount.js';
 
 const getModels = (dbConnection) => ({
-  JournalVoucher:
-    dbConnection.models.JournalVoucher ||
-    dbConnection.model('JournalVoucher', journalVoucherSchema),
-  AccountMaster:
-    dbConnection.models.AccountMaster ||
-    dbConnection.model('AccountMaster', accountMasterSchema),
+  Voucher:
+    dbConnection.models.Voucher ||
+    dbConnection.model('Voucher', voucherSchema),
+  CashAccount:
+    dbConnection.models.CashAccount ||
+    dbConnection.model('CashAccount', cashAccountSchema),
+  BankAccount:
+    dbConnection.models.BankAccount ||
+    dbConnection.model('BankAccount', bankAccountSchema),
 });
 
 const getFYStartDate = (fy) => new Date(parseInt(fy.split('-')[0], 10), 3, 1);
@@ -27,28 +31,14 @@ const resolveWindow = ({ fromDate, toDate, financialYear }) => {
   return { from, to };
 };
 
-// Which activity does a counter-account group belong to?
-const ACTIVITY_OF_GROUP = {
-  // Operating — day-to-day trade
-  Sales: 'operating',
-  Purchase: 'operating',
-  'Direct Expenses': 'operating',
-  'Indirect Expenses': 'operating',
-  'Sundry Debtors': 'operating',
-  'Sundry Creditors': 'operating',
-  'Current Liabilities': 'operating',
-  'Current Assets': 'operating',
-  'Duties & Taxes': 'operating',
-  'GST Payable': 'operating',
-  'GST Input Credit': 'operating',
-  // Investing — buying/selling long-term assets
-  'Fixed Assets': 'investing',
-  // Financing — owners & lenders
-  Capital: 'financing',
-  'Reserves & Surplus': 'financing',
-  'Loans & Liabilities': 'financing',
+// Which activity does a voucher's party belong to?
+//   Dealer / Supplier / Other  → Operating (day-to-day trade & expenses)
+//   Family/Friends             → Financing (owner funds in / drawings out)
+//   Internal                   → Operating (rare; standalone internal money moves)
+const activityForParty = (partyType) => {
+  if (partyType === 'Family/Friends') return 'financing';
+  return 'operating';
 };
-const activityFor = (group) => ACTIVITY_OF_GROUP[group] || 'operating';
 
 const ACTIVITY_LABELS = {
   operating: 'Operating Activities',
@@ -56,67 +46,83 @@ const ACTIVITY_LABELS = {
   financing: 'Financing Activities',
 };
 
-// @desc    Cash Flow Statement (indirect-from-ledger; built from posted JVs)
+// Human label for a party + direction
+const lineLabel = (partyType, isInflow) => {
+  switch (partyType) {
+    case 'Dealer': return isInflow ? 'Collections from dealers' : 'Refunds paid to dealers';
+    case 'Supplier': return isInflow ? 'Refunds from suppliers' : 'Payments to suppliers';
+    case 'Family/Friends': return isInflow ? 'Funds introduced (family/friends)' : 'Drawings / paid to family/friends';
+    case 'Internal': return isInflow ? 'Internal receipts' : 'Internal payments';
+    default: return isInflow ? 'Other receipts' : 'Other payments / expenses';
+  }
+};
+
+// @desc    Cash Flow Statement — built from the Voucher module (the actual
+//          source of truth for cash & bank movement) so it ties out to the
+//          real bank/cash balances and the balance sheet.
 // @route   GET /api/cash-flow?financialYear= OR fromDate=&toDate=
 // @access  Private
 export const getCashFlow = async (req, res) => {
   try {
-    const { JournalVoucher, AccountMaster } = getModels(req.dbConnection);
+    const { Voucher, CashAccount, BankAccount } = getModels(req.dbConnection);
     const { from, to } = resolveWindow(req.query);
 
-    // 1) Identify cash & bank ledger accounts
-    const cashAccounts = await AccountMaster.find({
-      accountGroup: 'Current Assets',
-      accountName: { $regex: /cash|bank/i },
-    }).select('accountName openingBalance openingBalanceType').lean();
+    // ── 1. Real cash & bank: opening balances + current balances (Box A) ──
+    const cashAccount = await CashAccount.getCashAccount();
+    const bankAccounts = await BankAccount.find({}).select('openingBalance currentBalance').lean();
 
-    const cashNameSet = new Set(cashAccounts.map((a) => a.accountName));
-    cashNameSet.add('Cash Account');
-    cashNameSet.add('Bank Account');
-    const cashNames = Array.from(cashNameSet);
+    const staticOpening = round2(
+      (cashAccount?.openingBalance || 0) +
+      bankAccounts.reduce((s, b) => s + (b.openingBalance || 0), 0)
+    );
+    const realCurrentCash = round2(
+      (cashAccount?.currentBalance || 0) +
+      bankAccounts.reduce((s, b) => s + (b.currentBalance || 0), 0)
+    );
 
-    // 2) Opening cash = chart opening balances + net cash movement before `from`
-    let openingCash = 0;
-    for (const a of cashAccounts) {
-      openingCash += (a.openingBalanceType || 'Dr') === 'Dr' ? (a.openingBalance || 0) : -(a.openingBalance || 0);
-    }
+    // ── 2. Opening cash AT `from` = static opening + net voucher movement before `from`.
+    //       Only Receipt/Payment move cash; Contra is an internal transfer (net zero on
+    //       total cash+bank) and is excluded. Cancelled/Draft are ignored. ──
+    let openingCash = staticOpening;
     if (from) {
-      const priorAgg = await JournalVoucher.aggregate([
-        { $match: { status: 'Posted', voucherDate: { $lt: from } } },
-        { $unwind: '$entries' },
-        { $match: { 'entries.accountName': { $in: cashNames } } },
-        { $group: { _id: null, debit: { $sum: '$entries.debit' }, credit: { $sum: '$entries.credit' } } },
+      const priorAgg = await Voucher.aggregate([
+        { $match: { status: 'Posted', voucherType: { $in: ['Receipt', 'Payment'] }, voucherDate: { $lt: from } } },
+        { $group: {
+          _id: '$voucherType',
+          amount: { $sum: '$totalAmount' },
+        }},
       ]);
-      if (priorAgg[0]) openingCash += (priorAgg[0].debit - priorAgg[0].credit);
+      let priorReceipts = 0, priorPayments = 0;
+      for (const r of priorAgg) {
+        if (r._id === 'Receipt') priorReceipts = r.amount || 0;
+        else if (r._id === 'Payment') priorPayments = r.amount || 0;
+      }
+      openingCash = round2(staticOpening + priorReceipts - priorPayments);
     }
-    openingCash = round2(openingCash);
 
-    // 3) Within the window: for every voucher that touches a cash account, the
-    //    counter-entries (non-cash lines) explain why cash moved.
-    //    cash inflow attributable to a counter line = credit − debit.
-    const voucherDateMatch = {};
-    if (from) voucherDateMatch.$gte = from;
-    if (to) voucherDateMatch.$lte = to;
+    // ── 3. Window movement: group Receipt/Payment by party type ──
+    const dateMatch = {};
+    if (from) dateMatch.$gte = from;
+    if (to) dateMatch.$lte = to;
 
-    const agg = await JournalVoucher.aggregate([
+    const agg = await Voucher.aggregate([
       {
         $match: {
           status: 'Posted',
-          ...(Object.keys(voucherDateMatch).length ? { voucherDate: voucherDateMatch } : {}),
-          'entries.accountName': { $in: cashNames },
+          voucherType: { $in: ['Receipt', 'Payment'] },
+          ...(Object.keys(dateMatch).length ? { voucherDate: dateMatch } : {}),
         },
       },
-      { $unwind: '$entries' },
-      { $match: { 'entries.accountName': { $nin: cashNames } } },
       {
         $group: {
-          _id: { group: '$entries.accountGroup', name: '$entries.accountName' },
-          net: { $sum: { $subtract: ['$entries.credit', '$entries.debit'] } },
+          _id: { voucherType: '$voucherType', partyType: '$partyType' },
+          amount: { $sum: '$totalAmount' },
+          count: { $sum: 1 },
         },
       },
     ]);
 
-    // 4) Bucket into activities
+    // ── 4. Bucket into activities ──
     const buckets = {
       operating: { key: 'operating', label: ACTIVITY_LABELS.operating, inflows: [], outflows: [], total: 0 },
       investing: { key: 'investing', label: ACTIVITY_LABELS.investing, inflows: [], outflows: [], total: 0 },
@@ -124,18 +130,26 @@ export const getCashFlow = async (req, res) => {
     };
 
     for (const row of agg) {
-      const group = row._id.group || 'Other';
-      const name = row._id.name || 'Unspecified';
-      const net = round2(row.net);
-      if (Math.abs(net) < 0.005) continue;
-      const bucket = buckets[activityFor(group)];
-      const line = { accountName: name, accountGroup: group, amount: Math.abs(net) };
-      if (net >= 0) bucket.inflows.push(line);
-      else bucket.outflows.push(line);
-      bucket.total = round2(bucket.total + net);
+      const amount = round2(row.amount || 0);
+      if (amount < 0.005) continue;
+      const isInflow = row._id.voucherType === 'Receipt';
+      const partyType = row._id.partyType || 'Other';
+      const bucket = buckets[activityForParty(partyType)];
+      const line = {
+        accountName: lineLabel(partyType, isInflow),
+        partyType,
+        amount,
+        count: row.count,
+      };
+      if (isInflow) {
+        bucket.inflows.push(line);
+        bucket.total = round2(bucket.total + amount);
+      } else {
+        bucket.outflows.push(line);
+        bucket.total = round2(bucket.total - amount);
+      }
     }
 
-    // sort each bucket's lines by amount desc
     for (const b of Object.values(buckets)) {
       b.inflows.sort((x, y) => y.amount - x.amount);
       b.outflows.sort((x, y) => y.amount - x.amount);
@@ -147,12 +161,14 @@ export const getCashFlow = async (req, res) => {
     const netCashFlow = round2(operating + investing + financing);
     const closingCash = round2(openingCash + netCashFlow);
 
+    // Tie-out: when reporting up to today, closing should equal the real balance.
+    const tiesOut = Math.abs(closingCash - realCurrentCash) < 1;
+
     res.json({
       success: true,
       data: {
         period: { from: from || null, to },
         financialYear: req.query.financialYear || null,
-        cashAccounts: cashNames,
         openingCash,
         activities: [buckets.operating, buckets.investing, buckets.financing],
         summary: {
@@ -163,7 +179,9 @@ export const getCashFlow = async (req, res) => {
           openingCash,
           closingCash,
         },
-        note: 'Cash flow is derived from posted journal vouchers that move cash or bank. Each cash movement is classified by its counter-account into Operating, Investing or Financing activities.',
+        realCurrentCash,
+        tiesOut,
+        note: 'Cash flow is built from posted Receipt and Payment vouchers — the actual record of money entering and leaving your bank and cash. Internal (Contra) transfers are excluded. Collections from dealers and payments to suppliers/expenses are Operating; owner funds are Financing. Pay expenses through a Payment voucher so they appear here.',
       },
     });
   } catch (error) {

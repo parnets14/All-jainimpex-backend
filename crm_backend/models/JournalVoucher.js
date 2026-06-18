@@ -61,7 +61,9 @@ const journalVoucherSchema = new mongoose.Schema({
 journalVoucherSchema.pre('save', async function (next) {
   if (!this.voucherNumber) {
     const year = new Date().getFullYear();
-    const count = await mongoose.model('JournalVoucher').countDocuments();
+    // Use this.constructor so the count comes from the CURRENT company database
+    // (not the default mongoose connection — otherwise numbers collide/duplicate).
+    const count = await this.constructor.countDocuments();
     this.voucherNumber = `JV-${year}-${String(count + 1).padStart(4, '0')}`;
   }
   next();

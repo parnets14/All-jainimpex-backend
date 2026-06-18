@@ -1,6 +1,7 @@
 import { paymentAllocationSchema } from '../models/PaymentAllocation.js';
 import { voucherSchema } from '../models/Voucher.js';
 import { dealerInvoiceSchema } from '../models/DealerInvoice.js';
+import { supplierInvoiceSchema } from '../models/SupplierInvoice.js';
 import { generateAllocationNumber } from '../services/voucherNumberService.js';
 
 // Helper function to get models for the current company database
@@ -11,7 +12,9 @@ const getModels = (dbConnection) => {
     Voucher: dbConnection.models.Voucher || 
              dbConnection.model('Voucher', voucherSchema),
     DealerInvoice: dbConnection.models.DealerInvoice || 
-                   dbConnection.model('DealerInvoice', dealerInvoiceSchema)
+                   dbConnection.model('DealerInvoice', dealerInvoiceSchema),
+    SupplierInvoice: dbConnection.models.SupplierInvoice || 
+                   dbConnection.model('SupplierInvoice', supplierInvoiceSchema)
   };
 };
 
@@ -21,7 +24,7 @@ const getModels = (dbConnection) => {
  */
 export const createPaymentAllocation = async (req, res) => {
   try {
-    const { PaymentAllocation, Voucher, DealerInvoice } = getModels(req.dbConnection);
+    const { PaymentAllocation, Voucher, DealerInvoice, SupplierInvoice } = getModels(req.dbConnection);
     const {
       voucherId,
       allocations
@@ -44,6 +47,11 @@ export const createPaymentAllocation = async (req, res) => {
         message: 'Voucher not found'
       });
     }
+
+    // Pick the right invoice collection based on who the voucher is for.
+    // Supplier vouchers (Payments) allocate against purchase invoices.
+    const isSupplier = voucher.partyType === 'Supplier';
+    const InvoiceModel = isSupplier ? SupplierInvoice : DealerInvoice;
     
     if (voucher.status !== 'Posted') {
       return res.status(400).json({
@@ -81,7 +89,7 @@ export const createPaymentAllocation = async (req, res) => {
     const preparedAllocations = [];
     
     for (const alloc of allocations) {
-      const invoice = await DealerInvoice.findById(alloc.invoiceId);
+      const invoice = await InvoiceModel.findById(alloc.invoiceId);
       
       if (!invoice) {
         return res.status(404).json({
@@ -152,10 +160,12 @@ export const createPaymentAllocation = async (req, res) => {
     
     // Update invoices
     for (const alloc of preparedAllocations) {
-      const invoice = await DealerInvoice.findById(alloc.invoiceId);
+      const invoice = await InvoiceModel.findById(alloc.invoiceId);
       if (invoice) {
         invoice.paidAmount = (invoice.paidAmount || 0) + alloc.allocatedAmount;
-        invoice.pendingAmount = invoice.totalAmount - invoice.paidAmount;
+        if (!isSupplier) {
+          invoice.pendingAmount = invoice.totalAmount - invoice.paidAmount;
+        }
         
         if (invoice.paidAmount >= invoice.totalAmount) {
           invoice.paymentStatus = 'Paid';
@@ -289,8 +299,8 @@ export const getPaymentAllocationById = async (req, res) => {
  */
 export const getOutstandingInvoices = async (req, res) => {
   try {
-    const { DealerInvoice } = getModels(req.dbConnection);
-    const { partyId } = req.query;
+    const { DealerInvoice, SupplierInvoice } = getModels(req.dbConnection);
+    const { partyId, partyType } = req.query;
     
     if (!partyId) {
       return res.status(400).json({
@@ -298,7 +308,44 @@ export const getOutstandingInvoices = async (req, res) => {
         message: 'Party ID is required'
       });
     }
-    
+
+    // Supplier outstanding (purchase invoices) — no pendingAmount field, compute it
+    if (partyType === 'Supplier') {
+      const supInvoices = await SupplierInvoice.find({
+        supplier: partyId,
+        status: 'Approved',
+        paymentStatus: { $ne: 'Paid' }
+      }).sort({ invoiceDate: 1 });
+
+      const outstanding = supInvoices
+        .map(inv => {
+          const paid = inv.paidAmount || 0;
+          const pending = inv.totalAmount - paid;
+          return {
+            _id: inv._id,
+            invoiceNumber: inv.invoiceNumber,
+            invoiceDate: inv.invoiceDate,
+            totalAmount: inv.totalAmount,
+            paidAmount: paid,
+            pendingAmount: pending,
+            paymentStatus: inv.paymentStatus,
+            dueDate: inv.dueDate
+          };
+        })
+        .filter(inv => inv.pendingAmount > 0);
+
+      const totalOutstanding = outstanding.reduce((sum, inv) => sum + inv.pendingAmount, 0);
+
+      return res.status(200).json({
+        success: true,
+        invoices: outstanding,
+        summary: {
+          totalInvoices: outstanding.length,
+          totalOutstanding
+        }
+      });
+    }
+
     const invoices = await DealerInvoice.find({
       dealer: partyId,
       status: 'Approved',

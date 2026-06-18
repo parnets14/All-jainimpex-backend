@@ -218,8 +218,27 @@ async function computeBalanceSheetData(req) {
     // ── 6. JOURNAL VOUCHER ADJUSTMENTS ────────────────────────────────────────
     const jvGroups = await aggregateJournalEntries(reportDate, req.dbConnection);
 
-    // Journal entries that affect current assets (Dr = increase asset)
-    const jvCurrentAssets = (jvGroups['Current Assets']?.debit || 0) - (jvGroups['Current Assets']?.credit || 0);
+    // Real cash & bank come from the actual balance documents (Box A — the
+    // single source of truth, updated by the Voucher module). The generic
+    // "Cash Account"/"Bank Account" ledgers used by some auto-JVs live in the
+    // 'Current Assets' group too — counting them here would DOUBLE-COUNT cash.
+    // So we strip those two accounts out of the current-assets JV adjustment.
+    const { JournalVoucher } = getModels(req.dbConnection);
+    const cashBankJV = await JournalVoucher.aggregate([
+      { $match: { voucherDate: { $lte: reportDate }, status: 'Posted' } },
+      { $unwind: '$entries' },
+      { $match: {
+        'entries.accountGroup': 'Current Assets',
+        'entries.accountName': { $in: ['Cash Account', 'Bank Account'] }
+      }},
+      { $group: { _id: null, debit: { $sum: '$entries.debit' }, credit: { $sum: '$entries.credit' } } }
+    ]);
+    const jvCashBankNet = (cashBankJV[0]?.debit || 0) - (cashBankJV[0]?.credit || 0);
+
+    // Journal entries that affect current assets (Dr = increase asset),
+    // EXCLUDING the generic cash/bank ledgers (handled by Box A above).
+    const jvCurrentAssets = (jvGroups['Current Assets']?.debit || 0)
+      - (jvGroups['Current Assets']?.credit || 0) - jvCashBankNet;
     // Opening stock from journal entries
     const jvOpeningStock = (jvGroups['Fixed Assets']?.debit || 0) - (jvGroups['Fixed Assets']?.credit || 0);
 
@@ -248,10 +267,14 @@ async function computeBalanceSheetData(req) {
     const totalAssets = totalCurrentAssets + netFixedAssets;
 
     // ── 8. ACCOUNTS PAYABLE ───────────────────────────────────────────────────
+    // Supplier ledger convention: purchase invoice = debit, payment = credit,
+    // runningBalance = debit - credit (positive = WE owe the supplier).
+    // So payable = sum(debit) - sum(credit). (Previously this was reversed,
+    // which made Accounts Payable show as 0.)
     const apAgg = await SupplierLedger.aggregate([
       { $match: { entryDate: { $lte: reportDate }, status: { $in: ['Active', 'Overdue'] } } },
       { $group: { _id: '$supplier', debit: { $sum: '$debitAmount' }, credit: { $sum: '$creditAmount' } } },
-      { $project: { balance: { $subtract: ['$credit', '$debit'] } } },
+      { $project: { balance: { $subtract: ['$debit', '$credit'] } } },
       { $match: { balance: { $gt: 0 } } },
       { $group: { _id: null, total: { $sum: '$balance' } } }
     ]);
@@ -288,19 +311,18 @@ async function computeBalanceSheetData(req) {
     ]);
     const pendingExpenses = pendingExpAgg[0]?.total || 0;
 
-    // ── 12. CHEQUES PAYABLE ───────────────────────────────────────────────────
-    const chequesAgg = await Cheque.aggregate([
-      { $match: { date: { $lte: reportDate }, status: { $in: ['Not Deposited', 'Deposited'] }, isDeleted: { $ne: true } } },
-      { $group: { _id: null, total: { $sum: '$amount' } } }
-    ]);
-    const pendingCheques = chequesAgg[0]?.total || 0;
+    // ── 12. (REMOVED) CHEQUES ─────────────────────────────────────────────────
+    // The Cheque register tracks cheques RECEIVED from dealers (incoming payments).
+    // Those are NOT a liability — the dealer's payment is already captured in
+    // Accounts Receivable (and in bank/cash once cleared) through the payment flow.
+    // Including them here was a phantom double-count, so it has been removed.
 
     // ── 13. JOURNAL LIABILITIES ───────────────────────────────────────────────
     const jvCurrentLiabilities = (jvGroups['Current Liabilities']?.credit || 0) - (jvGroups['Current Liabilities']?.debit || 0);
     const jvLoansLiabilities = (jvGroups['Loans & Liabilities']?.credit || 0) - (jvGroups['Loans & Liabilities']?.debit || 0);
 
     const totalCurrentLiabilities = accountsPayable + advanceFromDealers + gstPayable
-      + pendingExpenses + pendingCheques + jvCurrentLiabilities;
+      + pendingExpenses + jvCurrentLiabilities;
 
     // ── 14. LOANS ─────────────────────────────────────────────────────────────
     const loans = await Loan.find({ status: { $in: ['Active', 'Overdue'] }, disbursementDate: { $lte: reportDate } });
@@ -441,7 +463,6 @@ async function computeBalanceSheetData(req) {
             advanceFromDealers:  { amount: advanceFromDealers,  pct: pct(advanceFromDealers, totalLiabilities) },
             gstPayable:          { amount: gstPayable,           pct: pct(gstPayable, totalLiabilities), gstCollected, gstInputCredit },
             outstandingExpenses: { amount: pendingExpenses,      pct: pct(pendingExpenses, totalLiabilities) },
-            chequesPayable:      { amount: pendingCheques,       pct: pct(pendingCheques, totalLiabilities) },
             journalAdjustments:  { amount: jvCurrentLiabilities, pct: pct(jvCurrentLiabilities, totalLiabilities) },
             total: totalCurrentLiabilities
           },
