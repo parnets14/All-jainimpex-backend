@@ -412,6 +412,9 @@ export const updateDealer = async (req, res) => {
       allowedExtendedSubcategories,
       // Dealer-Specific Extra Discounts
       extraDiscounts,
+      // Opening Balance
+      openingBalance,
+      openingBalanceType,
     } = req.body;
 
     // Check if dealer exists
@@ -492,6 +495,12 @@ export const updateDealer = async (req, res) => {
     
     // Dealer-Specific Extra Discounts
     if (extraDiscounts !== undefined) updateData.extraDiscounts = extraDiscounts;
+
+    // Opening Balance (only set if provided; don't overwrite once set unless explicitly changed)
+    if (openingBalance !== undefined) {
+      updateData.openingBalance = parseFloat(openingBalance) || 0;
+      updateData.openingBalanceType = openingBalanceType || 'Dr';
+    }
     
     // Documents are handled separately via upload endpoint
     // Remove document fields from update data to avoid casting errors

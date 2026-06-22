@@ -1550,6 +1550,10 @@ export const getPriceListHistory = async (req, res) => {
 // @access  Private
 export const setOpeningStock = async (req, res) => {
   try {
+    console.log('=== SET OPENING STOCK ===');
+    console.log('Product ID:', req.params.id);
+    console.log('Body:', JSON.stringify(req.body));
+    console.log('User:', req.user?._id);
     const { Product, StockMovement, Warehouse, ProductPriceListHistory } = getModels(req.dbConnection);
     const { quantity, rate, warehouseId } = req.body;
 
