@@ -413,7 +413,13 @@ export const getDealerLedgerByDealer = async (req, res) => {
     });
 
     // ── 6. Calculate opening balance (entries BEFORE startDate) ──
-    let openingBalance = 0;
+    // Start with the dealer's master opening balance (set in Dealer Master)
+    const dealer = await Dealer.findById(dealerId);
+    const masterOpeningBalance = dealer?.openingBalance || 0;
+    const masterOBType = dealer?.openingBalanceType || 'Dr';
+    // Dr = dealer owes us (positive), Cr = we owe dealer / advance (negative)
+    let openingBalance = masterOBType === 'Dr' ? masterOpeningBalance : -masterOpeningBalance;
+
     if (startDate) {
       const beforeStart = new Date(startDate);
 
@@ -469,8 +475,6 @@ export const getDealerLedgerByDealer = async (req, res) => {
       currentBalance: runningBalance,
       totalTransactions: total
     };
-
-    const dealer = await Dealer.findById(dealerId);
 
     res.status(200).json({
       success: true,
