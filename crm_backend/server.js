@@ -8,6 +8,7 @@ import dotenv from "dotenv";
 import connectDB from "./config/db.js";
 import { initializeAllConnections } from "./config/multiDatabase.js"; // Add multi-database support
 import authRoutes from "./routes/authRoutes.js";
+import { enforceRoutePermissions } from "./middleware/routePermissions.js";
 import userRoutes from "./routes/userRoutes.js"; // Add this import
 import dealertypeRoutes from "./routes/dealertypeRoutes.js";
 import dealercategoryRouter from "./routes/dealerCategoryRoutes.js";
@@ -318,6 +319,11 @@ app.get("/api/", (req, res) => {
 });
 
 app.use("/api/auth", authRoutes);
+
+// Enforce route-level permissions globally (after auth, before feature routes).
+// Auth routes are excluded (mounted above). Super_admin bypasses automatically.
+app.use('/api', enforceRoutePermissions);
+
 app.use("/api/users", userRoutes);
 app.use("/api/employees", employeeRoutes);
 app.use("/api/attendance", attendanceRoutes);

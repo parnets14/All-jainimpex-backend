@@ -16,7 +16,7 @@ export const getUsers = async (req, res) => {
     // Get models from company-specific connection
     const { User } = getModels(req.dbConnection);
     
-    const { page = 1, limit = 10, search = '', status, role, startDate, endDate } = req.query;
+    const { page = 1, limit = 10, search = '', status, role, excludeRole, startDate, endDate } = req.query;
     
     // Build filter object
     const filter = {};
@@ -35,6 +35,11 @@ export const getUsers = async (req, res) => {
     
     if (role && role !== 'All') {
       filter.role = role;
+    }
+
+    // Exclude specific role (used to hide dealer-app users by default)
+    if (excludeRole && !role) {
+      filter.role = { $ne: excludeRole };
     }
 
     // Date range filter

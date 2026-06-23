@@ -543,7 +543,9 @@ export const createSalesOrder = async (req, res) => {
     // CREDIT LIMIT CHECK: If dealer has a credit limit and order exceeds it, force Pending status
     if (dealerData.creditLimit && dealerData.creditLimit > 0) {
       const currentOutstanding = await getDealerCreditOutstanding(req.dbConnection, dealerData._id);
-      const newOutstanding = currentOutstanding + orderTotalAmount;
+      // Use creditAmount (conservative: direct + dealer extra only) for the check
+      const creditCheckAmount = req.body.creditAmount || orderTotalAmount;
+      const newOutstanding = currentOutstanding + creditCheckAmount;
       
       console.log(`💳 Credit Limit Check (createSalesOrder):`, {
         creditLimit: dealerData.creditLimit,
@@ -758,6 +760,8 @@ export const createSalesOrder = async (req, res) => {
       stockValidation: stockValidation || [],
       // Credit overlimit fields
       creditOverlimit: req.body.creditOverlimit || undefined,
+      // Credit check amount (direct + dealer extra only, excludes level discount)
+      creditAmount: req.body.creditAmount || null,
       // Initialize order-level stock status for ALL orders
       orderStockStatus: {
         totalProducts: validatedProducts.length,

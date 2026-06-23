@@ -36,8 +36,13 @@ export const login = async (req, res) => {
     // Check if model already exists, otherwise create it
     const User = dbConnection.models.User || dbConnection.model('User', userSchema);
 
-    // Check if user exists in this company's database
-    const user = await User.findOne({ email }).select('+password');
+    // Check if user exists in this company's database (allow login by email OR username)
+    const user = await User.findOne({
+      $or: [
+        { email: email },
+        { username: email } // Allow username in the email field for login
+      ]
+    }).select('+password');
     if (!user) {
       console.log(`❌ User not found: ${email} in ${company} database`);
       return res.status(401).json({

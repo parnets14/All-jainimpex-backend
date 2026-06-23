@@ -149,8 +149,14 @@ export const requirePermission = (permission) => {
       return next();
     }
 
-    // Check if user has the required permission
-    if (!req.user.permissions.includes(permission) && !req.user.permissions.includes('*')) {
+    // Check if user has the required permission (exact, *, or module.*)
+    const perms = req.user.permissions || [];
+    const module = permission.split('.')[0];
+    const hasIt = perms.includes(permission) ||
+                  perms.includes('*') ||
+                  perms.includes(`${module}.*`) ||
+                  perms.includes(module);
+    if (!hasIt) {
       return res.status(403).json({
         success: false,
         message: `Access denied. Required permission: ${permission}`

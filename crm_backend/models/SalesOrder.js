@@ -161,6 +161,13 @@ const salesOrderSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
+  // Credit check amount: MRP minus direct + dealer extra discounts only (excludes level).
+  // Used for conservative credit-limit calculations so level-discount volatility
+  // doesn't let a dealer silently exceed their limit.
+  creditAmount: {
+    type: Number,
+    default: null
+  },
         status: {
           type: String,
           enum: ["Pending", "Confirmed", "Processing", "In Transit", "Delivered", "Cancelled", "Rejected", "Rescheduled", "Missing", "Expired"],

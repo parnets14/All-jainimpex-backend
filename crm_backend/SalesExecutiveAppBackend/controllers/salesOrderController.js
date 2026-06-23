@@ -103,11 +103,16 @@ export const getDealers = async (req, res) => {
       assignedRegions: user.assignedRegions,
     });
 
-    // Build query for dealers in assigned regions
+    // Build query — show only dealers directly assigned to this sales executive
     let query = { isActive: true };
     
-    if (user.assignedRegions && user.assignedRegions.length > 0) {
-      query.regionId = { $in: user.assignedRegions };
+    // Primary filter: dealers assigned to this SE via salesExecutiveId
+    query.salesExecutiveId = user._id;
+    
+    // If no dealers are directly assigned, fall back to region-based (backward compat)
+    const directCount = await Dealer.countDocuments(query);
+    if (directCount === 0 && user.assignedRegions && user.assignedRegions.length > 0) {
+      query = { isActive: true, regionId: { $in: user.assignedRegions } };
     }
 
     // Fetch dealers with credit information

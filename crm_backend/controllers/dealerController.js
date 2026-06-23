@@ -868,7 +868,9 @@ export const getDealerCompleteInfo = async (req, res) => {
     // Sum up confirmed orders that are NOT yet invoiced
     const confirmedOrdersAmount = confirmedOrders.reduce((sum, order) => {
       const isInvoiced = invoicedOrderIdStrings.includes(order._id.toString());
-      return isInvoiced ? sum : sum + (order.totalAmount || 0);
+      // Use creditAmount (conservative: excludes level discount) if available,
+      // otherwise fall back to totalAmount for older orders.
+      return isInvoiced ? sum : sum + (order.creditAmount || order.totalAmount || 0);
     }, 0);
     
     // Total credit used = actual ledger outstanding + confirmed-but-not-invoiced orders

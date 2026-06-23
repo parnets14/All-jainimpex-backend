@@ -432,18 +432,27 @@ export const getAssignedDealers = async (req, res) => {
     const { User, Dealer } = getModels(req);
 
     const se = await User.findById(userId);
-    if (!se || !se.assignedRegions || se.assignedRegions.length === 0) {
+    if (!se) {
       return res.json({
         success: true,
         dealers: [],
-        message: 'No regions assigned to this sales executive'
+        message: 'Sales executive not found'
       });
     }
 
-    const dealers = await Dealer.find({
-      regionId: { $in: se.assignedRegions },
+    // Primary: dealers directly assigned to this SE
+    let dealers = await Dealer.find({
+      salesExecutiveId: userId,
       isActive: true
     }).select('name code address phone contactPerson regionId');
+
+    // Fallback: if no direct assignments, use region-based
+    if (dealers.length === 0 && se.assignedRegions && se.assignedRegions.length > 0) {
+      dealers = await Dealer.find({
+        regionId: { $in: se.assignedRegions },
+        isActive: true
+      }).select('name code address phone contactPerson regionId');
+    }
 
     res.json({
       success: true,
