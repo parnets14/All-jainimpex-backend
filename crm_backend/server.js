@@ -210,6 +210,12 @@ app.use(
         "https://jainimpex.netlify.app/",    // with trailing slash
         "https://jainimpexall.netlify.app",  // new Netlify domain
         "https://jainimpexall.netlify.app/", // with trailing slash
+        "https://jain-impex.web.app",        // Firebase Hosting domain
+        "https://jain-impex.web.app/",       // with trailing slash
+        "https://jain-impex.firebaseapp.com", // Firebase Hosting (alt domain)
+        "https://jain-impex.firebaseapp.com/",// with trailing slash
+        "https://crm.jainimpexmysuru.com",   // custom domain (Firebase Hosting)
+        "https://crm.jainimpexmysuru.com/",  // with trailing slash
         "http://localhost:3000",             // local dealer app (React Native Metro)
         "http://localhost:8081",             // local dealer app (React Native alternative)
         "exp://localhost:19000",             // Expo dev

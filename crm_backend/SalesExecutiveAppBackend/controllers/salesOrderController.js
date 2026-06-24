@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { getModels } from '../utils/getModels.js';
 import { discountMappingSchema } from '../../models/DiscountMapping.js';
 
@@ -305,178 +306,223 @@ export const getProducts = async (req, res) => {
 
     console.log(`✅ Found ${products.length} products matching dealer permissions`);
 
-    // Get pricing and stock for each product
-    const productsWithDetails = await Promise.all(
-      products.map(async (product) => {
-        try {
-          // Get dealer pricing
-          const pricing = await DealerPricing.findOne({
-            product: product._id,
-            isActive: true
-          }).select('sellingPrice purchasePrice');
+    // ── Batch-load everything for this page (avoids per-product N+1 queries) ──
+    const productIds = products.map(p => p._id);
+    const whObjId = warehouseId ? new mongoose.Types.ObjectId(warehouseId) : null;
 
-          // ── Stock calculation ───────────────────────────────────────────
-          // Get all warehouses that have had any stock movement for this product
-          const allWarehouseIds = await StockMovement.find({
-            productId: product._id
-          }).distinct('warehouseId');
+    // 1) Dealer pricing for all products on this page (one query)
+    const pricingDocs = await DealerPricing.find({
+      product: { $in: productIds },
+      isActive: true,
+    }).select('product sellingPrice purchasePrice').lean();
+    const pricingMap = {};
+    pricingDocs.forEach(p => { pricingMap[p.product.toString()] = p; });
 
-          // If a specific warehouse is requested, only look at that one;
-          // otherwise look at all warehouses that have movements
-          const warehouseIdsToCheck = warehouseId
-            ? allWarehouseIds.filter(id => id.toString() === warehouseId)
-            : allWarehouseIds;
+    // 2) Active sales discount mappings (loaded once, resolved in memory)
+    const DiscountMapping = req.dbConnection.models.DiscountMapping
+      || req.dbConnection.model('DiscountMapping', discountMappingSchema);
+    const now = new Date();
+    const allMappings = await DiscountMapping.find({
+      mappingType: 'sales',
+      status:      'Approved',
+      isActive:    true,
+      validFrom:   { $lte: now },
+      validTo:     { $gte: now },
+    }).sort({ priority: -1, createdAt: -1 }).lean();
 
-          // Also check the selected warehouse even if it has no movements yet
-          if (warehouseId && warehouseIdsToCheck.length === 0) {
-            warehouseIdsToCheck.push(warehouseId);
-          }
+    const seAllowedLevels = req.user?.allowedDiscountLevels || [];
+    const dealerType = dealerDoc?.dealerType;
+    const matchesDealerType = (m) => {
+      if (!dealerType) return true;
+      const adt = m.applicableDealerTypes;
+      if (!adt || adt.length === 0) return true;
+      return adt.some(t => String(t) === String(dealerType));
+    };
+    // Priority order: product > brand > subcategory > category (mappings pre-sorted by priority)
+    const resolveDiscount = (product) => {
+      const pick = (predicate) => allMappings.find(m => matchesDealerType(m) && predicate(m));
+      let d = pick(m => m.targetType === 'product' && String(m.product) === String(product._id));
+      if (!d && product.brand?._id)        d = pick(m => m.targetType === 'brand'       && String(m.brand)       === String(product.brand._id));
+      if (!d && product.subcategory?._id)  d = pick(m => m.targetType === 'subcategory' && String(m.subcategory) === String(product.subcategory._id));
+      if (!d && product.category?._id)     d = pick(m => m.targetType === 'category'    && String(m.category)    === String(product.category._id));
+      if (!d) return null;
+      const allLevels = d.levels || [];
+      const allowedLevels = seAllowedLevels.length > 0
+        ? allLevels.filter(l => seAllowedLevels.includes(l.levelName))
+        : allLevels;
+      return {
+        discountMappingId:     d._id,
+        discountMappingName:   d.discountName,
+        discountType:          d.discountType,
+        directDiscountPct:     d.directDiscountPercentage || 0,
+        maxDiscountPercentage: d.maxDiscountPercentage || 0,
+        availableLevels: allowedLevels.map(l => ({
+          levelName:          l.levelName,
+          discountPercentage: l.discountPercentage,
+          description:        l.description || '',
+        })),
+        hasOffer: (d.directDiscountPercentage || 0) > 0 || allLevels.length > 0,
+      };
+    };
 
-          const warehouseStock = [];
-          let totalStock = 0;
+    // 3) Stock — batched aggregations across all products on this page
+    const stockMatch = { productId: { $in: productIds } };
+    if (whObjId) stockMatch.warehouseId = whObjId;
 
-          for (const whId of warehouseIdsToCheck) {
-            const warehouse = await Warehouse.findById(whId).select('name');
-            if (!warehouse) continue;
+    const [balanceRows, blockedRows, unblockedRows, grnDocs, total] = await Promise.all([
+      // Latest balance per (product, warehouse)
+      StockMovement.aggregate([
+        { $match: stockMatch },
+        { $sort: { date: -1, createdAt: -1 } },
+        { $group: { _id: { p: '$productId', w: '$warehouseId' }, balance: { $first: '$balance' } } },
+      ]),
+      // Blocked (OUT / "Stock Blocked")
+      StockMovement.aggregate([
+        { $match: { ...stockMatch, type: 'OUT', referenceType: 'SALE', remarks: { $regex: 'Stock Blocked' } } },
+        { $group: { _id: { p: '$productId', w: '$warehouseId' }, qty: { $sum: '$quantity' } } },
+      ]),
+      // Unblocked (IN / "Stock Unblocked")
+      StockMovement.aggregate([
+        { $match: { ...stockMatch, type: 'IN', referenceType: 'SALE', remarks: { $regex: 'Stock Unblocked' } } },
+        { $group: { _id: { p: '$productId', w: '$warehouseId' }, qty: { $sum: '$quantity' } } },
+      ]),
+      // Damaged from GRNs
+      GRN.find(
+        whObjId
+          ? { warehouseId: whObjId, 'items.productId': { $in: productIds } }
+          : { 'items.productId': { $in: productIds } }
+      ).select('warehouseId items.productId items.damageQuantity').lean(),
+      // Total count for pagination (runs in parallel)
+      Product.countDocuments(query),
+    ]);
 
-            // Get current stock from latest balance in StockMovement
-            const latestMovement = await StockMovement.findOne({
-              productId: product._id,
-              warehouseId: whId,
-            }).sort({ date: -1, createdAt: -1 });
+    const balByPair   = {};
+    const blkByPair   = {};
+    const unblkByPair = {};
+    const dmgByPair   = {};
+    const whIdSet     = new Set();
 
-            const currentStock = latestMovement?.balance ?? 0;
+    balanceRows.forEach(r => {
+      const key = `${r._id.p}_${r._id.w}`;
+      balByPair[key] = r.balance;
+      whIdSet.add(r._id.w.toString());
+    });
+    blockedRows.forEach(r => { blkByPair[`${r._id.p}_${r._id.w}`] = r.qty; });
+    unblockedRows.forEach(r => { unblkByPair[`${r._id.p}_${r._id.w}`] = r.qty; });
+    grnDocs.forEach(g => {
+      const w = g.warehouseId?.toString();
+      if (!w) return;
+      (g.items || []).forEach(it => {
+        const pid = it.productId?._id ? it.productId._id.toString() : it.productId?.toString();
+        if (!pid) return;
+        const key = `${pid}_${w}`;
+        dmgByPair[key] = (dmgByPair[key] || 0) + (it.damageQuantity || 0);
+      });
+    });
 
-            // Calculate damaged stock from GRN items
-            const grns = await GRN.find({
-              'items.productId': product._id,
-              warehouseId: whId
-            });
+    if (warehouseId) whIdSet.add(warehouseId);
 
-            let damagedQty = 0;
-            grns.forEach(grn => {
-              if (grn.items && Array.isArray(grn.items)) {
-                grn.items.forEach(item => {
-                  const itemProductId = item.productId?._id
-                    ? item.productId._id.toString()
-                    : item.productId?.toString();
-                  if (itemProductId === product._id.toString()) {
-                    damagedQty += item.damageQuantity || 0;
-                  }
-                });
-              }
-            });
+    // Warehouse names (one query)
+    const whDocs = await Warehouse.find({ _id: { $in: [...whIdSet] } }).select('name').lean();
+    const whNameMap = {};
+    whDocs.forEach(w => { whNameMap[w._id.toString()] = w.name; });
 
-            // Calculate blocked stock (OUT with "Stock Blocked" minus IN with "Stock Unblocked")
-            const [blockedMovements, unblockedMovements] = await Promise.all([
-              StockMovement.find({
-                productId: product._id,
-                warehouseId: whId,
-                type: 'OUT',
-                referenceType: 'SALE',
-                remarks: { $regex: /Stock Blocked/ }
-              }),
-              StockMovement.find({
-                productId: product._id,
-                warehouseId: whId,
-                type: 'IN',
-                referenceType: 'SALE',
-                remarks: { $regex: /Stock Unblocked/ }
-              }),
-            ]);
+    const buildStock = (product) => {
+      const pid = product._id.toString();
+      const whIds = warehouseId
+        ? [warehouseId]
+        : [...whIdSet].filter(w => balByPair[`${pid}_${w}`] !== undefined);
 
-            let blockedQty = 0;
-            blockedMovements.forEach(m => { blockedQty += m.quantity || 0; });
-            unblockedMovements.forEach(m => { blockedQty -= m.quantity || 0; });
-            blockedQty = Math.max(0, blockedQty);
+      const warehouseStock = [];
+      let totalStock = 0;
+      for (const w of whIds) {
+        const key = `${pid}_${w}`;
+        const currentStock = balByPair[key] ?? 0;
+        const damagedQty   = dmgByPair[key] ?? 0;
+        let blockedQty     = (blkByPair[key] ?? 0) - (unblkByPair[key] ?? 0);
+        blockedQty = Math.max(0, blockedQty);
+        const netStock = Math.max(0, currentStock - damagedQty - blockedQty);
+        warehouseStock.push({
+          warehouseId:   w.toString(),
+          warehouseName: whNameMap[w] || '',
+          quantity:      currentStock,
+          damaged:       damagedQty,
+          blocked:       blockedQty,
+          net:           netStock,
+        });
+        totalStock += netStock;
+      }
+      const availableStock = warehouseId
+        ? (warehouseStock.find(x => x.warehouseId === warehouseId)?.net ?? 0)
+        : totalStock;
+      return { warehouseStock, totalStock, availableStock };
+    };
 
-            const netStock = Math.max(0, currentStock - damagedQty - blockedQty);
+    // 4) Assemble response (all in-memory now — no per-product queries)
+    const productsWithDetails = products.map((product) => {
+      try {
+        const pricing = pricingMap[product._id.toString()] || null;
+        const { warehouseStock, totalStock, availableStock } = buildStock(product);
+        const isOutOfStock = availableStock <= 0;
+        const isLowStock   = !isOutOfStock && product.minStockLevel && availableStock <= product.minStockLevel;
 
-            // Always include the warehouse entry so the frontend knows about it
-            warehouseStock.push({
-              warehouseId:   whId.toString(),
-              warehouseName: warehouse.name,
-              quantity:      currentStock,
-              damaged:       damagedQty,
-              blocked:       blockedQty,
-              net:           netStock,
-            });
+        const discountInfo = resolveDiscount(product);
+        const dealerExtraDiscountPct = dealerDoc ? findDealerExtraDiscount(product, dealerDoc) : 0;
 
-            totalStock += netStock;
-          }
-
-          // availableStock = net stock in the requested warehouse, or total across all
-          const availableStock = warehouseId
-            ? (warehouseStock.find(w => w.warehouseId === warehouseId)?.net ?? 0)
-            : totalStock;
-
-          const isOutOfStock = availableStock <= 0;
-          const isLowStock   = !isOutOfStock && product.minStockLevel && availableStock <= product.minStockLevel;
-
-          // ── Discount data for this product ──────────────────────────────
-          const seAllowedLevels = req.user?.allowedDiscountLevels || [];
-          const discountInfo = await findProductDiscount(
-            product._id, product, dealerDoc?.dealerType, req.dbConnection, seAllowedLevels
-          );
-          const dealerExtraDiscountPct = dealerDoc ? findDealerExtraDiscount(product, dealerDoc) : 0;
-
-          return {
-            _id: product._id,
-            productCode: product.productCode,
-            itemName: product.itemName,
-            HSNCode: product.HSNCode,
-            description: product.description,
-            unit: product.unit,
-            gst: product.gst,
-            brandName: product.brand?.name || 'N/A',
-            brandId: product.brand?._id,
-            categoryName: product.category?.name || 'N/A',
-            categoryId: product.category?._id,
-            subcategoryName: product.subcategory?.name || 'N/A',
-            subcategoryId: product.subcategory?._id,
-            dealerPrice: product.mrp || product.totalAmount || ((pricing?.sellingPrice || (product.rateSlabs?.[0]?.rate || 0)) * (1 + (product.gst || 0) / 100)),
-            basePrice: pricing?.sellingPrice || product.rateSlabs?.[0]?.rate || 0,
-            images: product.images || [],
-            availableStock,
-            warehouseStock,
-            totalStock,
-            isOutOfStock,
-            isLowStock,
-            minStockLevel: product.minStockLevel,
-            // Discount info
-            discountMappingId:      discountInfo?.discountMappingId || null,
-            discountMappingName:    discountInfo?.discountMappingName || '',
-            discountType:           discountInfo?.discountType || null,
-            directDiscountPct:      discountInfo?.directDiscountPct || 0,
-            maxDiscountPercentage:  discountInfo?.maxDiscountPercentage || 0,
-            availableLevels:        discountInfo?.availableLevels || [],
-            hasOffer:               discountInfo?.hasOffer || false,
-            dealerExtraDiscountPct,
-          };
-        } catch (error) {
-          console.error(`Error getting details for product ${product._id}:`, error);
-          return {
-            _id: product._id,
-            productCode: product.productCode,
-            itemName: product.itemName,
-            HSNCode: product.HSNCode,
-            brandName: product.brand?.name || 'N/A',
-            categoryName: product.category?.name || 'N/A',
-            subcategoryName: product.subcategory?.name || 'N/A',
-            dealerPrice: product.mrp || product.totalAmount || ((product.rateSlabs?.[0]?.rate || 0) * (1 + (product.gst || 0) / 100)),
-            basePrice: product.rateSlabs?.[0]?.rate || 0,
-            images: product.images || [],
-            availableStock: 0,
-            warehouseStock: [],
-            totalStock: 0,
-            isOutOfStock: true,
-            isLowStock: false
-          };
-        }
-      })
-    );
-
-    const total = await Product.countDocuments(query);
+        return {
+          _id: product._id,
+          productCode: product.productCode,
+          itemName: product.itemName,
+          HSNCode: product.HSNCode,
+          description: product.description,
+          unit: product.unit,
+          gst: product.gst,
+          brandName: product.brand?.name || 'N/A',
+          brandId: product.brand?._id,
+          categoryName: product.category?.name || 'N/A',
+          categoryId: product.category?._id,
+          subcategoryName: product.subcategory?.name || 'N/A',
+          subcategoryId: product.subcategory?._id,
+          dealerPrice: product.mrp || product.totalAmount || ((pricing?.sellingPrice || (product.rateSlabs?.[0]?.rate || 0)) * (1 + (product.gst || 0) / 100)),
+          basePrice: pricing?.sellingPrice || product.rateSlabs?.[0]?.rate || 0,
+          images: product.images || [],
+          availableStock,
+          warehouseStock,
+          totalStock,
+          isOutOfStock,
+          isLowStock,
+          minStockLevel: product.minStockLevel,
+          // Discount info
+          discountMappingId:      discountInfo?.discountMappingId || null,
+          discountMappingName:    discountInfo?.discountMappingName || '',
+          discountType:           discountInfo?.discountType || null,
+          directDiscountPct:      discountInfo?.directDiscountPct || 0,
+          maxDiscountPercentage:  discountInfo?.maxDiscountPercentage || 0,
+          availableLevels:        discountInfo?.availableLevels || [],
+          hasOffer:               discountInfo?.hasOffer || false,
+          dealerExtraDiscountPct,
+        };
+      } catch (error) {
+        console.error(`Error getting details for product ${product._id}:`, error);
+        return {
+          _id: product._id,
+          productCode: product.productCode,
+          itemName: product.itemName,
+          HSNCode: product.HSNCode,
+          brandName: product.brand?.name || 'N/A',
+          categoryName: product.category?.name || 'N/A',
+          subcategoryName: product.subcategory?.name || 'N/A',
+          dealerPrice: product.mrp || product.totalAmount || ((product.rateSlabs?.[0]?.rate || 0) * (1 + (product.gst || 0) / 100)),
+          basePrice: product.rateSlabs?.[0]?.rate || 0,
+          images: product.images || [],
+          availableStock: 0,
+          warehouseStock: [],
+          totalStock: 0,
+          isOutOfStock: true,
+          isLowStock: false
+        };
+      }
+    });
 
     console.log(`✅ Found ${productsWithDetails.length} products`);
 
