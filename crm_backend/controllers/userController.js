@@ -10,6 +10,25 @@ const getModels = (dbConnection) => {
   };
 };
 
+// Validate a username: required, no "@" (so it can never be an email), and only
+// letters/numbers/dot/underscore/hyphen. Returns an error string or null if OK.
+const validateUsername = (username) => {
+  if (!username || !username.trim()) return 'Username is required';
+  const u = username.trim();
+  if (u.includes('@')) return 'Username cannot be an email address (no "@" allowed). Use a plain username like "nilesh".';
+  if (!/^[a-zA-Z0-9._-]+$/.test(u)) return 'Username can only contain letters, numbers, dot, underscore and hyphen';
+  if (u.length < 3) return 'Username must be at least 3 characters long';
+  return null;
+};
+
+// Validate email format if provided (email is optional). Returns error or null.
+const validateEmailFormat = (email) => {
+  if (!email || !email.trim()) return null; // optional
+  const e = email.trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) return 'Please enter a valid email address';
+  return null;
+};
+
 // Get all users (Super admin only)
 export const getUsers = async (req, res) => {
   try {
@@ -134,6 +153,16 @@ export const createUser = async (req, res) => {
       location
     } = req.body;
 
+    // Validate username + email format (clear messages returned to the screen)
+    const usernameError = validateUsername(username);
+    if (usernameError) {
+      return res.status(400).json({ success: false, message: usernameError });
+    }
+    const emailError = validateEmailFormat(email);
+    if (emailError) {
+      return res.status(400).json({ success: false, message: emailError });
+    }
+
     // Check if user already exists (case-insensitive, skip empty values)
     const esc = (v) => v.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const dupConds = [];
@@ -232,6 +261,16 @@ export const updateUser = async (req, res) => {
         success: false,
         message: 'User not found'
       });
+    }
+
+    // Validate username + email format (clear messages returned to the screen)
+    const usernameError = validateUsername(username);
+    if (usernameError) {
+      return res.status(400).json({ success: false, message: usernameError });
+    }
+    const emailFmtError = validateEmailFormat(email);
+    if (emailFmtError) {
+      return res.status(400).json({ success: false, message: emailFmtError });
     }
 
     // Check for duplicate email or username (case-insensitive, excluding current user)

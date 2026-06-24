@@ -36,15 +36,16 @@ export const login = async (req, res) => {
     // Check if model already exists, otherwise create it
     const User = dbConnection.models.User || dbConnection.model('User', userSchema);
 
-    // Find ALL users matching email or username (there can be duplicates if an
-    // email was reused for another account — e.g. a sales executive created with
-    // the same gmail as the super admin). We must not blindly take the first one.
-    const candidates = await User.find({
-      $or: [
-        { email: email },
-        { username: email } // Allow username in the email field for login
-      ]
-    }).select('+password');
+    // Route the lookup by format: anything containing "@" is treated as an email,
+    // otherwise as a username. Usernames can never contain "@", so the two never
+    // overlap — this removes the email-vs-username ambiguity. A case-insensitive
+    // exact match is used so "Admin@x.com" and "admin@x.com" resolve the same.
+    const loginId = (email || '').trim();
+    const escLogin = loginId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const idRegex = new RegExp(`^${escLogin}$`, 'i');
+    const lookupField = loginId.includes('@') ? { email: idRegex } : { username: idRegex };
+
+    const candidates = await User.find(lookupField).select('+password');
 
     if (!candidates || candidates.length === 0) {
       console.log(`❌ User not found: ${email} in ${company} database`);
