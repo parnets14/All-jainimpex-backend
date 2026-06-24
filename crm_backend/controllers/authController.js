@@ -36,14 +36,17 @@ export const login = async (req, res) => {
     // Check if model already exists, otherwise create it
     const User = dbConnection.models.User || dbConnection.model('User', userSchema);
 
-    // Check if user exists in this company's database (allow login by email OR username)
-    const user = await User.findOne({
+    // Find ALL users matching email or username (there can be duplicates if an
+    // email was reused for another account — e.g. a sales executive created with
+    // the same gmail as the super admin). We must not blindly take the first one.
+    const candidates = await User.find({
       $or: [
         { email: email },
         { username: email } // Allow username in the email field for login
       ]
     }).select('+password');
-    if (!user) {
+
+    if (!candidates || candidates.length === 0) {
       console.log(`❌ User not found: ${email} in ${company} database`);
       return res.status(401).json({
         success: false,
@@ -51,21 +54,40 @@ export const login = async (req, res) => {
       });
     }
 
+    // Disambiguate by password: only the account whose password matches is the
+    // one trying to log in. This lets the right person in even when an email is
+    // shared by two accounts.
+    const matched = [];
+    for (const c of candidates) {
+      // eslint-disable-next-line no-await-in-loop
+      if (await c.comparePassword(password)) matched.push(c);
+    }
+
+    if (matched.length === 0) {
+      console.log(`❌ Invalid password for: ${email}`);
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials'
+      });
+    }
+
+    // If still more than one (same email AND same password), prefer the exact
+    // email match, then an Active account.
+    matched.sort((a, b) => {
+      const aEmail = a.email === email ? 0 : 1;
+      const bEmail = b.email === email ? 0 : 1;
+      if (aEmail !== bEmail) return aEmail - bEmail;
+      const aActive = a.status === 'Active' ? 0 : 1;
+      const bActive = b.status === 'Active' ? 0 : 1;
+      return aActive - bActive;
+    });
+    const user = matched[0];
+
     // Check if user is active
     if (user.status !== 'Active') {
       return res.status(401).json({
         success: false,
         message: 'Your account has been deactivated. Please contact administrator.'
-      });
-    }
-
-    // Check password
-    const isPasswordValid = await user.comparePassword(password);
-    if (!isPasswordValid) {
-      console.log(`❌ Invalid password for: ${email}`);
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid credentials'
       });
     }
 

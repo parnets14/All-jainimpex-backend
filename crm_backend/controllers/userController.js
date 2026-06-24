@@ -134,15 +134,21 @@ export const createUser = async (req, res) => {
       location
     } = req.body;
 
-    // Check if user already exists
-    const existingUser = await User.findOne({
-      $or: [{ email }, { username }]
-    });
+    // Check if user already exists (case-insensitive, skip empty values)
+    const esc = (v) => v.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const dupConds = [];
+    if (email && email.trim()) dupConds.push({ email: new RegExp(`^${esc(email)}$`, 'i') });
+    if (username && username.trim()) dupConds.push({ username: new RegExp(`^${esc(username)}$`, 'i') });
+
+    const existingUser = dupConds.length ? await User.findOne({ $or: dupConds }) : null;
 
     if (existingUser) {
+      const sameEmail = email && existingUser.email && existingUser.email.toLowerCase() === email.trim().toLowerCase();
       return res.status(400).json({
         success: false,
-        message: 'User already exists with this email or username'
+        message: sameEmail
+          ? 'A user already exists with this email. Each user must have a unique email.'
+          : 'User already exists with this email or username'
       });
     }
 
@@ -228,18 +234,23 @@ export const updateUser = async (req, res) => {
       });
     }
 
-    // Check for duplicate email or username (excluding current user)
-    const existingUser = await User.findOne({
-      $and: [
-        { _id: { $ne: req.params.id } },
-        { $or: [{ email }, { username }] }
-      ]
-    });
+    // Check for duplicate email or username (case-insensitive, excluding current user)
+    const esc = (v) => v.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const dupConds = [];
+    if (email && email.trim()) dupConds.push({ email: new RegExp(`^${esc(email)}$`, 'i') });
+    if (username && username.trim()) dupConds.push({ username: new RegExp(`^${esc(username)}$`, 'i') });
+
+    const existingUser = dupConds.length
+      ? await User.findOne({ $and: [{ _id: { $ne: req.params.id } }, { $or: dupConds }] })
+      : null;
 
     if (existingUser) {
+      const sameEmail = email && existingUser.email && existingUser.email.toLowerCase() === email.trim().toLowerCase();
       return res.status(400).json({
         success: false,
-        message: 'Another user already exists with this email or username'
+        message: sameEmail
+          ? 'Another user already exists with this email. Each user must have a unique email.'
+          : 'Another user already exists with this email or username'
       });
     }
 
