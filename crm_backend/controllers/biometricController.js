@@ -29,23 +29,20 @@ export const ingestPunches = async (req, res) => {
     const ops = [];
     let maxSourceId = 0;
     for (const p of punches) {
-      const sourceId = parseInt(p.sourceId, 10);
-      if (!Number.isFinite(sourceId) || !p.cardNo || !p.punchAt) continue;
+      if (!p.cardNo || !p.punchAt) continue;
       const punchAt = new Date(p.punchAt);
       if (isNaN(punchAt.getTime())) continue;
-      if (sourceId > maxSourceId) maxSourceId = sourceId;
+      const cardNo = String(p.cardNo).trim();
+      const machineNo = String(p.machineNo || '1');
+      const sourceId = Number.isFinite(parseInt(p.sourceId, 10)) ? parseInt(p.sourceId, 10) : null;
+      if (sourceId && sourceId > maxSourceId) maxSourceId = sourceId;
 
       ops.push({
         updateOne: {
-          filter: { sourceId, machineNo: String(p.machineNo || '1') },
+          // Idempotent on who + when + which device
+          filter: { cardNo, punchAt, machineNo },
           update: {
-            $setOnInsert: {
-              cardNo: String(p.cardNo).trim(),
-              punchAt,
-              machineNo: String(p.machineNo || '1'),
-              sourceId,
-              processed: false,
-            },
+            $setOnInsert: { cardNo, punchAt, machineNo, sourceId, processed: false },
           },
           upsert: true,
         },
@@ -59,16 +56,16 @@ export const ingestPunches = async (req, res) => {
     const result = await BiometricPunch.bulkWrite(ops, { ordered: false });
     const inserted = result.upsertedCount || 0;
 
-    const latest = await BiometricPunch.findOne().sort({ sourceId: -1 }).select('sourceId').lean();
+    const latest = await BiometricPunch.findOne().sort({ punchAt: -1 }).select('punchAt').lean();
 
-    console.log(`🟢 [biometric/${company}] received ${punches.length}, inserted ${inserted}, lastSourceId ${latest?.sourceId ?? maxSourceId}`);
+    console.log(`🟢 [biometric/${company}] received ${punches.length}, inserted ${inserted}, lastPunchAt ${latest?.punchAt ?? 'n/a'}`);
 
     res.json({
       success: true,
       received: punches.length,
       inserted,
       duplicates: ops.length - inserted,
-      lastSourceId: latest ? latest.sourceId : maxSourceId,
+      lastPunchAt: latest ? latest.punchAt : null,
     });
   } catch (e) {
     console.error('ingestPunches error:', e);
@@ -87,9 +84,14 @@ export const getSyncState = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid or missing company' });
     }
     const BiometricPunch = getModel(company);
-    const latest = await BiometricPunch.findOne().sort({ sourceId: -1 }).select('sourceId').lean();
+    const latest = await BiometricPunch.findOne().sort({ punchAt: -1 }).select('punchAt sourceId').lean();
     const total = await BiometricPunch.estimatedDocumentCount();
-    res.json({ success: true, lastSourceId: latest ? latest.sourceId : 0, total });
+    res.json({
+      success: true,
+      lastSourceId: latest && latest.sourceId ? latest.sourceId : 0,
+      lastPunchAt: latest ? latest.punchAt : null,
+      total,
+    });
   } catch (e) {
     console.error('getSyncState error:', e);
     res.status(500).json({ success: false, message: e.message });
