@@ -9,6 +9,8 @@ import connectDB from "./config/db.js";
 import { initializeAllConnections } from "./config/multiDatabase.js"; // Add multi-database support
 import authRoutes from "./routes/authRoutes.js";
 import { enforceRoutePermissions } from "./middleware/routePermissions.js";
+import biometricRoutes from "./routes/biometricRoutes.js";
+import biometricViewRoutes from "./routes/biometricViewRoutes.js";
 import userRoutes from "./routes/userRoutes.js"; // Add this import
 import dealertypeRoutes from "./routes/dealertypeRoutes.js";
 import dealercategoryRouter from "./routes/dealerCategoryRoutes.js";
@@ -326,6 +328,10 @@ app.get("/api/", (req, res) => {
 
 app.use("/api/auth", authRoutes);
 
+// Biometric device sync agent (API-key auth, NOT user JWT) — mounted before the
+// permission middleware so it isn't blocked by user-permission enforcement.
+app.use("/api/biometric", biometricRoutes);
+
 // Enforce route-level permissions globally (after auth, before feature routes).
 // Auth routes are excluded (mounted above). Super_admin bypasses automatically.
 app.use('/api', enforceRoutePermissions);
@@ -333,6 +339,7 @@ app.use('/api', enforceRoutePermissions);
 app.use("/api/users", userRoutes);
 app.use("/api/employees", employeeRoutes);
 app.use("/api/attendance", attendanceRoutes);
+app.use("/api/biometric-view", biometricViewRoutes);
 app.use("/api/dealer-types", dealertypeRoutes);
 app.use("/api/dealer-categories", dealercategoryRouter);
 app.use("/api/dealers", dealerRoutes);
