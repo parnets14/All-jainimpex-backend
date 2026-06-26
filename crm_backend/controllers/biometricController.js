@@ -1,10 +1,16 @@
 import { biometricPunchSchema } from '../models/BiometricPunch.js';
+import { biometricEmployeeSchema } from '../models/BiometricEmployee.js';
 import { getCompanyConnection, isValidCompany } from '../config/multiDatabase.js';
 
 // Resolve the BiometricPunch model on the right company's database
 const getModel = (company) => {
   const conn = getCompanyConnection(company);
   return conn.models.BiometricPunch || conn.model('BiometricPunch', biometricPunchSchema);
+};
+
+const getEmpModel = (company) => {
+  const conn = getCompanyConnection(company);
+  return conn.models.BiometricEmployee || conn.model('BiometricEmployee', biometricEmployeeSchema);
 };
 
 /**
@@ -74,6 +80,42 @@ export const ingestPunches = async (req, res) => {
 };
 
 /**
+ * POST /api/biometric/employees  (device agent, API key)
+ * Body: { company, employees: [{ cardNo, name, empCode }] }
+ * Upserts the card->name map synced from the RealTime Mst_Employee table.
+ */
+export const ingestEmployees = async (req, res) => {
+  try {
+    const { company, employees } = req.body;
+    if (!company || !isValidCompany(company)) {
+      return res.status(400).json({ success: false, message: 'Invalid or missing company' });
+    }
+    if (!Array.isArray(employees) || employees.length === 0) {
+      return res.status(400).json({ success: false, message: 'No employees provided' });
+    }
+    const Emp = getEmpModel(company);
+    const ops = [];
+    for (const e of employees) {
+      const cardNo = String(e.cardNo || '').trim();
+      if (!cardNo) continue;
+      ops.push({
+        updateOne: {
+          filter: { cardNo },
+          update: { $set: { name: String(e.name || '').trim(), empCode: String(e.empCode || '').trim() } },
+          upsert: true,
+        },
+      });
+    }
+    if (ops.length === 0) return res.json({ success: true, upserted: 0 });
+    const result = await Emp.bulkWrite(ops, { ordered: false });
+    res.json({ success: true, received: employees.length, matched: result.modifiedCount || 0, inserted: result.upsertedCount || 0 });
+  } catch (e) {
+    console.error('ingestEmployees error:', e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+};
+
+/**
  * GET /api/biometric/sync-state?company=jain-impex
  * Tells the agent the highest sourceId already stored, so it can resume from there.
  */
@@ -107,6 +149,8 @@ export const listPunches = async (req, res) => {
   try {
     const BiometricPunch = req.dbConnection.models.BiometricPunch
       || req.dbConnection.model('BiometricPunch', biometricPunchSchema);
+    const BiometricEmployee = req.dbConnection.models.BiometricEmployee
+      || req.dbConnection.model('BiometricEmployee', biometricEmployeeSchema);
 
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
@@ -114,7 +158,13 @@ export const listPunches = async (req, res) => {
 
     const query = {};
     if (search && search.trim()) {
-      query.cardNo = { $regex: search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+      const safe = search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const rx = { $regex: safe, $options: 'i' };
+      // Search by card no OR by employee name (resolve names -> their cardNos)
+      const matchedEmps = await BiometricEmployee.find({ name: rx }).select('cardNo').lean();
+      const cardsFromName = matchedEmps.map((e) => e.cardNo);
+      query.$or = [{ cardNo: rx }];
+      if (cardsFromName.length) query.$or.push({ cardNo: { $in: cardsFromName } });
     }
     if (from || to) {
       query.punchAt = {};
@@ -132,9 +182,20 @@ export const listPunches = async (req, res) => {
       BiometricPunch.findOne().sort({ punchAt: -1 }).select('punchAt').lean(),
     ]);
 
+    // Attach employee name/code from the synced card map
+    const cardNos = [...new Set(rows.map((r) => r.cardNo))];
+    const emps = await BiometricEmployee.find({ cardNo: { $in: cardNos } }).select('cardNo name empCode').lean();
+    const empByCard = {};
+    emps.forEach((e) => { empByCard[e.cardNo] = e; });
+    const punches = rows.map((r) => ({
+      ...r,
+      employeeName: empByCard[r.cardNo]?.name || '',
+      empCode: empByCard[r.cardNo]?.empCode || '',
+    }));
+
     res.json({
       success: true,
-      punches: rows,
+      punches,
       page,
       limit,
       total,

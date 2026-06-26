@@ -37,39 +37,35 @@ router.post(
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 
-      // Check if already punched in today
-      const existingAttendance = await Attendance.findOne({
+      let attendance = await Attendance.findOne({
         employee: employeeId,
         date: today,
       });
+      if (!attendance) {
+        attendance = new Attendance({ employee: employeeId, date: today, sessions: [] });
+      }
 
-      if (existingAttendance && existingAttendance.punchIn) {
+      const sessions = attendance.sessions || [];
+      const last = sessions[sessions.length - 1];
+      const hasOpen = last && last.in && last.in.time && (!last.out || !last.out.time);
+      if (hasOpen) {
         return res.status(400).json({
           success: false,
-          message: "Already punched in for today",
+          message: "Already punched in. Please punch out first.",
         });
       }
 
-      const attendanceData = {
-        employee: employeeId,
-        date: today,
-        punchIn: {
+      sessions.push({
+        in: {
           time: new Date(),
           location: location || "Office",
           faceVerified: faceVerified || false,
+          source: "web",
         },
-      };
-
-      let attendance;
-      if (existingAttendance) {
-        attendance = await Attendance.findByIdAndUpdate(
-          existingAttendance._id,
-          attendanceData,
-          { new: true }
-        );
-      } else {
-        attendance = await Attendance.create(attendanceData);
-      }
+      });
+      attendance.sessions = sessions;
+      attendance.markModified("sessions");
+      await attendance.save();
 
       await attendance.populate(
         "employee",
@@ -108,25 +104,34 @@ router.post(
         date: today,
       });
 
-      if (!attendance) {
+      if (!attendance || !attendance.sessions || attendance.sessions.length === 0) {
         return res.status(404).json({
           success: false,
           message: "No punch in record found for today",
         });
       }
 
-      if (attendance.punchOut && attendance.punchOut.time) {
+      const last = attendance.sessions[attendance.sessions.length - 1];
+      if (!last.in || !last.in.time) {
         return res.status(400).json({
           success: false,
-          message: "Already punched out for today",
+          message: "No open punch-in to close.",
+        });
+      }
+      if (last.out && last.out.time) {
+        return res.status(400).json({
+          success: false,
+          message: "Already punched out. Please punch in first.",
         });
       }
 
-      attendance.punchOut = {
+      last.out = {
         time: new Date(),
         location: location || "Office",
         faceVerified: faceVerified || false,
+        source: "web",
       };
+      attendance.markModified("sessions");
 
       await attendance.save();
       await attendance.populate(

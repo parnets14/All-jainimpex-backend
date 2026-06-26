@@ -39,6 +39,21 @@ const salarySlipSchema = new mongoose.Schema({
   lopDays: Number,
   lopAmount: Number,
   hoursWorked: Number,
+
+  // ── HRMS earnings (Points 5, 12) ──
+  otMinutes: { type: Number, default: 0 },
+  otAmount: { type: Number, default: 0 },
+  incentiveBonus: { type: Number, default: 0 },   // manual monthly (admin-entered)
+
+  // ── HRMS deductions (Points 2, 4, 7, 12) ──
+  lateDays: { type: Number, default: 0 },
+  lateDeduction: { type: Number, default: 0 },
+  shortfallMinutes: { type: Number, default: 0 },
+  shortfallDeduction: { type: Number, default: 0 },
+  loanDeduction: { type: Number, default: 0 },
+  loanRefs: [{ loanId: mongoose.Schema.Types.ObjectId, amount: Number }],
+  manualAdjustment: { type: Number, default: 0 }, // manual one-off deduction
+  adjustmentReason: { type: String, default: '' },
   salaryType: {
     type: String,
     enum: ["fixed", "daily", "hourly"],

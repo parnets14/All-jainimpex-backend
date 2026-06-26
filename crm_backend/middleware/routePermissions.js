@@ -79,6 +79,7 @@ const ROUTE_PERMISSION_MAP = {
 
   // HRMS
   'attendance': 'attendance.master',
+  'hrms': 'attendance.master',
   'salary': 'salary.management',
   'claims': 'expense.claims',
   'claim-types': 'expense.claims',

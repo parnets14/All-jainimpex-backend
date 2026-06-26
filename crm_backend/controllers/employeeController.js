@@ -171,6 +171,9 @@ export const createEmployee = async (req, res) => {
       designation,
       department,
       dateOfJoining,
+      shiftStart, // Point 3
+      shiftEnd,
+      weeklyOff,
       phoneNumber, // NEW
       email,
       bankName,
@@ -269,6 +272,9 @@ export const createEmployee = async (req, res) => {
       designation: designation.trim(),
       department: department.trim(),
       dateOfJoining,
+      shiftStart: shiftStart || "10:00",
+      shiftEnd: shiftEnd || "18:00",
+      weeklyOff: weeklyOff || "Sunday",
       phoneNumber: phoneNumber ? phoneNumber.trim() : "", // NEW
       email: email ? email.trim().toLowerCase() : "", // NEW
       bankName: bankName.trim(),
@@ -408,6 +414,9 @@ export const updateEmployee = async (req, res) => {
       designation,
       department,
       dateOfJoining,
+      shiftStart, // Point 3
+      shiftEnd,
+      weeklyOff,
       phoneNumber, // NEW
       email, // NEW
       bankName,
@@ -452,6 +461,9 @@ export const updateEmployee = async (req, res) => {
     if (name !== undefined) updateData.name = name.trim();
     if (designation !== undefined) updateData.designation = designation.trim();
     if (department !== undefined) updateData.department = department.trim();
+    if (shiftStart !== undefined) updateData.shiftStart = shiftStart;
+    if (shiftEnd !== undefined) updateData.shiftEnd = shiftEnd;
+    if (weeklyOff !== undefined) updateData.weeklyOff = weeklyOff;
     if (dateOfJoining !== undefined) updateData.dateOfJoining = dateOfJoining;
     if (phoneNumber !== undefined)
       updateData.phoneNumber = phoneNumber ? phoneNumber.trim() : ""; // NEW

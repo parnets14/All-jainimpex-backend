@@ -1,5 +1,5 @@
 import express from 'express';
-import { ingestPunches, getSyncState } from '../controllers/biometricController.js';
+import { ingestPunches, getSyncState, ingestEmployees } from '../controllers/biometricController.js';
 
 const router = express.Router();
 
@@ -17,6 +17,7 @@ const requireApiKey = (req, res, next) => {
 };
 
 router.post('/punch', requireApiKey, ingestPunches);
+router.post('/employees', requireApiKey, ingestEmployees);
 router.get('/sync-state', requireApiKey, getSyncState);
 
 export default router;

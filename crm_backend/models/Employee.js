@@ -290,6 +290,23 @@ const employeeSchema = new mongoose.Schema({
     required: [true, 'Date of joining is required']
   },
 
+  // ── Shift & weekly off (Point 3) — per employee, set at registration ──
+  shiftStart: {
+    type: String,            // "HH:mm" 24h, e.g. "10:00"
+    default: '10:00',
+    trim: true
+  },
+  shiftEnd: {
+    type: String,            // "HH:mm" 24h, e.g. "18:00"
+    default: '18:00',
+    trim: true
+  },
+  weeklyOff: {
+    type: String,            // day of week; paid week-off, skipped in salary working-days
+    enum: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'None'],
+    default: 'Sunday'
+  },
+
   phoneNumber: {
     type: String,
     trim: true,

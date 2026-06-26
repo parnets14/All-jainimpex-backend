@@ -193,7 +193,7 @@ router.post(
   logActivity("Salary Management", "Generated salary slip", "CREATE"),
   async (req, res) => {
     try {
-      const { employeeId, month, year } = req.body;
+      const { employeeId, month, year, incentiveBonus, manualAdjustment, adjustmentReason } = req.body;
 
       if (!employeeId || !month || !year) {
         return res.status(400).json({
@@ -208,7 +208,8 @@ router.post(
         year,
         req.user._id,
         "manual",
-        req.dbConnection
+        req.dbConnection,
+        { incentiveBonus, manualAdjustment, adjustmentReason }
       );
 
       if (result.success) {
@@ -694,6 +695,34 @@ const generateSalarySlipHTML = (salarySlip) => {
                         }</td>
                         <td>Loss of Pay (${salarySlip.lopDays || 0} days)</td>
                         <td>₹${salarySlip.lopAmount?.toFixed(2) || "0.00"}</td>
+                    </tr>
+                    <tr>
+                        <td>Overtime (${salarySlip.otMinutes || 0} min)</td>
+                        <td>₹${salarySlip.otAmount?.toFixed(2) || "0.00"}</td>
+                        <td>Late Deduction (${salarySlip.lateDays || 0} days)</td>
+                        <td>₹${salarySlip.lateDeduction?.toFixed(2) || "0.00"}</td>
+                    </tr>
+                    <tr>
+                        <td>Incentive / Bonus</td>
+                        <td>₹${salarySlip.incentiveBonus?.toFixed(2) || "0.00"}</td>
+                        <td>Shortfall (${salarySlip.shortfallMinutes || 0} min)</td>
+                        <td>₹${salarySlip.shortfallDeduction?.toFixed(2) || "0.00"}</td>
+                    </tr>
+                    <tr>
+                        <td></td>
+                        <td></td>
+                        <td>Loan / Advance Installment</td>
+                        <td>₹${salarySlip.loanDeduction?.toFixed(2) || "0.00"}</td>
+                    </tr>
+                    <tr>
+                        <td></td>
+                        <td></td>
+                        <td>Manual Adjustment${
+                          salarySlip.adjustmentReason
+                            ? ` (${salarySlip.adjustmentReason})`
+                            : ""
+                        }</td>
+                        <td>₹${salarySlip.manualAdjustment?.toFixed(2) || "0.00"}</td>
                     </tr>
                     <tr class="total-row">
                         <td><strong>Gross Salary</strong></td>

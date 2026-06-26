@@ -11,6 +11,7 @@ import authRoutes from "./routes/authRoutes.js";
 import { enforceRoutePermissions } from "./middleware/routePermissions.js";
 import biometricRoutes from "./routes/biometricRoutes.js";
 import biometricViewRoutes from "./routes/biometricViewRoutes.js";
+import hrmsRoutes from "./routes/hrmsRoutes.js";
 import userRoutes from "./routes/userRoutes.js"; // Add this import
 import dealertypeRoutes from "./routes/dealertypeRoutes.js";
 import dealercategoryRouter from "./routes/dealerCategoryRoutes.js";
@@ -126,6 +127,7 @@ import seCollectionRoutes from './SalesExecutiveAppBackend/routes/collectionRout
 import seTargetRoutes from './SalesExecutiveAppBackend/routes/targetRoutes.js';
 import seExpenseRoutes        from './SalesExecutiveAppBackend/routes/expenseRoutes.js';
 import seNotificationRoutes   from './SalesExecutiveAppBackend/routes/notificationRoutes.js';
+import seDealerVisitRoutes    from './SalesExecutiveAppBackend/routes/dealerVisitRoutes.js';
 
 // Delivery Executive App Routes
 import deAuthRoutes from './DeliveryExecutiveAppBackend/routes/authRoutes.js';
@@ -340,6 +342,7 @@ app.use("/api/users", userRoutes);
 app.use("/api/employees", employeeRoutes);
 app.use("/api/attendance", attendanceRoutes);
 app.use("/api/biometric-view", biometricViewRoutes);
+app.use("/api/hrms", hrmsRoutes);
 app.use("/api/dealer-types", dealertypeRoutes);
 app.use("/api/dealer-categories", dealercategoryRouter);
 app.use("/api/dealers", dealerRoutes);
@@ -452,6 +455,7 @@ app.use('/api/se/collections', seCollectionRoutes);
 app.use('/api/se/targets', seTargetRoutes);
 app.use('/api/se/expenses', seExpenseRoutes);
 app.use('/api/se/notifications', seNotificationRoutes);
+app.use('/api/se/dealer-visits', seDealerVisitRoutes);
 console.log('✅ Sales Executive App routes registered at /api/se/*');
 
 // Delivery Executive App Routes (separate API prefix for DE app)
@@ -636,6 +640,14 @@ app.use("/public", express.static(join(__dirname, "public")));
     startNotificationCleanupCron();
   } catch (error) {
     console.error('❌ Failed to initialize notification cleanup cron:', error);
+  }
+
+  // Initialize HRMS crons (leave accrual + no-punch-in alert)
+  try {
+    const { startHrmsCrons } = await import('./cron/hrmsCron.js');
+    startHrmsCrons();
+  } catch (error) {
+    console.error('❌ Failed to initialize HRMS crons:', error);
   }
 
   // Start server

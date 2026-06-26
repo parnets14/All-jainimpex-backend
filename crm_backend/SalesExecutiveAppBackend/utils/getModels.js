@@ -35,6 +35,7 @@ import { collectionSchema }          from '../models/Collection.js';
 import { routePlanSchema }           from '../models/RoutePlan.js';
 import { targetSchema }              from '../models/Target.js';
 import { seNotificationSchema }      from '../models/SENotification.js';
+import { dealerVisitSchema }         from '../models/DealerVisit.js';
 
 const getOrCreate = (conn, name, schema) => {
   return conn.models[name] || conn.model(name, schema);
@@ -75,6 +76,7 @@ export const getModels = (req) => {
     RoutePlan:       getOrCreate(conn, 'RoutePlan',       routePlanSchema),
     Target:          getOrCreate(conn, 'Target',          targetSchema),
     SENotification:  getOrCreate(conn, 'SENotification',  seNotificationSchema),
+    DealerVisit:     getOrCreate(conn, 'DealerVisit',     dealerVisitSchema),
   };
 };
 

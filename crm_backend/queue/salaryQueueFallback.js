@@ -2,6 +2,16 @@
 import { employeeSchema } from "../models/Employee.js";
 import { salarySlipSchema } from "../models/SalarySlip.js";
 import { attendanceSchema } from "../models/Attendance.js";
+import { hrmsSettingsSchema } from "../models/HrmsSettings.js";
+import {
+  countWorkingDays,
+  computeAttendanceAdjustments,
+  computeLateDeduction,
+} from "../utils/hrmsSalaryCalc.js";
+import {
+  getDueInstallments,
+  markInstallmentPaid,
+} from "../controllers/loanAdvanceController.js";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -25,6 +35,9 @@ const getModels = (dbConnection) => {
     Attendance:
       dbConnection.models.Attendance ||
       dbConnection.model("Attendance", attendanceSchema),
+    HrmsSettings:
+      dbConnection.models.HrmsSettings ||
+      dbConnection.model("HrmsSettings", hrmsSettingsSchema),
   };
 };
 
@@ -35,10 +48,11 @@ export const generateSalarySlipDirect = async (
   year,
   generatedBy,
   type = "manual",
-  dbConnection
+  dbConnection,
+  extras = {}
 ) => {
   try {
-    const { Employee, SalarySlip, Attendance } = getModels(dbConnection);
+    const { Employee, SalarySlip, Attendance, HrmsSettings } = getModels(dbConnection);
     console.log(
       `Processing salary for employee ${employeeId}, ${month}/${year} (${type})`
     );
@@ -47,6 +61,10 @@ export const generateSalarySlipDirect = async (
     if (!employee) {
       throw new Error("Employee not found");
     }
+
+    // Company-wide HRMS settings drive OT / late / shortfall (admin-configurable)
+    let hrmsSettings = await HrmsSettings.findOne({ key: "default" });
+    if (!hrmsSettings) hrmsSettings = await HrmsSettings.create({ key: "default" });
 
     // Debug employee salary data
     console.log(`Employee ${employee.name} salary data:`, {
@@ -89,7 +107,11 @@ export const generateSalarySlipDirect = async (
       },
     });
 
-    // Calculate working days (excluding weekends)
+    // Calculate working days (excluding the employee's own weekly off — Point 3)
+    const offDayIndex = {
+      Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3,
+      Thursday: 4, Friday: 5, Saturday: 6,
+    }[employee.weeklyOff] ?? 0;
     let workingDays = 0;
     let presentDays = 0;
     let leaveDays = 0;
@@ -97,8 +119,8 @@ export const generateSalarySlipDirect = async (
 
     while (currentDate <= periodTo) {
       const dayOfWeek = currentDate.getDay();
-      // Exclude weekends (0 = Sunday, 6 = Saturday)
-      if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+      // Skip the employee's weekly off (paid week-off, not counted in divisor)
+      if (dayOfWeek !== offDayIndex) {
         workingDays++;
 
         // Check if employee was present on this day
@@ -218,14 +240,45 @@ export const generateSalarySlipDirect = async (
     grossSalary = isNaN(grossSalary) ? 0 : grossSalary;
     lopAmount = isNaN(lopAmount) ? 0 : lopAmount;
 
+    // ── HRMS adjustments: OT / late / shortfall (Points 5, 7, 2) ──
+    const adj = computeAttendanceAdjustments(attendance, employee, hrmsSettings);
+    const perDaySalary = workingDays > 0 ? grossSalary / workingDays : 0;
+    const otAmount = parseFloat((adj.otAmount || 0).toFixed(2));
+    const lateDeduction = parseFloat(
+      (computeLateDeduction(adj, hrmsSettings, perDaySalary) || 0).toFixed(2)
+    );
+    const shortfallDeduction = parseFloat((adj.shortfallAmount || 0).toFixed(2));
+
+    // ── Loan/advance installment for this month (Point 4) ──
+    const monthNum = parseInt(month, 10);
+    const monthKey = `${year}-${String(monthNum).padStart(2, "0")}`;
+    const dueInstallments = await getDueInstallments(
+      dbConnection,
+      employeeId,
+      monthKey
+    );
+    const loanDeduction = parseFloat(
+      dueInstallments.reduce((sum, d) => sum + (d.amount || 0), 0).toFixed(2)
+    );
+
+    // ── Manual monthly fields (Point 12) ──
+    const incentiveBonus = parseFloat(extras.incentiveBonus) || 0;
+    const manualAdjustment = parseFloat(extras.manualAdjustment) || 0;
+    const adjustmentReason = extras.adjustmentReason || "";
+
     const totalDeductions =
       calculatedPF +
       (parseFloat(employee.professionalTax) || 0) +
       calculatedTDS +
       (parseFloat(employee.otherDeductions) || 0) +
-      lopAmount;
+      lopAmount +
+      lateDeduction +
+      shortfallDeduction +
+      loanDeduction +
+      manualAdjustment;
 
-    netSalary = grossSalary - totalDeductions;
+    // Net = gross + OT + incentive/bonus − all deductions
+    netSalary = grossSalary + otAmount + incentiveBonus - totalDeductions;
 
     // Final safety check for NaN values
     if (isNaN(netSalary)) netSalary = 0;
@@ -260,6 +313,21 @@ export const generateSalarySlipDirect = async (
       leaveDays: paidLeaveDays,
       lopDays: lopDays || 0,
       lopAmount: lopAmount || 0,
+
+      // HRMS earnings
+      otMinutes: adj.otMinutes || 0,
+      otAmount: otAmount || 0,
+      incentiveBonus: incentiveBonus || 0,
+
+      // HRMS deductions
+      lateDays: adj.lateDaysCount || 0,
+      lateDeduction: lateDeduction || 0,
+      shortfallMinutes: adj.shortfallMinutes || 0,
+      shortfallDeduction: shortfallDeduction || 0,
+      loanDeduction: loanDeduction || 0,
+      loanRefs: dueInstallments.map((d) => ({ loanId: d.loanId, amount: d.amount })),
+      manualAdjustment: manualAdjustment || 0,
+      adjustmentReason,
       hoursWorked:
         attendance.reduce((total, record) => {
           if (
@@ -295,6 +363,15 @@ export const generateSalarySlipDirect = async (
     const salary = new SalarySlip(salaryData);
     await salary.save();
 
+    // Mark this month's loan installments as recovered (Point 4)
+    for (const d of dueInstallments) {
+      try {
+        await markInstallmentPaid(dbConnection, d.loanId, monthKey);
+      } catch (e) {
+        console.error(`Failed to mark loan ${d.loanId} installment paid:`, e.message);
+      }
+    }
+
     console.log(`Salary generated successfully for ${employee.name}`);
 
     return {
@@ -317,7 +394,8 @@ export const addSalaryJob = async (
   year,
   generatedBy,
   type = "manual",
-  dbConnection
+  dbConnection,
+  extras = {}
 ) => {
   // Process directly without queue
   return await generateSalarySlipDirect(
@@ -326,7 +404,8 @@ export const addSalaryJob = async (
     year,
     generatedBy,
     type,
-    dbConnection
+    dbConnection,
+    extras
   );
 };
 
