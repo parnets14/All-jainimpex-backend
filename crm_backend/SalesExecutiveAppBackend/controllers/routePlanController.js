@@ -877,9 +877,15 @@ export const optimizeDealerOrder = async (req, res) => {
 
 // ── Helper: Get coordinates from dealer ──────────────────────────────────────
 function getCoords(dealer) {
-  if (dealer.location?.coordinates?.length === 2 &&
-      (dealer.location.coordinates[0] !== 0 || dealer.location.coordinates[1] !== 0)) {
-    return { lng: dealer.location.coordinates[0], lat: dealer.location.coordinates[1] };
+  const c = dealer.location?.coordinates;
+  // Actual schema shape: location.coordinates = { lat, lng } (object)
+  if (c && typeof c === 'object' && !Array.isArray(c) &&
+      (c.lat || c.lng) && (c.lat !== 0 || c.lng !== 0)) {
+    return { lat: c.lat, lng: c.lng };
+  }
+  // GeoJSON array fallback: [lng, lat]
+  if (Array.isArray(c) && c.length === 2 && (c[0] !== 0 || c[1] !== 0)) {
+    return { lng: c[0], lat: c[1] };
   }
   if (dealer.location?.latitude && dealer.location?.longitude) {
     return { lat: dealer.location.latitude, lng: dealer.location.longitude };

@@ -32,7 +32,7 @@ router.get('/', protect, async (req, res) => {
 
     const total = await Dealer.countDocuments(query);
     const dealers = await Dealer.find(query)
-      .select('name code city phone region address dealerType creditLimit creditDays status')
+      .select('name code city phone regionId address dealerType creditLimit creditDays isActive')
       .sort({ name: 1 })
       .skip((page - 1) * limit)
       .limit(limit);
