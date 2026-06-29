@@ -307,6 +307,15 @@ const employeeSchema = new mongoose.Schema({
     default: 'Sunday'
   },
 
+  // ── Leave lapse cycle (Point 1, dynamic) ──
+  // 'yearly'  → leaves accumulate within the FY and lapse at FY end (default, regular staff)
+  // 'monthly' → use-it-or-lose-it each month (helpers / dispatch staff)
+  leaveLapseCycle: {
+    type: String,
+    enum: ['yearly', 'monthly'],
+    default: 'yearly'
+  },
+
   phoneNumber: {
     type: String,
     trim: true,

@@ -650,6 +650,14 @@ app.use("/public", express.static(join(__dirname, "public")));
     console.error('❌ Failed to initialize HRMS crons:', error);
   }
 
+  // Initialize SE trail-history cleanup cron (keeps Firebase RTDB small)
+  try {
+    const { startTrackingHistoryCleanupCron } = await import('./cron/trackingHistoryCleanup.js');
+    startTrackingHistoryCleanupCron();
+  } catch (error) {
+    console.error('❌ Failed to initialize trail-history cleanup cron:', error);
+  }
+
   // Start server
   const PORT = process.env.PORT || 5000;
   app.listen(PORT, '0.0.0.0', () => {

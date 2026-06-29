@@ -124,30 +124,43 @@ export const runAccrual = async (conn) => {
   const fyYear = fyYearOf(now, policy.financialYearStartMonth);
   const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
-  const employees = await Employee.find({ status: 'Active' }).select('_id dateOfJoining').lean();
+  const employees = await Employee.find({ status: 'Active' }).select('_id dateOfJoining leaveLapseCycle').lean();
   let credited = 0;
+  const activeTypes = (policy.types || []).filter((t) => t.active);
 
   for (const emp of employees) {
     let bal = await LeaveBalance.findOne({ employee: emp._id, fyYear });
     if (!bal) bal = new LeaveBalance({ employee: emp._id, fyYear, balances: [], lastAccrualMonth: '' });
 
-    const ensure = (key) => {
-      let tb = bal.balances.find((x) => x.key === key);
-      if (!tb) { bal.balances.push({ key, accrued: 0, used: 0 }); tb = bal.balances[bal.balances.length - 1]; }
-      return tb;
-    };
+    const cycle = emp.leaveLapseCycle === 'monthly' ? 'monthly' : 'yearly';
 
-    (policy.types || []).filter((t) => t.active).forEach((t) => {
-      const tb = ensure(t.key);
-      if (t.creditStyle === 'upfront') {
-        if (tb.accrued < t.annualQuota) tb.accrued = t.annualQuota; // credit full year once
-      } else {
-        // monthly: add quota/12 once per month
-        if (bal.lastAccrualMonth !== monthKey) {
+    if (cycle === 'monthly') {
+      // Use-it-or-lose-it: on the first run of a new month, lapse the previous
+      // month's balance and set this month's fresh allotment (annualQuota / 12).
+      if (bal.lastAccrualMonth !== monthKey) {
+        bal.balances = activeTypes.map((t) => ({
+          key: t.key,
+          accrued: parseFloat((t.annualQuota / 12).toFixed(2)),
+          used: 0,
+        }));
+      }
+    } else {
+      // Yearly cycle: accumulate within the FY (lapse happens at FY end via a new
+      // fyYear ledger). upfront types credited once; monthly types add 1/12 per month.
+      const ensure = (key) => {
+        let tb = bal.balances.find((x) => x.key === key);
+        if (!tb) { bal.balances.push({ key, accrued: 0, used: 0 }); tb = bal.balances[bal.balances.length - 1]; }
+        return tb;
+      };
+      activeTypes.forEach((t) => {
+        const tb = ensure(t.key);
+        if (t.creditStyle === 'upfront') {
+          if (tb.accrued < t.annualQuota) tb.accrued = t.annualQuota;
+        } else if (bal.lastAccrualMonth !== monthKey) {
           tb.accrued = parseFloat((tb.accrued + t.annualQuota / 12).toFixed(2));
         }
-      }
-    });
+      });
+    }
 
     bal.lastAccrualMonth = monthKey;
     bal.markModified('balances');

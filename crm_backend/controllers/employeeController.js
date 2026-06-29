@@ -168,12 +168,14 @@ export const createEmployee = async (req, res) => {
     // Extract data from form - when using multer, form data comes in req.body
     const {
       name,
+      empId: empIdInput, // manual empId (optional) — matches biometric card no
       designation,
       department,
       dateOfJoining,
       shiftStart, // Point 3
       shiftEnd,
       weeklyOff,
+      leaveLapseCycle, // Point 1 (dynamic lapse)
       phoneNumber, // NEW
       email,
       bankName,
@@ -222,8 +224,25 @@ export const createEmployee = async (req, res) => {
       });
     }
 
-    // Generate employee ID
-    const empId = await generateEmployeeId(req.dbConnection);
+    // Employee ID: use the manually entered one if provided (matches the biometric
+    // card number), otherwise auto-generate. Manual IDs must be unique.
+    let empId;
+    const manualId = (empIdInput || '').trim();
+    if (manualId && manualId.toLowerCase() !== 'auto-generated') {
+      const dupId = await Employee.findOne({
+        empId: { $regex: `^${manualId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' },
+      });
+      if (dupId) {
+        if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        return res.status(400).json({
+          success: false,
+          message: `Employee ID "${manualId}" is already in use. Please use a different ID.`,
+        });
+      }
+      empId = manualId;
+    } else {
+      empId = await generateEmployeeId(req.dbConnection);
+    }
 
     // Check if employee with same account number exists
     const existingEmployee = await Employee.findOne({ accountNumber });
@@ -275,6 +294,7 @@ export const createEmployee = async (req, res) => {
       shiftStart: shiftStart || "10:00",
       shiftEnd: shiftEnd || "18:00",
       weeklyOff: weeklyOff || "Sunday",
+      leaveLapseCycle: leaveLapseCycle === 'monthly' ? 'monthly' : 'yearly',
       phoneNumber: phoneNumber ? phoneNumber.trim() : "", // NEW
       email: email ? email.trim().toLowerCase() : "", // NEW
       bankName: bankName.trim(),
@@ -411,12 +431,14 @@ export const updateEmployee = async (req, res) => {
     // Extract data from form
     const {
       name,
+      empId: empIdInput, // allow editing to match biometric card no
       designation,
       department,
       dateOfJoining,
       shiftStart, // Point 3
       shiftEnd,
       weeklyOff,
+      leaveLapseCycle, // Point 1 (dynamic lapse)
       phoneNumber, // NEW
       email, // NEW
       bankName,
@@ -457,6 +479,25 @@ export const updateEmployee = async (req, res) => {
 
     const updateData = {};
 
+    // Employee ID — allow change if provided & unique (matches biometric card no)
+    if (empIdInput !== undefined) {
+      const manualId = (empIdInput || '').trim();
+      if (manualId && manualId.toLowerCase() !== 'auto-generated' && manualId !== existingEmployee.empId) {
+        const dupId = await Employee.findOne({
+          empId: { $regex: `^${manualId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' },
+          _id: { $ne: req.params.id },
+        });
+        if (dupId) {
+          if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+          return res.status(400).json({
+            success: false,
+            message: `Employee ID "${manualId}" is already in use.`,
+          });
+        }
+        updateData.empId = manualId;
+      }
+    }
+
     // Only update provided fields
     if (name !== undefined) updateData.name = name.trim();
     if (designation !== undefined) updateData.designation = designation.trim();
@@ -464,6 +505,7 @@ export const updateEmployee = async (req, res) => {
     if (shiftStart !== undefined) updateData.shiftStart = shiftStart;
     if (shiftEnd !== undefined) updateData.shiftEnd = shiftEnd;
     if (weeklyOff !== undefined) updateData.weeklyOff = weeklyOff;
+    if (leaveLapseCycle !== undefined) updateData.leaveLapseCycle = leaveLapseCycle === 'monthly' ? 'monthly' : 'yearly';
     if (dateOfJoining !== undefined) updateData.dateOfJoining = dateOfJoining;
     if (phoneNumber !== undefined)
       updateData.phoneNumber = phoneNumber ? phoneNumber.trim() : ""; // NEW
