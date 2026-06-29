@@ -21,10 +21,30 @@ router.get('/', protect, async (req, res) => {
     // ── Base filter: dealers DIRECTLY assigned to this sales executive ────────
     let baseFilter = { salesExecutiveId: userId, isActive: true };
 
-    // Fallback: if SE has no directly-assigned dealers, fall back to their regions
+    // Fallback: if SE has no directly-assigned dealers, try their assigned regions + routes.
     const directCount = await Dealer.countDocuments(baseFilter);
-    if (directCount === 0 && user.assignedRegions && user.assignedRegions.length > 0) {
-      baseFilter = { regionId: { $in: user.assignedRegions }, isActive: true };
+    if (directCount === 0) {
+      if (user.assignedRegions && user.assignedRegions.length > 0) {
+        // If user also has assignedRoutes, intersect both for tighter filtering
+        if (user.assignedRoutes && user.assignedRoutes.length > 0) {
+          baseFilter = { regionId: { $in: user.assignedRegions }, routeId: { $in: user.assignedRoutes }, isActive: true };
+        } else {
+          baseFilter = { regionId: { $in: user.assignedRegions }, isActive: true };
+        }
+      } else {
+        // No direct assignments, no regions → no dealers visible (strict)
+        return res.json({
+          success: true,
+          dealers: [],
+          count: 0,
+          total: 0,
+          page,
+          limit,
+          totalPages: 0,
+          hasMore: false,
+          message: 'No dealers assigned. Ask admin to assign dealers or regions.',
+        });
+      }
     }
 
     // ── Apply search on top of the base (assignment) filter ───────────────────
