@@ -18,34 +18,9 @@ router.get('/', protect, async (req, res) => {
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
     const search = (req.query.search || '').trim();
 
-    // ── Base filter: dealers DIRECTLY assigned to this sales executive ────────
-    let baseFilter = { salesExecutiveId: userId, isActive: true };
-
-    // Fallback: if SE has no directly-assigned dealers, try their assigned regions + routes.
-    const directCount = await Dealer.countDocuments(baseFilter);
-    if (directCount === 0) {
-      if (user.assignedRegions && user.assignedRegions.length > 0) {
-        // If user also has assignedRoutes, intersect both for tighter filtering
-        if (user.assignedRoutes && user.assignedRoutes.length > 0) {
-          baseFilter = { regionId: { $in: user.assignedRegions }, routeId: { $in: user.assignedRoutes }, isActive: true };
-        } else {
-          baseFilter = { regionId: { $in: user.assignedRegions }, isActive: true };
-        }
-      } else {
-        // No direct assignments, no regions → no dealers visible (strict)
-        return res.json({
-          success: true,
-          dealers: [],
-          count: 0,
-          total: 0,
-          page,
-          limit,
-          totalPages: 0,
-          hasMore: false,
-          message: 'No dealers assigned. Ask admin to assign dealers or regions.',
-        });
-      }
-    }
+    // ── STRICT filter: only dealers where salesExecutiveId = this user ────────
+    // This is set by admin when creating/editing a dealer in the web CRM.
+    const baseFilter = { salesExecutiveId: userId, isActive: true };
 
     // ── Apply search on top of the base (assignment) filter ───────────────────
     const query = { ...baseFilter };
