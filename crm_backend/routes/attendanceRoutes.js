@@ -2,6 +2,9 @@ import express from "express";
 import { attendanceSchema } from "../models/Attendance.js";
 import { leaveSchema } from "../models/Leave.js";
 import { employeeSchema } from "../models/Employee.js";
+import { leavePolicySchema } from "../models/LeavePolicy.js";
+import { leaveBalanceSchema } from "../models/LeaveBalance.js";
+import { fyYearOf } from "../controllers/hrmsController.js";
 import { protect, requireRole } from "../middleware/authMiddleware.js";
 import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 import { logActivity } from "../middleware/activityLogMiddleware.js";
@@ -18,7 +21,22 @@ const getModels = (dbConnection) => {
     Employee:
       dbConnection.models.Employee ||
       dbConnection.model("Employee", employeeSchema),
+    LeavePolicy:
+      dbConnection.models.LeavePolicy ||
+      dbConnection.model("LeavePolicy", leavePolicySchema),
+    LeaveBalance:
+      dbConnection.models.LeaveBalance ||
+      dbConnection.model("LeaveBalance", leaveBalanceSchema),
   };
+};
+
+// Map the Attendance/Leave leaveType label to a leave-policy balance key.
+// Unpaid leave consumes no balance (returns null).
+const leaveKeyForType = (leaveType) => {
+  if (leaveType === "Sick Leave") return "sick";
+  if (leaveType === "Casual Leave") return "casual";
+  if (leaveType === "Unpaid Leave") return null;
+  return "earned"; // 'Paid Leave' (and any paid default)
 };
 
 // All attendance routes require authentication and a company database connection
@@ -535,7 +553,7 @@ router.patch(
   logActivity("Attendance", "Approved leave", "UPDATE"),
   async (req, res) => {
     try {
-      const { Leave, Attendance } = getModels(req.dbConnection);
+      const { Leave, Attendance, LeavePolicy, LeaveBalance } = getModels(req.dbConnection);
       const leave = await Leave.findById(req.params.id);
 
       if (!leave) {
@@ -560,6 +578,7 @@ router.patch(
       const start = new Date(leave.startDate);
       const end = new Date(leave.endDate);
 
+      let leaveDaysCreated = 0;
       for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
         // Skip weekends (Saturday = 6, Sunday = 0)
         if (d.getDay() !== 0 && d.getDay() !== 6) {
@@ -579,12 +598,37 @@ router.patch(
               leaveType: leave.leaveType,
               reason: leave.reason,
             });
+            leaveDaysCreated++;
           } else if (existingAttendance.status === "Absent") {
             existingAttendance.status = "Leave";
             existingAttendance.leaveType = leave.leaveType;
             existingAttendance.reason = leave.reason;
             await existingAttendance.save();
+            leaveDaysCreated++;
           }
+        }
+      }
+
+      // Consume the leave balance for paid leave types (Unpaid consumes nothing).
+      // Keeps the Leave Balances screen accurate with what was actually approved.
+      const balKey = leaveKeyForType(leave.leaveType);
+      if (balKey && leaveDaysCreated > 0) {
+        try {
+          const policy = await LeavePolicy.findOne({ key: "default" });
+          const fyYear = fyYearOf(start, policy?.financialYearStartMonth || 4);
+          let bal = await LeaveBalance.findOne({ employee: leave.employee, fyYear });
+          if (!bal) bal = new LeaveBalance({ employee: leave.employee, fyYear, balances: [] });
+          let tb = bal.balances.find((x) => x.key === balKey);
+          if (!tb) {
+            bal.balances.push({ key: balKey, accrued: 0, used: 0 });
+            tb = bal.balances[bal.balances.length - 1];
+          }
+          tb.used = parseFloat(((tb.used || 0) + leaveDaysCreated).toFixed(2));
+          bal.markModified("balances");
+          await bal.save();
+        } catch (balErr) {
+          console.error("Leave balance update on approve failed:", balErr.message);
+          // Don't fail the approval if balance bookkeeping hiccups.
         }
       }
 

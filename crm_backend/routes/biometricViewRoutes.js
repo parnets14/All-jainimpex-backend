@@ -1,7 +1,7 @@
 import express from 'express';
 import { protect } from '../middleware/authMiddleware.js';
 import { attachCompanyDB } from '../middleware/companyMiddleware.js';
-import { listPunches, punchStats } from '../controllers/biometricController.js';
+import { listPunches, punchStats, listDeviceCards } from '../controllers/biometricController.js';
 
 const router = express.Router();
 
@@ -11,6 +11,7 @@ router.use(attachCompanyDB);
 
 router.get('/punches', listPunches);
 router.get('/stats', punchStats);
+router.get('/device-cards', listDeviceCards);
 
 // Lightweight health/ping for the "Test Connection" button in the admin screen.
 router.get('/ping', (req, res) => {

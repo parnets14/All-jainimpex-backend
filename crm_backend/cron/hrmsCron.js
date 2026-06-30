@@ -14,6 +14,7 @@ import { hrmsSettingsSchema } from '../models/HrmsSettings.js';
 import { hrmsAlertSchema } from '../models/HrmsAlert.js';
 import { employeeSchema } from '../models/Employee.js';
 import { attendanceSchema } from '../models/Attendance.js';
+import { processBiometricPunches, finalizeDayAttendance } from '../utils/biometricAttendance.js';
 
 const COMPANIES = ['jain-impex', 'ridhi', 'shree-jain-impex'];
 
@@ -116,12 +117,45 @@ const runNoPunchAlert = async () => {
   }
 };
 
+// ── Biometric Phase 2: raw punches -> attendance ──
+const runBiometricProcessing = async () => {
+  for (const company of COMPANIES) {
+    try {
+      const db = getCompanyConnection(company);
+      if (!db) continue;
+      const r = await processBiometricPunches(db);
+      if (r.processedPunches > 0) {
+        console.log(`🟢 [biometric/${company}] processed ${r.processedPunches} punch(es) -> ${r.updatedAttendance} day(s); unmapped ${r.unmapped}`);
+      }
+    } catch (e) {
+      console.error(`   ${company} biometric processing error:`, e.message);
+    }
+  }
+};
+
+// ── Biometric end-of-day finalizer (mark yesterday's absentees) ──
+const runBiometricFinalize = async () => {
+  for (const company of COMPANIES) {
+    try {
+      const db = getCompanyConnection(company);
+      if (!db) continue;
+      const r = await finalizeDayAttendance(db);
+      console.log(`🟢 [biometric/${company}] finalized ${r.dayKey}: marked ${r.marked} absent`);
+    } catch (e) {
+      console.error(`   ${company} biometric finalize error:`, e.message);
+    }
+  }
+};
+
 export const startHrmsCrons = () => {
-  // Daily accrual at 00:05 IST
   cron.schedule('5 0 * * *', runAccrualAllCompanies, { timezone: 'Asia/Kolkata' });
   // No-punch alert check every 5 minutes
   cron.schedule('*/5 * * * *', runNoPunchAlert, { timezone: 'Asia/Kolkata' });
-  console.log('⏰ HRMS crons scheduled (accrual 00:05 IST, no-punch alert every 5 min)');
+  // Biometric Phase 2: convert raw punches -> attendance every 5 minutes
+  cron.schedule('*/5 * * * *', runBiometricProcessing, { timezone: 'Asia/Kolkata' });
+  // End-of-day finalizer (mark absentees for yesterday) at 00:20 IST
+  cron.schedule('20 0 * * *', runBiometricFinalize, { timezone: 'Asia/Kolkata' });
+  console.log('⏰ HRMS crons scheduled (accrual 00:05, no-punch every 5m, biometric every 5m, finalize 00:20 IST)');
 };
 
 export default startHrmsCrons;

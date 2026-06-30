@@ -29,23 +29,34 @@ const markAbsentForCompany = async (company) => {
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const todayDow = today.getDay();
+    const DAY_INDEX = {
+      Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3,
+      Thursday: 4, Friday: 5, Saturday: 6,
+    };
 
     const activeEmployees = await Employee.find({ status: "Active" }).select(
-      "_id"
+      "_id weeklyOff"
     );
+    // Present = anyone with a punch today (web sets punchIn.time; biometric sets sessions)
     const presentEmployees = await Attendance.find({
       date: today,
-      "punchIn.time": { $exists: true },
+      $or: [
+        { "punchIn.time": { $exists: true } },
+        { "sessions.0": { $exists: true } },
+      ],
     }).select("employee");
 
     const presentEmployeeIds = presentEmployees.map((att) =>
       att.employee.toString()
     );
 
-    // Employees who didn't punch in today
-    const absentEmployees = activeEmployees.filter(
-      (emp) => !presentEmployeeIds.includes(emp._id.toString())
-    );
+    // Employees who didn't punch in today AND are not on their weekly off
+    const absentEmployees = activeEmployees.filter((emp) => {
+      if (presentEmployeeIds.includes(emp._id.toString())) return false;
+      const offIdx = DAY_INDEX[emp.weeklyOff] ?? 0;
+      return todayDow !== offIdx; // skip weekly-off (paid, not absent)
+    });
 
     // Approved leaves covering today
     const approvedLeaves = await Leave.find({

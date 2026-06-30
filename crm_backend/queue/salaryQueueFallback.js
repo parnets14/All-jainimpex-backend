@@ -41,6 +41,22 @@ const getModels = (dbConnection) => {
   };
 };
 
+// Worked hours for a day: sum of completed in/out sessions (excludes break gaps),
+// falling back to legacy punchIn/out, then stored workingHours. Matches the
+// multi-punch model so hourly pay and hoursWorked don't count lunch breaks.
+const workedHoursOf = (record) => {
+  const sessions = (record.sessions || []).filter((s) => s.in?.time && s.out?.time);
+  if (sessions.length) {
+    let ms = 0;
+    sessions.forEach((s) => { ms += new Date(s.out.time) - new Date(s.in.time); });
+    return Math.max(0, ms / 3600000);
+  }
+  if (record.punchIn?.time && record.punchOut?.time) {
+    return Math.max(0, (new Date(record.punchOut.time) - new Date(record.punchIn.time)) / 3600000);
+  }
+  return record.workingHours || 0;
+};
+
 // Direct salary calculation without queue
 export const generateSalarySlipDirect = async (
   employeeId,
@@ -205,20 +221,10 @@ export const generateSalarySlipDirect = async (
       // Absent / unpaid-leave days are simply unpaid for daily wage (no separate deduction)
       lopDays = Math.max(0, absentDays);
     } else if (employee.salaryType === "hourly") {
-      // For hourly wage - calculate total hours actually worked from punches
+      // For hourly wage - total hours actually worked (sessions-aware, excludes breaks)
       const totalHours = attendance.reduce((total, record) => {
-        if (
-          (record.status === "Present" || record.status === "Late") &&
-          record.punchIn &&
-          record.punchOut
-        ) {
-          const punchInTime = new Date(record.punchIn.time);
-          const punchOutTime = new Date(record.punchOut.time);
-
-          if (!isNaN(punchInTime.getTime()) && !isNaN(punchOutTime.getTime())) {
-            const hoursWorked = (punchOutTime - punchInTime) / (1000 * 60 * 60);
-            return total + Math.max(0, hoursWorked);
-          }
+        if (record.status === "Present" || record.status === "Late") {
+          return total + workedHoursOf(record);
         }
         return total;
       }, 0);
@@ -283,6 +289,8 @@ export const generateSalarySlipDirect = async (
     // Final safety check for NaN values
     if (isNaN(netSalary)) netSalary = 0;
     if (isNaN(totalDeductions)) totalDeductions = 0;
+    // A payslip's net pay is never negative (excess loan/LOP carries via loan balance).
+    netSalary = Math.max(0, netSalary);
 
     // Create salary slip
     const salaryData = {
@@ -330,22 +338,8 @@ export const generateSalarySlipDirect = async (
       adjustmentReason,
       hoursWorked:
         attendance.reduce((total, record) => {
-          if (
-            (record.status === "Present" || record.status === "Late") &&
-            record.punchIn &&
-            record.punchOut
-          ) {
-            const punchInTime = new Date(record.punchIn.time);
-            const punchOutTime = new Date(record.punchOut.time);
-
-            if (
-              !isNaN(punchInTime.getTime()) &&
-              !isNaN(punchOutTime.getTime())
-            ) {
-              const hoursWorked =
-                (punchOutTime - punchInTime) / (1000 * 60 * 60);
-              return total + Math.max(0, hoursWorked);
-            }
+          if (record.status === "Present" || record.status === "Late") {
+            return total + workedHoursOf(record);
           }
           return total;
         }, 0) || 0,

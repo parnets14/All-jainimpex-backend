@@ -275,6 +275,15 @@ const employeeSchema = new mongoose.Schema({
     unique: true,
     trim: true
   },
+  // Biometric machine card / enrollment number (e.g. "00000034"). Links this
+  // employee to punches coming from the attendance device. Kept separate from
+  // empId so the CRM ID and the device card can differ safely.
+  biometricCardNo: {
+    type: String,
+    default: '',
+    trim: true,
+    index: true
+  },
   designation: {
     type: String,
     required: [true, 'Designation is required'],

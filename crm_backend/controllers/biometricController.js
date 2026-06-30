@@ -1,5 +1,6 @@
 import { biometricPunchSchema } from '../models/BiometricPunch.js';
 import { biometricEmployeeSchema } from '../models/BiometricEmployee.js';
+import { employeeSchema } from '../models/Employee.js';
 import { getCompanyConnection, isValidCompany } from '../config/multiDatabase.js';
 
 // Resolve the BiometricPunch model on the right company's database
@@ -136,6 +137,84 @@ export const getSyncState = async (req, res) => {
     });
   } catch (e) {
     console.error('getSyncState error:', e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+};
+
+/**
+ * GET /api/biometric-view/device-cards  (authenticated admin view)
+ * Lists every biometric card known to the CRM — enrolled names synced from the
+ * device (BiometricEmployee) unioned with any card seen in punches — annotated
+ * with whether it's already linked to a CRM employee, plus last-punch info.
+ * Used by the Employee Registration card-picker and the "unmapped cards" panel.
+ */
+const stripZeros = (s) => String(s || '').trim().replace(/^0+/, '');
+
+export const listDeviceCards = async (req, res) => {
+  try {
+    const db = req.dbConnection;
+    const BiometricEmployee = db.models.BiometricEmployee || db.model('BiometricEmployee', biometricEmployeeSchema);
+    const BiometricPunch = db.models.BiometricPunch || db.model('BiometricPunch', biometricPunchSchema);
+    const Employee = db.models.Employee || db.model('Employee', employeeSchema);
+
+    const [enrolled, punchAgg, employees] = await Promise.all([
+      BiometricEmployee.find().select('cardNo name empCode').lean(),
+      BiometricPunch.aggregate([
+        { $group: { _id: '$cardNo', lastPunchAt: { $max: '$punchAt' }, count: { $sum: 1 } } },
+      ]),
+      Employee.find({}).select('biometricCardNo empId name').lean(),
+    ]);
+
+    // Build linked-card lookup (exact + zero-stripped on card and empId)
+    const linkedByCard = new Map();
+    for (const e of employees) {
+      const keys = new Set();
+      if (e.biometricCardNo) { keys.add(String(e.biometricCardNo).trim()); keys.add(stripZeros(e.biometricCardNo)); }
+      if (e.empId) { keys.add(String(e.empId).trim()); keys.add(stripZeros(e.empId)); }
+      for (const k of keys) if (k) linkedByCard.set(k, { _id: e._id, name: e.name, empId: e.empId });
+    }
+
+    const punchByCard = new Map();
+    punchAgg.forEach((p) => punchByCard.set(String(p._id).trim(), p));
+
+    // Union of cardNos
+    const cardSet = new Set();
+    enrolled.forEach((c) => cardSet.add(String(c.cardNo).trim()));
+    punchAgg.forEach((p) => cardSet.add(String(p._id).trim()));
+
+    const enrolledByCard = new Map();
+    enrolled.forEach((c) => enrolledByCard.set(String(c.cardNo).trim(), c));
+
+    const cards = [...cardSet].map((cardNo) => {
+      const en = enrolledByCard.get(cardNo);
+      const pa = punchByCard.get(cardNo);
+      const linked = linkedByCard.get(cardNo) || linkedByCard.get(stripZeros(cardNo)) || null;
+      return {
+        cardNo,
+        deviceName: en?.name || '',
+        empCode: en?.empCode || '',
+        lastPunchAt: pa?.lastPunchAt || null,
+        punchCount: pa?.count || 0,
+        linked: !!linked,
+        linkedEmployeeName: linked?.name || '',
+        linkedEmpId: linked?.empId || '',
+      };
+    });
+
+    // sort: unlinked-with-punches first (need attention), then by name/card
+    cards.sort((a, b) => {
+      if (a.linked !== b.linked) return a.linked ? 1 : -1;
+      return (b.punchCount || 0) - (a.punchCount || 0);
+    });
+
+    res.json({
+      success: true,
+      cards,
+      total: cards.length,
+      unmapped: cards.filter((c) => !c.linked && c.punchCount > 0).length,
+    });
+  } catch (e) {
+    console.error('listDeviceCards error:', e);
     res.status(500).json({ success: false, message: e.message });
   }
 };

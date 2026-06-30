@@ -169,6 +169,7 @@ export const createEmployee = async (req, res) => {
     const {
       name,
       empId: empIdInput, // manual empId (optional) — matches biometric card no
+      biometricCardNo: bioCardInput, // selected from the device card list
       designation,
       department,
       dateOfJoining,
@@ -244,6 +245,21 @@ export const createEmployee = async (req, res) => {
       empId = await generateEmployeeId(req.dbConnection);
     }
 
+    // Biometric card: optional, must be unique among employees (ignore blanks)
+    const bioCard = (bioCardInput || '').trim();
+    if (bioCard) {
+      const dupCard = await Employee.findOne({
+        biometricCardNo: { $regex: `^${bioCard.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' },
+      });
+      if (dupCard) {
+        if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        return res.status(400).json({
+          success: false,
+          message: `Biometric card "${bioCard}" is already linked to another employee.`,
+        });
+      }
+    }
+
     // Check if employee with same account number exists
     const existingEmployee = await Employee.findOne({ accountNumber });
     if (existingEmployee) {
@@ -288,6 +304,7 @@ export const createEmployee = async (req, res) => {
     const employeeData = {
       name: name.trim(),
       empId,
+      biometricCardNo: bioCard,
       designation: designation.trim(),
       department: department.trim(),
       dateOfJoining,
@@ -432,6 +449,7 @@ export const updateEmployee = async (req, res) => {
     const {
       name,
       empId: empIdInput, // allow editing to match biometric card no
+      biometricCardNo: bioCardInput, // selected from device card list
       designation,
       department,
       dateOfJoining,
@@ -496,6 +514,25 @@ export const updateEmployee = async (req, res) => {
         }
         updateData.empId = manualId;
       }
+    }
+
+    // Biometric card — allow change/clear if provided & unique
+    if (bioCardInput !== undefined) {
+      const bioCard = (bioCardInput || '').trim();
+      if (bioCard && bioCard !== existingEmployee.biometricCardNo) {
+        const dupCard = await Employee.findOne({
+          biometricCardNo: { $regex: `^${bioCard.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' },
+          _id: { $ne: req.params.id },
+        });
+        if (dupCard) {
+          if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+          return res.status(400).json({
+            success: false,
+            message: `Biometric card "${bioCard}" is already linked to another employee.`,
+          });
+        }
+      }
+      updateData.biometricCardNo = bioCard;
     }
 
     // Only update provided fields
