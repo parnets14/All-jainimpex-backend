@@ -179,8 +179,9 @@ export const processBiometricPunches = async (db, { batchLimit = 5000 } = {}) =>
     );
     await att.save(); // pre-save derives punchIn/out, workingHours, status
 
-    // Correct the status/late using THIS employee's shift (the model pre-save
-    // uses a generic 9:30 threshold; override it with the real shiftStart).
+    // Correct the status/late using THIS employee's shift. We use updateOne (NOT
+    // att.save()) because the Attendance pre-save hook re-derives status/late from
+    // a generic 9:30 threshold and would otherwise overwrite our shift-correct value.
     const shiftStartMin = hmToMin(emp.shiftStart, 600); // default 10:00
     const firstIn = att.sessions[0]?.in?.time ? new Date(att.sessions[0].in.time) : null;
     if (firstIn && att.status !== 'Leave') {
@@ -189,9 +190,10 @@ export const processBiometricPunches = async (db, { batchLimit = 5000 } = {}) =>
       const newStatus = lateBy > 0 ? 'Late' : 'Present';
       const newLate = lateBy > 0 ? lateBy : 0;
       if (att.status !== newStatus || (att.lateMinutes || 0) !== newLate) {
-        att.status = newStatus;
-        att.lateMinutes = newLate;
-        await att.save();
+        await Attendance.updateOne(
+          { _id: att._id },
+          { $set: { status: newStatus, lateMinutes: newLate } }
+        );
       }
     }
     updatedAttendance += 1;
