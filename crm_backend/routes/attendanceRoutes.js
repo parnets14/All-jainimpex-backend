@@ -288,12 +288,14 @@ router.get(
         (record) => !!record.employee
       );
 
-      // Create a map of employee attendance
+      // Create a map of employee attendance (key uses IST calendar day)
       const attendanceMap = new Map();
       validAttendanceRecords.forEach((record) => {
         const empId = record.employee._id.toString();
-        const dateKey = record.date.toISOString().split("T")[0];
-        attendanceMap.set(`${empId}-${dateKey}`, record);
+        // Convert stored UTC date to IST calendar day for matching
+        const utcMs = new Date(record.date).getTime();
+        const istDay = new Date(utcMs + 5.5 * 3600000).toISOString().slice(0, 10);
+        attendanceMap.set(`${empId}-${istDay}`, record);
       });
 
       // Generate complete attendance list with absent employees
@@ -312,15 +314,18 @@ router.get(
           endIterDate = new Date(today);
         }
 
-        startIterDate.setHours(0, 0, 0, 0);
-        endIterDate.setHours(0, 0, 0, 0);
+        // Iterate by IST calendar day (YYYY-MM-DD strings)
+        const startKey = startIterDate.toISOString().split("T")[0];
+        const endKey = endIterDate.toISOString().split("T")[0];
 
         for (
-          let d = new Date(startIterDate);
-          d <= endIterDate;
-          d.setDate(d.getDate() + 1)
+          let dStr = startKey;
+          dStr <= endKey;
+          // increment by one day
+          dStr = new Date(new Date(dStr + "T00:00:00Z").getTime() + 86400000).toISOString().split("T")[0]
         ) {
-          const dateKey = d.toISOString().split("T")[0];
+          const dateKey = dStr;
+          const dayOfWeek = new Date(dStr + "T12:00:00+05:30").getDay();
 
           allEmployees.forEach((employee) => {
             const key = `${employee._id}-${dateKey}`;
@@ -329,12 +334,11 @@ router.get(
             if (existingRecord) {
               completeAttendance.push(existingRecord);
             } else {
-              const dayOfWeek = new Date(d).getDay();
               if (dayOfWeek !== 0 && dayOfWeek !== 6) {
                 completeAttendance.push({
                   _id: `absent-${employee._id}-${dateKey}`,
                   employee: employee,
-                  date: new Date(d),
+                  date: new Date(dStr + "T00:00:00+05:30"),
                   status: "Absent",
                   punchIn: null,
                   punchOut: null,
