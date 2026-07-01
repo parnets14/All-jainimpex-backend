@@ -39,14 +39,17 @@ const hmToMin = (hm, def = 600) => {
   return h * 60 + m;
 };
 
-// Day bucket = server-local midnight Date. MUST match every other attendance
-// writer (web punch, leave approve, crons, salary) which all use
-// `new Date(x); setHours(0,0,0,0)`. Using a different convention (e.g. IST ISO)
-// would create off-by-one days and duplicate Attendance docs on a UTC server.
+// Day bucket = IST midnight as a UTC Date. The server runs in UTC, but all
+// attendance dates must represent IST calendar days for salary/leave to work.
+// IST = UTC+5:30, so IST midnight = 18:30 UTC of the previous day.
 const dayStartOf = (date) => {
   const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return d;
+  // Convert to IST then zero the time, then convert back to UTC
+  const istMs = d.getTime() + 5.5 * 60 * 60 * 1000;
+  const istDate = new Date(istMs);
+  istDate.setUTCHours(0, 0, 0, 0); // midnight in IST (as if it were UTC)
+  // Convert back: subtract IST offset to get the UTC instant of IST midnight
+  return new Date(istDate.getTime() - 5.5 * 60 * 60 * 1000);
 };
 
 /**

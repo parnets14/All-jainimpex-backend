@@ -43,6 +43,16 @@ const leaveKeyForType = (leaveType) => {
 router.use(protect);
 router.use(attachCompanyDB);
 
+// IST midnight helper: on a UTC server, `setHours(0,0,0,0)` gives UTC midnight,
+// but attendance must be stored at IST midnight (18:30 UTC of prev day) so that
+// the unique index (employee+date) works correctly for India.
+const istMidnight = (d = new Date()) => {
+  const ms = new Date(d).getTime() + 5.5 * 60 * 60 * 1000;
+  const ist = new Date(ms);
+  ist.setUTCHours(0, 0, 0, 0);
+  return new Date(ist.getTime() - 5.5 * 60 * 60 * 1000);
+};
+
 // Punch In
 router.post(
   "/punch-in",
@@ -52,8 +62,7 @@ router.post(
       const { Attendance } = getModels(req.dbConnection);
       const { employeeId, location, faceVerified } = req.body;
 
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const today = istMidnight();
 
       let attendance = await Attendance.findOne({
         employee: employeeId,
@@ -114,8 +123,7 @@ router.post(
       const { Attendance } = getModels(req.dbConnection);
       const { employeeId, location, faceVerified } = req.body;
 
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const today = istMidnight();
 
       const attendance = await Attendance.findOne({
         employee: employeeId,

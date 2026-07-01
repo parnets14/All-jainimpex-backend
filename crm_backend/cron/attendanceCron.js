@@ -27,9 +27,14 @@ const markAbsentForCompany = async (company) => {
     const dbConnection = getCompanyConnection(company);
     const { Attendance, Employee, Leave } = getModels(dbConnection);
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const todayDow = today.getDay();
+    // IST midnight for today (server is UTC; IST = UTC+5:30)
+    const now = new Date();
+    const istMs = now.getTime() + 5.5 * 60 * 60 * 1000;
+    const istDate = new Date(istMs);
+    istDate.setUTCHours(0, 0, 0, 0);
+    const today = new Date(istDate.getTime() - 5.5 * 60 * 60 * 1000);
+
+    const todayDow = new Date(istMs).getUTCDay(); // day-of-week in IST
     const DAY_INDEX = {
       Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3,
       Thursday: 4, Friday: 5, Saturday: 6,
