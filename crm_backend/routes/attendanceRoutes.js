@@ -716,30 +716,32 @@ router.get(
 
       if (startDate && endDate) {
         dateFilter = {
-          $gte: new Date(startDate),
-          $lte: new Date(endDate),
+          $gte: istMidnight(new Date(startDate)),
+          $lte: new Date(istMidnight(new Date(endDate)).getTime() + 86400000 - 1),
         };
       } else {
         switch (period) {
           case "week": {
-            const weekStart = new Date(now);
-            weekStart.setDate(now.getDate() - now.getDay());
-            weekStart.setHours(0, 0, 0, 0);
+            const weekStart = istMidnight(new Date(now.getTime() - now.getDay() * 86400000));
             dateFilter = { $gte: weekStart };
             break;
           }
           case "month": {
-            const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+            // First day of current month in IST
+            const istNow = new Date(now.getTime() + 5.5 * 3600000);
+            const monthStart = istMidnight(new Date(istNow.getUTCFullYear(), istNow.getUTCMonth(), 1));
             dateFilter = { $gte: monthStart };
             break;
           }
           case "year": {
-            const yearStart = new Date(now.getFullYear(), 0, 1);
+            const istNow = new Date(now.getTime() + 5.5 * 3600000);
+            const yearStart = istMidnight(new Date(istNow.getUTCFullYear(), 0, 1));
             dateFilter = { $gte: yearStart };
             break;
           }
           default: {
-            const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1);
+            const istNow = new Date(now.getTime() + 5.5 * 3600000);
+            const defaultStart = istMidnight(new Date(istNow.getUTCFullYear(), istNow.getUTCMonth(), 1));
             dateFilter = { $gte: defaultStart };
           }
         }
