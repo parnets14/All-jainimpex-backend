@@ -187,8 +187,7 @@ router.get(
   async (req, res) => {
     try {
       const { Attendance } = getModels(req.dbConnection);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const today = istMidnight();
 
       const attendance = await Attendance.find({ date: today })
         .populate("employee", "name empId designation department")
@@ -228,26 +227,20 @@ router.get(
       } = req.query;
 
       // Default to today if no date specified
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const tomorrow = new Date(today);
-      tomorrow.setDate(tomorrow.getDate() + 1);
+      const today = istMidnight();
+      const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
 
       let dateFilter = {};
       if (startDate && endDate) {
-        const start = new Date(startDate);
-        start.setHours(0, 0, 0, 0);
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999);
+        const start = istMidnight(new Date(startDate));
+        const end = new Date(istMidnight(new Date(endDate)).getTime() + 24 * 60 * 60 * 1000 - 1);
         dateFilter = { $gte: start, $lte: end };
       } else if (startDate) {
-        const start = new Date(startDate);
-        start.setHours(0, 0, 0, 0);
-        const end = new Date(startDate);
-        end.setHours(23, 59, 59, 999);
+        const start = istMidnight(new Date(startDate));
+        const end = new Date(start.getTime() + 24 * 60 * 60 * 1000 - 1);
         dateFilter = { $gte: start, $lte: end };
       } else if (endDate) {
-        const end = new Date(endDate);
+        const end = new Date(istMidnight(new Date(endDate)).getTime() + 24 * 60 * 60 * 1000 - 1);
         end.setHours(23, 59, 59, 999);
         dateFilter = { $lte: end };
       } else {
@@ -836,8 +829,7 @@ router.get(
   async (req, res) => {
     try {
       const { Attendance, Employee } = getModels(req.dbConnection);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const today = istMidnight();
 
       const totalEmployees = await Employee.countDocuments({ status: "Active" });
       const presentToday = await Attendance.countDocuments({
