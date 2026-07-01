@@ -227,8 +227,13 @@ const DAY_INDEX = {
 
 /**
  * End-of-day finalizer for a given IST day key (default: yesterday).
- * Marks Absent any active employee who has no attendance record that day and is
- * not on their weekly-off (Leave days are created elsewhere and are skipped).
+ * Two rules:
+ *  1. Marks Absent any active employee who has NO attendance record and is not
+ *     on their weekly-off.
+ *  2. If an employee punched IN but never punched OUT (only open session, no
+ *     completed in+out pair), mark them Absent — per client rule "no punch out
+ *     = absent for that day". The punch-in stays on record for visibility.
+ * Leave days are never overwritten.
  */
 export const finalizeDayAttendance = async (db, dateInput = null) => {
   const { Employee, Attendance } = getModels(db);
@@ -253,13 +258,31 @@ export const finalizeDayAttendance = async (db, dateInput = null) => {
     if (dow === offIdx) continue; // weekly off — paid, skip
 
     const existing = await Attendance.findOne({ employee: emp._id, date: dayStart }).lean();
-    if (existing) continue; // has punches or leave already
 
-    try {
-      await Attendance.create({ employee: emp._id, date: dayStart, status: 'Absent', sessions: [] });
-      marked += 1;
-    } catch (e) {
-      if (e.code !== 11000) throw e; // ignore race duplicates
+    if (!existing) {
+      // No record at all → Absent
+      try {
+        await Attendance.create({ employee: emp._id, date: dayStart, status: 'Absent', sessions: [] });
+        marked += 1;
+      } catch (e) {
+        if (e.code !== 11000) throw e;
+      }
+    } else if (existing.status === 'Leave') {
+      continue; // never touch approved leave
+    } else {
+      // Has a record — check if there's at least one COMPLETED session (in + out).
+      // If only open sessions (punch-in without punch-out), mark Absent.
+      const completed = (existing.sessions || []).filter(
+        (s) => s.in?.time && s.out?.time
+      );
+      if (completed.length === 0) {
+        // Only punch-in, no punch-out → Absent (punch-in stays in sessions for visibility)
+        await Attendance.updateOne(
+          { _id: existing._id },
+          { $set: { status: 'Absent', workingHours: 0, lateMinutes: 0 } }
+        );
+        marked += 1;
+      }
     }
   }
   return { dayKey, marked };
