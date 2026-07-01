@@ -110,9 +110,15 @@ export const generateSalarySlipDirect = async (
       };
     }
 
-    // Calculate salary period (1st to last day of month)
-    const periodFrom = new Date(year, month - 1, 1);
-    const periodTo = new Date(year, month, 0); // Last day of month
+    // Calculate salary period (1st to last day of month) using IST boundaries.
+    // IST midnight = 18:30 UTC of the previous day.
+    const istMid = (d) => {
+      const ms = new Date(d).getTime() + 5.5 * 3600000;
+      const ist = new Date(ms); ist.setUTCHours(0, 0, 0, 0);
+      return new Date(ist.getTime() - 5.5 * 3600000);
+    };
+    const periodFrom = istMid(new Date(year, month - 1, 1));
+    const periodTo = new Date(istMid(new Date(year, month, 0)).getTime() + 86400000 - 1);
 
     // Get attendance for the month
     const attendance = await Attendance.find({

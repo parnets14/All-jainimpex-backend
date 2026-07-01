@@ -3,7 +3,13 @@ import { leavePolicySchema } from '../models/LeavePolicy.js';
 import { leaveBalanceSchema } from '../models/LeaveBalance.js';
 import { employeeSchema } from '../models/Employee.js';
 
-const getModels = (conn) => ({
+// IST midnight: given any date, returns the UTC instant of IST midnight for that calendar day.
+const istMidnight = (d = new Date()) => {
+  const ms = new Date(d).getTime() + 5.5 * 60 * 60 * 1000;
+  const ist = new Date(ms);
+  ist.setUTCHours(0, 0, 0, 0);
+  return new Date(ist.getTime() - 5.5 * 60 * 60 * 1000);
+};const getModels = (conn) => ({
   HrmsSettings: conn.models.HrmsSettings || conn.model('HrmsSettings', hrmsSettingsSchema),
   LeavePolicy: conn.models.LeavePolicy || conn.model('LeavePolicy', leavePolicySchema),
   LeaveBalance: conn.models.LeaveBalance || conn.model('LeaveBalance', leaveBalanceSchema),
@@ -233,8 +239,8 @@ export const markAttendanceDay = async (req, res) => {
     if (!employeeId || !date || !action) {
       return res.status(400).json({ success: false, message: 'employeeId, date and action are required' });
     }
-    const day = new Date(date); day.setHours(0, 0, 0, 0);
-    const dayEnd = new Date(day); dayEnd.setHours(23, 59, 59, 999);
+    const day = istMidnight(new Date(date));
+    const dayEnd = new Date(day.getTime() + 86400000 - 1);
 
     let att = await Attendance.findOne({ employee: employeeId, date: { $gte: day, $lte: dayEnd } });
     if (!att) att = new Attendance({ employee: employeeId, date: day, sessions: [] });
@@ -316,8 +322,8 @@ export const getWorkingTimeReport = async (req, res) => {
     if (!employeeId || !from || !to) {
       return res.status(400).json({ success: false, message: 'employeeId, from and to are required' });
     }
-    const fromD = new Date(from); fromD.setHours(0, 0, 0, 0);
-    const toD = new Date(to); toD.setHours(23, 59, 59, 999);
+    const fromD = istMidnight(new Date(from));
+    const toD = new Date(istMidnight(new Date(to)).getTime() + 86400000 - 1);
 
     const records = await Attendance.find({
       employee: employeeId,

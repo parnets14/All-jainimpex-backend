@@ -241,7 +241,6 @@ router.get(
         dateFilter = { $gte: start, $lte: end };
       } else if (endDate) {
         const end = new Date(istMidnight(new Date(endDate)).getTime() + 24 * 60 * 60 * 1000 - 1);
-        end.setHours(23, 59, 59, 999);
         dateFilter = { $lte: end };
       } else {
         dateFilter = { $gte: today, $lt: tomorrow };
@@ -587,8 +586,7 @@ router.patch(
       for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
         // Skip weekends (Saturday = 6, Sunday = 0)
         if (d.getDay() !== 0 && d.getDay() !== 6) {
-          const attendanceDate = new Date(d);
-          attendanceDate.setHours(0, 0, 0, 0);
+          const attendanceDate = istMidnight(d);
 
           const existingAttendance = await Attendance.findOne({
             employee: leave.employee,
