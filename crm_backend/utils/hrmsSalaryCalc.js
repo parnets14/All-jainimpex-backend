@@ -59,13 +59,21 @@ const recordLastOutMinutes = (rec) => {
  */
 export const countWorkingDays = (year, month, employee) => {
   const offDay = DAY_INDEX[employee?.weeklyOff] ?? -1; // -1 = 'None'
-  const from = new Date(year, month - 1, 1);
-  const to = new Date(year, month, 0);
+  // Use IST boundaries: first day of month at IST midnight
+  const istMid = (d) => {
+    const ms = new Date(d).getTime() + 5.5 * 3600000;
+    const ist = new Date(ms); ist.setUTCHours(0, 0, 0, 0);
+    return new Date(ist.getTime() - 5.5 * 3600000);
+  };
+  const from = istMid(new Date(year, month - 1, 1));
+  const to = istMid(new Date(year, month, 0));
   let workingDays = 0;
   const d = new Date(from);
   while (d <= to) {
-    if (d.getDay() !== offDay) workingDays++;
-    d.setDate(d.getDate() + 1);
+    // Use IST day-of-week
+    const istDay = new Date(d.getTime() + 5.5 * 3600000).getUTCDay();
+    if (istDay !== offDay) workingDays++;
+    d.setTime(d.getTime() + 86400000); // advance by exactly one IST day
   }
   return { workingDays };
 };
@@ -119,7 +127,7 @@ export const computeAttendanceAdjustments = (attendance, employee, settings) => 
 
     // On the employee's weekly-off day we never penalize (late/shortfall); OT for
     // extra work is still credited below.
-    const isWeeklyOff = offDay >= 0 && new Date(rec.date).getDay() === offDay;
+    const isWeeklyOff = offDay >= 0 && new Date(new Date(rec.date).getTime() + 5.5 * 3600000).getUTCDay() === offDay;
 
     // ── Late (Point 7): first punch-in vs shift start, beyond grace ──
     const firstIn = recordFirstInMinutes(rec);

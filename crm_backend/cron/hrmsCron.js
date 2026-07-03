@@ -55,11 +55,16 @@ const hmToMin = (hm) => {
 
 const runNoPunchAlert = async () => {
   const now = new Date();
-  // local IST minutes
-  const nowMin = now.getHours() * 60 + now.getMinutes();
-  const startOfDay = new Date(now); startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(now); endOfDay.setHours(23, 59, 59, 999);
-  const todayDow = now.getDay();
+  // Convert current time to IST to compare against configured alert time
+  const istNow = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
+  const nowMin = istNow.getUTCHours() * 60 + istNow.getUTCMinutes();
+  const todayDow = istNow.getUTCDay(); // day-of-week in IST
+
+  // IST midnight for today (UTC instant of 18:30 previous day)
+  const istMidnight = new Date(istNow);
+  istMidnight.setUTCHours(0, 0, 0, 0);
+  const startOfDay = new Date(istMidnight.getTime() - 5.5 * 60 * 60 * 1000);
+  const endOfDay = new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000 - 1);
 
   for (const company of COMPANIES) {
     try {

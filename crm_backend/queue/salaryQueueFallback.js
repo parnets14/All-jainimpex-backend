@@ -140,15 +140,20 @@ export const generateSalarySlipDirect = async (
     let currentDate = new Date(periodFrom);
 
     while (currentDate <= periodTo) {
-      const dayOfWeek = currentDate.getDay();
+      // Use IST day-of-week (server is UTC; IST = UTC+5:30)
+      const istDate = new Date(currentDate.getTime() + 5.5 * 3600000);
+      const dayOfWeek = istDate.getUTCDay();
       // Skip the employee's weekly off (paid week-off, not counted in divisor)
       if (dayOfWeek !== offDayIndex) {
         workingDays++;
 
-        // Check if employee was present on this day
-        const attendanceRecord = attendance.find(
-          (a) => a.date.toDateString() === currentDate.toDateString()
-        );
+        // Check if employee was present on this day using IST calendar day matching
+        // (attendance dates stored as IST midnight = 18:30 UTC of previous day)
+        const currentIST = new Date(currentDate.getTime() + 5.5 * 3600000).toISOString().slice(0, 10);
+        const attendanceRecord = attendance.find((a) => {
+          const aIST = new Date(new Date(a.date).getTime() + 5.5 * 3600000).toISOString().slice(0, 10);
+          return aIST === currentIST;
+        });
 
         if (attendanceRecord) {
           if (
