@@ -170,6 +170,8 @@ export const createEmployee = async (req, res) => {
       name,
       empId: empIdInput, // manual empId (optional) — matches biometric card no
       biometricCardNo: bioCardInput, // selected from the device card list
+      isSalesExecutive,
+      linkedUserId,
       designation,
       department,
       dateOfJoining,
@@ -305,6 +307,8 @@ export const createEmployee = async (req, res) => {
       name: name.trim(),
       empId,
       biometricCardNo: bioCard,
+      isSalesExecutive: isSalesExecutive === 'true' || isSalesExecutive === true,
+      linkedUserId: linkedUserId || null,
       designation: designation.trim(),
       department: department.trim(),
       dateOfJoining,
@@ -450,6 +454,8 @@ export const updateEmployee = async (req, res) => {
       name,
       empId: empIdInput, // allow editing to match biometric card no
       biometricCardNo: bioCardInput, // selected from device card list
+      isSalesExecutive: isSEInput,
+      linkedUserId: linkedUserIdInput,
       designation,
       department,
       dateOfJoining,
@@ -533,6 +539,14 @@ export const updateEmployee = async (req, res) => {
         }
       }
       updateData.biometricCardNo = bioCard;
+    }
+
+    // SE link update
+    if (isSEInput !== undefined) {
+      updateData.isSalesExecutive = isSEInput === 'true' || isSEInput === true;
+    }
+    if (linkedUserIdInput !== undefined) {
+      updateData.linkedUserId = linkedUserIdInput || null;
     }
 
     // Only update provided fields
