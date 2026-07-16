@@ -284,6 +284,17 @@ const employeeSchema = new mongoose.Schema({
     trim: true,
     index: true
   },
+  // If this employee is a Sales Executive, link to their User record so their
+  // app attendance syncs into HRMS automatically.
+  isSalesExecutive: {
+    type: Boolean,
+    default: false
+  },
+  linkedUserId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+  },
   designation: {
     type: String,
     required: [true, 'Designation is required'],

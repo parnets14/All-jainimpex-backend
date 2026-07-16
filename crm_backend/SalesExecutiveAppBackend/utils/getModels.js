@@ -28,6 +28,8 @@ import { subcategorySchema }           from '../../models/Subcategory.js';
 import { extendedSubcategorySchema }   from '../../models/ExtendedSubcategory.js';
 import { routeSchema }                 from '../../models/Route.js';
 import { regionSchema }                from '../../models/Region.js';
+import { employeeSchema }              from '../../models/Employee.js';
+import { attendanceSchema as hrmsAttendanceSchema } from '../../models/Attendance.js';
 
 // SE-specific model schemas
 import { attendanceSchema }          from '../models/Attendance.js';
@@ -69,6 +71,8 @@ export const getModels = (req) => {
     ExtendedSubcategory:  getOrCreate(conn, 'ExtendedSubcategory',   extendedSubcategorySchema),
     Route:                getOrCreate(conn, 'Route',                 routeSchema),
     Region:               getOrCreate(conn, 'Region',                regionSchema),
+    Employee:             getOrCreate(conn, 'Employee',              employeeSchema),
+    Attendance:           getOrCreate(conn, 'Attendance',            hrmsAttendanceSchema),
 
     // SE-specific models (per-company)
     SEAttendance:    getOrCreate(conn, 'SEAttendance',    attendanceSchema),

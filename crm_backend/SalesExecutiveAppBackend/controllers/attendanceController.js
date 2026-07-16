@@ -62,6 +62,30 @@ export const checkIn = async (req, res) => {
       attendance = await SEAttendance.create(attendanceData);
     }
 
+    // Sync to HRMS Attendance (Option A): find the linked Employee record and
+    // write a session so the HRMS salary/attendance system sees this punch.
+    try {
+      const { Employee, Attendance: HRMSAttendance } = getModels(req);
+      const linkedEmp = await Employee.findOne({ linkedUserId: userId, status: 'Active' }).select('_id').lean();
+      if (linkedEmp) {
+        const istMid = (d) => { const ms = new Date(d).getTime()+5.5*3600000; const ist=new Date(ms); ist.setUTCHours(0,0,0,0); return new Date(ist.getTime()-5.5*3600000); };
+        const dayStart = istMid(checkInTime);
+        let hrmsAtt = await HRMSAttendance.findOne({ employee: linkedEmp._id, date: dayStart });
+        if (!hrmsAtt) hrmsAtt = new HRMSAttendance({ employee: linkedEmp._id, date: dayStart, sessions: [] });
+        // Add a new open session (check-in, no out yet)
+        const sessions = hrmsAtt.sessions || [];
+        const hasOpenApp = sessions.some(s => s.in?.source === 'app' && !s.out?.time);
+        if (!hasOpenApp) {
+          sessions.push({ in: { time: checkInTime, location: address || 'Field', source: 'app' } });
+          hrmsAtt.sessions = sessions;
+          hrmsAtt.markModified('sessions');
+          await hrmsAtt.save();
+        }
+      }
+    } catch (syncErr) {
+      console.error('SE→HRMS attendance sync (check-in) failed:', syncErr.message);
+    }
+
     res.status(200).json({
       success: true,
       message: 'Checked in successfully',
@@ -122,6 +146,29 @@ export const checkOut = async (req, res) => {
     }
 
     await attendance.save();
+
+    // Sync to HRMS Attendance: close the open 'app' session for this employee today
+    try {
+      const { Employee, Attendance: HRMSAttendance } = getModels(req);
+      const linkedEmp = await Employee.findOne({ linkedUserId: userId, status: 'Active' }).select('_id').lean();
+      if (linkedEmp) {
+        const istMid = (d) => { const ms = new Date(d).getTime()+5.5*3600000; const ist=new Date(ms); ist.setUTCHours(0,0,0,0); return new Date(ist.getTime()-5.5*3600000); };
+        const dayStart = istMid(new Date());
+        const hrmsAtt = await HRMSAttendance.findOne({ employee: linkedEmp._id, date: dayStart });
+        if (hrmsAtt) {
+          const sessions = hrmsAtt.sessions || [];
+          const openIdx = sessions.findIndex(s => s.in?.source === 'app' && !s.out?.time);
+          if (openIdx >= 0) {
+            sessions[openIdx].out = { time: attendance.checkOutTime, location: address || 'Field', source: 'app' };
+            hrmsAtt.sessions = sessions;
+            hrmsAtt.markModified('sessions');
+            await hrmsAtt.save();
+          }
+        }
+      }
+    } catch (syncErr) {
+      console.error('SE→HRMS attendance sync (check-out) failed:', syncErr.message);
+    }
 
     res.status(200).json({
       success: true,
