@@ -30,6 +30,7 @@ import { routeSchema }                 from '../../models/Route.js';
 import { regionSchema }                from '../../models/Region.js';
 import { employeeSchema }              from '../../models/Employee.js';
 import { attendanceSchema as hrmsAttendanceSchema } from '../../models/Attendance.js';
+import { getCompanyConnection }        from '../../config/multiDatabase.js';
 
 // SE-specific model schemas
 import { attendanceSchema }          from '../models/Attendance.js';
@@ -43,9 +44,16 @@ const getOrCreate = (conn, name, schema) => {
   return conn.models[name] || conn.model(name, schema);
 };
 
+// Master company for SE Attendance — all companies share one attendance record
+const ATTENDANCE_MASTER_COMPANY = 'jain-impex';
+
 export const getModels = (req) => {
   const conn = req.dbConnection;
   if (!conn) throw new Error('req.dbConnection not set — protect middleware missing?');
+
+  // SE Attendance is ALWAYS stored in the master company (jain-impex) DB
+  // so that check-in from any company is visible across all companies.
+  const masterConn = getCompanyConnection(ATTENDANCE_MASTER_COMPANY);
 
   return {
     // Shared CRM models (per-company)
@@ -74,8 +82,10 @@ export const getModels = (req) => {
     Employee:             getOrCreate(conn, 'Employee',              employeeSchema),
     Attendance:           getOrCreate(conn, 'Attendance',            hrmsAttendanceSchema),
 
+    // SE Attendance — uses master (jain-impex) DB so check-in is shared across all companies
+    SEAttendance:    getOrCreate(masterConn, 'SEAttendance',    attendanceSchema),
+
     // SE-specific models (per-company)
-    SEAttendance:    getOrCreate(conn, 'SEAttendance',    attendanceSchema),
     Collection:      getOrCreate(conn, 'Collection',      collectionSchema),
     RoutePlan:       getOrCreate(conn, 'RoutePlan',       routePlanSchema),
     Target:          getOrCreate(conn, 'Target',          targetSchema),

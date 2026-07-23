@@ -165,10 +165,15 @@ export const verifyOTP = async (req, res) => {
     // Generate token scoped to this company
     const token = generateToken(user._id, target.company.dbKey);
 
+    // Find the jain-impex userId for consistent Firebase tracking keys
+    const masterEntry = companies.find(c => c.company.id === 'jain-impex');
+    const masterUserId = masterEntry ? masterEntry.userId.toString() : user._id.toString();
+
     res.status(200).json({
       success: true,
       message: 'Login successful',
       token,
+      masterUserId, // jain-impex userId — used as Firebase key for cross-company tracking
       // Return ALL companies user belongs to (for switch-company feature)
       companies: companies.map(({ company }) => ({
         id: company.id,

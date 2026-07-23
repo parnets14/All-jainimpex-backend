@@ -58,8 +58,22 @@ const attendanceSchema = new mongoose.Schema({
 attendanceSchema.index({ employee: 1, date: 1 }, { unique: true });
 
 // Pre-save: compute derived punchIn/punchOut + working/break hours.
-attendanceSchema.pre('save', function(next) {
+// Uses the employee's shiftStart for late detection (falls back to 9:30 if not set).
+attendanceSchema.pre('save', async function(next) {
   const completed = (this.sessions || []).filter(s => s.in && s.in.time && s.out && s.out.time);
+
+  // Resolve the employee's shift start time for late calculation
+  let shiftStartHour = 9, shiftStartMin = 30; // fallback default
+  try {
+    const Employee = this.constructor.db?.models?.Employee || this.model('Employee');
+    if (Employee && this.employee) {
+      const emp = await Employee.findById(this.employee).select('shiftStart').lean();
+      if (emp && emp.shiftStart && emp.shiftStart.includes(':')) {
+        const [h, m] = emp.shiftStart.split(':').map(Number);
+        if (!isNaN(h) && !isNaN(m)) { shiftStartHour = h; shiftStartMin = m; }
+      }
+    }
+  } catch (e) { /* use fallback */ }
 
   if (this.sessions && this.sessions.length > 0) {
     // ── Multi-punch mode ──
@@ -83,10 +97,10 @@ attendanceSchema.pre('save', function(next) {
       this.breakMinutes = Math.max(0, Math.round((spanMs - workedMs) / 60000));
     }
 
-    // basic status (Point 7 will refine late logic vs shift)
+    // Late detection using employee's actual shift start
     if (firstIn && firstIn.time) {
       const t = new Date(firstIn.time);
-      const lt = new Date(t); lt.setHours(9, 30, 0, 0);
+      const lt = new Date(t); lt.setHours(shiftStartHour, shiftStartMin, 0, 0);
       if (t > lt) { this.lateMinutes = Math.round((t - lt) / 60000); this.status = 'Late'; }
       else if (this.status === 'Absent') { this.status = 'Present'; }
     }
@@ -96,7 +110,7 @@ attendanceSchema.pre('save', function(next) {
     this.workingHours = parseFloat(hours.toFixed(2));
     const punchInTime = new Date(this.punchIn.time);
     const lateThreshold = new Date(punchInTime);
-    lateThreshold.setHours(9, 30, 0, 0);
+    lateThreshold.setHours(shiftStartHour, shiftStartMin, 0, 0);
     if (punchInTime > lateThreshold) {
       this.lateMinutes = Math.round((punchInTime - lateThreshold) / (1000 * 60));
       this.status = 'Late';

@@ -1,6 +1,40 @@
 import { getModels } from '../utils/getModels.js';
+import { getCompanyConnection } from '../../config/multiDatabase.js';
+import { userSchema } from '../../models/User.js';
+import { employeeSchema } from '../../models/Employee.js';
+import { attendanceSchema as hrmsAttendanceSchema } from '../../models/Attendance.js';
 import path from 'path';
 import fs from 'fs';
+
+// Master company where all SE Attendance records are stored
+const ATTENDANCE_MASTER_COMPANY = 'jain-impex';
+
+/**
+ * Resolve the master (jain-impex) userId for this SE.
+ * Since the same person can have different _id in each company DB,
+ * we match by phone number to find their jain-impex identity.
+ * Falls back to the current user's _id if they're already on jain-impex
+ * or if no match is found (so attendance still works).
+ */
+const getMasterUserId = async (req) => {
+  // If already logged into jain-impex, just use the current _id
+  if (req.company === ATTENDANCE_MASTER_COMPANY) {
+    return req.user._id;
+  }
+
+  // Find this user's jain-impex counterpart by phone
+  const masterConn = getCompanyConnection(ATTENDANCE_MASTER_COMPANY);
+  const MasterUser = masterConn.models.User || masterConn.model('User', userSchema);
+  const phone = req.user.phone;
+
+  if (!phone) return req.user._id; // fallback
+
+  const masterUser = await MasterUser.findOne({ phone, role: 'sales_executive', status: 'Active' })
+    .select('_id')
+    .lean();
+
+  return masterUser ? masterUser._id : req.user._id;
+};
 
 // @desc    Check-in with GPS and selfie
 // @route   POST /api/se/attendance/check-in
@@ -8,7 +42,7 @@ import fs from 'fs';
 export const checkIn = async (req, res) => {
   try {
     const { latitude, longitude, address } = req.body;
-    const userId = req.user._id;
+    const userId = await getMasterUserId(req); // Always use jain-impex userId
     const { SEAttendance } = getModels(req);
 
     const today = new Date().setHours(0, 0, 0, 0);
@@ -64,8 +98,11 @@ export const checkIn = async (req, res) => {
 
     // Sync to HRMS Attendance (Option A): find the linked Employee record and
     // write a session so the HRMS salary/attendance system sees this punch.
+    // Always syncs to jain-impex HRMS since that's where attendance is managed.
     try {
-      const { Employee, Attendance: HRMSAttendance } = getModels(req);
+      const masterConn = getCompanyConnection(ATTENDANCE_MASTER_COMPANY);
+      const Employee = masterConn.models.Employee || masterConn.model('Employee', employeeSchema);
+      const HRMSAttendance = masterConn.models.Attendance || masterConn.model('Attendance', hrmsAttendanceSchema);
       const linkedEmp = await Employee.findOne({ linkedUserId: userId, status: 'Active' }).select('_id').lean();
       if (linkedEmp) {
         const istMid = (d) => { const ms = new Date(d).getTime()+5.5*3600000; const ist=new Date(ms); ist.setUTCHours(0,0,0,0); return new Date(ist.getTime()-5.5*3600000); };
@@ -107,7 +144,7 @@ export const checkIn = async (req, res) => {
 export const checkOut = async (req, res) => {
   try {
     const { latitude, longitude, address } = req.body;
-    const userId = req.user._id;
+    const userId = await getMasterUserId(req); // Always use jain-impex userId
     const { SEAttendance } = getModels(req);
 
     const today = new Date().setHours(0, 0, 0, 0);
@@ -148,8 +185,11 @@ export const checkOut = async (req, res) => {
     await attendance.save();
 
     // Sync to HRMS Attendance: close the open 'app' session for this employee today
+    // Always syncs to jain-impex HRMS since that's where attendance is managed.
     try {
-      const { Employee, Attendance: HRMSAttendance } = getModels(req);
+      const masterConn = getCompanyConnection(ATTENDANCE_MASTER_COMPANY);
+      const Employee = masterConn.models.Employee || masterConn.model('Employee', employeeSchema);
+      const HRMSAttendance = masterConn.models.Attendance || masterConn.model('Attendance', hrmsAttendanceSchema);
       const linkedEmp = await Employee.findOne({ linkedUserId: userId, status: 'Active' }).select('_id').lean();
       if (linkedEmp) {
         const istMid = (d) => { const ms = new Date(d).getTime()+5.5*3600000; const ist=new Date(ms); ist.setUTCHours(0,0,0,0); return new Date(ist.getTime()-5.5*3600000); };
@@ -190,7 +230,7 @@ export const checkOut = async (req, res) => {
 // @access  Private (Sales Executive)
 export const getTodayAttendance = async (req, res) => {
   try {
-    const userId = req.user._id;
+    const userId = await getMasterUserId(req); // Always use jain-impex userId
     const today = new Date().setHours(0, 0, 0, 0);
     const { SEAttendance } = getModels(req);
 
@@ -218,7 +258,7 @@ export const getTodayAttendance = async (req, res) => {
 // @access  Private (Sales Executive)
 export const getAttendanceHistory = async (req, res) => {
   try {
-    const userId = req.user._id;
+    const userId = await getMasterUserId(req); // Always use jain-impex userId
     const { startDate, endDate, page = 1, limit = 30 } = req.query;
     const { SEAttendance } = getModels(req);
 
@@ -260,13 +300,17 @@ export const getAttendanceHistory = async (req, res) => {
   }
 };
 
-// @desc    Get all attendance records (Admin/Web view) — filtered by admin's company
+// @desc    Get all attendance records (Admin/Web view) — all companies see centralized attendance
 // @route   GET /api/se/attendance/all
 // @access  Private (Admin)
 export const getAllAttendance = async (req, res) => {
   try {
     const { date, userId, startDate, endDate, page = 1, limit = 100 } = req.query;
-    const { SEAttendance, User } = getModels(req);
+    const { SEAttendance } = getModels(req);
+
+    // User info is always from jain-impex (master) since that's where userIds are from
+    const masterConn = getCompanyConnection(ATTENDANCE_MASTER_COMPANY);
+    const MasterUser = masterConn.models.User || masterConn.model('User', userSchema);
 
     const query = {};
 
@@ -296,16 +340,16 @@ export const getAllAttendance = async (req, res) => {
       SEAttendance.countDocuments(query),
     ]);
 
-    // Get user info from the same company DB (already on req.dbConnection)
+    // Get user info from the master (jain-impex) DB since all userIds reference that DB
     const userIds = [...new Set(attendances.map(a => a.user?.toString()).filter(Boolean))];
     const userMap = {};
 
     if (userIds.length > 0) {
-      const users = await User.find({ _id: { $in: userIds } }).select('name phone email').lean();
+      const users = await MasterUser.find({ _id: { $in: userIds } }).select('name phone email').lean();
       users.forEach(u => { userMap[u._id.toString()] = u; });
     }
 
-    // Attach user info — only include records where user was found in this company
+    // Attach user info
     const enriched = attendances
       .map(a => ({
         ...a,

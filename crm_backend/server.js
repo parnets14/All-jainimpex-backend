@@ -128,6 +128,7 @@ import seTargetRoutes from './SalesExecutiveAppBackend/routes/targetRoutes.js';
 import seExpenseRoutes        from './SalesExecutiveAppBackend/routes/expenseRoutes.js';
 import seNotificationRoutes   from './SalesExecutiveAppBackend/routes/notificationRoutes.js';
 import seDealerVisitRoutes    from './SalesExecutiveAppBackend/routes/dealerVisitRoutes.js';
+import seDailySummaryRoutes  from './SalesExecutiveAppBackend/routes/dailySummaryRoutes.js';
 
 // Delivery Executive App Routes
 import deAuthRoutes from './DeliveryExecutiveAppBackend/routes/authRoutes.js';
@@ -456,6 +457,7 @@ app.use('/api/se/targets', seTargetRoutes);
 app.use('/api/se/expenses', seExpenseRoutes);
 app.use('/api/se/notifications', seNotificationRoutes);
 app.use('/api/se/dealer-visits', seDealerVisitRoutes);
+app.use('/api/se/daily-summary', seDailySummaryRoutes);
 console.log('✅ Sales Executive App routes registered at /api/se/*');
 
 // Delivery Executive App Routes (separate API prefix for DE app)
@@ -656,6 +658,14 @@ app.use("/public", express.static(join(__dirname, "public")));
     startTrackingHistoryCleanupCron();
   } catch (error) {
     console.error('❌ Failed to initialize trail-history cleanup cron:', error);
+  }
+
+  // Initialize SE Daily Summary cron (9 PM IST — generates daily performance reports)
+  try {
+    const { startSEDailySummaryCron } = await import('./cron/seDailySummary.js');
+    startSEDailySummaryCron();
+  } catch (error) {
+    console.error('❌ Failed to initialize SE daily summary cron:', error);
   }
 
   // Start server

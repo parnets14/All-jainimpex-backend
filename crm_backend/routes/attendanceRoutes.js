@@ -263,7 +263,7 @@ router.get(
       }
 
       const allEmployees = await Employee.find(employeeFilter)
-        .select("name empId designation department")
+        .select("name empId designation department weeklyOff")
         .sort({ name: 1 });
 
       // Get attendance records for the date range
@@ -333,7 +333,10 @@ router.get(
             if (existingRecord) {
               completeAttendance.push(existingRecord);
             } else {
-              if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+              // Use employee's registered weeklyOff day instead of hardcoded Sat/Sun
+              const DAY_MAP = { Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Friday: 5, Saturday: 6 };
+              const empOffDay = DAY_MAP[employee.weeklyOff] ?? 0; // default Sunday if not set
+              if (dayOfWeek !== empOffDay) {
                 completeAttendance.push({
                   _id: `absent-${employee._id}-${dateKey}`,
                   employee: employee,
@@ -582,10 +585,16 @@ router.patch(
       const start = new Date(leave.startDate);
       const end = new Date(leave.endDate);
 
+      // Get employee's weekly off to skip their off day (not hardcoded Sat/Sun)
+      const { Employee: EmpModel } = getModels(req.dbConnection);
+      const leaveEmp = await EmpModel.findById(leave.employee).select('weeklyOff').lean();
+      const DAY_MAP_LEAVE = { Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Friday: 5, Saturday: 6 };
+      const empOffDay = DAY_MAP_LEAVE[leaveEmp?.weeklyOff] ?? 0;
+
       let leaveDaysCreated = 0;
       for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-        // Skip weekends (Saturday = 6, Sunday = 0)
-        if (d.getDay() !== 0 && d.getDay() !== 6) {
+        // Skip the employee's weekly off day
+        if (d.getDay() !== empOffDay) {
           const attendanceDate = istMidnight(d);
 
           const existingAttendance = await Attendance.findOne({
