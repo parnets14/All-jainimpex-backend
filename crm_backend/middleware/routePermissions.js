@@ -104,6 +104,12 @@ const ROUTE_PERMISSION_MAP = {
   'notifications': null, // all authenticated users can receive notifications
   'app-settings': 'system.management',
 
+  // Sales Executive App
+  'se': 'sales.executive.app',
+
+  // Delivery Executive App
+  'de': 'delivery.executive.app',
+
   // Support
   'chat': 'support.chat',
 };

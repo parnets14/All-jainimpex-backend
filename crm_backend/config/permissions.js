@@ -1098,6 +1098,53 @@ export const AVAILABLE_PERMISSIONS = {
       name: "Delivery History View",
       description: "View delivery history"
     }
+  ],
+  "Financial Reports": [
+    {
+      id: "balance.sheet",
+      name: "Financial Statements & Reports",
+      description: "Access Balance Sheet, Trial Balance, P&L, General Ledger, GST, Aging, Fixed Assets, TDS, Cash Flow, Bank Reconciliation"
+    },
+    {
+      id: "salary.management",
+      name: "Salary Management",
+      description: "Process and manage employee salary records"
+    },
+    {
+      id: "expense.claims",
+      name: "Expense Claims Access",
+      description: "Submit and view expense claims"
+    },
+    {
+      id: "reports.activityLogs",
+      name: "Activity Logs Report",
+      description: "View system activity logs report"
+    },
+    {
+      id: "reports.agingReport",
+      name: "Aging Report",
+      description: "View accounts receivable/payable aging report"
+    },
+    {
+      id: "reports.dealerPerformance",
+      name: "Dealer Performance Report",
+      description: "View dealer performance analytics"
+    },
+    {
+      id: "reports.profitAnalysis",
+      name: "Profit Analysis Report",
+      description: "View profit analysis and margin reports"
+    },
+    {
+      id: "reports.salesAnalytics",
+      name: "Sales Analytics Report",
+      description: "View sales analytics and trends"
+    },
+    {
+      id: "dealer.order.requests",
+      name: "Dealer Order Requests",
+      description: "View and manage dealer app order requests"
+    }
   ]
 };
 
