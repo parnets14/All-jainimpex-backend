@@ -340,13 +340,33 @@ export const getAllAttendance = async (req, res) => {
       SEAttendance.countDocuments(query),
     ]);
 
-    // Get user info from the master (jain-impex) DB since all userIds reference that DB
+    // Get user info — search ALL company DBs since SEs may only exist in one company
     const userIds = [...new Set(attendances.map(a => a.user?.toString()).filter(Boolean))];
     const userMap = {};
 
     if (userIds.length > 0) {
+      // First try master (jain-impex)
       const users = await MasterUser.find({ _id: { $in: userIds } }).select('name phone email').lean();
       users.forEach(u => { userMap[u._id.toString()] = u; });
+
+      // For any userIds NOT found in jain-impex, search other company DBs
+      const missingIds = userIds.filter(id => !userMap[id]);
+      if (missingIds.length > 0) {
+        const ALL_COMPANIES = ['ridhi', 'shree-jain-impex'];
+        for (const company of ALL_COMPANIES) {
+          if (missingIds.length === 0) break;
+          try {
+            const conn = getCompanyConnection(company);
+            const CompanyUser = conn.models.User || conn.model('User', userSchema);
+            const found = await CompanyUser.find({ _id: { $in: missingIds } }).select('name phone email').lean();
+            found.forEach(u => {
+              userMap[u._id.toString()] = u;
+              const idx = missingIds.indexOf(u._id.toString());
+              if (idx >= 0) missingIds.splice(idx, 1);
+            });
+          } catch (e) { /* skip company if connection fails */ }
+        }
+      }
     }
 
     // Attach user info
