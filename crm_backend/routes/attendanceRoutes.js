@@ -503,6 +503,15 @@ router.post(
 
       await leave.populate("employee", "name empId designation department");
 
+      // Notify admin about new leave application
+      try {
+        const { notifyLeaveRequest } = await import('../services/adminNotificationService.js');
+        const empName = leave.employee?.name || 'Employee';
+        const sDate = start.toISOString().slice(0, 10);
+        const eDate = end.toISOString().slice(0, 10);
+        notifyLeaveRequest(empName, leaveType, sDate, eDate);
+      } catch (e) { /* non-blocking */ }
+
       res.status(201).json({
         success: true,
         message: "Leave application submitted successfully. Pending approval.",

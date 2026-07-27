@@ -103,7 +103,7 @@ const runNoPunchAlert = async () => {
 
         // raise (idempotent) alert
         try {
-          await HrmsAlert.updateOne(
+          const result = await HrmsAlert.updateOne(
             { type: 'no_punch_in', employee: emp._id, date: startOfDay },
             {
               $setOnInsert: {
@@ -117,6 +117,13 @@ const runNoPunchAlert = async () => {
             },
             { upsert: true }
           );
+          // Only notify admin on NEW alerts (not re-runs)
+          if (result.upsertedCount > 0) {
+            try {
+              const { notifyNoPunchIn } = await import('../services/adminNotificationService.js');
+              notifyNoPunchIn(emp.name, company);
+            } catch (ne) { /* non-blocking */ }
+          }
         } catch (e) {
           if (e.code !== 11000) console.error(`   ${company} alert error:`, e.message);
         }

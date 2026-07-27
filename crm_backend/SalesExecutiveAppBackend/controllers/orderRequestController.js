@@ -168,13 +168,8 @@ export const createOrderRequest = async (req, res) => {
 
     // Notify admin via Firebase RTDB
     try {
-      const { notifyNewOrderRequest } = await import('../../services/adminNotificationService.js');
-      const company = req.company || 'jain-impex';
-      notifyNewOrderRequest(company, {
-        dealerName: dealer.name,
-        orderNumber: request.requestNumber,
-        amount: request.totalAmount,
-      });
+      const { notifyNewDealerOrder } = await import('../../services/adminNotificationService.js');
+      notifyNewDealerOrder(dealer.name, request.requestNumber, req.company || 'jain-impex');
     } catch (e) { /* non-blocking */ }
 
     res.status(201).json({

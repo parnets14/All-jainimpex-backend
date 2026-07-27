@@ -94,6 +94,12 @@ export const createOrderRequest = async (req, res) => {
       requestDate: new Date(),
     });
 
+    // Notify admin about new dealer order
+    try {
+      const { notifyNewDealerOrder } = await import('../../services/adminNotificationService.js');
+      notifyNewDealerOrder(dealer.name, request.requestNumber, req.company || 'jain-impex');
+    } catch (e) { /* non-blocking */ }
+
     return res.status(201).json({
       success: true,
       message: 'Order request submitted successfully',

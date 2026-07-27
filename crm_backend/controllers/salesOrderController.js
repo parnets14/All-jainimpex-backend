@@ -8,6 +8,7 @@ import { notificationSchema } from "../models/Notification.js";
 import { warehouseSchema } from "../models/Warehouse.js";
 import { regionSchema } from "../models/Region.js";
 import { discountMappingSchema } from "../models/DiscountMapping.js";
+import { notifyCreditLimitExceeded, sendAdminNotification } from "../services/adminNotificationService.js";
 import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
 import { dealerLedgerSchema } from "../models/DealerLedger.js";
 import { paymentAllocationSchema } from "../models/PaymentAllocation.js";
@@ -559,6 +560,9 @@ export const createSalesOrder = async (req, res) => {
         const overlimitAmount = newOutstanding - dealerData.creditLimit;
         console.log(`⚠️ Credit limit exceeded by ₹${overlimitAmount.toFixed(2)} - forcing status to Pending`);
         req.body.status = "Pending";
+
+        // Notify admin about credit limit breach
+        try { notifyCreditLimitExceeded(dealerData.name, '', overlimitAmount, req.company); } catch(e) {}
         req.body.creditOverlimit = {
           isOverlimit: true,
           creditLimit: dealerData.creditLimit,

@@ -1,142 +1,175 @@
 /**
  * Admin Notification Service
- * Writes notifications to Firebase RTDB for real-time web CRM alerts.
- * Web frontend listens to /notifications/{company}/ for instant updates.
+ * Writes notifications to Firebase RTDB at /notifications/{company}
+ * These are read by the CRM web NotificationBell component in real-time.
+ * 
+ * Notification types:
+ *   order_request    - New dealer order from app
+ *   sales_order      - Credit limit exceeded / needs approval
+ *   leave_request    - Employee leave application
+ *   payment          - New SE collection received
+ *   new_dealer       - New dealer registered
+ *   expense          - New expense claim submitted
+ *   delivery_completed - Delivery completed
+ *   delivery_failed    - Delivery failed
+ *   no_punch          - Employee didn't punch in
+ *   system            - General system notifications
  */
 import admin from 'firebase-admin';
 
-// Get the Firebase RTDB instance (already initialized in firebaseNotificationService.js)
-const getDb = () => {
-  try {
-    const app = admin.app();
-    return app.database('https://jain-impex-default-rtdb.asia-southeast1.firebasedatabase.app');
-  } catch (e) {
-    console.warn('⚠️ Firebase not initialized for admin notifications:', e.message);
-    return null;
-  }
-};
+const ALL_COMPANIES = ['jain-impex', 'ridhi', 'shree-jain-impex'];
 
 /**
- * Send a notification to the web admin CRM via Firebase RTDB
- * @param {string} company - Company slug (jain-impex, ridhi, shree-jain-impex)
- * @param {object} notification - { type, title, message, data, priority }
+ * Send a notification to the admin panel (visible in the bell icon).
+ * Writes to all company paths so any admin on any company sees it.
+ * 
+ * @param {object} opts
+ * @param {string} opts.type - Notification type (matches NOTIFICATION_ROUTES in frontend)
+ * @param {string} opts.title - Short title
+ * @param {string} opts.message - Descriptive message
+ * @param {string} [opts.priority='medium'] - low | medium | high
+ * @param {string} [opts.company] - If set, only write to this company. Otherwise all.
+ * @param {object} [opts.data] - Extra metadata (orderId, employeeName, etc.)
  */
-export const sendAdminNotification = async (company, { type, title, message, data = {}, priority = 'normal' }) => {
-  const db = getDb();
-  if (!db) return null;
-
+export const sendAdminNotification = async ({ type, title, message, priority = 'medium', company = null, data = {} }) => {
   try {
-    const notifRef = db.ref(`/notifications/${company}`).push();
-    const notification = {
-      id: notifRef.key,
+    if (!admin.apps.length) {
+      console.warn('⚠️ Firebase not initialized — admin notification skipped');
+      return;
+    }
+
+    const db = admin.database();
+    const notif = {
       type,
       title,
       message,
-      data,
-      priority, // 'high', 'normal', 'low'
+      priority,
       read: false,
       createdAt: Date.now(),
+      ...data,
     };
 
-    await notifRef.set(notification);
-    console.log(`🔔 Admin notification [${type}]: ${title}`);
-    return notification;
-  } catch (error) {
-    console.error('❌ Failed to send admin notification:', error.message);
-    return null;
+    const companies = company ? [company] : ALL_COMPANIES;
+    for (const c of companies) {
+      try {
+        await db.ref(`/notifications/${c}`).push(notif);
+      } catch (e) { /* silent */ }
+    }
+  } catch (e) {
+    console.error('adminNotification error:', e.message);
   }
 };
 
-// ─── Convenience methods for common notification types ───────────
-
-export const notifyNewOrderRequest = (company, { dealerName, orderNumber, amount }) => {
-  return sendAdminNotification(company, {
+// Convenience helpers for common notification types
+export const notifyNewDealerOrder = (dealerName, orderNumber, company) =>
+  sendAdminNotification({
     type: 'order_request',
-    title: '🛒 New Order Request',
-    message: `${dealerName} placed order request #${orderNumber} — ₹${amount?.toLocaleString() || '0'}`,
-    data: { orderNumber, dealerName, amount },
+    title: 'New Dealer Order',
+    message: `${dealerName} placed order ${orderNumber} from the app`,
     priority: 'high',
+    company,
+    data: { dealerName, orderNumber },
   });
-};
 
-export const notifyNewSalesOrder = (company, { salesExecutive, dealerName, orderNumber, amount }) => {
-  return sendAdminNotification(company, {
+export const notifyCreditLimitExceeded = (dealerName, orderNumber, amount, company) =>
+  sendAdminNotification({
     type: 'sales_order',
-    title: '📋 New Sales Order',
-    message: `${salesExecutive} placed order #${orderNumber} for ${dealerName} — ₹${amount?.toLocaleString() || '0'}`,
-    data: { orderNumber, dealerName, salesExecutive, amount },
-    priority: 'normal',
+    title: 'Credit Limit Exceeded',
+    message: `Order ${orderNumber} for ${dealerName} exceeds credit limit by ₹${Math.round(amount).toLocaleString()}. Approval required.`,
+    priority: 'high',
+    company,
+    data: { dealerName, orderNumber, amount },
   });
-};
 
-export const notifyPaymentCollected = (company, { salesExecutive, dealerName, amount, mode }) => {
-  return sendAdminNotification(company, {
+export const notifyLeaveRequest = (employeeName, leaveType, startDate, endDate, company) =>
+  sendAdminNotification({
+    type: 'leave_request',
+    title: 'Leave Application',
+    message: `${employeeName} applied for ${leaveType} (${startDate} to ${endDate})`,
+    priority: 'medium',
+    company,
+    data: { employeeName, leaveType },
+  });
+
+export const notifyNewCollection = (seName, amount, dealerName, company) =>
+  sendAdminNotification({
     type: 'payment',
-    title: '💰 Payment Collected',
-    message: `₹${amount?.toLocaleString() || '0'} collected from ${dealerName} by ${salesExecutive} (${mode || 'cash'})`,
-    data: { dealerName, salesExecutive, amount, mode },
-    priority: 'normal',
+    title: 'Collection Received',
+    message: `${seName} collected ₹${Math.round(amount).toLocaleString()} from ${dealerName}`,
+    priority: 'medium',
+    company,
+    data: { seName, amount, dealerName },
   });
-};
 
-export const notifyDeliveryCompleted = (company, { executiveName, orderNumber, dealerName }) => {
-  return sendAdminNotification(company, {
-    type: 'delivery_completed',
-    title: '✅ Delivery Completed',
-    message: `Order #${orderNumber} delivered to ${dealerName} by ${executiveName} — awaiting confirmation`,
-    data: { orderNumber, dealerName, executiveName },
+// Alias for backward compatibility
+export const notifyPaymentCollected = (company, { salesExecutive, dealerName, amount, mode }) =>
+  sendAdminNotification({
+    type: 'payment',
+    title: 'Payment Collected',
+    message: `${salesExecutive} collected ₹${Math.round(amount).toLocaleString()} from ${dealerName} (${mode})`,
+    priority: 'medium',
+    company,
+    data: { salesExecutive, dealerName, amount, mode },
+  });
+
+export const notifyNoPunchIn = (employeeName, company) =>
+  sendAdminNotification({
+    type: 'no_punch',
+    title: 'No Punch-In Alert',
+    message: `${employeeName} has not punched in today`,
     priority: 'high',
+    company,
+    data: { employeeName },
   });
-};
 
-export const notifyDeliveryFailed = (company, { executiveName, orderNumber, dealerName, reason }) => {
-  return sendAdminNotification(company, {
-    type: 'delivery_failed',
-    title: '❌ Delivery Failed',
-    message: `Order #${orderNumber} to ${dealerName} failed — ${reason}`,
-    data: { orderNumber, dealerName, executiveName, reason },
-    priority: 'high',
-  });
-};
-
-export const notifyDeliveryRescheduled = (company, { executiveName, orderNumber, dealerName, newDate, reason }) => {
-  return sendAdminNotification(company, {
-    type: 'delivery_rescheduled',
-    title: '🔄 Delivery Rescheduled',
-    message: `Order #${orderNumber} to ${dealerName} rescheduled to ${newDate} — ${reason}`,
-    data: { orderNumber, dealerName, executiveName, newDate, reason },
-    priority: 'normal',
-  });
-};
-
-export const notifyNewDealerRegistered = (company, { dealerName, phone }) => {
-  return sendAdminNotification(company, {
-    type: 'new_dealer',
-    title: '👤 New Dealer Registered',
-    message: `${dealerName} (${phone}) registered on the Dealer App`,
-    data: { dealerName, phone },
-    priority: 'low',
-  });
-};
-
-export const notifyExpenseSubmitted = (company, { salesExecutive, amount, category }) => {
-  return sendAdminNotification(company, {
+export const notifyNewExpenseClaim = (employeeName, amount, company) =>
+  sendAdminNotification({
     type: 'expense',
-    title: '🧾 Expense Submitted',
-    message: `${salesExecutive} submitted ₹${amount?.toLocaleString() || '0'} expense (${category})`,
-    data: { salesExecutive, amount, category },
-    priority: 'low',
+    title: 'New Expense Claim',
+    message: `${employeeName} submitted expense claim of ₹${Math.round(amount).toLocaleString()}`,
+    priority: 'medium',
+    company,
+    data: { employeeName, amount },
   });
-};
 
-export default {
-  sendAdminNotification,
-  notifyNewOrderRequest,
-  notifyNewSalesOrder,
-  notifyPaymentCollected,
-  notifyDeliveryCompleted,
-  notifyDeliveryFailed,
-  notifyDeliveryRescheduled,
-  notifyNewDealerRegistered,
-  notifyExpenseSubmitted,
-};
+export const notifyDeliveryCompleted = (executiveName, dealerName, company) =>
+  sendAdminNotification({
+    type: 'delivery_completed',
+    title: 'Delivery Completed',
+    message: `${executiveName} delivered to ${dealerName}`,
+    priority: 'low',
+    company,
+    data: { executiveName, dealerName },
+  });
+
+export const notifyDeliveryFailed = (executiveName, dealerName, reason, company) =>
+  sendAdminNotification({
+    type: 'delivery_failed',
+    title: 'Delivery Failed',
+    message: `${executiveName} failed delivery to ${dealerName}${reason ? ': ' + reason : ''}`,
+    priority: 'high',
+    company,
+    data: { executiveName, dealerName, reason },
+  });
+
+export const notifyDeliveryRescheduled = (executiveName, dealerName, newDate, company) =>
+  sendAdminNotification({
+    type: 'delivery_rescheduled',
+    title: 'Delivery Rescheduled',
+    message: `${executiveName} rescheduled delivery to ${dealerName}${newDate ? ' for ' + newDate : ''}`,
+    priority: 'medium',
+    company,
+    data: { executiveName, dealerName, newDate },
+  });
+
+export const notifyNewSEOrder = (seName, dealerName, orderNumber, company) =>
+  sendAdminNotification({
+    type: 'sales_order',
+    title: 'New SE Order',
+    message: `${seName} placed order ${orderNumber} for ${dealerName}`,
+    priority: 'medium',
+    company,
+    data: { seName, dealerName, orderNumber },
+  });
+
+export default sendAdminNotification;
