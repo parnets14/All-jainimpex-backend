@@ -130,10 +130,13 @@ export const generateSalarySlipDirect = async (
     });
 
     // Calculate working days (excluding the employee's own weekly off — Point 3)
-    const offDayIndex = {
-      Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3,
-      Thursday: 4, Friday: 5, Saturday: 6,
-    }[employee.weeklyOff] ?? 0;
+    const getOffDays = (weeklyOff) => {
+      const DI = { Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Friday: 5, Saturday: 6 };
+      if (!weeklyOff) return [];
+      const days = Array.isArray(weeklyOff) ? weeklyOff : [weeklyOff];
+      return days.map(d => DI[d]).filter(d => d !== undefined);
+    };
+    const offDays = getOffDays(employee.weeklyOff);
     let workingDays = 0;
     let presentDays = 0;
     let leaveDays = 0;
@@ -143,8 +146,8 @@ export const generateSalarySlipDirect = async (
       // Use IST day-of-week (server is UTC; IST = UTC+5:30)
       const istDate = new Date(currentDate.getTime() + 5.5 * 3600000);
       const dayOfWeek = istDate.getUTCDay();
-      // Skip the employee's weekly off (paid week-off, not counted in divisor)
-      if (dayOfWeek !== offDayIndex) {
+      // Skip the employee's weekly off day(s) (paid week-off, not counted in divisor)
+      if (!offDays.includes(dayOfWeek)) {
         workingDays++;
 
         // Check if employee was present on this day using IST calendar day matching

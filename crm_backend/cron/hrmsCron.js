@@ -83,8 +83,13 @@ const runNoPunchAlert = async () => {
 
       for (const emp of employees) {
         // skip weekly off
-        const offIdx = DAY_INDEX[emp.weeklyOff] ?? 0;
-        if (todayDow === offIdx) continue;
+        const getOffDays = (weeklyOff) => {
+          if (!weeklyOff) return [];
+          const days = Array.isArray(weeklyOff) ? weeklyOff : [weeklyOff];
+          return days.map(d => DAY_INDEX[d]).filter(d => d !== undefined);
+        };
+        const offDays = getOffDays(emp.weeklyOff);
+        if (offDays.includes(todayDow)) continue;
 
         const att = await Attendance.findOne({
           employee: emp._id,

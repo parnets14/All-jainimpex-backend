@@ -314,7 +314,12 @@ export const createEmployee = async (req, res) => {
       dateOfJoining,
       shiftStart: shiftStart || "10:00",
       shiftEnd: shiftEnd || "18:00",
-      weeklyOff: weeklyOff || "Sunday",
+      weeklyOff: (() => {
+        if (!weeklyOff) return ["Sunday"];
+        if (Array.isArray(weeklyOff)) return weeklyOff;
+        try { const parsed = JSON.parse(weeklyOff); return Array.isArray(parsed) ? parsed : [weeklyOff]; }
+        catch { return [weeklyOff]; }
+      })(),
       leaveLapseCycle: leaveLapseCycle === 'monthly' ? 'monthly' : 'yearly',
       phoneNumber: phoneNumber ? phoneNumber.trim() : "", // NEW
       email: email ? email.trim().toLowerCase() : "", // NEW
@@ -555,7 +560,10 @@ export const updateEmployee = async (req, res) => {
     if (department !== undefined) updateData.department = department.trim();
     if (shiftStart !== undefined) updateData.shiftStart = shiftStart;
     if (shiftEnd !== undefined) updateData.shiftEnd = shiftEnd;
-    if (weeklyOff !== undefined) updateData.weeklyOff = weeklyOff;
+    if (weeklyOff !== undefined) {
+      if (Array.isArray(weeklyOff)) updateData.weeklyOff = weeklyOff;
+      else { try { const p = JSON.parse(weeklyOff); updateData.weeklyOff = Array.isArray(p) ? p : [weeklyOff]; } catch { updateData.weeklyOff = [weeklyOff]; } }
+    }
     if (leaveLapseCycle !== undefined) updateData.leaveLapseCycle = leaveLapseCycle === 'monthly' ? 'monthly' : 'yearly';
     if (dateOfJoining !== undefined) updateData.dateOfJoining = dateOfJoining;
     if (phoneNumber !== undefined)

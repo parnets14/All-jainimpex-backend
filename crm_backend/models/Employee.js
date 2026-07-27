@@ -322,9 +322,9 @@ const employeeSchema = new mongoose.Schema({
     trim: true
   },
   weeklyOff: {
-    type: String,            // day of week; paid week-off, skipped in salary working-days
-    enum: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'None'],
-    default: 'Sunday'
+    type: [String],          // days of week; paid week-off, skipped in salary working-days
+    enum: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
+    default: ['Sunday']
   },
 
   // ── Leave lapse cycle (Point 1, dynamic) ──

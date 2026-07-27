@@ -52,13 +52,20 @@ const recordLastOutMinutes = (rec) => {
   return null;
 };
 
+// Normalize weeklyOff: handles both old string ("Sunday") and new array (["Sunday","Saturday"])
+const getOffDays = (weeklyOff) => {
+  if (!weeklyOff) return [];
+  const days = Array.isArray(weeklyOff) ? weeklyOff : [weeklyOff];
+  return days.map(d => DAY_INDEX[d]).filter(d => d !== undefined);
+};
+
 /**
  * Count paid working days in a month for an employee, skipping their weekly off.
  * Returns { workingDays } where weekly-off days are excluded (they are paid but
  * not part of the divisor used for per-day deductions).
  */
 export const countWorkingDays = (year, month, employee) => {
-  const offDay = DAY_INDEX[employee?.weeklyOff] ?? -1; // -1 = 'None'
+  const offDays = getOffDays(employee?.weeklyOff);
   // Use IST boundaries: first day of month at IST midnight
   const istMid = (d) => {
     const ms = new Date(d).getTime() + 5.5 * 3600000;
@@ -72,7 +79,7 @@ export const countWorkingDays = (year, month, employee) => {
   while (d <= to) {
     // Use IST day-of-week
     const istDay = new Date(d.getTime() + 5.5 * 3600000).getUTCDay();
-    if (istDay !== offDay) workingDays++;
+    if (!offDays.includes(istDay)) workingDays++;
     d.setTime(d.getTime() + 86400000); // advance by exactly one IST day
   }
   return { workingDays };
@@ -96,7 +103,7 @@ export const computeAttendanceAdjustments = (attendance, employee, settings) => 
   // overnight shift guard
   if (shiftEndMin <= shiftStartMin) shiftEndMin += 24 * 60;
   const shiftDurationMin = shiftEndMin - shiftStartMin;
-  const offDay = DAY_INDEX[employee?.weeklyOff] ?? -1; // weekly-off: no late/shortfall penalty
+  const offDays = getOffDays(employee?.weeklyOff); // weekly-off: no late/shortfall penalty
 
   const otBuffer = Number(s.otBufferMinutes) || 0;
   const otRate = Number(s.otRate) || 0;
@@ -127,7 +134,7 @@ export const computeAttendanceAdjustments = (attendance, employee, settings) => 
 
     // On the employee's weekly-off day we never penalize (late/shortfall); OT for
     // extra work is still credited below.
-    const isWeeklyOff = offDay >= 0 && new Date(new Date(rec.date).getTime() + 5.5 * 3600000).getUTCDay() === offDay;
+    const isWeeklyOff = offDays.length > 0 && offDays.includes(new Date(new Date(rec.date).getTime() + 5.5 * 3600000).getUTCDay());
 
     // ── Late (Point 7): first punch-in vs shift start, beyond grace ──
     const firstIn = recordFirstInMinutes(rec);

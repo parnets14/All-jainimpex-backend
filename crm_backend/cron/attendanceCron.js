@@ -59,8 +59,13 @@ const markAbsentForCompany = async (company) => {
     // Employees who didn't punch in today AND are not on their weekly off
     const absentEmployees = activeEmployees.filter((emp) => {
       if (presentEmployeeIds.includes(emp._id.toString())) return false;
-      const offIdx = DAY_INDEX[emp.weeklyOff] ?? 0;
-      return todayDow !== offIdx; // skip weekly-off (paid, not absent)
+      const getOffDays = (weeklyOff) => {
+        if (!weeklyOff) return [];
+        const days = Array.isArray(weeklyOff) ? weeklyOff : [weeklyOff];
+        return days.map(d => DAY_INDEX[d]).filter(d => d !== undefined);
+      };
+      const offDays = getOffDays(emp.weeklyOff);
+      return !offDays.includes(todayDow); // skip weekly-off (paid, not absent)
     });
 
     // Approved leaves covering today

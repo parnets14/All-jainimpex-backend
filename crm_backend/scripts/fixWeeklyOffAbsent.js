@@ -30,8 +30,13 @@ const fixCompany = async (company) => {
   let totalDeleted = 0;
 
   for (const emp of employees) {
-    const offDay = DAY_INDEX[emp.weeklyOff];
-    if (offDay === undefined) continue;
+    const getOffDays = (weeklyOff) => {
+      if (!weeklyOff) return [];
+      const days = Array.isArray(weeklyOff) ? weeklyOff : [weeklyOff];
+      return days.map(d => DAY_INDEX[d]).filter(d => d !== undefined);
+    };
+    const offDays = getOffDays(emp.weeklyOff);
+    if (offDays.length === 0) continue;
 
     // Find all "Absent" records for this employee
     const absentRecords = await Attendance.find({
@@ -51,7 +56,7 @@ const fixCompany = async (company) => {
       // Convert to IST day-of-week
       const istDate = new Date(recDate.getTime() + 5.5 * 3600000);
       const dow = istDate.getUTCDay();
-      if (dow === offDay) {
+      if (offDays.includes(dow)) {
         toDelete.push(rec._id);
       }
     }

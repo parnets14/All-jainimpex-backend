@@ -257,8 +257,13 @@ export const finalizeDayAttendance = async (db, dateInput = null) => {
 
   let marked = 0;
   for (const emp of employees) {
-    const offIdx = DAY_INDEX[emp.weeklyOff] ?? 0;
-    if (dow === offIdx) continue; // weekly off — paid, skip
+    const getOffDays = (weeklyOff) => {
+      if (!weeklyOff) return [];
+      const days = Array.isArray(weeklyOff) ? weeklyOff : [weeklyOff];
+      return days.map(d => DAY_INDEX[d]).filter(d => d !== undefined);
+    };
+    const offDays = getOffDays(emp.weeklyOff);
+    if (offDays.includes(dow)) continue; // weekly off — paid, skip
 
     const existing = await Attendance.findOne({ employee: emp._id, date: dayStart }).lean();
 
