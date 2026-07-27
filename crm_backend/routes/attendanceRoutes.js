@@ -790,12 +790,16 @@ router.get(
       const endCalc = new Date();
       let workingDays = 0;
 
+      // Use employee's registered weeklyOff day (not hardcoded Sat/Sun)
+      const DAY_MAP_DETAILS = { Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Friday: 5, Saturday: 6 };
+      const empOffDay = DAY_MAP_DETAILS[employee.weeklyOff] ?? 0;
+
       for (
         let d = new Date(startCalc);
         d <= endCalc;
         d.setDate(d.getDate() + 1)
       ) {
-        if (d.getDay() !== 0 && d.getDay() !== 6) {
+        if (d.getDay() !== empOffDay) {
           workingDays++;
         }
       }
