@@ -808,6 +808,41 @@ router.get(
       const attendancePercentage =
         workingDays > 0 ? ((presentDays / workingDays) * 100).toFixed(2) : 0;
 
+      // Build a complete day-by-day view including weekly off days
+      const DAY_MAP_DETAIL = { Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Friday: 5, Saturday: 6 };
+      const empOffDayIdx = DAY_MAP_DETAIL[employee.weeklyOff] ?? -1;
+      
+      // Create a map of existing records by IST date
+      const recordsByDate = {};
+      attendanceRecords.forEach(r => {
+        const istDay = new Date(new Date(r.date).getTime() + 5.5 * 3600000).toISOString().slice(0, 10);
+        recordsByDate[istDay] = r;
+      });
+
+      // Fill in weekly off days as "Weekly Off" entries
+      const allRecords = [...attendanceRecords.map(r => r.toObject ? r.toObject() : r)];
+      const startD = dateFilter.$gte ? new Date(dateFilter.$gte) : new Date(now.getFullYear(), now.getMonth(), 1);
+      const endD = new Date();
+      for (let d = new Date(startD); d <= endD; d.setDate(d.getDate() + 1)) {
+        const istDate = new Date(d.getTime() + 5.5 * 3600000);
+        const dateKey = istDate.toISOString().slice(0, 10);
+        const dow = istDate.getUTCDay();
+        if (dow === empOffDayIdx && !recordsByDate[dateKey]) {
+          allRecords.push({
+            _id: `weekoff-${dateKey}`,
+            date: d.toISOString(),
+            status: 'Weekly Off',
+            punchIn: null,
+            punchOut: null,
+            sessions: [],
+            workingHours: 0,
+            isWeeklyOff: true,
+          });
+        }
+      }
+      // Sort by date descending
+      allRecords.sort((a, b) => new Date(b.date) - new Date(a.date));
+
       res.json({
         success: true,
         employee: {
@@ -826,7 +861,7 @@ router.get(
           leaveDays,
           attendancePercentage,
         },
-        attendanceRecords,
+        attendanceRecords: allRecords,
         leaveRecords,
       });
     } catch (error) {
