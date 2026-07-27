@@ -104,11 +104,11 @@ const ROUTE_PERMISSION_MAP = {
   'notifications': null, // all authenticated users can receive notifications
   'app-settings': 'system.management',
 
-  // Sales Executive App
-  'se': 'sales.executive.app',
+  // Sales Executive App — protected by its own SE middleware, not CRM permissions
+  'se': null,
 
-  // Delivery Executive App
-  'de': 'delivery.executive.app',
+  // Delivery Executive App — protected by its own DE middleware, not CRM permissions
+  'de': null,
 
   // Support
   'chat': 'support.chat',
