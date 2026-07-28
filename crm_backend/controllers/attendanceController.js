@@ -50,11 +50,18 @@ export const punchIn = async (req, res) => {
       });
     }
 
-    // Calculate if late (assuming 9:00 AM start time)
+    // Calculate if late using the employee's actual shift start time
     const punchInTime = new Date();
     const lateTime = new Date();
-    lateTime.setHours(9, 0, 0, 0); // 9:00 AM
-    
+
+    // Parse employee's shiftStart (HH:mm), fall back to 10:00 if not set
+    let shiftHour = 10, shiftMin = 0;
+    if (employee.shiftStart && employee.shiftStart.includes(':')) {
+      const [h, m] = employee.shiftStart.split(':').map(Number);
+      if (!isNaN(h) && !isNaN(m)) { shiftHour = h; shiftMin = m; }
+    }
+    lateTime.setHours(shiftHour, shiftMin, 0, 0);
+
     let status = 'Present';
     let lateMinutes = 0;
 

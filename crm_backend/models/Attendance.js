@@ -58,12 +58,12 @@ const attendanceSchema = new mongoose.Schema({
 attendanceSchema.index({ employee: 1, date: 1 }, { unique: true });
 
 // Pre-save: compute derived punchIn/punchOut + working/break hours.
-// Uses the employee's shiftStart for late detection (falls back to 9:30 if not set).
+// Uses the employee's shiftStart for late detection (falls back to 10:00 if not set).
 attendanceSchema.pre('save', async function(next) {
   const completed = (this.sessions || []).filter(s => s.in && s.in.time && s.out && s.out.time);
 
   // Resolve the employee's shift start time for late calculation
-  let shiftStartHour = 9, shiftStartMin = 30; // fallback default
+  let shiftStartHour = 10, shiftStartMin = 0; // fallback default (10:00)
   try {
     const Employee = this.constructor.db?.models?.Employee || this.model('Employee');
     if (Employee && this.employee) {
