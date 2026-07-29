@@ -89,11 +89,19 @@ const generateSummaryForUser = async (userId, userName, userPhone, dateStr, mode
   const dayStart = new Date(dateStr + 'T00:00:00.000+05:30'); // IST midnight
   const dayEnd = new Date(dateStr + 'T23:59:59.999+05:30');
 
-  // 1. Attendance
-  const attendance = await SEAttendance.findOne({
-    user: userId,
-    date: { $gte: dayStart, $lte: dayEnd },
-  }).lean();
+  // 1. Attendance — check all company DBs (SE may be registered in any)
+  let attendance = null;
+  for (const company of ALL_COMPANIES) {
+    try {
+      const conn = getCompanyConnection(company);
+      const SEAtt = conn.models.SEAttendance || conn.model('SEAttendance', seAttendanceSchema);
+      attendance = await SEAtt.findOne({
+        user: userId,
+        date: { $gte: dayStart, $lte: dayEnd },
+      }).lean();
+      if (attendance) break;
+    } catch (e) { /* try next */ }
+  }
 
   const checkInTime = attendance?.checkInTime || null;
   const checkOutTime = attendance?.checkOutTime || null;
@@ -101,11 +109,10 @@ const generateSummaryForUser = async (userId, userName, userPhone, dateStr, mode
     ? Math.round((new Date(checkOutTime) - new Date(checkInTime)) / 60000)
     : 0;
 
-  // 2. Trail data from Firebase
+  // 2. Trail data from Firebase — already reads all companies
   let trailStats = { totalDistanceKm: 0, trailPoints: 0, activeTimeMin: 0, idleTimeMin: 0, movingTimeMin: 0 };
   if (firebaseDB) {
     try {
-      // Read from all company paths and merge
       const allPoints = [];
       for (const company of ALL_COMPANIES) {
         const snap = await firebaseDB.ref(`/se-tracking-history/${company}/${userId}/${dateStr}`).once('value');
@@ -118,7 +125,6 @@ const generateSummaryForUser = async (userId, userName, userPhone, dateStr, mode
           });
         }
       }
-      // Deduplicate by timestamp (in case same point written to multiple paths)
       const seen = new Set();
       const unique = allPoints.filter(p => {
         const key = `${p.lat.toFixed(5)}_${p.lng.toFixed(5)}_${p.t}`;
@@ -132,36 +138,64 @@ const generateSummaryForUser = async (userId, userName, userPhone, dateStr, mode
     }
   }
 
-  // 3. Dealer visits
-  const visitCount = await DealerVisit.countDocuments({
-    user: userId,
-    checkInAt: { $gte: dayStart, $lte: dayEnd },
-  });
+  // 3. Dealer visits — search across all company DBs
+  let visitCount = 0;
+  for (const company of ALL_COMPANIES) {
+    try {
+      const conn = getCompanyConnection(company);
+      const DV = conn.models.DealerVisit || conn.model('DealerVisit', dealerVisitSchema);
+      const count = await DV.countDocuments({
+        user: userId,
+        checkInAt: { $gte: dayStart, $lte: dayEnd },
+      });
+      visitCount += count;
+    } catch (e) { /* try next */ }
+  }
 
-  // Assigned dealers count
-  const assignedCount = await Dealer.countDocuments({
-    salesExecutiveId: userId,
-  });
+  // Assigned dealers count — search across all company DBs
+  let assignedCount = 0;
+  for (const company of ALL_COMPANIES) {
+    try {
+      const conn = getCompanyConnection(company);
+      const D = conn.models.Dealer || conn.model('Dealer', dealerSchema);
+      const count = await D.countDocuments({ salesExecutiveId: userId });
+      assignedCount += count;
+    } catch (e) { /* try next */ }
+  }
 
   const coveragePercent = assignedCount > 0 ? Math.round((visitCount / assignedCount) * 100) : 0;
 
-  // 4. Orders
-  const orders = await SalesOrder.find({
-    createdBy: userId,
-    createdAt: { $gte: dayStart, $lte: dayEnd },
-  }).select('totalAmount').lean();
+  // 4. Orders — search across all company DBs
+  let ordersPlaced = 0;
+  let orderValue = 0;
+  for (const company of ALL_COMPANIES) {
+    try {
+      const conn = getCompanyConnection(company);
+      const SO = conn.models.SalesOrder || conn.model('SalesOrder', salesOrderSchema);
+      const orders = await SO.find({
+        createdBy: userId,
+        createdAt: { $gte: dayStart, $lte: dayEnd },
+      }).select('totalAmount').lean();
+      ordersPlaced += orders.length;
+      orderValue += orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+    } catch (e) { /* try next */ }
+  }
 
-  const ordersPlaced = orders.length;
-  const orderValue = orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-
-  // 5. Collections
-  const collections = await Collection.find({
-    collectedBy: userId,
-    date: { $gte: dayStart, $lte: dayEnd },
-  }).select('amount').lean();
-
-  const collectionsCount = collections.length;
-  const collectionAmount = collections.reduce((sum, c) => sum + (c.amount || 0), 0);
+  // 5. Collections — search across all company DBs
+  let collectionsCount = 0;
+  let collectionAmount = 0;
+  for (const company of ALL_COMPANIES) {
+    try {
+      const conn = getCompanyConnection(company);
+      const Coll = conn.models.Collection || conn.model('Collection', collectionSchema);
+      const collections = await Coll.find({
+        collectedBy: userId,
+        collectionDate: { $gte: dayStart, $lte: dayEnd },
+      }).select('amount').lean();
+      collectionsCount += collections.length;
+      collectionAmount += collections.reduce((sum, c) => sum + (c.amount || 0), 0);
+    } catch (e) { /* try next */ }
+  }
 
   // 6. Upsert summary
   const summary = {
@@ -198,24 +232,44 @@ const runDailySummary = async (targetDate = null) => {
 
   try {
     const masterConn = getCompanyConnection(MASTER_COMPANY);
-    const User = masterConn.models.User || masterConn.model('User', userSchema);
-    const SEAttendance = masterConn.models.SEAttendance || masterConn.model('SEAttendance', seAttendanceSchema);
-    const DealerVisit = masterConn.models.DealerVisit || masterConn.model('DealerVisit', dealerVisitSchema);
-    const SalesOrder = masterConn.models.SalesOrder || masterConn.model('SalesOrder', salesOrderSchema);
-    const Collection = masterConn.models.Collection || masterConn.model('Collection', collectionSchema);
-    const Dealer = masterConn.models.Dealer || masterConn.model('Dealer', dealerSchema);
     const SEDailySummary = masterConn.models.SEDailySummary || masterConn.model('SEDailySummary', dailySummarySchema);
-
     const firebaseDB = getFirebaseDB();
 
-    // Get all active sales executives
-    const salesExecs = await User.find({ role: 'sales_executive', status: 'Active' })
+    // Collect SEs from ALL companies, deduplicate by phone using master userId
+    const seMap = new Map(); // masterUserId → { _id, name, phone }
+    for (const company of ALL_COMPANIES) {
+      try {
+        const conn = getCompanyConnection(company);
+        const User = conn.models.User || conn.model('User', userSchema);
+        const execs = await User.find({ role: 'sales_executive', status: 'Active' })
+          .select('_id name phone')
+          .lean();
+
+        for (const se of execs) {
+          const key = se._id.toString();
+          if (!seMap.has(key)) {
+            seMap.set(key, { _id: se._id, name: se.name, phone: se.phone });
+          }
+        }
+      } catch (e) {
+        console.warn(`  ⚠️ Could not fetch SEs from ${company}:`, e.message);
+      }
+    }
+
+    // Also ensure master (jain-impex) SEs are included (they are the canonical source)
+    const masterUserConn = getCompanyConnection(MASTER_COMPANY);
+    const MasterUser = masterUserConn.models.User || masterUserConn.model('User', userSchema);
+    const masterExecs = await MasterUser.find({ role: 'sales_executive', status: 'Active' })
       .select('_id name phone')
       .lean();
+    for (const se of masterExecs) {
+      seMap.set(se._id.toString(), { _id: se._id, name: se.name, phone: se.phone });
+    }
 
-    console.log(`  Found ${salesExecs.length} active SEs`);
+    const salesExecs = Array.from(seMap.values());
+    console.log(`  Found ${salesExecs.length} unique active SEs across all companies`);
 
-    const models = { SEAttendance, DealerVisit, SalesOrder, Collection, Dealer, SEDailySummary };
+    const models = { SEDailySummary };
     let generated = 0;
 
     for (const se of salesExecs) {

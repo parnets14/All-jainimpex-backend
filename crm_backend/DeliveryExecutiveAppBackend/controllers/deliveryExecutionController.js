@@ -252,11 +252,11 @@ export const completeDelivery = async (req, res) => {
 
     // Notify admin via Firebase RTDB
     const company = req.company || req.deModels?.company || 'jain-impex';
-    notifyDeliveryCompleted(company, {
-      executiveName: req.user.name || 'Executive',
-      orderNumber: assignment.salesOrder?.orderNumber || '',
-      dealerName: assignment.dealer?.name || '',
-    });
+    notifyDeliveryCompleted(
+      req.user.name || 'Executive',
+      assignment.dealer?.name || '',
+      company
+    );
 
     console.log(`✅ Delivery completed by executive for order #${assignment.salesOrder?.orderNumber} — awaiting admin confirmation`);
 
@@ -329,13 +329,12 @@ export const rescheduleDelivery = async (req, res) => {
 
     // Notify admin
     const company = req.company || req.deModels?.company || 'jain-impex';
-    notifyDeliveryRescheduled(company, {
-      executiveName: req.user.name || 'Executive',
-      orderNumber: assignment.salesOrder?.orderNumber || '',
-      dealerName: assignment.dealer?.name || '',
-      newDate: requestedDate.toLocaleDateString('en-IN'),
-      reason,
-    });
+    notifyDeliveryRescheduled(
+      req.user.name || 'Executive',
+      assignment.dealer?.name || '',
+      requestedDate.toLocaleDateString('en-IN'),
+      company
+    );
 
     console.log(`🔄 Delivery rescheduled to ${requestedDate.toDateString()} — reason: ${reason}`);
 
@@ -396,12 +395,12 @@ export const failDelivery = async (req, res) => {
 
     // Notify admin
     const company = req.company || req.deModels?.company || 'jain-impex';
-    notifyDeliveryFailed(company, {
-      executiveName: req.user.name || 'Executive',
-      orderNumber: assignment.salesOrder?.orderNumber || '',
-      dealerName: assignment.dealer?.name || '',
+    notifyDeliveryFailed(
+      req.user.name || 'Executive',
+      assignment.dealer?.name || '',
       reason,
-    });
+      company
+    );
 
     console.log(`❌ Delivery failed — reason: ${reason}`);
 
