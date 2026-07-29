@@ -263,7 +263,7 @@ router.get(
       }
 
       const allEmployees = await Employee.find(employeeFilter)
-        .select("name empId designation department weeklyOff")
+        .select("name empId designation department weeklyOff shiftStart")
         .sort({ name: 1 });
 
       // Get attendance records for the date range
@@ -279,7 +279,7 @@ router.get(
       }
 
       const attendanceRecords = await Attendance.find(attendanceFilter)
-        .populate("employee", "name empId designation department")
+        .populate("employee", "name empId designation department shiftStart")
         .sort({ date: -1, "punchIn.time": -1 });
 
       // Filter out records with null employees (orphaned records)
@@ -359,11 +359,36 @@ router.get(
         completeAttendance = validAttendanceRecords;
       }
 
+      // Helper: compute effective late minutes from punch time vs employee shift start
+      const computeEffectiveLateMin = (record) => {
+        // Already stored
+        if (record.lateMinutes > 0) return record.lateMinutes;
+        const punchTime = record.sessions?.[0]?.in?.time || record.punchIn?.time;
+        if (!punchTime) return 0;
+        const shiftStart = record.employee?.shiftStart || "10:00";
+        if (!shiftStart.includes(":")) return 0;
+        const [h, m] = shiftStart.split(":").map(Number);
+        if (isNaN(h) || isNaN(m)) return 0;
+        const punch = new Date(punchTime);
+        const threshold = new Date(punch);
+        threshold.setHours(h, m, 0, 0);
+        const diff = Math.round((punch - threshold) / 60000);
+        return diff > 0 ? diff : 0;
+      };
+
       // Apply status filter
       if (status && status !== "All") {
-        completeAttendance = completeAttendance.filter(
-          (record) => record.status === status
-        );
+        completeAttendance = completeAttendance.filter((record) => {
+          if (status === "Late") {
+            // Match DB status OR computed late (handles records not yet updated by cron)
+            return record.status === "Late" || computeEffectiveLateMin(record) > 0;
+          }
+          if (status === "Present") {
+            // Present = DB says Present AND not actually late
+            return record.status === "Present" && computeEffectiveLateMin(record) === 0;
+          }
+          return record.status === status;
+        });
       }
 
       // Sort by date and name
@@ -917,10 +942,29 @@ router.get(
         date: today,
         status: { $in: ["Present", "Late"] },
       });
-      const lateToday = await Attendance.countDocuments({
+
+      // Count late: DB-marked Late OR punched in after shift start (stored as Present)
+      // Fetch today's Present records and compute late from punch time vs shiftStart
+      const todayPresent = await Attendance.find({
         date: today,
-        status: "Late",
-      });
+        status: { $in: ["Present", "Late"] },
+      }).populate("employee", "shiftStart").lean();
+
+      let lateToday = 0;
+      for (const rec of todayPresent) {
+        if (rec.status === "Late") { lateToday++; continue; }
+        const punchTime = rec.sessions?.[0]?.in?.time || rec.punchIn?.time;
+        if (!punchTime) continue;
+        const shiftStart = rec.employee?.shiftStart || "10:00";
+        if (!shiftStart.includes(":")) continue;
+        const [h, m] = shiftStart.split(":").map(Number);
+        if (isNaN(h) || isNaN(m)) continue;
+        const punch = new Date(punchTime);
+        const threshold = new Date(punch);
+        threshold.setHours(h, m, 0, 0);
+        if (punch > threshold) lateToday++;
+      }
+
       const absentToday = totalEmployees - presentToday;
 
       const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
