@@ -20,23 +20,29 @@ const getModels = (dbConnection) => {
   };
 };
 
-// Generate PO Number
+// Generate PO Number (retry-safe to prevent duplicate key errors)
 const generatePONumber = async (dbConnection) => {
   const { PurchaseOrder } = getModels(dbConnection);
   const date = new Date();
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
+  const datePrefix = `PO-${year}${month}${day}-`;
 
-  const lastPO = await PurchaseOrder.findOne().sort({ createdAt: -1 });
-  let sequence = 1;
+  // Count existing POs with today's prefix to determine next sequence
+  const count = await PurchaseOrder.countDocuments({ poNumber: { $regex: `^${datePrefix}` } });
+  let nextSeq = count + 1;
 
-  if (lastPO && lastPO.poNumber) {
-    const lastSequence = parseInt(lastPO.poNumber.split("-").pop());
-    sequence = lastSequence + 1;
+  // Retry loop to handle race conditions
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const poNumber = `${datePrefix}${String(nextSeq).padStart(3, "0")}`;
+    const exists = await PurchaseOrder.findOne({ poNumber }).lean();
+    if (!exists) return poNumber;
+    nextSeq++;
   }
 
-  return `PO-${year}${month}${day}-${String(sequence).padStart(3, "0")}`;
+  // Fallback: timestamp to guarantee uniqueness
+  return `${datePrefix}T${Date.now().toString().slice(-5)}`;
 };
 
 // Create Purchase Order - FIXED VERSION
@@ -167,6 +173,7 @@ export const createPurchaseOrder = async (req, res) => {
       lines,
       notes,
       createdBy: req.user._id,
+      expirationDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days to approve
     };
 
     // Calculate totals manually before creating the document.
@@ -627,6 +634,12 @@ export const updatePurchaseOrderStatus = async (req, res) => {
 
     const oldStatus = purchaseOrder.status;
     purchaseOrder.status = status;
+    
+    // Clear expiration when approved (no longer needs to expire)
+    if (status === 'Approved') {
+      purchaseOrder.expirationDate = null;
+    }
+    
     await purchaseOrder.save();
 
     // Auto-sync dealer pricing when PO is approved

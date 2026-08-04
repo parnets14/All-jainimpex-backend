@@ -668,6 +668,14 @@ app.use("/public", express.static(join(__dirname, "public")));
     console.error('❌ Failed to initialize SE daily summary cron:', error);
   }
 
+  // Initialize PO Expiration cron (8 AM IST — expire old POs + notify before expiry)
+  try {
+    const { startPOExpirationCron } = await import('./cron/poExpiration.js');
+    startPOExpirationCron();
+  } catch (error) {
+    console.error('❌ Failed to initialize PO expiration cron:', error);
+  }
+
   // Start server
   const PORT = process.env.PORT || 5000;
   app.listen(PORT, '0.0.0.0', () => {

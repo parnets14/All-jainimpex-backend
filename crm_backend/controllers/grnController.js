@@ -182,7 +182,8 @@ export const createGRN = async (req, res) => {
     await session.startTransaction();
     
     const {
-      poId,
+      poId,       // Primary PO (backward compat)
+      poIds,      // Array of PO IDs (multi-PO support)
       warehouseId,
       items,
       remarks,
@@ -190,230 +191,213 @@ export const createGRN = async (req, res) => {
       inspectedBy
     } = req.body;
 
-    console.log('Creating GRN with data:', { poId, warehouseId, items });
+    // Support both single poId and multi poIds
+    const allPoIds = poIds && poIds.length > 0 ? poIds : [poId];
+    const primaryPoId = allPoIds[0];
+
+    console.log('Creating GRN with data:', { poIds: allPoIds, warehouseId, itemCount: items?.length });
 
     // Validate quantities first
     validateGRNQuantities(items);
 
-    // Validate PO exists and is approved
-    const purchaseOrder = await PurchaseOrder.findById(poId)
-      .populate('supplierId')
-      .populate('lines.productId')
-      .session(session);
+    // Validate ALL POs exist and are approved
+    const purchaseOrders = [];
+    for (const pid of allPoIds) {
+      const po = await PurchaseOrder.findById(pid)
+        .populate('supplierId')
+        .populate('lines.productId')
+        .session(session);
 
-    if (!purchaseOrder) {
-      await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: 'Purchase Order not found'
-      });
+      if (!po) {
+        await session.abortTransaction();
+        return res.status(404).json({ success: false, message: `Purchase Order not found: ${pid}` });
+      }
+      if (po.status !== 'Approved') {
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: `PO ${po.poNumber} is not Approved (status: ${po.status})` });
+      }
+      purchaseOrders.push(po);
     }
 
-    if (purchaseOrder.status !== 'Approved') {
-      await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: `Only approved Purchase Orders can be used for GRN. Current status: ${purchaseOrder.status}`
-      });
-    }
+    const primaryPO = purchaseOrders[0];
 
     // Block GRNs dated in a closed financial year
     await assertPeriodOpen(req.dbConnection, req.body.grnDate || Date.now(), 'GRN');
 
-    // Calculate totals and validate quantities with cumulative tracking
+    // Calculate totals and build GRN items
     let totalAmount = 0;
     const grnItems = [];
+    const autoCreatedPOs = [];
 
     for (const item of items) {
-      const poLine = purchaseOrder.lines.find(
-        line => line.productId._id.toString() === item.productId
-      );
+      // Find which PO this item belongs to
+      let matchedPO = null;
+      let poLine = null;
+      
+      if (item.sourcePOId) {
+        matchedPO = purchaseOrders.find(po => po._id.toString() === item.sourcePOId);
+        poLine = matchedPO?.lines.find(l => l.productId._id.toString() === item.productId);
+      }
+      
+      // Fallback: search all POs for this product
+      if (!poLine) {
+        for (const po of purchaseOrders) {
+          poLine = po.lines.find(l => l.productId._id.toString() === item.productId);
+          if (poLine) { matchedPO = po; break; }
+        }
+      }
 
       if (!poLine) {
         await session.abortTransaction();
-        return res.status(400).json({
-          success: false,
-          message: `Product not found in Purchase Order: ${item.productId}`
-        });
+        return res.status(400).json({ success: false, message: `Product not found in any selected Purchase Order: ${item.productId}` });
       }
 
-      // Check cumulative received quantity across all GRNs
-      const existingGRNs = await GRN.find({ poId }).session(session);
-      const totalReceived = existingGRNs.reduce((sum, grn) => {
-        const grnItem = grn.items.find(gi => 
-          gi.productId && gi.productId.toString() === item.productId
-        );
-        return sum + (grnItem ? grnItem.receivedQuantity : 0);
-      }, 0);
-
-      const remainingQuantity = poLine.quantity - totalReceived;
-      
-      // Allow receiving more than ordered quantity (supplier may send extra)
-      // No validation check - accept whatever quantity is received
-      
       const acceptedQuantity = item.receivedQuantity - (item.damageQuantity || 0);
-      // poLine.price is the MRP (GST-INCLUSIVE) — do NOT add GST on top.
+      const companyBillQty = item.companyBillQuantity || item.receivedQuantity;
+      const shortageQty = Math.max(0, companyBillQty - item.receivedQuantity);
       const itemTotal = acceptedQuantity * poLine.price;
 
       grnItems.push({
+        serialNo: item.serialNo || null,
         productId: item.productId,
-        poQuantity: poLine.quantity,
+        sourcePOId: matchedPO._id,
+        sourcePONumber: item.sourcePONumber || matchedPO.poNumber,
+        poQuantity: item.poQuantity || poLine.quantity,
+        companyBillQuantity: companyBillQty,
         receivedQuantity: item.receivedQuantity,
         damageQuantity: item.damageQuantity || 0,
         acceptedQuantity,
+        shortageQuantity: shortageQty,
         unitPrice: poLine.price,
         gst: poLine.gst,
-        totalPrice: itemTotal
+        totalPrice: itemTotal,
+        purchaseDiscount: {
+          hasDiscount: poLine.purchaseDiscount?.hasDiscount || false,
+          directDiscountPercentage: poLine.purchaseDiscount?.directDiscountPercentage || 0,
+          floatingDiscountPercentage: poLine.purchaseDiscount?.referenceFloatingDiscount || 0,
+          floatingDiscountRange: {
+            min: poLine.purchaseDiscount?.floatingDiscountRange?.min || 0,
+            max: poLine.purchaseDiscount?.floatingDiscountRange?.max || 0,
+            enabled: poLine.purchaseDiscount?.floatingDiscountRange?.enabled || false
+          }
+        }
       });
 
       totalAmount += itemTotal;
+    }
+
+    // --- EXCESS CHECK: Collect ALL excess items into ONE auto-PO ---
+    const excessLines = [];
+    for (const grnItem of grnItems) {
+      if (grnItem.receivedQuantity > grnItem.poQuantity) {
+        const excessQty = grnItem.receivedQuantity - grnItem.poQuantity;
+        excessLines.push({
+          productId: grnItem.productId,
+          quantity: excessQty,
+          price: grnItem.unitPrice,
+          gst: grnItem.gst,
+          total: excessQty * grnItem.unitPrice,
+          purchaseDiscount: {
+            hasDiscount: grnItem.purchaseDiscount?.hasDiscount || false,
+            directDiscountPercentage: grnItem.purchaseDiscount?.directDiscountPercentage || 0,
+            referenceFloatingDiscount: grnItem.purchaseDiscount?.floatingDiscountPercentage || 0,
+            floatingDiscountRange: grnItem.purchaseDiscount?.floatingDiscountRange || { min: 0, max: 0, enabled: false },
+            floatingDiscountEnabled: grnItem.purchaseDiscount?.floatingDiscountRange?.enabled || false,
+            floatingDiscountMin: grnItem.purchaseDiscount?.floatingDiscountRange?.min || 0,
+            floatingDiscountMax: grnItem.purchaseDiscount?.floatingDiscountRange?.max || 0,
+          }
+        });
+      }
+    }
+
+    if (excessLines.length > 0) {
+      const excessPONumber = await generatePONumber(req.dbConnection);
+      const excessSubtotal = excessLines.reduce((s, l) => s + l.total, 0);
+      const excessPO = new PurchaseOrder({
+        poNumber: excessPONumber,
+        supplierId: primaryPO.supplierId._id,
+        warehouseId,
+        orderDate: new Date(),
+        expectedDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        status: 'Approved',
+        isAutoCreated: true,
+        autoCreatedReason: 'excess',
+        expirationDate: null, // No expiration for approved excess POs — already used in GRN
+        paymentTermsDays: primaryPO.paymentTermsDays,
+        billingAddress: primaryPO.billingAddress,
+        shippingAddress: primaryPO.shippingAddress,
+        lines: excessLines,
+        subtotal: excessSubtotal,
+        gstTotal: 0,
+        total: excessSubtotal,
+        createdBy: req.user._id,
+        notes: `Auto-created for excess quantities from GRN. ${excessLines.length} product(s).`
+      });
+      await excessPO.save({ session });
+
+      autoCreatedPOs.push({
+        poId: excessPO._id,
+        poNumber: excessPONumber,
+        reason: 'excess',
+        quantity: excessLines.reduce((s, l) => s + l.quantity, 0),
+        productId: excessLines.length === 1 ? excessLines[0].productId : null,
+        createdAt: new Date()
+      });
+
+      allPoIds.push(excessPO._id);
+
+      // Update GRN items' poQuantity to include excess and add excess PO to sourcePONumber
+      for (const grnItem of grnItems) {
+        const exLine = excessLines.find(l => l.productId.toString() === grnItem.productId.toString());
+        if (exLine) {
+          grnItem.poQuantity = grnItem.poQuantity + exLine.quantity;
+          // Append excess PO number to source reference
+          grnItem.sourcePONumber = grnItem.sourcePONumber 
+            ? `${grnItem.sourcePONumber}, ${excessPONumber}` 
+            : excessPONumber;
+        }
+      }
+
+      console.log(`✅ Auto-created PO ${excessPONumber} with ${excessLines.length} excess product(s)`);
     }
 
     // Generate GRN number using atomic counter
     const grnNo = await generateGRNNumber(req.dbConnection);
     console.log('Generated GRN No:', grnNo);
 
-    // Determine GRN status based on received quantities
-    let grnStatus = 'Received'; // Default to fully received
-    let hasShortage = false;
-    let hasOverage = false;
-    
-    // Check each item for deviations
-    for (const item of grnItems) {
-      if (item.acceptedQuantity < item.poQuantity) {
-        hasShortage = true;
-      }
-      if (item.acceptedQuantity > item.poQuantity) {
-        hasOverage = true;
-      }
-    }
-    
-    // Set status based on deviations
-    if (hasShortage && hasOverage) {
-      grnStatus = 'Partially Received'; // Mixed: some short, some over
-    } else if (hasShortage) {
-      grnStatus = 'Partially Received'; // Some items short
-    } else if (hasOverage) {
-      grnStatus = 'Received'; // All received (some extra) - still mark as received
-    }
-    // else: grnStatus remains 'Received' (all exact match)
+    // ALWAYS create as Draft — inspection is mandatory second step
+    const grnStatus = 'Draft';
 
     const grnData = {
       grnNo,
-      poId,
-      supplierId: purchaseOrder.supplierId._id,
+      poId: primaryPoId,
+      poIds: allPoIds,
+      supplierId: primaryPO.supplierId._id,
       warehouseId,
       items: grnItems,
       totalAmount,
       remarks: remarks || '',
       receivedBy: receivedBy || '',
-      inspectedBy: inspectedBy || '',
+      receivedAt: new Date(),
+      inspectedBy: '',
+      inspectedAt: null,
+      autoCreatedPOs,
       createdBy: req.user._id,
       status: grnStatus
     };
 
-    console.log('GRN data to save:', grnData);
-
     const grn = new GRN(grnData);
     await grn.save({ session });
 
-    // Update PO status to 'Completed' after GRN is created
-    try {
-      await PurchaseOrder.findByIdAndUpdate(
-        poId,
-        { status: 'Completed' },
-        { session }
-      );
-      console.log(`✅ PO ${poId} status updated to Completed after GRN creation`);
-    } catch (poUpdateError) {
-      console.error('Error updating PO status:', poUpdateError);
-      // Don't fail GRN creation if PO status update fails
-    }
-    
-    // Create stock movements for this GRN within transaction
-    // Create stock movements for this GRN within transaction
-    try {
-      await StockMovementService.createStockMovementsFromGRN(grn, false, session, req.dbConnection);
-      console.log(`✅ Stock movements created for GRN: ${grn.grnNo}`);
-    } catch (stockError) {
-      console.error('Error creating stock movements:', stockError);
-      await session.abortTransaction();
-      return res.status(500).json({
-        success: false,
-        message: `GRN created but stock movement failed: ${stockError.message}`
-      });
-    }
-    
-    // Check and fulfill pending out-of-stock orders
-    try {
-      await fulfillPendingOutOfStockOrders(grn, session, req.dbConnection);
-      console.log(`✅ Checked and fulfilled pending out-of-stock orders for GRN: ${grn.grnNo}`);
-    } catch (fulfillError) {
-      console.error('Error fulfilling pending orders:', fulfillError);
-      // Don't fail the GRN creation if pending order fulfillment fails
-    }
-    
-    // Auto-Apply Purchase Schemes for GRN
-    try {
-      const grnData = {
-        supplierId: purchaseOrder.supplierId._id,
-        items: grnItems.map(item => ({
-          productId: item.productId,
-          category: item.productId?.category,
-          subcategory: item.productId?.subcategory,
-          brand: item.productId?.brand,
-          acceptedQuantity: item.acceptedQuantity,
-          unitPrice: item.unitPrice,
-          totalPrice: item.totalPrice
-        })),
-        totalAmount: totalAmount,
-        grnDate: new Date().toISOString()
-      };
-
-      const schemeResult = await schemeService.checkAndApplyPurchaseSchemesForGRN(grnData);
-      
-      if (schemeResult.appliedSchemes.length > 0) {
-        console.log(`✅ Applied ${schemeResult.appliedSchemes.length} purchase schemes for GRN: ${grn.grnNo}`);
-        
-        // Log scheme applications
-        await schemeService.logSchemeApplication({
-          grnId: grn._id,
-          supplierId: purchaseOrder.supplierId._id,
-          appliedSchemes: schemeResult.appliedSchemes,
-          totalBenefits: schemeResult.totalBenefits,
-          appliedAt: new Date().toISOString()
-        });
-      }
-    } catch (schemeError) {
-      console.error('Error applying purchase schemes for GRN:', schemeError);
-      // Don't fail the GRN creation if scheme application fails
-    }
+    // Draft = NO stock update, NO PO completion. That happens at inspection.
     
     // Commit transaction
     await session.commitTransaction();
     
-    // IMPORTANT: Check waiting orders for stock arrival (after transaction commits)
-    // This runs outside the transaction to avoid blocking GRN creation
-    try {
-      const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
-      
-      for (const item of grnItems) {
-        await StockArrivalService.checkWaitingOrdersForStock(
-          item.productId,
-          warehouseId,
-          item.acceptedQuantity,
-          req.dbConnection
-        );
-      }
-      console.log(`✅ Checked waiting orders for stock arrival after GRN: ${grn.grnNo}`);
-    } catch (arrivalError) {
-      console.error('⚠️  Error checking waiting orders (non-critical):', arrivalError);
-      // Don't fail GRN creation if stock arrival check fails
-    }
-    
     // Populate the saved GRN for response
     const populatedGRN = await GRN.findById(grn._id)
       .populate('poId', 'poNumber')
+      .populate('poIds', 'poNumber')
       .populate('supplierId', 'name companyName')
       .populate('warehouseId', 'name location')
       .populate('items.productId', 'itemName productCode HSNCode')
@@ -421,21 +405,270 @@ export const createGRN = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: 'GRN created successfully',
-      data: populatedGRN
+      message: 'GRN created as Draft. Inspection required to complete.',
+      data: populatedGRN,
+      autoCreatedPOs: autoCreatedPOs.length > 0 ? autoCreatedPOs : undefined
     });
   } catch (error) {
-    // Rollback transaction on error
     await session.abortTransaction();
     if (handlePeriodLockError(error, res)) return;
     console.error('Create GRN error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    res.status(500).json({ success: false, message: error.message });
   } finally {
-    // End session
     session.endSession();
+  }
+};
+
+// Helper to generate PO number for auto-created POs (matches existing format, retry-safe)
+const generatePONumber = async (dbConnection) => {
+  const { PurchaseOrder } = getModels(dbConnection);
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const datePrefix = `PO-${year}${month}${day}-`;
+
+  // Get count of ALL POs with today's prefix
+  const count = await PurchaseOrder.countDocuments({ poNumber: { $regex: `^${datePrefix}` } });
+  let nextSeq = count + 1;
+
+  // Retry loop to find unused number
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const poNumber = `${datePrefix}${String(nextSeq).padStart(3, "0")}`;
+    const exists = await PurchaseOrder.findOne({ poNumber }).lean();
+    if (!exists) return poNumber;
+    nextSeq++;
+  }
+
+  // Fallback: timestamp to guarantee uniqueness
+  return `${datePrefix}T${Date.now().toString().slice(-5)}`;
+};
+
+// ─── STAGE 2: INSPECT GRN (completes the GRN, updates stock, creates POs for shortage) ───
+export const inspectGRN = async (req, res) => {
+  const { GRN, PurchaseOrder } = getModels(req.dbConnection);
+  const session = await req.dbConnection.startSession();
+
+  try {
+    await session.startTransaction();
+
+    const { id } = req.params;
+    const { inspectedBy, shortageActions } = req.body;
+    // shortageActions: [{ productId, action: 'createPO' | 'end' }]
+
+    if (!inspectedBy) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'Inspected By name is required' });
+    }
+
+    const grn = await GRN.findById(id).session(session);
+    if (!grn) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'GRN not found' });
+    }
+    if (grn.status !== 'Draft') {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: `GRN is already ${grn.status}. Only Draft GRNs can be inspected.` });
+    }
+
+    // Check for shortage items (PO Qty > Received Qty) and handle
+    // Collect all shortage items into ONE draft PO (if user wants)
+    const autoCreatedPOs = [...(grn.autoCreatedPOs || [])];
+    const shortageLines = [];
+
+    for (const item of grn.items) {
+      const shortageFromPO = item.poQuantity - item.receivedQuantity;
+      if (shortageFromPO > 0) {
+        const action = shortageActions?.find(a => a.productId === item.productId.toString());
+        if (action && action.action === 'createPO') {
+          shortageLines.push({
+            productId: item.productId,
+            quantity: shortageFromPO,
+            price: item.unitPrice,
+            gst: item.gst,
+            total: shortageFromPO * item.unitPrice,
+            purchaseDiscount: {
+              hasDiscount: item.purchaseDiscount?.hasDiscount || false,
+              directDiscountPercentage: item.purchaseDiscount?.directDiscountPercentage || 0,
+              referenceFloatingDiscount: item.purchaseDiscount?.floatingDiscountPercentage || 0,
+              floatingDiscountRange: item.purchaseDiscount?.floatingDiscountRange || { min: 0, max: 0, enabled: false },
+              floatingDiscountEnabled: item.purchaseDiscount?.floatingDiscountRange?.enabled || false,
+              floatingDiscountMin: item.purchaseDiscount?.floatingDiscountRange?.min || 0,
+              floatingDiscountMax: item.purchaseDiscount?.floatingDiscountRange?.max || 0,
+            }
+          });
+        }
+      }
+    }
+
+    // Create ONE draft PO for all shortage products
+    if (shortageLines.length > 0) {
+      const shortagePONumber = await generatePONumber(req.dbConnection);
+      const shortageSubtotal = shortageLines.reduce((s, l) => s + l.total, 0);
+      const shortagePO = new PurchaseOrder({
+        poNumber: shortagePONumber,
+        supplierId: grn.supplierId,
+        warehouseId: grn.warehouseId,
+        orderDate: new Date(),
+        expectedDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+        status: 'Draft',
+        isAutoCreated: true,
+        autoCreatedReason: 'shortage',
+        parentGRNId: grn._id,
+        expirationDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days to approve
+        paymentTermsDays: 30,
+        billingAddress: 'As per original PO',
+        shippingAddress: 'As per original PO',
+        lines: shortageLines,
+        subtotal: shortageSubtotal,
+        gstTotal: 0,
+        total: shortageSubtotal,
+        createdBy: req.user._id,
+        notes: `Auto-created for shortage. GRN: ${grn.grnNo}. ${shortageLines.length} product(s).`
+      });
+      await shortagePO.save({ session });
+      autoCreatedPOs.push({
+        poId: shortagePO._id,
+        poNumber: shortagePONumber,
+        reason: 'shortage',
+        quantity: shortageLines.reduce((s, l) => s + l.quantity, 0),
+        productId: shortageLines.length === 1 ? shortageLines[0].productId : null,
+        createdAt: new Date()
+      });
+      console.log(`📝 Created Draft PO ${shortagePONumber} for shortage — ${shortageLines.length} product(s)`);
+    }
+
+    // GRN Status logic:
+    // - Shortage exists + user chose "end" (no PO created) → Partially Received
+    // - Shortage exists + user created PO → Received (shortage will be fulfilled by new PO)
+    // - No shortage → Received
+    const hasUnresolvedShortage = grn.items.some(item => {
+      const shortage = item.poQuantity - item.receivedQuantity;
+      if (shortage <= 0) return false;
+      const action = shortageActions?.find(a => a.productId === item.productId.toString());
+      return !action || action.action === 'end';
+    });
+    const finalStatus = hasUnresolvedShortage ? 'Partially Received' : 'Received';
+
+    // Update GRN
+    grn.inspectedBy = inspectedBy;
+    grn.inspectedAt = new Date();
+    grn.status = finalStatus;
+    grn.autoCreatedPOs = autoCreatedPOs;
+    await grn.save({ session });
+
+    // NOW update stock (only on inspection, not draft)
+    try {
+      await StockMovementService.createStockMovementsFromGRN(grn, false, session, req.dbConnection);
+      console.log(`✅ Stock movements created for GRN: ${grn.grnNo}`);
+    } catch (stockError) {
+      console.error('Error creating stock movements:', stockError);
+      await session.abortTransaction();
+      return res.status(500).json({ success: false, message: `Inspection failed — stock error: ${stockError.message}` });
+    }
+
+    // Mark all associated POs as Completed
+    for (const poId of (grn.poIds || [grn.poId])) {
+      try {
+        await PurchaseOrder.findByIdAndUpdate(poId, { status: 'Completed' }, { session });
+      } catch (e) { /* non-critical */ }
+    }
+
+    // Check and fulfill pending out-of-stock orders
+    try {
+      await fulfillPendingOutOfStockOrders(grn, session, req.dbConnection);
+    } catch (e) { /* non-critical */ }
+
+    // Auto-Apply Purchase Schemes
+    try {
+      const schemeData = {
+        supplierId: grn.supplierId,
+        items: grn.items.map(item => ({
+          productId: item.productId,
+          acceptedQuantity: item.acceptedQuantity,
+          unitPrice: item.unitPrice,
+          totalPrice: item.totalPrice
+        })),
+        totalAmount: grn.totalAmount,
+        grnDate: new Date().toISOString()
+      };
+      const schemeResult = await schemeService.checkAndApplyPurchaseSchemesForGRN(schemeData);
+      if (schemeResult.appliedSchemes.length > 0) {
+        await schemeService.logSchemeApplication({
+          grnId: grn._id,
+          supplierId: grn.supplierId,
+          appliedSchemes: schemeResult.appliedSchemes,
+          totalBenefits: schemeResult.totalBenefits,
+          appliedAt: new Date().toISOString()
+        });
+      }
+    } catch (e) { /* non-critical */ }
+
+    await session.commitTransaction();
+
+    // Post-transaction: check waiting orders for stock
+    try {
+      const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
+      for (const item of grn.items) {
+        await StockArrivalService.checkWaitingOrdersForStock(item.productId, grn.warehouseId, item.acceptedQuantity, req.dbConnection);
+      }
+    } catch (e) { /* non-critical */ }
+
+    const populatedGRN = await GRN.findById(grn._id)
+      .populate('poId', 'poNumber')
+      .populate('poIds', 'poNumber')
+      .populate('supplierId', 'name companyName')
+      .populate('warehouseId', 'name location')
+      .populate('items.productId', 'itemName productCode HSNCode')
+      .populate('createdBy', 'name email');
+
+    res.json({
+      success: true,
+      message: 'GRN inspection completed successfully. Stock updated.',
+      data: populatedGRN,
+      autoCreatedPOs: autoCreatedPOs.filter(p => p.reason === 'shortage')
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    if (handlePeriodLockError(error, res)) return;
+    console.error('Inspect GRN error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  } finally {
+    session.endSession();
+  }
+};
+
+// ─── EXTEND PO EXPIRATION ───
+export const extendPOExpiration = async (req, res) => {
+  try {
+    const { PurchaseOrder } = getModels(req.dbConnection);
+    const { id } = req.params;
+    const { newExpirationDate, days } = req.body;
+
+    const po = await PurchaseOrder.findById(id);
+    if (!po) return res.status(404).json({ success: false, message: 'PO not found' });
+    if (!po.expirationDate) return res.status(400).json({ success: false, message: 'This PO has no expiration date' });
+
+    let newDate;
+    if (newExpirationDate) {
+      newDate = new Date(newExpirationDate);
+    } else {
+      newDate = new Date(po.expirationDate.getTime() + (days || 30) * 24 * 60 * 60 * 1000);
+    }
+
+    po.expirationDate = newDate;
+    po.expirationExtended = true;
+    po.expirationNotified = false; // Reset so it notifies again 1 day before new date
+    await po.save();
+
+    res.json({
+      success: true,
+      message: `PO expiration extended to ${newDate.toLocaleDateString()}`,
+      data: po
+    });
+  } catch (error) {
+    console.error('Extend PO expiration error:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -535,10 +768,12 @@ export const getGRN = async (req, res) => {
     const { GRN } = getModels(req.dbConnection);
     
     const grn = await GRN.findById(req.params.id)
-      .populate('poId')
+      .populate('poId', 'poNumber status orderDate expectedDate')
+      .populate('poIds', 'poNumber status orderDate expectedDate isAutoCreated autoCreatedReason')
       .populate('supplierId')
       .populate('warehouseId')
       .populate('items.productId')
+      .populate('items.sourcePOId', 'poNumber')
       .populate('createdBy', 'name email');
 
     if (!grn) {
@@ -563,120 +798,66 @@ export const getGRN = async (req, res) => {
 
 export const updateGRN = async (req, res) => {
   try {
-    // Get models from company-specific connection
     const { GRN } = getModels(req.dbConnection);
     
     const { id } = req.params;
     const updateData = req.body;
 
-    // Get the existing GRN to compare changes
     const existingGRN = await GRN.findById(id);
     if (!existingGRN) {
-      return res.status(404).json({
+      return res.status(404).json({ success: false, message: 'GRN not found' });
+    }
+
+    // Only Draft GRNs can be edited
+    if (existingGRN.status !== 'Draft') {
+      return res.status(403).json({
         success: false,
-        message: 'GRN not found'
+        message: `Cannot edit GRN. Status is "${existingGRN.status}". Only Draft GRNs can be edited.`
       });
     }
 
-    // Check if invoice has been created for this GRN
+    // Check if invoice has been created
     if (existingGRN.isInvoiceCreated) {
       return res.status(403).json({
         success: false,
-        message: 'Cannot edit GRN. Supplier Invoice has already been created for this GRN.',
-        invoiceId: existingGRN.supplierInvoiceId,
-        invoiceCreatedAt: existingGRN.invoiceCreatedAt
+        message: 'Cannot edit GRN. Supplier Invoice has already been created.'
       });
     }
 
-    // If items are being updated, recalculate status and handle stock movements
+    // Keep status as Draft — stock is NOT updated on edit (only on inspection)
+    updateData.status = 'Draft';
+    
+    // Remove fields that shouldn't be changed via edit
+    delete updateData.inspectedBy;
+    delete updateData.inspectedAt;
+
+    // Recalculate totalAmount if items are updated
     if (updateData.items && Array.isArray(updateData.items)) {
-      let grnStatus = 'Received'; // Default to fully received
-      let hasShortage = false;
-      let hasOverage = false;
-      
-      // Check each item for deviations
-      for (const item of updateData.items) {
-        if (item.acceptedQuantity < item.poQuantity) {
-          hasShortage = true;
-        }
-        if (item.acceptedQuantity > item.poQuantity) {
-          hasOverage = true;
-        }
-      }
-      
-      // Set status based on deviations
-      if (hasShortage && hasOverage) {
-        grnStatus = 'Partially Received'; // Mixed: some short, some over
-      } else if (hasShortage) {
-        grnStatus = 'Partially Received'; // Some items short
-      } else if (hasOverage) {
-        grnStatus = 'Received'; // All received (some extra) - still mark as received
-      }
-      // else: grnStatus remains 'Received' (all exact match)
-      
-      updateData.status = grnStatus;
-
-      // Handle stock movements for updated items
-      try {
-        // Delete existing stock movements for this GRN
-        await StockMovementService.deleteStockMovementsForGRN(id, req.dbConnection);
-        console.log(`✅ Deleted existing stock movements for GRN: ${existingGRN.grnNo}`);
-
-        // Update the GRN first
-        const updatedGRN = await GRN.findByIdAndUpdate(
-          id,
-          updateData,
-          { new: true, runValidators: true }
-        )
-          .populate('poId')
-          .populate('supplierId')
-          .populate('warehouseId')
-          .populate('items.productId')
-          .populate('createdBy', 'name email');
-
-        // Create new stock movements for the updated GRN
-        await StockMovementService.createStockMovementsFromGRN(updatedGRN, false, null, req.dbConnection);
-        console.log(`✅ Created new stock movements for updated GRN: ${updatedGRN.grnNo}`);
-
-        res.json({
-          success: true,
-          message: 'GRN updated successfully',
-          data: updatedGRN
-        });
-      } catch (stockError) {
-        console.error('Error updating stock movements:', stockError);
-        // Still return success for GRN update, but log the stock error
-        res.json({
-          success: true,
-          message: 'GRN updated successfully, but there was an issue updating stock movements',
-          data: updatedGRN
-        });
-      }
-    } else {
-      // If no items are being updated, just update the GRN normally
-      const grn = await GRN.findByIdAndUpdate(
-        id,
-        updateData,
-        { new: true, runValidators: true }
-      )
-        .populate('poId')
-        .populate('supplierId')
-        .populate('warehouseId')
-        .populate('items.productId')
-        .populate('createdBy', 'name email');
-
-      res.json({
-        success: true,
-        message: 'GRN updated successfully',
-        data: grn
-      });
+      updateData.totalAmount = updateData.items.reduce((sum, item) => {
+        const accepted = (item.receivedQuantity || 0) - (item.damageQuantity || 0);
+        item.acceptedQuantity = Math.max(0, accepted);
+        item.totalPrice = item.acceptedQuantity * (item.unitPrice || 0);
+        item.shortageQuantity = Math.max(0, (item.companyBillQuantity || 0) - (item.receivedQuantity || 0));
+        return sum + item.totalPrice;
+      }, 0);
     }
+
+    const updatedGRN = await GRN.findByIdAndUpdate(id, updateData, { new: true, runValidators: true })
+      .populate('poId', 'poNumber')
+      .populate('poIds', 'poNumber')
+      .populate('supplierId', 'name companyName')
+      .populate('warehouseId', 'name location')
+      .populate('items.productId', 'itemName productCode HSNCode')
+      .populate('createdBy', 'name email');
+
+    res.json({
+      success: true,
+      message: 'GRN updated successfully (Draft)',
+      data: updatedGRN
+    });
   } catch (error) {
     console.error('Update GRN error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 

@@ -6,11 +6,17 @@ const grnSchema = new mongoose.Schema({
     required: true,
     unique: true
   },
+  // Support multiple POs in one GRN
   poId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'PurchaseOrder',
     required: true
   },
+  // Array of all PO IDs included in this GRN (for multi-PO support)
+  poIds: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'PurchaseOrder'
+  }],
   supplierId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Supplier',
@@ -28,17 +34,35 @@ const grnSchema = new mongoose.Schema({
   status: {
     type: String,
     enum: ['Draft', 'Received', 'Partially Received', 'Cancelled', 'Completed'],
-    default: 'Received'
+    default: 'Draft'
   },
   items: [{
+    serialNo: {
+      type: Number,
+      default: null  // User can manually enter; if null, auto-assigned
+    },
     productId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Product',
       required: true
     },
+    // Which PO this line item came from (for multi-PO GRNs)
+    sourcePOId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'PurchaseOrder',
+      default: null
+    },
+    sourcePONumber: {
+      type: String,
+      default: ''
+    },
     poQuantity: {
       type: Number,
       required: true
+    },
+    companyBillQuantity: {
+      type: Number,
+      default: 0  // What supplier's bill/invoice says
     },
     receivedQuantity: {
       type: Number,
@@ -52,6 +76,10 @@ const grnSchema = new mongoose.Schema({
       type: Number,
       required: true
     },
+    shortageQuantity: {
+      type: Number,
+      default: 0  // companyBillQuantity - receivedQuantity (display/records)
+    },
     unitPrice: {
       type: Number,
       required: true
@@ -63,6 +91,17 @@ const grnSchema = new mongoose.Schema({
     totalPrice: {
       type: Number,
       required: true
+    },
+    // Store purchase discount info for reference
+    purchaseDiscount: {
+      hasDiscount: { type: Boolean, default: false },
+      directDiscountPercentage: { type: Number, default: 0 },
+      floatingDiscountPercentage: { type: Number, default: 0 },
+      floatingDiscountRange: {
+        min: { type: Number, default: 0 },
+        max: { type: Number, default: 0 },
+        enabled: { type: Boolean, default: false }
+      }
     }
   }],
   totalAmount: {
@@ -78,15 +117,33 @@ const grnSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
+  // Two-stage workflow
   receivedBy: {
     type: String,
     default: ''
+  },
+  receivedAt: {
+    type: Date,
+    default: null
   },
   inspectedBy: {
     type: String,
     default: ''
   },
-  // Invoice tracking - to prevent editing GRN after invoice creation
+  inspectedAt: {
+    type: Date,
+    default: null
+  },
+  // Auto-created POs tracking
+  autoCreatedPOs: [{
+    poId: { type: mongoose.Schema.Types.ObjectId, ref: 'PurchaseOrder' },
+    poNumber: { type: String },
+    reason: { type: String, enum: ['excess', 'shortage'] },
+    quantity: { type: Number },
+    productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+    createdAt: { type: Date, default: Date.now }
+  }],
+  // Invoice tracking
   isInvoiceCreated: {
     type: Boolean,
     default: false
@@ -104,10 +161,10 @@ const grnSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Note: GRN number is generated in the controller, not here
-// This ensures better control and prevents race conditions
+// Index for faster queries
+grnSchema.index({ supplierId: 1, grnDate: -1 });
+grnSchema.index({ status: 1 });
+grnSchema.index({ 'poIds': 1 });
 
-// Export schema for multi-database support
 export { grnSchema };
-
 export default mongoose.model('GRN', grnSchema);

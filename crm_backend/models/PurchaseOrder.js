@@ -130,8 +130,36 @@ const purchaseOrderSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['Draft', 'Submitted', 'Approved', 'Rejected', 'Completed'],
+    enum: ['Draft', 'Submitted', 'Approved', 'Rejected', 'Completed', 'Expired'],
     default: 'Draft'
+  },
+  // Auto-created PO fields
+  isAutoCreated: {
+    type: Boolean,
+    default: false
+  },
+  autoCreatedReason: {
+    type: String,
+    enum: ['excess', 'shortage', null],
+    default: null
+  },
+  parentGRNId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'GRN',
+    default: null
+  },
+  // Expiration (for auto-approved POs)
+  expirationDate: {
+    type: Date,
+    default: null  // null = no expiration; set to +30 days for auto-approved POs
+  },
+  expirationExtended: {
+    type: Boolean,
+    default: false
+  },
+  expirationNotified: {
+    type: Boolean,
+    default: false  // true once the 1-day-before notification has been sent
   },
   paymentTermsDays: {
     type: Number,
