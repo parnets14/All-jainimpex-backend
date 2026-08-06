@@ -49,6 +49,8 @@ const initFirebase = () => {
 };
 
 // Send push notification to a single FCM token
+export const initFirebaseAdmin = () => initFirebase();
+
 export const sendPushNotification = async ({ token, title, body, data = {}, channelId = 'se_notifications' }) => {
   if (!token) return { success: false, reason: 'no_token' };
   const app = initFirebase();

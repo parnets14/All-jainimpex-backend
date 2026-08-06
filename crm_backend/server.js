@@ -1,4 +1,4 @@
-import cluster from "cluster";
+﻿import cluster from "cluster";
 import { cpus } from "os";
 import express from "express";
 import cors from "cors";
@@ -49,6 +49,8 @@ import referenceRoutes from "./routes/referenceRoutes.js";
 import discountMappingRoutes from "./routes/discountMappingRoutes.js";
 import purchaseDiscountRoutes from "./routes/purchaseDiscountRoutes.js";
 import pointsRoutes from "./routes/pointsRoutes.js";
+import turnoverDiscountRoutes from "./routes/turnoverDiscountRoutes.js";
+import dealerTurnoverDiscountRoutes from "./routes/dealerTurnoverDiscountRoutes.js";
 import warehouseRoutes from "./routes/warehouseRoutes.js";
 import purchaseOrderRoutes from "./routes/purchaseOrderRoutes.js";
 import grnRoutes from './routes/grnRoutes.js';
@@ -151,11 +153,6 @@ const numCPUs = cpus().length;
 const useCluster = process.env.NODE_ENV === 'production' && process.env.USE_CLUSTER === 'true';
 
 if (useCluster && cluster.isPrimary) {
-  console.log(`\n${"=".repeat(50)}`);
-  console.log(`🚀 Primary process ${process.pid} is running`);
-  console.log(`💻 CPU Cores: ${numCPUs}`);
-  console.log(`🔄 Forking ${numCPUs} worker processes...`);
-  console.log(`${"=".repeat(50)}\n`);
 
   // Fork workers for each CPU core
   for (let i = 0; i < numCPUs; i++) {
@@ -164,24 +161,19 @@ if (useCluster && cluster.isPrimary) {
 
   // Listen for dying workers and restart
   cluster.on("exit", (worker, code, signal) => {
-    console.log(`\n⚠️  Worker ${worker.process.pid} died. Restarting...`);
     cluster.fork();
   });
 
   // Track when workers come online
   cluster.on("online", (worker) => {
-    console.log(`✅ Worker ${worker.process.pid} is online`);
   });
 } else {
   // Single process mode (for free tier) or worker process
-  console.log(`🚀 Running in single process mode (PID: ${process.pid})`);
   const app = express();
 
   // Initialize multi-company database connections
-  console.log('\n🔌 Initializing multi-company database connections...');
   initializeAllConnections()
     .then(() => {
-      console.log('✅ All company databases connected successfully\n');
     })
     .catch((error) => {
       console.error('❌ Failed to initialize company databases:', error);
@@ -226,18 +218,12 @@ app.use(
         "exp://localhost:19000",             // Expo dev
       ];
       
-      console.log('🌐 CORS Origin Check:', { origin, allowedOrigins });
-      
       // Allow requests with no origin (mobile apps, Postman, etc.)
-      // Mobile apps typically don't send origin header, so allow null
       if (!origin || allowedOrigins.includes(origin)) {
-        console.log('✅ CORS: Origin allowed', { origin: origin || 'null (mobile app)' });
         callback(null, true);
       } else {
-        console.log('❌ CORS: Origin blocked', { origin });
         // For development, allow all origins to avoid issues
         if (process.env.NODE_ENV !== 'production') {
-          console.log('⚠️ Development mode: Allowing origin anyway');
           callback(null, true);
         } else {
           callback(new Error("Not allowed by CORS"));
@@ -267,21 +253,9 @@ app.use(helmet({
 // Apply general rate limiting to all routes
 app.use(generalLimiter);
 
-// Optional: Logging middleware
-app.use((req, res, next) => {
-  console.log(`[Worker ${process.pid}] ${req.method} ${req.url}`);
-  next();
-});
+// Optional: Logging middleware (disabled for production cleanliness)
+// app.use((req, res, next) => { console.log(`[Worker ${process.pid}] ${req.method} ${req.url}`); next(); });
 
-// Debug middleware for auth routes
-app.use('/api/auth', (req, res, next) => {
-  console.log('🔍 Auth Route Debug:');
-  console.log('   Method:', req.method);
-  console.log('   URL:', req.url);
-  console.log('   Content-Type:', req.get('Content-Type'));
-  console.log('   Body:', JSON.stringify(req.body, null, 2));
-  next();
-});
 
 // Routes
 // Health check route
@@ -360,9 +334,7 @@ app.use("/api/extended-subcategories", extendedSubcategoryRoutes); // Add extend
 app.use("/api/salary", salaryRoutes);
 app.use("/api/products", productRoutes);
 // Register dealer pricing routes
-console.log('🔧 Registering dealer pricing routes...');
 app.use("/api/dealer-pricing", dealerPricingRoutes);
-console.log('✅ Dealer pricing routes registered at /api/dealer-pricing');
 app.use("/api/regions", regionRoutes);
 app.use("/api/routes", routeRoutes);
 app.use("/api/suppliers", supplierRoutes);
@@ -370,6 +342,8 @@ app.use("/api/reference", referenceRoutes);
 app.use("/api/discount-mappings", discountMappingRoutes);
 app.use("/api/purchase-discounts", purchaseDiscountRoutes);
 app.use("/api/points", pointsRoutes);
+app.use("/api/turnover-discounts", turnoverDiscountRoutes);
+app.use("/api/dealer-turnover-discounts", dealerTurnoverDiscountRoutes);
 app.use("/api/warehouses", warehouseRoutes);
 app.use("/api/purchase-orders", purchaseOrderRoutes);
 app.use('/api/grn', grnRoutes);
@@ -437,13 +411,9 @@ app.use('/api/app/credit-notes', appCreditNoteRoutes);
 app.use('/api/app/order-requests', appDealerOrderRequestRoutes);
 
 // Sales Executive App Routes (separate API prefix for SE app)
-console.log('🔧 Registering Sales Executive App routes...');
 
-// Add logging middleware for SE routes
-app.use('/api/se', (req, res, next) => {
-  console.log(`📍 SE Route Hit: ${req.method} ${req.url}`);
-  next();
-});
+// Add logging middleware for SE routes (disabled)
+app.use('/api/se', (req, res, next) => { next(); });
 
 app.use('/api/se/auth', seAuthRoutes);
 app.use('/api/se/attendance', seAttendanceRoutes);
@@ -458,10 +428,8 @@ app.use('/api/se/expenses', seExpenseRoutes);
 app.use('/api/se/notifications', seNotificationRoutes);
 app.use('/api/se/dealer-visits', seDealerVisitRoutes);
 app.use('/api/se/daily-summary', seDailySummaryRoutes);
-console.log('✅ Sales Executive App routes registered at /api/se/*');
 
 // Delivery Executive App Routes (separate API prefix for DE app)
-console.log('🔧 Registering Delivery Executive App routes...');
 app.use('/api/de/auth', deAuthRoutes);
 app.use('/api/de/assignments', deAssignmentRoutes);
 app.use('/api/de/payments', dePaymentRoutes);
@@ -474,12 +442,9 @@ app.use('/api/de/deliveries', deDeliveriesRoutes); // Mobile app uses /deliverie
 app.use('/api/de/deliveries', deDeliveryHistoryRoutes); // Mobile app uses /deliveries/history
 // Admin routes for delivery management (web app)
 app.use('/api/admin/deliveries', deAdminDeliveryRoutes);
-console.log('✅ Delivery Executive App routes registered at /api/de/*');
-console.log('✅ Admin delivery routes registered at /api/admin/deliveries/*');
 
 // ── Seed route — seeds standard ClaimTypes & ExpenseTypes across all company DBs ──
 app.post('/api/admin/seed-types', protect, seedTypesForAllCompanies);
-console.log('✅ Seed route registered at POST /api/admin/seed-types');
 
 // Migration: Fix MRP for products (run once per company)
 app.post('/api/admin/migrate-mrp', protect, async (req, res) => {
@@ -504,7 +469,6 @@ app.post('/api/admin/migrate-mrp', protect, async (req, res) => {
       updated++;
     }
     
-    console.log(`✅ MRP Migration for "${company}": ${updated}/${products.length} products updated`);
     res.json({ success: true, message: `MRP migration completed for ${company}. Updated ${updated} products.` });
   } catch (error) {
     console.error('Migration error:', error);
@@ -594,7 +558,6 @@ app.use("/public", express.static(join(__dirname, "public")));
   });
 
   // Direct processing mode - no queue system needed
-  console.log("📝 Using direct salary processing (no queue system)");
 
   // Initialize discount expiration cron job
   try {
@@ -679,6 +642,5 @@ app.use("/public", express.static(join(__dirname, "public")));
   // Start server
   const PORT = process.env.PORT || 5000;
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Worker ${process.pid}] 🎯 Server running on port ${PORT}`);
   });
 }

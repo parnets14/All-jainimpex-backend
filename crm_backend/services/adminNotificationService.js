@@ -16,8 +16,16 @@
  *   system            - General system notifications
  */
 import admin from 'firebase-admin';
+import { initFirebaseAdmin } from './firebaseNotificationService.js';
 
 const ALL_COMPANIES = ['jain-impex', 'ridhi', 'shree-jain-impex'];
+
+// Ensure Firebase admin is initialized before any notification write
+const ensureFirebase = () => {
+  if (!admin.apps.length) {
+    initFirebaseAdmin();
+  }
+};
 
 /**
  * Send a notification to the admin panel (visible in the bell icon).
@@ -33,6 +41,7 @@ const ALL_COMPANIES = ['jain-impex', 'ridhi', 'shree-jain-impex'];
  */
 export const sendAdminNotification = async ({ type, title, message, priority = 'medium', company = null, data = {} }) => {
   try {
+    ensureFirebase();
     if (!admin.apps.length) {
       console.warn('⚠️ Firebase not initialized — admin notification skipped');
       return;
@@ -171,5 +180,26 @@ export const notifyNewSEOrder = (seName, dealerName, orderNumber, company) =>
     company,
     data: { seName, dealerName, orderNumber },
   });
+
+export const notifyTurnoverAchieved = ({ supplierName, targetName, achievements = [], turnoverId, company }) => {
+  const periodLabel = (t) => ({ monthly: 'Monthly', quarterly: 'Quarterly', yearly: 'Yearly' }[t] || t);
+  const multiple = achievements.length > 1;
+  let message;
+  if (multiple) {
+    const parts = achievements.map(a => `${periodLabel(a.periodType)} (${a.discountPercentage}%)`).join(', ');
+    message = `${supplierName} — ${targetName}: multiple turnover targets achieved — ${parts}. You can now claim these discounts.`;
+  } else {
+    const a = achievements[0];
+    message = `${supplierName} — ${targetName}: ${periodLabel(a.periodType)} turnover target of ₹${Math.round(a.targetAmount).toLocaleString()} achieved. You can now claim ${a.discountPercentage}% discount.`;
+  }
+  return sendAdminNotification({
+    type: 'turnover_achieved',
+    title: multiple ? 'Multiple Turnover Targets Achieved' : 'Turnover Target Achieved',
+    message,
+    priority: 'high',
+    company,
+    data: { supplierName, targetName, turnoverId, achievementsCount: achievements.length },
+  });
+};
 
 export default sendAdminNotification;
