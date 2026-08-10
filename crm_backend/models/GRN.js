@@ -112,6 +112,11 @@ const grnSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  // Specific notes for different scenarios
+  shortageNote: { type: String, default: '' },
+  excessNote:   { type: String, default: '' },
+  damageNote:   { type: String, default: '' },
+  generalNote:  { type: String, default: '' },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

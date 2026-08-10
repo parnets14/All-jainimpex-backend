@@ -279,7 +279,7 @@ router.get(
       }
 
       const attendanceRecords = await Attendance.find(attendanceFilter)
-        .populate("employee", "name empId designation department shiftStart")
+        .populate("employee", "name empId designation department shiftStart weeklyOff")
         .sort({ date: -1, "punchIn.time": -1 });
 
       // Filter out records with null employees (orphaned records)
