@@ -249,7 +249,9 @@ export const finalizeDayAttendance = async (db, dateInput = null) => {
     dayStart = dayStartOf(new Date());
     dayStart.setDate(dayStart.getDate() - 1);
   }
-  const dow = dayStart.getDay();
+  // Get IST day-of-week (dayStart is stored as UTC midnight of IST day)
+  // Add 5.5h to get back to IST, then getUTCDay()
+  const dow = new Date(dayStart.getTime() + 5.5 * 60 * 60 * 1000).getUTCDay();
   const dayKey = dayStart.toISOString().slice(0, 10);
 
   const employees = await Employee.find({ status: 'Active' })

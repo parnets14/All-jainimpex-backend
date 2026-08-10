@@ -479,8 +479,19 @@ export const inspectGRN = async (req, res) => {
     for (const item of grn.items) {
       const shortageFromPO = item.poQuantity - item.receivedQuantity;
       if (shortageFromPO > 0) {
-        const action = shortageActions?.find(a => a.productId === item.productId.toString());
+        // Match by productId + sourcePOId to handle same product from multiple POs
+        const pidStr = item.productId.toString();
+        const spoStr = item.sourcePOId ? item.sourcePOId.toString() : null;
+        const action = shortageActions?.find(a => {
+          if (a.productId !== pidStr) return false;
+          // If sourcePOId is provided, match both; otherwise match productId only
+          if (a.sourcePOId && spoStr) return a.sourcePOId === spoStr;
+          return true;
+        });
         if (action && action.action === 'createPO') {
+          // Remove matched action to prevent duplicate matching for same productId
+          const actionIdx = shortageActions.indexOf(action);
+          if (actionIdx > -1) shortageActions.splice(actionIdx, 1);
           shortageLines.push({
             productId: item.productId,
             quantity: shortageFromPO,
@@ -545,7 +556,14 @@ export const inspectGRN = async (req, res) => {
     const hasUnresolvedShortage = grn.items.some(item => {
       const shortage = item.poQuantity - item.receivedQuantity;
       if (shortage <= 0) return false;
-      const action = shortageActions?.find(a => a.productId === item.productId.toString());
+      const pidStr = item.productId.toString();
+      const spoStr = item.sourcePOId ? item.sourcePOId.toString() : null;
+      // Check if this item was explicitly marked as "end" (or no action = default end)
+      const action = req.body.shortageActions?.find(a => {
+        if (a.productId !== pidStr) return false;
+        if (a.sourcePOId && spoStr) return a.sourcePOId === spoStr;
+        return true;
+      });
       return !action || action.action === 'end';
     });
     const finalStatus = hasUnresolvedShortage ? 'Partially Received' : 'Received';
