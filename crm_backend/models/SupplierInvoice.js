@@ -105,6 +105,59 @@ const supplierInvoiceItemSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
+  // Supplier bill comparison fields
+  supplierPrice: {    // Manual entry: what supplier actually billed per unit (before GST)
+    type: Number,
+    default: null
+  },
+  supplierBillAmount: { // supplierPrice × billQuantity
+    type: Number,
+    default: null
+  },
+  supplierMRP: {      // Auto-calc: supplierPrice × (1 + gst/100)
+    type: Number,
+    default: null
+  },
+  ourMRP: {           // From Product master mrp field
+    type: Number,
+    default: null
+  },
+  poAmount: {         // Our PO price × bill qty (what we expected to pay)
+    type: Number,
+    default: null
+  },
+  amountDifference: { // supplierBillAmount - poAmount
+    type: Number,
+    default: 0
+  },
+  differencePercentage: { // ((supplierBillAmount - poAmount) / poAmount) × 100
+    type: Number,
+    default: 0
+  },
+  discountAmountPO: { // Total discount from PO in ₹
+    type: Number,
+    default: 0
+  },
+  discountPercentagePO: { // Total discount % from PO
+    type: Number,
+    default: 0
+  },
+  afterDiscountAmount: { // After all discounts total (qty level)
+    type: Number,
+    default: null
+  },
+  afterDiscountCost: { // Per unit after discount
+    type: Number,
+    default: null
+  },
+  ourDiscountExclGst: { type: Number, default: null },
+  ourDiscountInclGst: { type: Number, default: null },
+  supplierDiscountExclGst: { type: Number, default: null },
+  supplierDiscountInclGst: { type: Number, default: null },
+  billQuantity: {     // From GRN companyBillQuantity
+    type: Number,
+    default: null
+  },
   warehouse: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Warehouse"

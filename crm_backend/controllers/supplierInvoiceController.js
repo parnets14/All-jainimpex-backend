@@ -270,7 +270,24 @@ export const createSupplierInvoice = async (req, res) => {
           subtotal: baseAmount, // Raw qty × MRP (before any discount)
           totalPrice: afterAllDiscounts, // Final amount after all discounts
           warehouse: item.warehouseId,
-          warehouseName: item.warehouseName
+          warehouseName: item.warehouseName,
+          // Comparison fields
+          billQuantity: item.billQuantity || quantity,
+          supplierPrice: item.supplierPrice || null,
+          supplierBillAmount: item.supplierBillAmount || null,
+          supplierMRP: item.supplierMRP || null,
+          ourMRP: item.ourMRP || null,
+          poAmount: item.poAmount || null,
+          amountDifference: item.amountDifference || 0,
+          differencePercentage: item.differencePercentage || 0,
+          discountAmountPO: item.discountAmountPO || 0,
+          discountPercentagePO: item.discountPercentagePO || 0,
+          afterDiscountAmount: item.afterDiscountAmount || afterAllDiscounts,
+          afterDiscountCost: item.afterDiscountCost || null,
+          ourDiscountExclGst: item.ourDiscountExclGst || null,
+          ourDiscountInclGst: item.ourDiscountInclGst || null,
+          supplierDiscountExclGst: item.supplierDiscountExclGst || null,
+          supplierDiscountInclGst: item.supplierDiscountInclGst || null
         };
       });
       
@@ -295,7 +312,9 @@ export const createSupplierInvoice = async (req, res) => {
           });
         }
 
-        const baseAmount = grnItem.acceptedQuantity * grnItem.unitPrice;
+        // Use companyBillQuantity (what supplier billed) for invoice, fallback to acceptedQuantity
+        const quantity = grnItem.companyBillQuantity || grnItem.acceptedQuantity;
+        const baseAmount = quantity * grnItem.unitPrice;
         // unitPrice is MRP (GST-INCLUSIVE) — extract embedded GST, don't add on top.
         const gstAmount = grnItem.gst > 0 ? baseAmount - baseAmount / (1 + grnItem.gst / 100) : 0;
         const totalPrice = baseAmount;
@@ -305,8 +324,10 @@ export const createSupplierInvoice = async (req, res) => {
           productCode: product.productCode,
           productName: product.itemName,
           HSNCode: product.HSNCode,
-          quantity: grnItem.acceptedQuantity,
+          quantity: quantity,
+          billQuantity: grnItem.companyBillQuantity || quantity,
           unitPrice: grnItem.unitPrice,
+          ourMRP: product.mrp || null,
           gst: grnItem.gst,
           gstAmount: gstAmount,
           totalPrice: totalPrice,
