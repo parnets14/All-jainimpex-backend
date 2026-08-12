@@ -424,6 +424,9 @@ export const createSupplierInvoice = async (req, res) => {
           );
           let previousBalance = lastEntry ? lastEntry.runningBalance : 0;
           
+          // Use supplier's actual billed amount if available, else fall back to our calculated total
+          const ledgerAmount = supplierInvoice.supplierBilledTotal || totalAmount;
+          
           const ledgerEntry = new SupplierLedger({
             supplier: supplierId,
             supplierName: supplier.name,
@@ -432,10 +435,10 @@ export const createSupplierInvoice = async (req, res) => {
             transactionType: "Invoice",
             invoice: supplierInvoice._id,
             invoiceNumber: supplierInvoice.invoiceNumber,
-            invoiceValue: totalAmount,
-            debitAmount: totalAmount,
+            invoiceValue: ledgerAmount,
+            debitAmount: ledgerAmount,
             creditAmount: 0,
-            runningBalance: previousBalance + totalAmount,
+            runningBalance: previousBalance + ledgerAmount,
             description: `Purchase Invoice ${supplierInvoice.invoiceNumber} approved`,
             creditDays: supplierInvoice.creditDays || 0,
             dueDate: supplierInvoice.dueDate,
@@ -443,7 +446,7 @@ export const createSupplierInvoice = async (req, res) => {
           });
           
           await ledgerEntry.save();
-          console.log(`✅ Created supplier ledger entry on create-as-approved: ${supplierInvoice.invoiceNumber}, Amount: ₹${totalAmount}`);
+          console.log(`✅ Created supplier ledger entry on create-as-approved: ${supplierInvoice.invoiceNumber}, Amount: ₹${ledgerAmount}`);
         }
       } catch (ledgerError) {
         console.error("⚠️ Error creating ledger entry on create-as-approved:", ledgerError.message);
@@ -620,25 +623,30 @@ export const updateSupplierInvoice = async (req, res) => {
         // Check if ledger entry already exists
         const existingEntry = await SupplierLedger.findOne({ invoice: id });
         if (!existingEntry) {
-          // Calculate correct amount from items
-          let correctTotalAmount = updatedInvoice.totalAmount || supplierInvoice.totalAmount;
-          if (updatedInvoice.items && updatedInvoice.items.length > 0) {
-            let subtotal = 0;
-            let totalDiscount = 0;
-            updatedInvoice.items.forEach(item => {
-              const sub = (item.quantity || 0) * (item.unitPrice || 0);
-              subtotal += sub;
-              const directPct = item.purchaseDiscount?.directDiscountPercentage || 0;
-              const extraPct = item.purchaseDiscount?.supplierExtraDiscountPercentage || 0;
-              const floatingPct = item.purchaseDiscount?.floatingDiscountPercentage || 0;
-              const directAmt = (sub * directPct) / 100;
-              const afterDir = sub - directAmt;
-              const extraAmt = (afterDir * extraPct) / 100;
-              const afterExt = afterDir - extraAmt;
-              const floatingAmt = (afterExt * floatingPct) / 100;
-              totalDiscount += directAmt + extraAmt + floatingAmt;
-            });
-            correctTotalAmount = subtotal - totalDiscount;
+          // Use supplier's actual billed amount if available, else fall back to calculated total
+          let ledgerAmount = updatedInvoice.supplierBilledTotal || supplierInvoice.supplierBilledTotal;
+          
+          if (!ledgerAmount) {
+            // Fallback: calculate from items
+            ledgerAmount = updatedInvoice.totalAmount || supplierInvoice.totalAmount;
+            if (updatedInvoice.items && updatedInvoice.items.length > 0) {
+              let subtotal = 0;
+              let totalDiscount = 0;
+              updatedInvoice.items.forEach(item => {
+                const sub = (item.quantity || 0) * (item.unitPrice || 0);
+                subtotal += sub;
+                const directPct = item.purchaseDiscount?.directDiscountPercentage || 0;
+                const extraPct = item.purchaseDiscount?.supplierExtraDiscountPercentage || 0;
+                const floatingPct = item.purchaseDiscount?.floatingDiscountPercentage || 0;
+                const directAmt = (sub * directPct) / 100;
+                const afterDir = sub - directAmt;
+                const extraAmt = (afterDir * extraPct) / 100;
+                const afterExt = afterDir - extraAmt;
+                const floatingAmt = (afterExt * floatingPct) / 100;
+                totalDiscount += directAmt + extraAmt + floatingAmt;
+              });
+              ledgerAmount = subtotal - totalDiscount;
+            }
           }
           
           const lastEntry = await SupplierLedger.findOne(
@@ -656,10 +664,10 @@ export const updateSupplierInvoice = async (req, res) => {
             transactionType: "Invoice",
             invoice: updatedInvoice._id,
             invoiceNumber: updatedInvoice.invoiceNumber,
-            invoiceValue: correctTotalAmount,
-            debitAmount: correctTotalAmount,
+            invoiceValue: ledgerAmount,
+            debitAmount: ledgerAmount,
             creditAmount: 0,
-            runningBalance: previousBalance + correctTotalAmount,
+            runningBalance: previousBalance + ledgerAmount,
             description: `Purchase Invoice ${updatedInvoice.invoiceNumber} approved`,
             creditDays: updatedInvoice.creditDays || 0,
             dueDate: updatedInvoice.dueDate,
@@ -667,7 +675,7 @@ export const updateSupplierInvoice = async (req, res) => {
           });
           
           await ledgerEntry.save();
-          console.log(`✅ Created supplier ledger entry on update-approval: ${updatedInvoice.invoiceNumber}, Amount: ₹${correctTotalAmount}`);
+          console.log(`✅ Created supplier ledger entry on update-approval: ${updatedInvoice.invoiceNumber}, Amount: ₹${ledgerAmount}`);
         }
       } catch (ledgerError) {
         console.error("⚠️ Error creating ledger entry on update-approval:", ledgerError.message);
@@ -775,25 +783,30 @@ export const updateSupplierInvoiceStatus = async (req, res) => {
         // Check if ledger entry already exists for this invoice (avoid duplicates)
         const existingEntry = await SupplierLedger.findOne({ invoice: supplierInvoice._id });
         if (!existingEntry) {
-          // Calculate correct totalAmount from items using sequential percentages
-          let correctTotalAmount = supplierInvoice.totalAmount;
-          if (supplierInvoice.items && supplierInvoice.items.length > 0) {
-            let subtotal = 0;
-            let totalDiscount = 0;
-            supplierInvoice.items.forEach(item => {
-              const sub = (item.quantity || 0) * (item.unitPrice || 0);
-              subtotal += sub;
-              const directPct = item.purchaseDiscount?.directDiscountPercentage || 0;
-              const extraPct = item.purchaseDiscount?.supplierExtraDiscountPercentage || 0;
-              const floatingPct = item.purchaseDiscount?.floatingDiscountPercentage || 0;
-              const directAmt = (sub * directPct) / 100;
-              const afterDir = sub - directAmt;
-              const extraAmt = (afterDir * extraPct) / 100;
-              const afterExt = afterDir - extraAmt;
-              const floatingAmt = (afterExt * floatingPct) / 100;
-              totalDiscount += directAmt + extraAmt + floatingAmt;
-            });
-            correctTotalAmount = subtotal - totalDiscount;
+          // Use supplier's actual billed amount if available
+          let ledgerAmount = supplierInvoice.supplierBilledTotal;
+          
+          if (!ledgerAmount) {
+            // Fallback: calculate from items
+            ledgerAmount = supplierInvoice.totalAmount;
+            if (supplierInvoice.items && supplierInvoice.items.length > 0) {
+              let subtotal = 0;
+              let totalDiscount = 0;
+              supplierInvoice.items.forEach(item => {
+                const sub = (item.quantity || 0) * (item.unitPrice || 0);
+                subtotal += sub;
+                const directPct = item.purchaseDiscount?.directDiscountPercentage || 0;
+                const extraPct = item.purchaseDiscount?.supplierExtraDiscountPercentage || 0;
+                const floatingPct = item.purchaseDiscount?.floatingDiscountPercentage || 0;
+                const directAmt = (sub * directPct) / 100;
+                const afterDir = sub - directAmt;
+                const extraAmt = (afterDir * extraPct) / 100;
+                const afterExt = afterDir - extraAmt;
+                const floatingAmt = (afterExt * floatingPct) / 100;
+                totalDiscount += directAmt + extraAmt + floatingAmt;
+              });
+              ledgerAmount = subtotal - totalDiscount;
+            }
           }
           
           const lastEntry = await SupplierLedger.findOne(
@@ -812,10 +825,10 @@ export const updateSupplierInvoiceStatus = async (req, res) => {
             transactionType: "Invoice",
             invoice: supplierInvoice._id,
             invoiceNumber: supplierInvoice.invoiceNumber,
-            invoiceValue: correctTotalAmount,
-            debitAmount: correctTotalAmount,
+            invoiceValue: ledgerAmount,
+            debitAmount: ledgerAmount,
             creditAmount: 0,
-            runningBalance: previousBalance + correctTotalAmount,
+            runningBalance: previousBalance + ledgerAmount,
             description: `Purchase Invoice ${supplierInvoice.invoiceNumber} approved`,
             creditDays: supplierInvoice.creditDays || 0,
             dueDate: supplierInvoice.dueDate,
@@ -823,7 +836,7 @@ export const updateSupplierInvoiceStatus = async (req, res) => {
           });
           
           await ledgerEntry.save();
-          console.log(`✅ Created supplier ledger entry for approved invoice: ${supplierInvoice.invoiceNumber}, Amount: ₹${correctTotalAmount}`);
+          console.log(`✅ Created supplier ledger entry for approved invoice: ${supplierInvoice.invoiceNumber}, Amount: ₹${ledgerAmount}`);
         }
       } catch (ledgerError) {
         console.error("⚠️ Error creating supplier ledger entry on approval:", ledgerError.message);
@@ -962,7 +975,7 @@ export const getAvailableGRNs = async (req, res) => {
     const grns = await GRN.find(query)
       .populate("supplierId", "name code")
       .populate("poId", "poNumber")
-      .populate("items.productId", "productCode itemName")
+      .populate("items.productId", "productCode itemName gst mrp")
       .populate("warehouseId", "name")
       .sort({ createdAt: -1 })
       .lean();

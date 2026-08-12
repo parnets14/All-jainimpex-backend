@@ -292,6 +292,11 @@ const supplierInvoiceSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
+  // Supplier's actual billed total (sum of all supplierPrice per item + GST)
+  supplierBilledTotal: {
+    type: Number,
+    default: null
+  },
   
   // Status and Tracking
   status: {
