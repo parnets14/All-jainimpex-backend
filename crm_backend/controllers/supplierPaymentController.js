@@ -203,8 +203,9 @@ export const createSupplierPayment = async (req, res) => {
       });
     }
 
-    // Calculate remaining amount
-    const remainingAmount = invoice.totalAmount - (invoice.paidAmount || 0);
+    // Calculate remaining amount — use supplier's actual billed total if available
+    const invoiceTotal = invoice.supplierBilledTotal || invoice.totalAmount;
+    const remainingAmount = invoiceTotal - (invoice.paidAmount || 0);
 
     // Block posting into a closed financial year
     await assertPeriodOpen(req.dbConnection, paymentDate, 'supplier payment');
@@ -332,7 +333,8 @@ export const updateSupplierPaymentStatus = async (req, res) => {
         invoice.paidAmount = newPaidAmount;
         
         // Update payment status based on remaining amount
-        if (newPaidAmount >= invoice.totalAmount) {
+        const invoiceTotal = invoice.supplierBilledTotal || invoice.totalAmount;
+        if (newPaidAmount >= invoiceTotal) {
           invoice.paymentStatus = "Paid";
         } else {
           invoice.paymentStatus = "Partial";

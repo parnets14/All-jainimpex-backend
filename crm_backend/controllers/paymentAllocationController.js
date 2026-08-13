@@ -99,7 +99,8 @@ export const createPaymentAllocation = async (req, res) => {
       }
       
       const previouslyPaid = invoice.paidAmount || 0;
-      const remainingAmount = invoice.totalAmount - previouslyPaid - alloc.allocatedAmount;
+      const invoiceTotal = invoice.supplierBilledTotal || invoice.totalAmount;
+      const remainingAmount = invoiceTotal - previouslyPaid - alloc.allocatedAmount;
       
       if (remainingAmount < 0) {
         return res.status(400).json({
@@ -163,14 +164,15 @@ export const createPaymentAllocation = async (req, res) => {
       const invoice = await InvoiceModel.findById(alloc.invoiceId);
       if (invoice) {
         invoice.paidAmount = (invoice.paidAmount || 0) + alloc.allocatedAmount;
+        const invoiceTotal = invoice.supplierBilledTotal || invoice.totalAmount;
         if (!isSupplier) {
           invoice.pendingAmount = invoice.totalAmount - invoice.paidAmount;
         }
         
-        if (invoice.paidAmount >= invoice.totalAmount) {
+        if (invoice.paidAmount >= invoiceTotal) {
           invoice.paymentStatus = 'Paid';
         } else if (invoice.paidAmount > 0) {
-          invoice.paymentStatus = 'Partial';  // Fixed: was "Partially Paid"
+          invoice.paymentStatus = 'Partial';
         }
         
         await invoice.save();
