@@ -88,6 +88,11 @@ const grnSchema = new mongoose.Schema({
       type: Number,
       required: true
     },
+    // Supplier's actual cost per unit (written back from supplier invoice)
+    supplierCostPerUnit: {
+      type: Number,
+      default: null
+    },
     totalPrice: {
       type: Number,
       required: true

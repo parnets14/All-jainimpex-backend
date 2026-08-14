@@ -39,7 +39,8 @@ const buildAging = async ({ invoices, asOf, partyKey, partyNameKey }) => {
   const grand = emptyBuckets();
 
   for (const inv of invoices) {
-    const outstanding = round2((inv.totalAmount || 0) - (inv.paidAmount || 0));
+    const invoiceTotal = inv.supplierBilledTotal || inv.totalAmount || 0;
+    const outstanding = round2(invoiceTotal - (inv.paidAmount || 0));
     if (outstanding <= 0.009) continue;
 
     const pid = (inv[partyKey]?._id || inv[partyKey] || 'unknown').toString();

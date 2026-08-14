@@ -80,8 +80,10 @@ async function buildWeightedAvgCost(reportDate, dbConnection) {
     for (const item of grn.items) {
       const pid = item.productId.toString();
       if (!map[pid]) map[pid] = { totalQty: 0, totalCost: 0 };
-      map[pid].totalQty += item.acceptedQuantity || 0;
-      map[pid].totalCost += (item.acceptedQuantity || 0) * (item.unitPrice || 0);
+      const costPerUnit = item.supplierCostPerUnit || item.unitPrice || 0;
+      const billQty = item.companyBillQuantity || item.acceptedQuantity || 0;
+      map[pid].totalQty += billQty;
+      map[pid].totalCost += billQty * costPerUnit;
     }
   }
 
@@ -721,3 +723,511 @@ export const getBalanceSheetComparison = async (req, res) => {
 export const exportBalanceSheet = async (req, res) => {
   res.status(200).json({ success: true, message: 'Export not yet implemented', data: {} });
 };
+
+// ─── V2: Hierarchical Balance Sheet with Drill-down (Schedule III Div I) ─────
+
+export const getBalanceSheetV2 = async (req, res) => {
+  try {
+    const models = getModels(req.dbConnection);
+    const { CashAccount, BankAccount, DealerLedger, SupplierLedger, StockMovement,
+            SupplierInvoice, DealerInvoice, Expense, Capital, Loan, FixedAsset,
+            AccountMaster, JournalVoucher } = models;
+
+    const { date, drill, drillId } = req.query;
+    const reportDate = date ? new Date(date) : new Date();
+    const reportFY = fyStringFromDate(reportDate);
+
+    // ── If drillId is provided along with drill, return transaction-level detail ──
+    if (drill && drillId) {
+      const drillData = await getDrillIdDetail(drill, drillId, reportDate, models);
+      return res.status(200).json({ success: true, drillData });
+    }
+
+    // ── If drill param provided, return breakdown for that category ──
+    if (drill) {
+      const drillData = await getDrillBreakdown(drill, reportDate, models, req.dbConnection);
+      return res.status(200).json({ success: true, drillData });
+    }
+
+    // ── Full hierarchical balance sheet ──────────────────────────────────────
+
+    // 1. CASH & BANK
+    const cashAccount = await CashAccount.getCashAccount();
+    const cashInHand = cashAccount?.currentBalance || 0;
+
+    const bankAccounts = await BankAccount.find({ isActive: true });
+    const bankBalances = bankAccounts.reduce((s, a) => s + (a.currentBalance || 0), 0);
+
+    // 2. TRADE RECEIVABLES (Sundry Debtors) - dealers who owe us
+    const arAgg = await DealerLedger.aggregate([
+      { $match: { entryDate: { $lte: reportDate }, status: { $in: ['Active', 'Overdue'] } } },
+      { $group: { _id: '$dealer', debit: { $sum: '$debitAmount' }, credit: { $sum: '$creditAmount' } } },
+      { $project: { balance: { $subtract: ['$debit', '$credit'] } } },
+      { $match: { balance: { $gt: 0 } } },
+      { $group: { _id: null, total: { $sum: '$balance' } } }
+    ]);
+    const tradeReceivables = arAgg[0]?.total || 0;
+
+    // 3. ADVANCE TO SUPPLIERS
+    const advSupAgg = await SupplierLedger.aggregate([
+      { $match: { entryDate: { $lte: reportDate }, transactionType: 'Advance Payment', status: 'Active' } },
+      { $group: { _id: null, total: { $sum: '$debitAmount' } } }
+    ]);
+    const advanceToSuppliers = advSupAgg[0]?.total || 0;
+
+    // 4. INVENTORY (weighted average cost)
+    const avgCostMap = await buildWeightedAvgCost(reportDate, req.dbConnection);
+    const stockAgg = await StockMovement.aggregate([
+      { $match: { date: { $lte: reportDate } } },
+      { $sort: { date: -1, createdAt: -1 } },
+      { $group: { _id: { productId: '$productId', warehouseId: '$warehouseId' }, latestBalance: { $first: '$balance' } } },
+      { $match: { latestBalance: { $gt: 0 } } },
+      { $group: { _id: '$_id.productId', totalQty: { $sum: '$latestBalance' } } }
+    ]);
+    let inventoryValue = 0;
+    for (const row of stockAgg) {
+      const pid = row._id.toString();
+      inventoryValue += row.totalQty * (avgCostMap[pid] || 0);
+    }
+
+    // 5. GST INPUT CREDIT
+    const gstInputAgg = await SupplierInvoice.aggregate([
+      { $match: { invoiceDate: { $lte: reportDate }, status: { $nin: ['Cancelled'] } } },
+      { $group: { _id: null, totalGst: { $sum: '$totalGst' } } }
+    ]);
+    const gstInputCredit = gstInputAgg[0]?.totalGst || 0;
+
+    // 6. FIXED ASSETS (Net)
+    const fixedAssets = await FixedAsset.find({ status: 'Active', purchaseDate: { $lte: reportDate } });
+    const fixedAssetsGross = fixedAssets.reduce((s, a) => s + (a.purchaseValue || 0), 0);
+    const accumulatedDepreciation = fixedAssets.reduce((s, a) => s + (a.accumulatedDepreciation || 0), 0);
+    const netFixedAssets = fixedAssetsGross - accumulatedDepreciation;
+
+    // ── TOTAL ASSETS
+    const totalCurrentAssets = cashInHand + bankBalances + tradeReceivables + advanceToSuppliers + inventoryValue + gstInputCredit;
+    const totalAssets = totalCurrentAssets + netFixedAssets;
+
+    // 7. TRADE PAYABLES (Sundry Creditors) - we owe suppliers
+    const apAgg = await SupplierLedger.aggregate([
+      { $match: { entryDate: { $lte: reportDate }, status: { $in: ['Active', 'Overdue'] } } },
+      { $group: { _id: '$supplier', debit: { $sum: '$debitAmount' }, credit: { $sum: '$creditAmount' } } },
+      { $project: { balance: { $subtract: ['$debit', '$credit'] } } },
+      { $match: { balance: { $gt: 0 } } },
+      { $group: { _id: null, total: { $sum: '$balance' } } }
+    ]);
+    const tradePayables = apAgg[0]?.total || 0;
+
+    // 8. ADVANCE FROM DEALERS
+    const advDealerAgg = await DealerLedger.aggregate([
+      { $match: { entryDate: { $lte: reportDate }, transactionType: 'Advance Payment', status: 'Active' } },
+      { $group: { _id: null, total: { $sum: '$creditAmount' } } }
+    ]);
+    const advanceFromDealers = advDealerAgg[0]?.total || 0;
+
+    // 9. GST PAYABLE
+    const gstSalesAgg = await DealerInvoice.aggregate([
+      { $match: { invoiceDate: { $lte: reportDate }, status: { $nin: ['Cancelled', 'Draft'] }, isDraft: false, isDeleted: { $ne: true } } },
+      { $group: { _id: null, totalGst: { $sum: '$totalGst' } } }
+    ]);
+    const gstPayable = Math.max(0, gstSalesAgg[0]?.totalGst || 0);
+
+    // 10. OTHER CURRENT LIABILITIES (outstanding expenses)
+    const pendingExpAgg = await Expense.aggregate([
+      { $match: { date: { $lte: reportDate }, status: 'pending' } },
+      { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]);
+    const otherCurrentLiab = pendingExpAgg[0]?.total || 0;
+
+    const totalCurrentLiabilities = tradePayables + advanceFromDealers + gstPayable + otherCurrentLiab;
+
+    // 11. LOANS (Non-Current Liabilities)
+    const loans = await Loan.find({ status: { $in: ['Active', 'Overdue'] }, disbursementDate: { $lte: reportDate } });
+    const totalLoans = loans.reduce((s, l) => s + (l.totalOutstanding || 0), 0);
+
+    const totalLiabilities = totalCurrentLiabilities + totalLoans;
+
+    // 12. CAPITAL (Equity)
+    const capitalDocs = await Capital.find({});
+    const capitalFromModel = capitalDocs.reduce((s, c) => s + (c.currentBalance || 0), 0);
+    const capitalAccounts = await AccountMaster.find({ accountGroup: 'Capital', isActive: true });
+    const capitalFromMaster = capitalAccounts.reduce((s, a) => {
+      const bal = a.openingBalance || 0;
+      return s + (a.openingBalanceType === 'Cr' ? bal : -bal);
+    }, 0);
+    const totalCapital = capitalFromModel + capitalFromMaster;
+
+    // 13. P&L (for net worth / retained earnings)
+    const revenueAgg = await DealerInvoice.aggregate([
+      { $match: { invoiceDate: { $lte: reportDate }, status: { $nin: ['Cancelled', 'Draft'] }, isDraft: false, isDeleted: { $ne: true } } },
+      { $group: { _id: null, totalAmount: { $sum: '$totalAmount' }, subtotal: { $sum: '$subtotal' }, totalDiscount: { $sum: '$totalDiscount' } } }
+    ]);
+    const netSales = revenueAgg[0]?.totalAmount || 0;
+
+    const costAgg = await SupplierInvoice.aggregate([
+      { $match: { invoiceDate: { $lte: reportDate }, status: { $nin: ['Cancelled'] } } },
+      { $group: { _id: null, total: { $sum: { $ifNull: ['$supplierBilledTotal', '$totalAmount'] } } } }
+    ]);
+    const costOfGoods = costAgg[0]?.total || 0;
+
+    const expAgg = await Expense.aggregate([
+      { $match: { date: { $lte: reportDate }, status: 'approved' } },
+      { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]);
+    const totalExpenses = expAgg[0]?.total || 0;
+
+    const grossProfit = netSales - costOfGoods;
+    const netProfit = grossProfit - totalExpenses;
+
+    const totalEquity = totalCapital + netProfit;
+    const netWorth = totalEquity;
+
+    // ── BUILD RESPONSE ───────────────────────────────────────────────────────
+    const response = {
+      success: true,
+      reportDate: reportDate.toISOString().split('T')[0],
+      financialYear: reportFY,
+      summary: {
+        totalAssets,
+        totalLiabilities,
+        totalEquity,
+        netWorth
+      },
+      equityAndLiabilities: {
+        total: totalLiabilities + totalEquity,
+        groups: [
+          {
+            name: 'Capital Account',
+            key: 'capital',
+            amount: totalCapital,
+            drillable: true,
+            children: []
+          },
+          {
+            name: 'Current Liabilities',
+            key: 'currentLiabilities',
+            amount: totalCurrentLiabilities,
+            drillable: true,
+            children: [
+              { name: 'Trade Payables (Sundry Creditors)', key: 'tradePayables', amount: tradePayables, drillable: true },
+              { name: 'GST Payable', key: 'gstPayable', amount: gstPayable, drillable: true },
+              { name: 'Advance from Dealers', key: 'advanceFromDealers', amount: advanceFromDealers, drillable: false },
+              { name: 'Other Current Liabilities', key: 'otherCurrentLiab', amount: otherCurrentLiab, drillable: false }
+            ]
+          },
+          {
+            name: 'Non-Current Liabilities',
+            key: 'nonCurrentLiabilities',
+            amount: totalLoans,
+            drillable: true,
+            children: [
+              { name: 'Loans', key: 'loans', amount: totalLoans, drillable: true }
+            ]
+          }
+        ]
+      },
+      assets: {
+        total: totalAssets,
+        groups: [
+          {
+            name: 'Current Assets',
+            key: 'currentAssets',
+            amount: totalCurrentAssets,
+            drillable: true,
+            children: [
+              { name: 'Cash in Hand', key: 'cashInHand', amount: cashInHand, drillable: false },
+              { name: 'Bank Balances', key: 'bankBalances', amount: bankBalances, drillable: true },
+              { name: 'Inventories (Stock-in-Hand)', key: 'inventories', amount: inventoryValue, drillable: true },
+              { name: 'Trade Receivables (Sundry Debtors)', key: 'tradeReceivables', amount: tradeReceivables, drillable: true },
+              { name: 'GST Input Credit', key: 'gstInputCredit', amount: gstInputCredit, drillable: false },
+              { name: 'Advance to Suppliers', key: 'advanceToSuppliers', amount: advanceToSuppliers, drillable: false }
+            ]
+          },
+          {
+            name: 'Non-Current Assets',
+            key: 'nonCurrentAssets',
+            amount: netFixedAssets,
+            drillable: true,
+            children: [
+              { name: 'Fixed Assets (Net)', key: 'fixedAssets', amount: netFixedAssets, drillable: true }
+            ]
+          }
+        ]
+      },
+      profitAndLoss: {
+        netSales,
+        costOfGoods,
+        grossProfit,
+        expenses: totalExpenses,
+        netProfit
+      },
+      drillData: null
+    };
+
+    res.status(200).json(response);
+  } catch (error) {
+    console.error('❌ Balance Sheet V2 error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to generate balance sheet',
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+};
+
+// ─── Drill breakdown helpers ─────────────────────────────────────────────────
+
+async function getDrillBreakdown(drill, reportDate, models, dbConnection) {
+  const { SupplierLedger, DealerLedger, BankAccount, StockMovement, FixedAsset, Loan } = models;
+
+  switch (drill) {
+    case 'tradePayables': {
+      // List of suppliers with outstanding balances
+      const agg = await SupplierLedger.aggregate([
+        { $match: { entryDate: { $lte: reportDate }, status: { $in: ['Active', 'Overdue'] } } },
+        { $group: {
+          _id: '$supplier',
+          supplierName: { $first: '$supplierName' },
+          debit: { $sum: '$debitAmount' },
+          credit: { $sum: '$creditAmount' }
+        }},
+        { $project: { supplierId: '$_id', supplierName: 1, balance: { $subtract: ['$debit', '$credit'] } } },
+        { $match: { balance: { $gt: 0 } } },
+        { $sort: { balance: -1 } }
+      ]);
+      return {
+        drill: 'tradePayables',
+        label: 'Trade Payables - Supplier Breakdown',
+        items: agg.map(r => ({
+          id: r._id,
+          name: r.supplierName || 'Unknown Supplier',
+          amount: r.balance,
+          drillable: true
+        }))
+      };
+    }
+
+    case 'tradeReceivables': {
+      // List of dealers with outstanding balances
+      const agg = await DealerLedger.aggregate([
+        { $match: { entryDate: { $lte: reportDate }, status: { $in: ['Active', 'Overdue'] } } },
+        { $group: {
+          _id: '$dealer',
+          dealerName: { $first: '$dealerName' },
+          debit: { $sum: '$debitAmount' },
+          credit: { $sum: '$creditAmount' }
+        }},
+        { $project: { dealerId: '$_id', dealerName: 1, balance: { $subtract: ['$debit', '$credit'] } } },
+        { $match: { balance: { $gt: 0 } } },
+        { $sort: { balance: -1 } }
+      ]);
+      return {
+        drill: 'tradeReceivables',
+        label: 'Trade Receivables - Dealer Breakdown',
+        items: agg.map(r => ({
+          id: r._id,
+          name: r.dealerName || 'Unknown Dealer',
+          amount: r.balance,
+          drillable: true
+        }))
+      };
+    }
+
+    case 'bankBalances': {
+      // List of bank accounts with balances
+      const banks = await BankAccount.find({ isActive: true }).lean();
+      return {
+        drill: 'bankBalances',
+        label: 'Bank Balances - Account Breakdown',
+        items: banks.map(b => ({
+          id: b._id,
+          name: `${b.bankName} - ${b.accountName} (${b.accountNumber})`,
+          amount: b.currentBalance || 0,
+          drillable: false
+        }))
+      };
+    }
+
+    case 'inventories': {
+      // List of products with stock value (weighted avg cost from GRN)
+      const avgCostMap = await buildWeightedAvgCost(reportDate, dbConnection);
+      const stockAgg = await StockMovement.aggregate([
+        { $match: { date: { $lte: reportDate } } },
+        { $sort: { date: -1, createdAt: -1 } },
+        { $group: { _id: { productId: '$productId', warehouseId: '$warehouseId' }, latestBalance: { $first: '$balance' } } },
+        { $match: { latestBalance: { $gt: 0 } } },
+        { $group: { _id: '$_id.productId', totalQty: { $sum: '$latestBalance' } } }
+      ]);
+
+      // Lookup product names
+      const Product = dbConnection.models.Product || dbConnection.model('Product', (await import('../models/Product.js')).productSchema);
+      const productIds = stockAgg.map(r => r._id);
+      const products = await Product.find({ _id: { $in: productIds } }).select('itemName productCode').lean();
+      const productMap = {};
+      for (const p of products) { productMap[p._id.toString()] = p; }
+
+      const items = stockAgg.map(row => {
+        const pid = row._id.toString();
+        const cost = avgCostMap[pid] || 0;
+        const value = row.totalQty * cost;
+        const product = productMap[pid];
+        return {
+          id: row._id,
+          name: product?.itemName || `Product ${product?.productCode || pid}`,
+          quantity: row.totalQty,
+          avgCost: Math.round(cost * 100) / 100,
+          amount: Math.round(value * 100) / 100,
+          drillable: false
+        };
+      }).sort((a, b) => b.amount - a.amount);
+
+      return {
+        drill: 'inventories',
+        label: 'Inventories - Product Breakdown',
+        items
+      };
+    }
+
+    case 'fixedAssets': {
+      // List of fixed assets with net book value
+      const assets = await FixedAsset.find({ status: 'Active', purchaseDate: { $lte: reportDate } }).lean();
+      return {
+        drill: 'fixedAssets',
+        label: 'Fixed Assets - Asset Breakdown',
+        items: assets.map(a => ({
+          id: a._id,
+          name: a.assetName,
+          category: a.assetCategory,
+          grossValue: a.purchaseValue || 0,
+          depreciation: a.accumulatedDepreciation || 0,
+          amount: (a.purchaseValue || 0) - (a.accumulatedDepreciation || 0),
+          drillable: false
+        })).sort((a, b) => b.amount - a.amount)
+      };
+    }
+
+    case 'loans': {
+      // List of active loans with outstanding
+      const loanDocs = await Loan.find({ status: { $in: ['Active', 'Overdue'] }, disbursementDate: { $lte: reportDate } }).lean();
+      return {
+        drill: 'loans',
+        label: 'Loans - Breakdown',
+        items: loanDocs.map(l => ({
+          id: l._id,
+          name: `${l.lenderName} - ${l.loanType}`,
+          loanType: l.loanType,
+          principal: l.outstandingPrincipal || 0,
+          interest: l.outstandingInterest || 0,
+          amount: l.totalOutstanding || 0,
+          drillable: false
+        })).sort((a, b) => b.amount - a.amount)
+      };
+    }
+
+    case 'capital': {
+      // List of capital accounts
+      const capitalDocs = await models.Capital.find({}).lean();
+      const capitalAccounts = await models.AccountMaster.find({ accountGroup: 'Capital', isActive: true }).lean();
+      const items = [
+        ...capitalDocs.map(c => ({
+          id: c._id,
+          name: c.ownerName,
+          type: c.capitalType,
+          amount: c.currentBalance || 0,
+          drillable: false
+        })),
+        ...capitalAccounts.map(a => ({
+          id: a._id,
+          name: a.accountName || a.name,
+          type: 'Account Master',
+          amount: a.openingBalanceType === 'Cr' ? (a.openingBalance || 0) : -(a.openingBalance || 0),
+          drillable: false
+        }))
+      ];
+      return {
+        drill: 'capital',
+        label: 'Capital Account - Breakdown',
+        items
+      };
+    }
+
+    case 'gstPayable': {
+      // GST payable breakdown by invoice
+      const gstAgg = await models.DealerInvoice.aggregate([
+        { $match: { invoiceDate: { $lte: reportDate }, status: { $nin: ['Cancelled', 'Draft'] }, isDraft: false, isDeleted: { $ne: true }, totalGst: { $gt: 0 } } },
+        { $sort: { invoiceDate: -1 } },
+        { $limit: 50 },
+        { $project: { invoiceNumber: 1, invoiceDate: 1, totalGst: 1, dealer: 1 } }
+      ]);
+      return {
+        drill: 'gstPayable',
+        label: 'GST Payable - Recent Invoices',
+        items: gstAgg.map(inv => ({
+          id: inv._id,
+          name: inv.invoiceNumber || 'Draft Invoice',
+          date: inv.invoiceDate,
+          amount: inv.totalGst || 0,
+          drillable: false
+        }))
+      };
+    }
+
+    default:
+      return { drill, label: 'Unknown drill category', items: [] };
+  }
+}
+
+async function getDrillIdDetail(drill, drillId, reportDate, models) {
+  const { SupplierLedger, DealerLedger } = models;
+
+  switch (drill) {
+    case 'tradePayables': {
+      // All SupplierLedger entries for a specific supplier
+      const entries = await SupplierLedger.find({
+        supplier: drillId,
+        entryDate: { $lte: reportDate }
+      }).sort({ entryDate: -1 }).lean();
+      return {
+        drill: 'tradePayables',
+        entityId: drillId,
+        label: entries[0]?.supplierName || 'Supplier Ledger',
+        transactions: entries.map(e => ({
+          id: e._id,
+          date: e.entryDate,
+          transactionType: e.transactionType,
+          description: e.description || e.narration || '',
+          debit: e.debitAmount || 0,
+          credit: e.creditAmount || 0,
+          runningBalance: e.runningBalance || 0,
+          referenceNumber: e.referenceNumber || e.invoiceNumber || ''
+        }))
+      };
+    }
+
+    case 'tradeReceivables': {
+      // All DealerLedger entries for a specific dealer
+      const entries = await DealerLedger.find({
+        dealer: drillId,
+        entryDate: { $lte: reportDate }
+      }).sort({ entryDate: -1 }).lean();
+      return {
+        drill: 'tradeReceivables',
+        entityId: drillId,
+        label: entries[0]?.dealerName || 'Dealer Ledger',
+        transactions: entries.map(e => ({
+          id: e._id,
+          date: e.entryDate,
+          transactionType: e.transactionType,
+          description: e.description || e.narration || '',
+          debit: e.debitAmount || 0,
+          credit: e.creditAmount || 0,
+          runningBalance: e.runningBalance || 0,
+          referenceNumber: e.referenceNumber || e.invoiceNumber || ''
+        }))
+      };
+    }
+
+    default:
+      return { drill, entityId: drillId, label: 'No detail available', transactions: [] };
+  }
+}

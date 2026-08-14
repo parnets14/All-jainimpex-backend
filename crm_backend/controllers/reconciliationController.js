@@ -569,8 +569,9 @@ export const performAutoReconciliation = async (req, res) => {
         return sum + (payment.paymentAmount || 0);
       }, 0);
 
-      const outstandingAmount = (invoice.totalAmount || 0) - totalPaidAmount;
-      const isSignificantOutstanding = Math.abs(outstandingAmount) > 0.01; // Allow for small rounding differences
+      const invoiceTotal = invoice.supplierBilledTotal || invoice.totalAmount || 0;
+      const outstandingAmount = invoiceTotal - totalPaidAmount;
+      const isSignificantOutstanding = Math.abs(outstandingAmount) > 0.01;
 
       if (isSignificantOutstanding && outstandingAmount > 0) {
         reconciliationResults.discrepancies.push({
@@ -578,7 +579,7 @@ export const performAutoReconciliation = async (req, res) => {
           invoiceId: invoice._id,
           invoiceNumber: invoice.invoiceNumber,
           invoiceDate: invoice.invoiceDate,
-          invoiceAmount: invoice.totalAmount || 0,
+          invoiceAmount: invoiceTotal,
           paidAmount: totalPaidAmount,
           outstandingAmount: outstandingAmount,
           paymentDetails: relatedPayments.map(payment => ({
@@ -590,13 +591,12 @@ export const performAutoReconciliation = async (req, res) => {
           }))
         });
       } else if (!isSignificantOutstanding || outstandingAmount <= 0) {
-        // Add to matches if fully paid or overpaid (within tolerance)
         reconciliationResults.matches.push({
           type: 'INVOICE_PAYMENT_MATCH',
           invoiceId: invoice._id,
           invoiceNumber: invoice.invoiceNumber,
           invoiceDate: invoice.invoiceDate,
-          amount: invoice.totalAmount || 0,
+          amount: invoiceTotal,
           paidAmount: totalPaidAmount,
           paymentCount: relatedPayments.length
         });

@@ -459,7 +459,8 @@ export const getAvailableInvoicesForPayment = async (req, res) => {
     // Filter invoices that are not fully paid
     const availableInvoices = invoices.filter(invoice => {
       const paidAmount = invoice.paidAmount || 0;
-      return paidAmount < invoice.totalAmount;
+      const invoiceTotal = invoice.supplierBilledTotal || invoice.totalAmount;
+      return paidAmount < invoiceTotal;
     });
 
     res.json({

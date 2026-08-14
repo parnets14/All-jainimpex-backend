@@ -219,6 +219,7 @@ export const getStock = async (req, res) => {
             weightedPriceSum: 0,
             weightedGSTSum: 0,
             totalAcceptedQty: 0,
+            totalBillQty: 0,
             totalValue: 0,
             hasGRN: true,
             hasMovements: false
@@ -240,15 +241,20 @@ export const getStock = async (req, res) => {
             // REMOVED: warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
             // Damaged quantity will be calculated from stock movements (source of truth)
             warehouseStock[warehouseId].totalAcceptedQty += item.acceptedQuantity || 0;
+            warehouseStock[warehouseId].totalBillQty += item.companyBillQuantity || item.acceptedQuantity || 0;
             
             if (grn.supplierId) {
               warehouseStock[warehouseId].suppliers.add(grn.supplierId.name);
             }
             
-            // Calculate weighted averages including GST
-            const itemValue = (item.acceptedQuantity || 0) * (item.unitPrice || 0);
-            warehouseStock[warehouseId].totalValue += itemValue;
-            warehouseStock[warehouseId].weightedPriceSum += itemValue;
+            // Calculate weighted averages using supplier cost if available
+            const costPerUnit = item.supplierCostPerUnit || item.unitPrice || 0;
+            const billQty = item.companyBillQuantity || item.acceptedQuantity || 0;
+            const receivedQty = item.receivedQuantity || item.acceptedQuantity || 0;
+            // For avg price calculation: use billQty (what supplier charged for)
+            warehouseStock[warehouseId].weightedPriceSum += billQty * costPerUnit;
+            // For total stock value: use receivedQty (what actually came)
+            warehouseStock[warehouseId].totalValue += receivedQty * costPerUnit;
             
             // Calculate weighted GST average
             const itemGSTValue = (item.acceptedQuantity || 0) * (item.gst || 0);
@@ -319,6 +325,11 @@ export const getStock = async (req, res) => {
         const warehouseId = grn.warehouseId._id.toString();
         const warehouseName = grn.warehouseId.name;
         
+        // Skip if this warehouse was already processed in the first loop
+        if (warehouseStock[warehouseId] && warehouseStock[warehouseId].hasGRN) {
+          return;
+        }
+        
         if (!warehouseStock[warehouseId]) {
           warehouseStock[warehouseId] = {
             warehouseId: warehouseId,
@@ -329,6 +340,7 @@ export const getStock = async (req, res) => {
             weightedPriceSum: 0,
             weightedGSTSum: 0,
             totalAcceptedQty: 0,
+            totalBillQty: 0,
             totalValue: 0
           };
         }
@@ -348,13 +360,16 @@ export const getStock = async (req, res) => {
             // REMOVED: warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
             // Damaged quantity will be calculated from stock movements (source of truth)
             warehouseStock[warehouseId].totalAcceptedQty += item.acceptedQuantity || 0;
+            warehouseStock[warehouseId].totalBillQty += item.companyBillQuantity || item.acceptedQuantity || 0;
             
             if (grn.supplierId) {
               warehouseStock[warehouseId].suppliers.add(grn.supplierId.name);
             }
             
-            // Calculate weighted averages including GST
-            const itemValue = (item.acceptedQuantity || 0) * (item.unitPrice || 0);
+            // Calculate weighted averages using supplier cost if available (full bill qty)
+            const costPerUnit = item.supplierCostPerUnit || item.unitPrice || 0;
+            const billQty = item.companyBillQuantity || item.acceptedQuantity || 0;
+            const itemValue = billQty * costPerUnit;
             warehouseStock[warehouseId].totalValue += itemValue;
             warehouseStock[warehouseId].weightedPriceSum += itemValue;
             
@@ -447,7 +462,7 @@ export const getStock = async (req, res) => {
             return;
           }
 
-          const averageUnitPrice = warehouse.totalAcceptedQty > 0 ? warehouse.weightedPriceSum / warehouse.totalAcceptedQty : 0;
+          const averageUnitPrice = (warehouse.totalBillQty || warehouse.totalAcceptedQty) > 0 ? warehouse.weightedPriceSum / (warehouse.totalBillQty || warehouse.totalAcceptedQty) : 0;
           const averageGST = warehouse.totalAcceptedQty > 0 ? warehouse.weightedGSTSum / warehouse.totalAcceptedQty : 0;
           const blockedQty = warehouse.blockedQty || 0; // Use calculated blocked quantity
           
@@ -476,7 +491,7 @@ export const getStock = async (req, res) => {
             warehouseId: warehouse.warehouseId,
             basePrice: averageUnitPrice,
             gst: averageGST,
-            totalPrice: currentStock * averageUnitPrice,
+            totalPrice: warehouse.totalValue,
             totalQty: currentStock,
             damagedQty: warehouse.damagedQty,
             blockedQty: blockedQty,
@@ -1117,6 +1132,7 @@ export const debugStockCalculation = async (req, res) => {
           suppliers: new Set(),
           weightedPriceSum: 0,
           totalAcceptedQty: 0,
+          totalBillQty: 0,
           totalValue: 0,
           grns: []
         };
@@ -1136,13 +1152,16 @@ export const debugStockCalculation = async (req, res) => {
           // REMOVED: warehouseStock[warehouseId].damagedQty += item.damageQuantity || 0;
           // Damaged quantity will be calculated from stock movements (source of truth)
           warehouseStock[warehouseId].totalAcceptedQty += item.acceptedQuantity || 0;
+          warehouseStock[warehouseId].totalBillQty += item.companyBillQuantity || item.acceptedQuantity || 0;
           
           if (grn.supplierId) {
             warehouseStock[warehouseId].suppliers.add(grn.supplierId.name);
           }
           
-          // Calculate weighted averages
-          const itemValue = (item.acceptedQuantity || 0) * (item.unitPrice || 0);
+          // Calculate weighted averages using supplier cost if available
+          const costPerUnit = item.supplierCostPerUnit || item.unitPrice || 0;
+          const billQty = item.companyBillQuantity || item.acceptedQuantity || 0;
+          const itemValue = billQty * costPerUnit;
           warehouseStock[warehouseId].totalValue += itemValue;
           warehouseStock[warehouseId].weightedPriceSum += itemValue;
           
@@ -1165,7 +1184,7 @@ export const debugStockCalculation = async (req, res) => {
 
     // Calculate final values
     const finalWarehouses = Object.values(warehouseStock).map(warehouse => {
-      const averageUnitPrice = warehouse.totalAcceptedQty > 0 ? warehouse.weightedPriceSum / warehouse.totalAcceptedQty : 0;
+      const averageUnitPrice = (warehouse.totalBillQty || warehouse.totalAcceptedQty) > 0 ? warehouse.weightedPriceSum / (warehouse.totalBillQty || warehouse.totalAcceptedQty) : 0;
       const blockedQty = 0;
       const netStock = warehouse.totalQty - warehouse.damagedQty - blockedQty;
 

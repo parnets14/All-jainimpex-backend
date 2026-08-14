@@ -322,12 +322,13 @@ export const getOutstandingInvoices = async (req, res) => {
       const outstanding = supInvoices
         .map(inv => {
           const paid = inv.paidAmount || 0;
-          const pending = inv.totalAmount - paid;
+          const invoiceTotal = inv.supplierBilledTotal || inv.totalAmount;
+          const pending = invoiceTotal - paid;
           return {
             _id: inv._id,
             invoiceNumber: inv.invoiceNumber,
             invoiceDate: inv.invoiceDate,
-            totalAmount: inv.totalAmount,
+            totalAmount: invoiceTotal,
             paidAmount: paid,
             pendingAmount: pending,
             paymentStatus: inv.paymentStatus,

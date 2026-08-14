@@ -403,12 +403,37 @@ export const createSupplierInvoice = async (req, res) => {
     await supplierInvoice.save();
 
     // Mark GRN as invoiced to prevent further editing
-    await GRN.findByIdAndUpdate(grnId, {
+    // Also write back supplier cost per unit to GRN items for stock valuation
+    const grnUpdateData = {
       isInvoiceCreated: true,
       supplierInvoiceId: supplierInvoice._id,
       invoiceCreatedAt: new Date(),
-      status: 'Completed' // Mark GRN as completed once invoice is created
-    });
+      status: 'Completed'
+    };
+
+    // Update GRN items with supplier cost per unit (for weighted avg in stock)
+    const grnDoc = await GRN.findById(grnId);
+    if (grnDoc && supplierInvoice.items) {
+      grnDoc.items.forEach((grnItem, idx) => {
+        // Find matching invoice item by productId
+        const invoiceItem = supplierInvoice.items.find(ii => 
+          ii.product && grnItem.productId && 
+          ii.product.toString() === grnItem.productId.toString()
+        );
+        if (invoiceItem && invoiceItem.supplierPrice) {
+          const billQty = invoiceItem.billQuantity || invoiceItem.quantity || 1;
+          // supplierPrice = total before GST for the line; divide by billQty for per-unit
+          grnItem.supplierCostPerUnit = invoiceItem.supplierPrice / billQty;
+        }
+      });
+      grnDoc.isInvoiceCreated = true;
+      grnDoc.supplierInvoiceId = supplierInvoice._id;
+      grnDoc.invoiceCreatedAt = new Date();
+      grnDoc.status = 'Completed';
+      await grnDoc.save();
+    } else {
+      await GRN.findByIdAndUpdate(grnId, grnUpdateData);
+    }
 
     console.log(`GRN ${grn.grnNo} marked as invoiced and locked for editing`);
 
@@ -1038,7 +1063,7 @@ export const getSupplierInvoiceStats = async (req, res) => {
         $group: {
           _id: null,
           totalInvoices: { $sum: 1 },
-          totalValue: { $sum: "$totalAmount" },
+          totalValue: { $sum: { $ifNull: ["$supplierBilledTotal", "$totalAmount"] } },
           draftInvoices: {
             $sum: { $cond: [{ $eq: ["$status", "Draft"] }, 1, 0] }
           },
