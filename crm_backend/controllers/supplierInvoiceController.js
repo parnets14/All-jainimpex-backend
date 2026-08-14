@@ -387,6 +387,7 @@ export const createSupplierInvoice = async (req, res) => {
       totalGst: totalGst,
       totalAmount: totalAmount,
       grandTotal: grandTotal,
+      supplierBilledTotal: req.body.supplierBilledTotal || null,
       // Purchase discount summary
       purchaseDiscountSummary: purchaseDiscountSummary || {
         directDiscountApplied: totalDirectDiscount > 0,
@@ -399,8 +400,64 @@ export const createSupplierInvoice = async (req, res) => {
       createdBy: req.user._id
     });
 
+    // Debug: log first item comparison fields before save
+    if (invoiceItems.length > 0) {
+      console.log('🔍 BACKEND: First item before save:', {
+        supplierPrice: invoiceItems[0].supplierPrice,
+        supplierMRP: invoiceItems[0].supplierMRP,
+        billQuantity: invoiceItems[0].billQuantity,
+        amountDifference: invoiceItems[0].amountDifference,
+        ourDiscountExclGst: invoiceItems[0].ourDiscountExclGst
+      });
+    }
+
     // Save supplier invoice
     await supplierInvoice.save();
+
+    // Safety net: if supplierBilledTotal is set but items don't have supplierPrice, calculate from invoice total
+    if (supplierInvoice.supplierBilledTotal && supplierInvoice.items.length > 0) {
+      let needsUpdate = false;
+      supplierInvoice.items.forEach((item, idx) => {
+        if (!item.supplierPrice && supplierInvoice.supplierBilledTotal > 0) {
+          // Distribute total proportionally by unitPrice weight OR evenly if single item
+          const totalItems = supplierInvoice.items.length;
+          if (totalItems === 1) {
+            const gst = item.gst || 0;
+            const supplierBeforeGst = supplierInvoice.supplierBilledTotal / (1 + gst / 100);
+            const billQty = item.billQuantity || item.quantity || 1;
+            item.supplierPrice = supplierBeforeGst;
+            item.supplierBillAmount = supplierBeforeGst;
+            item.supplierMRP = supplierInvoice.supplierBilledTotal;
+            item.billQuantity = billQty;
+            item.ourMRP = item.unitPrice;
+            item.poAmount = billQty * item.unitPrice;
+            // Calculate difference
+            const afterAllDiscounts = item.totalPrice || (item.quantity * item.unitPrice);
+            const ourTotalBeforeGst = afterAllDiscounts / (1 + gst / 100);
+            item.amountDifference = supplierBeforeGst - ourTotalBeforeGst;
+            item.differencePercentage = ourTotalBeforeGst > 0 ? ((supplierBeforeGst - ourTotalBeforeGst) / ourTotalBeforeGst) * 100 : 0;
+            // Discount percentages
+            const qty = billQty;
+            const afterDiscPerUnit = afterAllDiscounts / qty;
+            const ourDiscIncl = item.unitPrice > 0 ? ((1 - afterDiscPerUnit / item.unitPrice) * 100) : 0;
+            item.ourDiscountInclGst = ourDiscIncl;
+            item.ourDiscountExclGst = 100 - ((100 - ourDiscIncl) / (1 + gst / 100));
+            const suppPerUnit = supplierBeforeGst / qty;
+            const suppPerUnitIncl = suppPerUnit * (1 + gst / 100);
+            const suppDiscIncl = item.unitPrice > 0 ? ((1 - suppPerUnitIncl / item.unitPrice) * 100) : 0;
+            item.supplierDiscountInclGst = suppDiscIncl;
+            item.supplierDiscountExclGst = supplierBeforeGst > 0 ? (100 - ((100 - suppDiscIncl) / (1 + gst / 100))) : 0;
+            item.afterDiscountAmount = afterAllDiscounts;
+            item.afterDiscountCost = afterDiscPerUnit;
+            needsUpdate = true;
+          }
+        }
+      });
+      if (needsUpdate) {
+        await supplierInvoice.save();
+        console.log('✅ Safety net: Patched item comparison fields from supplierBilledTotal');
+      }
+    }
 
     // Mark GRN as invoiced to prevent further editing
     // Also write back supplier cost per unit to GRN items for stock valuation
@@ -603,7 +660,24 @@ export const updateSupplierInvoice = async (req, res) => {
           subtotal: baseAmount,
           totalPrice: afterAllDiscounts,
           warehouse: item.warehouseId || item.warehouse,
-          warehouseName: item.warehouseName
+          warehouseName: item.warehouseName,
+          // Comparison fields (preserve from frontend)
+          billQuantity: item.billQuantity || quantity,
+          supplierPrice: item.supplierPrice || null,
+          supplierBillAmount: item.supplierBillAmount || null,
+          supplierMRP: item.supplierMRP || null,
+          ourMRP: item.ourMRP || unitPrice,
+          poAmount: item.poAmount || null,
+          amountDifference: item.amountDifference || 0,
+          differencePercentage: item.differencePercentage || 0,
+          discountAmountPO: item.discountAmountPO || 0,
+          discountPercentagePO: item.discountPercentagePO || 0,
+          afterDiscountAmount: item.afterDiscountAmount || afterAllDiscounts,
+          afterDiscountCost: item.afterDiscountCost || null,
+          ourDiscountExclGst: item.ourDiscountExclGst || null,
+          ourDiscountInclGst: item.ourDiscountInclGst || null,
+          supplierDiscountExclGst: item.supplierDiscountExclGst || null,
+          supplierDiscountInclGst: item.supplierDiscountInclGst || null
         };
       });
       
