@@ -14,13 +14,35 @@ const hrmsSettingsSchema = new mongoose.Schema({
   // ── Late entry deduction (Point 7) ──
   lateGraceMinutes: { type: Number, default: 15 },
   lateDeductionMode: { type: String, enum: ['proportional', 'slab', 'count'], default: 'proportional' },
-  lateProportionalUsesFullTime: { type: Boolean, default: false }, // deduct full late time vs only excess over grace
+  lateProportionalUsesFullTime: { type: Boolean, default: false },
   lateRateMode: { type: String, enum: ['perHour', 'perMinute'], default: 'perMinute' },
-  lateRate: { type: Number, default: 0 },        // for proportional mode
-  lateSlabHalfDayMinutes: { type: Number, default: 0 },  // cross => half-day cut
-  lateSlabFullDayMinutes: { type: Number, default: 0 },  // cross => full-day cut
-  lateCountPerMonth: { type: Number, default: 3 },       // for count mode: N lates
-  lateCountEqualsDays: { type: Number, default: 1 },     // = this many days' salary cut
+  lateRate: { type: Number, default: 0 },
+  lateSlabHalfDayMinutes: { type: Number, default: 0 },
+  lateSlabFullDayMinutes: { type: Number, default: 0 },
+  lateCountPerMonth: { type: Number, default: 3 },
+  lateCountEqualsDays: { type: Number, default: 1 },
+
+  // ── Per-employee late deduction rules ──
+  // Each rule has a method, config, and assignment (all/remaining/custom employees)
+  lateDeductionRules: [{
+    method: { type: String, enum: ['count', 'proportional', 'slab'], required: true },
+    applyTo: { type: String, enum: ['all', 'remaining', 'custom'], default: 'all' },
+    employees: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Employee' }],
+    enabled: { type: Boolean, default: true },
+    config: {
+      graceMinutes: { type: Number, default: 5 },
+      // Count rule
+      latesPerMonth: { type: Number, default: 3 },
+      daysSalaryCut: { type: Number, default: 0.5 },
+      // Proportional (per minute) rule
+      rateMode: { type: String, enum: ['perHour', 'perMinute'], default: 'perMinute' },
+      rate: { type: Number, default: 5 },
+      usesFullTime: { type: Boolean, default: false },
+      // Slab rule
+      slabHalfDayMinutes: { type: Number, default: 30 },
+      slabFullDayMinutes: { type: Number, default: 60 }
+    }
+  }],
 
   // ── Lunch / working-hours shortfall (Point 2) ──
   allowedLunchMinutes: { type: Number, default: 45 },

@@ -3,6 +3,7 @@ import { employeeSchema } from "../models/Employee.js";
 import { salarySlipSchema } from "../models/SalarySlip.js";
 import { attendanceSchema } from "../models/Attendance.js";
 import { hrmsSettingsSchema } from "../models/HrmsSettings.js";
+import { leavePolicySchema } from "../models/LeavePolicy.js";
 import {
   countWorkingDays,
   computeAttendanceAdjustments,
@@ -38,6 +39,9 @@ const getModels = (dbConnection) => {
     HrmsSettings:
       dbConnection.models.HrmsSettings ||
       dbConnection.model("HrmsSettings", hrmsSettingsSchema),
+    LeavePolicy:
+      dbConnection.models.LeavePolicy ||
+      dbConnection.model("LeavePolicy", leavePolicySchema),
   };
 };
 
@@ -68,7 +72,7 @@ export const generateSalarySlipDirect = async (
   extras = {}
 ) => {
   try {
-    const { Employee, SalarySlip, Attendance, HrmsSettings } = getModels(dbConnection);
+    const { Employee, SalarySlip, Attendance, HrmsSettings, LeavePolicy } = getModels(dbConnection);
     console.log(
       `Processing salary for employee ${employeeId}, ${month}/${year} (${type})`
     );
@@ -81,6 +85,19 @@ export const generateSalarySlipDirect = async (
     // Company-wide HRMS settings drive OT / late / shortfall (admin-configurable)
     let hrmsSettings = await HrmsSettings.findOne({ key: "default" });
     if (!hrmsSettings) hrmsSettings = await HrmsSettings.create({ key: "default" });
+
+    // Load leave policy to determine which leave types are paid
+    let leavePolicy = await LeavePolicy.findOne({ key: "default" });
+    const paidLeaveTypes = new Set();
+    if (leavePolicy && leavePolicy.types) {
+      leavePolicy.types.forEach(t => { if (t.paid && t.active) paidLeaveTypes.add(t.label); });
+    }
+    // Fallback: if no policy, treat all except 'Unpaid Leave' as paid
+    if (paidLeaveTypes.size === 0) {
+      paidLeaveTypes.add('Paid Leave');
+      paidLeaveTypes.add('Sick Leave');
+      paidLeaveTypes.add('Casual Leave');
+    }
 
     // Debug employee salary data
     console.log(`Employee ${employee.name} salary data:`, {
@@ -165,8 +182,9 @@ export const generateSalarySlipDirect = async (
           ) {
             presentDays++;
           } else if (attendanceRecord.status === "Leave") {
-            // Unpaid leave is not paid; all other leave types count as paid
-            if (attendanceRecord.leaveType !== "Unpaid Leave") {
+            // Check LeavePolicy to determine if this leave type is paid
+            const isPaidLeave = paidLeaveTypes.has(attendanceRecord.leaveType);
+            if (isPaidLeave) {
               leaveDays++;
               presentDays++; // Paid leave counts as present for salary
             }

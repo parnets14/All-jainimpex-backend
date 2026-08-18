@@ -110,10 +110,56 @@ export const computeAttendanceAdjustments = (attendance, employee, settings) => 
   const otPerMinute = s.otRateMode === 'perMinute';
 
   const lateGrace = Number(s.lateGraceMinutes) || 0;
-  const lateMode = s.lateDeductionMode || 'proportional';
-  const lateRate = Number(s.lateRate) || 0;
-  const latePerMinute = s.lateRateMode !== 'perHour';
-  const lateUsesFullTime = !!s.lateProportionalUsesFullTime;
+  
+  // ── Per-employee rule lookup from lateDeductionRules ──
+  let lateMode = s.lateDeductionMode || 'proportional';
+  let lateRate = Number(s.lateRate) || 0;
+  let latePerMinute = s.lateRateMode !== 'perHour';
+  let lateUsesFullTime = !!s.lateProportionalUsesFullTime;
+  let employeeGrace = lateGrace;
+  let employeeCountPerMonth = Number(s.lateCountPerMonth) || 0;
+  let employeeCountEqualsDays = Number(s.lateCountEqualsDays) || 0;
+
+  if (s.lateDeductionRules && s.lateDeductionRules.length > 0 && employee?._id) {
+    const empId = employee._id.toString();
+    // Find which rule applies to this employee
+    let matchedRule = null;
+    const assignedByPrevious = new Set();
+    
+    for (const rule of s.lateDeductionRules) {
+      if (!rule.enabled) continue;
+      if (rule.applyTo === 'all') {
+        matchedRule = rule;
+        break;
+      } else if (rule.applyTo === 'custom') {
+        const empIds = (rule.employees || []).map(id => id.toString());
+        if (empIds.includes(empId)) {
+          matchedRule = rule;
+          break;
+        }
+        empIds.forEach(id => assignedByPrevious.add(id));
+      } else if (rule.applyTo === 'remaining') {
+        if (!assignedByPrevious.has(empId)) {
+          matchedRule = rule;
+          break;
+        }
+      }
+    }
+
+    if (matchedRule) {
+      lateMode = matchedRule.method;
+      employeeGrace = Number(matchedRule.config?.graceMinutes) ?? lateGrace;
+      if (matchedRule.method === 'proportional') {
+        lateRate = Number(matchedRule.config?.rate) || 0;
+        latePerMinute = matchedRule.config?.rateMode !== 'perHour';
+        lateUsesFullTime = !!matchedRule.config?.usesFullTime;
+      }
+      if (matchedRule.method === 'count') {
+        employeeCountPerMonth = Number(matchedRule.config?.latesPerMonth) || 0;
+        employeeCountEqualsDays = Number(matchedRule.config?.daysSalaryCut) || 0;
+      }
+    }
+  }
 
   const allowedLunch = Number(s.allowedLunchMinutes) || 0;
   const shortfallGrace = Number(s.shortfallGraceMinutes) || 0;
@@ -140,9 +186,9 @@ export const computeAttendanceAdjustments = (attendance, employee, settings) => 
     const firstIn = recordFirstInMinutes(rec);
     if (!isWeeklyOff && firstIn != null) {
       const lateBy = firstIn - shiftStartMin; // minutes after shift start
-      if (lateBy > lateGrace) {
+      if (lateBy > employeeGrace) {
         lateDaysCount++;
-        const excess = lateUsesFullTime ? lateBy : (lateBy - lateGrace);
+        const excess = lateUsesFullTime ? lateBy : (lateBy - employeeGrace);
         lateExcessMinutes += Math.max(0, excess);
         if (s.lateSlabFullDayMinutes > 0 && lateBy >= s.lateSlabFullDayMinutes) {
           lateSlabFullDays++;
@@ -191,6 +237,9 @@ export const computeAttendanceAdjustments = (attendance, employee, settings) => 
     lateDaysCount, lateExcessMinutes, lateProportionalAmount,
     lateSlabHalfDays, lateSlabFullDays,
     lateMode,
+    // Per-employee count rule params (from matched rule or global settings)
+    lateCountPerMonth: employeeCountPerMonth,
+    lateCountEqualsDays: employeeCountEqualsDays,
   };
 };
 
@@ -210,8 +259,8 @@ export const computeLateDeduction = (adj, settings, perDaySalary) => {
     return round2(days * perDaySalary);
   }
   if (adj.lateMode === 'count') {
-    const per = Number(s.lateCountPerMonth) || 0;
-    const eq = Number(s.lateCountEqualsDays) || 0;
+    const per = adj.lateCountPerMonth || Number(s.lateCountPerMonth) || 0;
+    const eq = adj.lateCountEqualsDays || Number(s.lateCountEqualsDays) || 0;
     if (per > 0 && eq > 0 && adj.lateDaysCount >= per) {
       const units = Math.floor(adj.lateDaysCount / per);
       return round2(units * eq * perDaySalary);
