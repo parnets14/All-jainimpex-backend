@@ -330,6 +330,7 @@ const supplierInvoiceSchema = new mongoose.Schema({
     required: true
   },
   remarks: String,
+  supplierInvoiceRef: String, // Supplier's own invoice number for reference
   internalNotes: String
 }, {
   timestamps: true
