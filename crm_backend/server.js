@@ -131,6 +131,7 @@ import seExpenseRoutes        from './SalesExecutiveAppBackend/routes/expenseRou
 import seNotificationRoutes   from './SalesExecutiveAppBackend/routes/notificationRoutes.js';
 import seDealerVisitRoutes    from './SalesExecutiveAppBackend/routes/dealerVisitRoutes.js';
 import seDailySummaryRoutes  from './SalesExecutiveAppBackend/routes/dailySummaryRoutes.js';
+import sePostCheckoutRoutes  from './SalesExecutiveAppBackend/routes/postCheckoutActivityRoutes.js';
 
 // Delivery Executive App Routes
 import deAuthRoutes from './DeliveryExecutiveAppBackend/routes/authRoutes.js';
@@ -428,6 +429,7 @@ app.use('/api/se/expenses', seExpenseRoutes);
 app.use('/api/se/notifications', seNotificationRoutes);
 app.use('/api/se/dealer-visits', seDealerVisitRoutes);
 app.use('/api/se/daily-summary', seDailySummaryRoutes);
+app.use('/api/se/post-checkout-activity', sePostCheckoutRoutes);
 
 // Delivery Executive App Routes (separate API prefix for DE app)
 app.use('/api/de/auth', deAuthRoutes);
@@ -637,6 +639,13 @@ app.use("/public", express.static(join(__dirname, "public")));
     startPOExpirationCron();
   } catch (error) {
     console.error('❌ Failed to initialize PO expiration cron:', error);
+  }
+
+  // Initialize SE Tracking Auto-Stop cron (11:59 PM IST — privacy: stop all tracking)
+  try {
+    await import('./cron/seTrackingAutoStop.js');
+  } catch (error) {
+    console.error('❌ Failed to initialize SE tracking auto-stop cron:', error);
   }
 
   // Start server

@@ -39,6 +39,7 @@ import { routePlanSchema }           from '../models/RoutePlan.js';
 import { targetSchema }              from '../models/Target.js';
 import { seNotificationSchema }      from '../models/SENotification.js';
 import { dealerVisitSchema }         from '../models/DealerVisit.js';
+import { postCheckoutActivitySchema } from '../models/PostCheckoutActivity.js';
 
 const getOrCreate = (conn, name, schema) => {
   return conn.models[name] || conn.model(name, schema);
@@ -84,6 +85,7 @@ export const getModels = (req) => {
 
     // SE Attendance — uses master (jain-impex) DB so check-in is shared across all companies
     SEAttendance:    getOrCreate(masterConn, 'SEAttendance',    attendanceSchema),
+    PostCheckoutActivity: getOrCreate(masterConn, 'PostCheckoutActivity', postCheckoutActivitySchema),
 
     // SE-specific models (per-company)
     Collection:      getOrCreate(conn, 'Collection',      collectionSchema),

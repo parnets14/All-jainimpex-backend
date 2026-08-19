@@ -3,11 +3,29 @@ import { getCompanyConnection } from '../../config/multiDatabase.js';
 import { userSchema } from '../../models/User.js';
 import { employeeSchema } from '../../models/Employee.js';
 import { attendanceSchema as hrmsAttendanceSchema } from '../../models/Attendance.js';
+import admin from 'firebase-admin';
 import path from 'path';
 import fs from 'fs';
 
 // Master company where all SE Attendance records are stored
 const ATTENDANCE_MASTER_COMPANY = 'jain-impex';
+const ALL_COMPANIES = ['jain-impex', 'ridhi', 'shree-jain-impex'];
+const RTDB_URL = 'https://jain-impex-default-rtdb.asia-southeast1.firebasedatabase.app';
+
+// Mark SE as offline in Firebase RTDB (server-side enforcement on check-out)
+const markSEOfflineInFirebase = async (userId) => {
+  try {
+    const db = admin.app().database(RTDB_URL);
+    for (const company of ALL_COMPANIES) {
+      await db.ref(`/se-tracking/${company}/${userId}`).update({
+        status: 'offline',
+        lastUpdated: admin.database.ServerValue.TIMESTAMP,
+      });
+    }
+  } catch (e) {
+    console.error('Failed to mark SE offline in Firebase:', e.message);
+  }
+};
 
 /**
  * Resolve the master (jain-impex) userId for this SE.
@@ -210,10 +228,15 @@ export const checkOut = async (req, res) => {
       console.error('SE→HRMS attendance sync (check-out) failed:', syncErr.message);
     }
 
+    // Server-side: mark SE offline in Firebase RTDB so tracking stops immediately
+    // even if the app has a bug or delay in calling stopTracking().
+    await markSEOfflineInFirebase(userId.toString());
+
     res.status(200).json({
       success: true,
       message: 'Checked out successfully',
       attendance,
+      trackingStopped: true, // signals the app to stop tracking
     });
   } catch (error) {
     console.error('Check-out error:', error);
