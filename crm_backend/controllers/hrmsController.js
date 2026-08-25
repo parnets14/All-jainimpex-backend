@@ -377,8 +377,9 @@ export const getWorkingTimeReport = async (req, res) => {
         in: s.in?.time || null,
         out: s.out?.time || null,
       }));
-      const attendanceTime = calculateAttendanceTime(r, { allowedLunchMinutes });
-      const eligibleForLate = ['Present', 'Late', 'Half Day'].includes(r.status);
+      const eligibleForWork = ['Present', 'Late', 'Half Day'].includes(r.status);
+      const attendanceTime = calculateAttendanceTime(eligibleForWork ? r : null, { allowedLunchMinutes });
+      const eligibleForLate = eligibleForWork;
       const firstIn = eligibleForLate
         ? (r.sessions?.[0]?.in?.time || r.punchIn?.time || null)
         : null;
