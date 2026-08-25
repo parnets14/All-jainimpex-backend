@@ -38,7 +38,18 @@ const salarySlipSchema = new mongoose.Schema({
   leaveDays: Number,
   lopDays: Number,
   lopAmount: Number,
+  absentPenaltyUnits: { type: Number, default: 0 }, // Σ of per-day absent X multipliers
   hoursWorked: Number,
+  calculationVersion: { type: String, default: 'hrms-v2' },
+  attendanceCutoff: Date,
+  actualDaysInMonth: Number,
+  requiredWorkingMinutes: Number,
+  adjustmentGrossBase: Number,
+  absenceDayRate: Number,
+  fixedProrationFactor: Number,
+  payableCalendarDays: Number,
+  perMinuteSalaryRate: Number,
+  halfDayThresholdMinutes: Number,
 
   // ── HRMS earnings (Points 5, 12) ──
   otMinutes: { type: Number, default: 0 },
@@ -47,7 +58,16 @@ const salarySlipSchema = new mongoose.Schema({
 
   // ── HRMS deductions (Points 2, 4, 7, 12) ──
   lateDays: { type: Number, default: 0 },
+  lateMinutes: { type: Number, default: 0 },       // total late minutes beyond grace
   lateDeduction: { type: Number, default: 0 },
+  // OT-Late offset (Scenario 1 & 2) — informational, no direct pay impact beyond lateDeduction
+  otLateOffsetEnabled: { type: Boolean, default: false },
+  otRequiredMinutes: { type: Number, default: 0 },     // late × dynamic multiplier
+  lateEquivalentMinutes: { type: Number, default: 0 }, // minutes actually deducted after offset
+  otSurplusMinutes: { type: Number, default: 0 },      // display-only surplus (worked more OT than needed)
+  // Half-day / shortfall
+  halfDayCount: { type: Number, default: 0 },          // days classified as half day
+  halfDayShortMinutes: { type: Number, default: 0 },   // total short minutes deducted by-minutes
   shortfallMinutes: { type: Number, default: 0 },
   shortfallDeduction: { type: Number, default: 0 },
   loanDeduction: { type: Number, default: 0 },

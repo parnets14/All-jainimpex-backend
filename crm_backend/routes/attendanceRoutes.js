@@ -4,9 +4,13 @@ import { leaveSchema } from "../models/Leave.js";
 import { employeeSchema } from "../models/Employee.js";
 import { leavePolicySchema } from "../models/LeavePolicy.js";
 import { leaveBalanceSchema } from "../models/LeaveBalance.js";
+import { holidaySchema } from "../models/Holiday.js";
+import { hrmsSettingsSchema } from "../models/HrmsSettings.js";
+import { calculateAttendanceTime } from "../utils/attendanceTime.js";
 import { fyYearOf } from "../controllers/hrmsController.js";
 import { protect, requireRole } from "../middleware/authMiddleware.js";
 import { attachCompanyDB } from "../middleware/companyMiddleware.js";
+import { enforceRoutePermissions, userHasPermission } from "../middleware/routePermissions.js";
 import { logActivity } from "../middleware/activityLogMiddleware.js";
 
 const router = express.Router();
@@ -27,6 +31,12 @@ const getModels = (dbConnection) => {
     LeaveBalance:
       dbConnection.models.LeaveBalance ||
       dbConnection.model("LeaveBalance", leaveBalanceSchema),
+    Holiday:
+      dbConnection.models.Holiday ||
+      dbConnection.model("Holiday", holidaySchema),
+    HrmsSettings:
+      dbConnection.models.HrmsSettings ||
+      dbConnection.model("HrmsSettings", hrmsSettingsSchema),
   };
 };
 
@@ -42,6 +52,19 @@ const leaveKeyForType = (leaveType) => {
 // All attendance routes require authentication and a company database connection
 router.use(protect);
 router.use(attachCompanyDB);
+router.use(enforceRoutePermissions);
+// geo.attendance.monitoring is intentionally read-only. Every attendance
+// mutation requires the stronger attendance.master permission.
+router.use((req, res, next) => {
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
+  if (req.user?.role === "super_admin" || userHasPermission(req.user?.permissions, "attendance.master")) {
+    return next();
+  }
+  return res.status(403).json({
+    success: false,
+    message: "Access denied. Attendance changes require attendance.master",
+  });
+});
 
 // IST midnight helper: on a UTC server, `setHours(0,0,0,0)` gives UTC midnight,
 // but attendance must be stored at IST midnight (18:30 UTC of prev day) so that
@@ -51,6 +74,25 @@ const istMidnight = (d = new Date()) => {
   const ist = new Date(ms);
   ist.setUTCHours(0, 0, 0, 0);
   return new Date(ist.getTime() - 5.5 * 60 * 60 * 1000);
+};
+
+const dateKeyIST = (value) => new Date(new Date(value).getTime() + 5.5 * 3600000)
+  .toISOString().slice(0, 10);
+
+const withCalculatedTime = (record, allowedLunchMinutes) => {
+  const plain = record?.toObject ? record.toObject() : record;
+  if (!plain || !["Present", "Late", "Half Day"].includes(plain.status)) return plain;
+  const time = calculateAttendanceTime(plain, { allowedLunchMinutes });
+  return {
+    ...plain,
+    workingHours: time.creditedWorkingHours,
+    workedMinutes: time.creditedWorkingMinutes,
+    breakMinutes: time.actualBreakMinutes,
+    actualBreakMinutes: time.actualBreakMinutes,
+    deductedBreakMinutes: time.deductedBreakMinutes,
+    configuredLunchMinutes: time.configuredLunchMinutes,
+    workingTimeDataQuality: time.dataQuality,
+  };
 };
 
 // Punch In
@@ -186,12 +228,18 @@ router.get(
   logActivity("Attendance", "Viewed today's attendance", "READ"),
   async (req, res) => {
     try {
-      const { Attendance } = getModels(req.dbConnection);
+      const { Attendance, HrmsSettings } = getModels(req.dbConnection);
+      const settings = await HrmsSettings.findOne({ key: "default" })
+        .select("allowedLunchMinutes").lean();
+      const allowedLunchMinutes = Math.max(0, Number(settings?.allowedLunchMinutes ?? 45));
       const today = istMidnight();
 
-      const attendance = await Attendance.find({ date: today })
+      const attendanceDocuments = await Attendance.find({ date: today })
         .populate("employee", "name empId designation department")
         .sort({ "punchIn.time": -1 });
+      const attendance = attendanceDocuments.map((record) =>
+        withCalculatedTime(record, allowedLunchMinutes)
+      );
 
       res.json({
         success: true,
@@ -213,7 +261,10 @@ router.get(
   logActivity("Attendance", "Viewed attendance list", "READ"),
   async (req, res) => {
     try {
-      const { Attendance, Employee } = getModels(req.dbConnection);
+      const { Attendance, Employee, Holiday, HrmsSettings } = getModels(req.dbConnection);
+      const settings = await HrmsSettings.findOne({ key: "default" })
+        .select("allowedLunchMinutes").lean();
+      const allowedLunchMinutes = Math.max(0, Number(settings?.allowedLunchMinutes ?? 45));
       const {
         startDate,
         endDate,
@@ -263,8 +314,17 @@ router.get(
       }
 
       const allEmployees = await Employee.find(employeeFilter)
-        .select("name empId designation department weeklyOff shiftStart")
+        .select("name empId designation department weeklyOff shiftStart dateOfJoining")
         .sort({ name: 1 });
+
+      const holidays = await Holiday.find({ date: dateFilter }).select("date name departments").lean();
+      const holidaysByDate = new Map();
+      for (const holiday of holidays) {
+        const key = new Date(new Date(holiday.date).getTime() + 5.5 * 3600000).toISOString().slice(0, 10);
+        const list = holidaysByDate.get(key) || [];
+        list.push(holiday);
+        holidaysByDate.set(key, list);
+      }
 
       // Get attendance records for the date range
       const attendanceFilter = { date: dateFilter };
@@ -315,7 +375,9 @@ router.get(
 
         // Iterate by IST calendar day (YYYY-MM-DD strings)
         const startKey = startIterDate.toISOString().split("T")[0];
-        const endKey = endIterDate.toISOString().split("T")[0];
+        const requestedEndKey = endIterDate.toISOString().split("T")[0];
+        const todayKey = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+        const endKey = requestedEndKey > todayKey ? todayKey : requestedEndKey;
 
         for (
           let dStr = startKey;
@@ -327,10 +389,25 @@ router.get(
           const dayOfWeek = new Date(dStr + "T12:00:00+05:30").getDay();
 
           allEmployees.forEach((employee) => {
+            if (employee.dateOfJoining && dateKey < dateKeyIST(employee.dateOfJoining)) return;
             const key = `${employee._id}-${dateKey}`;
             const existingRecord = attendanceMap.get(key);
+            const applicableHoliday = (holidaysByDate.get(dateKey) || []).find(
+              (holiday) => !holiday.departments?.length || holiday.departments.includes(employee.department)
+            );
 
-            if (existingRecord) {
+            if (applicableHoliday) {
+              const base = existingRecord?.toObject ? existingRecord.toObject() : (existingRecord || {});
+              completeAttendance.push({
+                ...base,
+                _id: existingRecord?._id || `holiday-${employee._id}-${dateKey}`,
+                employee,
+                date: new Date(`${dateKey}T00:00:00+05:30`),
+                status: "Holiday",
+                isHoliday: true,
+                holidayName: applicableHoliday.name,
+              });
+            } else if (existingRecord) {
               completeAttendance.push(existingRecord);
             } else {
               // Use employee's registered weeklyOff day(s) instead of hardcoded Sat/Sun
@@ -351,6 +428,16 @@ router.get(
                   punchOut: null,
                   isAbsent: true,
                 });
+              } else {
+                completeAttendance.push({
+                  _id: `weekly-off-${employee._id}-${dateKey}`,
+                  employee,
+                  date: new Date(`${dStr}T00:00:00+05:30`),
+                  status: "Weekly Off",
+                  punchIn: null,
+                  punchOut: null,
+                  isWeeklyOff: true,
+                });
               }
             }
           });
@@ -359,33 +446,55 @@ router.get(
         completeAttendance = validAttendanceRecords;
       }
 
-      // Helper: compute effective late minutes from punch time vs employee shift start
-      const computeEffectiveLateMin = (record) => {
-        // Already stored
-        if (record.lateMinutes > 0) return record.lateMinutes;
+      // Compute raw lateness from first punch versus this employee's shift in
+      // IST. This also repairs historical API output for rows that were stored
+      // as Present/0 by the old server-timezone biometric overwrite.
+      const computeEffectiveLate = (record) => {
+        const storedMinutes = Number(record.lateMinutes || 0);
+        if (storedMinutes > 0) return { minutes: storedMinutes, isLate: true };
         const punchTime = record.sessions?.[0]?.in?.time || record.punchIn?.time;
-        if (!punchTime) return 0;
+        if (!punchTime) return { minutes: 0, isLate: record.status === "Late" };
         const shiftStart = record.employee?.shiftStart || "10:00";
-        if (!shiftStart.includes(":")) return 0;
+        if (!shiftStart.includes(":")) return { minutes: 0, isLate: record.status === "Late" };
         const [h, m] = shiftStart.split(":").map(Number);
-        if (isNaN(h) || isNaN(m)) return 0;
-        const punch = new Date(punchTime);
-        const threshold = new Date(punch);
-        threshold.setHours(h, m, 0, 0);
-        const diff = Math.round((punch - threshold) / 60000);
-        return diff > 0 ? diff : 0;
+        if (isNaN(h) || isNaN(m)) return { minutes: 0, isLate: record.status === "Late" };
+        const punch = new Date(new Date(punchTime).getTime() + 5.5 * 3600000);
+        const punchMinutes = punch.getUTCHours() * 60 + punch.getUTCMinutes() + punch.getUTCSeconds() / 60;
+        const rawDifference = punchMinutes - (h * 60 + m);
+        return {
+          minutes: rawDifference > 0 ? Math.round(rawDifference) : 0,
+          // Status uses the exact timestamp, matching Attendance pre-save even
+          // when a sub-minute late arrival rounds to 0 display minutes.
+          isLate: rawDifference > 0,
+        };
       };
+
+      completeAttendance = completeAttendance.map((record) => {
+        if (!["Present", "Late", "Half Day"].includes(record.status)) return record;
+        const plain = withCalculatedTime(record, allowedLunchMinutes);
+        const effectiveLate = computeEffectiveLate(plain);
+        return {
+          ...plain,
+          // lateMinutes remains raw minutes after shift start. Payroll separately
+          // applies the employee's configured grace and OT-offset policy.
+          lateMinutes: effectiveLate.minutes,
+          rawLateMinutes: effectiveLate.minutes,
+          status: effectiveLate.isLate && plain.status === "Present" ? "Late" : plain.status,
+        };
+      });
+
+      const summaryAttendance = [...completeAttendance];
 
       // Apply status filter
       if (status && status !== "All") {
         completeAttendance = completeAttendance.filter((record) => {
           if (status === "Late") {
             // Match DB status OR computed late (handles records not yet updated by cron)
-            return record.status === "Late" || computeEffectiveLateMin(record) > 0;
+            return record.status === "Late" || computeEffectiveLate(record).isLate;
           }
           if (status === "Present") {
             // Present = DB says Present AND not actually late
-            return record.status === "Present" && computeEffectiveLateMin(record) === 0;
+            return record.status === "Present" && !computeEffectiveLate(record).isLate;
           }
           return record.status === status;
         });
@@ -414,12 +523,10 @@ router.get(
         currentPage: parseInt(page),
         total,
         totalEmployees: allEmployees.length,
-        presentToday: validAttendanceRecords.filter(
-          (r) => r.status !== "Absent"
-        ).length,
-        absentToday:
-          allEmployees.length -
-          validAttendanceRecords.filter((r) => r.status !== "Absent").length,
+        presentToday: summaryAttendance.filter((r) => ["Present", "Late", "Half Day"].includes(r.status)).length,
+        absentToday: summaryAttendance.filter((r) => r.status === "Absent").length,
+        leaveToday: summaryAttendance.filter((r) => r.status === "Leave").length,
+        holidayToday: summaryAttendance.filter((r) => r.status === "Holiday").length,
       });
     } catch (error) {
       console.error("Get attendance error:", error);
@@ -534,7 +641,7 @@ router.post(
         const empName = leave.employee?.name || 'Employee';
         const sDate = start.toISOString().slice(0, 10);
         const eDate = end.toISOString().slice(0, 10);
-        notifyLeaveRequest(empName, leaveType, sDate, eDate);
+        notifyLeaveRequest(empName, leaveType, sDate, eDate, req.company);
       } catch (e) { /* non-blocking */ }
 
       res.status(201).json({
@@ -758,7 +865,7 @@ router.get(
   logActivity("Attendance", "Viewed employee attendance details", "READ"),
   async (req, res) => {
     try {
-      const { Attendance, Leave, Employee } = getModels(req.dbConnection);
+      const { Attendance, Leave, Employee, HrmsSettings } = getModels(req.dbConnection);
       const { employeeId } = req.params;
       const { period = "month", startDate, endDate } = req.query;
 
@@ -805,6 +912,10 @@ router.get(
           message: "Employee not found",
         });
       }
+
+      const settings = await HrmsSettings.findOne({ key: "default" })
+        .select("allowedLunchMinutes").lean();
+      const allowedLunchMinutes = Math.max(0, Number(settings?.allowedLunchMinutes ?? 45));
 
       const attendanceRecords = await Attendance.find({
         employee: employeeId,
@@ -874,7 +985,9 @@ router.get(
       });
 
       // Fill in weekly off days as "Weekly Off" entries
-      const allRecords = [...attendanceRecords.map(r => r.toObject ? r.toObject() : r)];
+      const allRecords = attendanceRecords.map((record) =>
+        withCalculatedTime(record, allowedLunchMinutes)
+      );
       const startD = dateFilter.$gte ? new Date(dateFilter.$gte) : new Date(now.getFullYear(), now.getMonth(), 1);
       const endD = new Date();
       for (let d = new Date(startD); d <= endD; d.setDate(d.getDate() + 1)) {

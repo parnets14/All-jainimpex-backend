@@ -8,11 +8,16 @@ import {
   countWorkingDays,
   computeAttendanceAdjustments,
   computeLateDeduction,
+  computeHalfDayDeduction,
+  computeTotalWorkingMinutes,
+  daysInMonth,
 } from "../utils/hrmsSalaryCalc.js";
 import {
   getDueInstallments,
   markInstallmentPaid,
 } from "../controllers/loanAdvanceController.js";
+import { getHolidayDatesForMonth } from "../controllers/holidayController.js";
+import { calculateAttendanceTime } from "../utils/attendanceTime.js";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -45,21 +50,9 @@ const getModels = (dbConnection) => {
   };
 };
 
-// Worked hours for a day: sum of completed in/out sessions (excludes break gaps),
-// falling back to legacy punchIn/out, then stored workingHours. Matches the
-// multi-punch model so hourly pay and hoursWorked don't count lunch breaks.
-const workedHoursOf = (record) => {
-  const sessions = (record.sessions || []).filter((s) => s.in?.time && s.out?.time);
-  if (sessions.length) {
-    let ms = 0;
-    sessions.forEach((s) => { ms += new Date(s.out.time) - new Date(s.in.time); });
-    return Math.max(0, ms / 3600000);
-  }
-  if (record.punchIn?.time && record.punchOut?.time) {
-    return Math.max(0, (new Date(record.punchOut.time) - new Date(record.punchIn.time)) / 3600000);
-  }
-  return record.workingHours || 0;
-};
+const workedHoursOf = (record, allowedLunchMinutes) => (
+  calculateAttendanceTime(record, { allowedLunchMinutes }).creditedWorkingHours
+);
 
 // Direct salary calculation without queue
 export const generateSalarySlipDirect = async (
@@ -72,6 +65,30 @@ export const generateSalarySlipDirect = async (
   extras = {}
 ) => {
   try {
+    const previewOnly = extras.previewOnly === true;
+    const yNum = parseInt(year, 10);
+    const mNum = parseInt(month, 10);
+    if (!Number.isInteger(yNum) || !Number.isInteger(mNum) || mNum < 1 || mNum > 12) {
+      throw new Error("A valid salary month and year are required");
+    }
+
+    // Future months are invalid. Current-month final generation is allowed only
+    // when every required date has a finalized/reviewed record; the unresolved
+    // guard below therefore blocks premature generation while still allowing
+    // payroll on the last working day. Preview is capped at the last completed
+    // IST day.
+    const nowIst = new Date(Date.now() + 5.5 * 3600000);
+    const currentYear = nowIst.getUTCFullYear();
+    const currentMonth = nowIst.getUTCMonth() + 1;
+    const targetKey = yNum * 100 + mNum;
+    const currentKey = currentYear * 100 + currentMonth;
+    if (!previewOnly && targetKey > currentKey) {
+      throw new Error("Final salary cannot be generated for a future month");
+    }
+    if (previewOnly && targetKey > currentKey) {
+      throw new Error("Salary preview is not available for a future month");
+    }
+
     const { Employee, SalarySlip, Attendance, HrmsSettings, LeavePolicy } = getModels(dbConnection);
     console.log(
       `Processing salary for employee ${employeeId}, ${month}/${year} (${type})`
@@ -84,7 +101,8 @@ export const generateSalarySlipDirect = async (
 
     // Company-wide HRMS settings drive OT / late / shortfall (admin-configurable)
     let hrmsSettings = await HrmsSettings.findOne({ key: "default" });
-    if (!hrmsSettings) hrmsSettings = await HrmsSettings.create({ key: "default" });
+    if (!hrmsSettings) hrmsSettings = previewOnly ? {} : await HrmsSettings.create({ key: "default" });
+    const allowedLunchMinutes = Math.max(0, Number(hrmsSettings?.allowedLunchMinutes ?? 45) || 0);
 
     // Load leave policy to determine which leave types are paid
     let leavePolicy = await LeavePolicy.findOne({ key: "default" });
@@ -92,9 +110,10 @@ export const generateSalarySlipDirect = async (
     if (leavePolicy && leavePolicy.types) {
       leavePolicy.types.forEach(t => { if (t.paid && t.active) paidLeaveTypes.add(t.label); });
     }
-    // Fallback: if no policy, treat all except 'Unpaid Leave' as paid
-    if (paidLeaveTypes.size === 0) {
-      paidLeaveTypes.add('Paid Leave');
+    // The unplanned free/excused leave uses this canonical protected type even
+    // when the configurable leave policy has other labels.
+    paidLeaveTypes.add('Paid Leave');
+    if (paidLeaveTypes.size === 1) {
       paidLeaveTypes.add('Sick Leave');
       paidLeaveTypes.add('Casual Leave');
     }
@@ -116,7 +135,7 @@ export const generateSalarySlipDirect = async (
       year,
     });
 
-    if (existingSlip) {
+    if (!previewOnly && existingSlip) {
       console.log(
         `Salary slip already exists for ${employee.name} - ${month}/${year}`
       );
@@ -134,8 +153,15 @@ export const generateSalarySlipDirect = async (
       const ist = new Date(ms); ist.setUTCHours(0, 0, 0, 0);
       return new Date(ist.getTime() - 5.5 * 3600000);
     };
-    const periodFrom = istMid(new Date(year, month - 1, 1));
-    const periodTo = new Date(istMid(new Date(year, month, 0)).getTime() + 86400000 - 1);
+    const periodFrom = istMid(new Date(yNum, mNum - 1, 1));
+    const fullPeriodTo = new Date(istMid(new Date(yNum, mNum, 0)).getTime() + 86400000 - 1);
+    let periodTo = fullPeriodTo;
+    if (previewOnly && targetKey === currentKey) {
+      const todayStartUtc = new Date(Date.UTC(currentYear, currentMonth - 1, nowIst.getUTCDate()) - 5.5 * 3600000);
+      periodTo = new Date(todayStartUtc.getTime() - 1); // yesterday 23:59:59.999 IST
+    }
+
+    const holidayDates = await getHolidayDatesForMonth(dbConnection, yNum, mNum, employee);
 
     // Get attendance for the month
     const attendance = await Attendance.find({
@@ -157,19 +183,38 @@ export const generateSalarySlipDirect = async (
     let workingDays = 0;
     let presentDays = 0;
     let leaveDays = 0;
+    // Sum of per-day multipliers for unexcused absences (Absent Review).
+    // Each unexcused day contributes its own X (e.g. 1, 1.5, 2). Plain absent
+    // days with no review default to X = 1.
+    let absentMultiplierUnits = 0;
+    const unresolvedDates = [];
+    const joiningDateKey = employee.dateOfJoining
+      ? new Date(new Date(employee.dateOfJoining).getTime() + 5.5 * 3600000).toISOString().slice(0, 10)
+      : null;
+    const targetMonthLastKey = `${year}-${String(month).padStart(2, "0")}-${String(daysInMonth(yNum, mNum)).padStart(2, "0")}`;
+    if (joiningDateKey && joiningDateKey > targetMonthLastKey) {
+      if (previewOnly) {
+        throw new Error("Invalid salary period: employee joins after the target month");
+      }
+      return {
+        success: false,
+        message: "Employee was not employed during the target month",
+        employeeName: employee.name,
+      };
+    }
     let currentDate = new Date(periodFrom);
 
     while (currentDate <= periodTo) {
       // Use IST day-of-week (server is UTC; IST = UTC+5:30)
       const istDate = new Date(currentDate.getTime() + 5.5 * 3600000);
       const dayOfWeek = istDate.getUTCDay();
-      // Skip the employee's weekly off day(s) (paid week-off, not counted in divisor)
-      if (!offDays.includes(dayOfWeek)) {
+      const currentIST = new Date(currentDate.getTime() + 5.5 * 3600000).toISOString().slice(0, 10);
+      // Weekly offs and applicable holidays are paid non-working days.
+      if ((!joiningDateKey || currentIST >= joiningDateKey) && !offDays.includes(dayOfWeek) && !holidayDates.has(currentIST)) {
         workingDays++;
 
         // Check if employee was present on this day using IST calendar day matching
         // (attendance dates stored as IST midnight = 18:30 UTC of previous day)
-        const currentIST = new Date(currentDate.getTime() + 5.5 * 3600000).toISOString().slice(0, 10);
         const attendanceRecord = attendance.find((a) => {
           const aIST = new Date(new Date(a.date).getTime() + 5.5 * 3600000).toISOString().slice(0, 10);
           return aIST === currentIST;
@@ -178,25 +223,62 @@ export const generateSalarySlipDirect = async (
         if (attendanceRecord) {
           if (
             attendanceRecord.status === "Present" ||
-            attendanceRecord.status === "Late"
+            attendanceRecord.status === "Late" ||
+            attendanceRecord.status === "Half Day"
           ) {
             presentDays++;
           } else if (attendanceRecord.status === "Leave") {
             // Check LeavePolicy to determine if this leave type is paid
-            const isPaidLeave = paidLeaveTypes.has(attendanceRecord.leaveType);
+            const isProtectedReview = ['auto_paid', 'excused'].includes(attendanceRecord.reviewStatus);
+            const isPaidLeave = isProtectedReview || paidLeaveTypes.has(attendanceRecord.leaveType);
             if (isPaidLeave) {
               leaveDays++;
               presentDays++; // Paid leave counts as present for salary
+            } else {
+              // Unpaid leave (e.g. unexcused absence marked via Absent Review).
+              // Deduct with its own X multiplier (default 1 if unset).
+              const x = attendanceRecord.absentDeductionMultiplier != null
+                ? Number(attendanceRecord.absentDeductionMultiplier)
+                : 1;
+              absentMultiplierUnits += (x >= 0 ? x : 1);
             }
+          } else if (attendanceRecord.status === "Absent") {
+            // Unreviewed/pending days are provisional in preview and block final
+            // generation so an admin decision can never be silently persisted.
+            if (attendanceRecord.reviewStatus !== 'unexcused') unresolvedDates.push(currentIST);
+            const x = attendanceRecord.absentDeductionMultiplier != null
+              ? Number(attendanceRecord.absentDeductionMultiplier)
+              : 1;
+            absentMultiplierUnits += (x >= 0 ? x : 1);
           }
+        } else {
+          // Missing working-day attendance is provisional X=1 in preview and
+          // blocks final generation for completed months.
+          unresolvedDates.push(currentIST);
+          absentMultiplierUnits += 1;
         }
       }
       currentDate.setDate(currentDate.getDate() + 1);
     }
 
+    if (!previewOnly && unresolvedDates.length > 0) {
+      throw new Error(`Cannot generate final salary: ${unresolvedDates.length} attendance day(s) are missing or pending review (${unresolvedDates.slice(0, 5).join(', ')}${unresolvedDates.length > 5 ? ', ...' : ''})`);
+    }
+
+    // Head-count of absent days (for display). Actual money uses absentMultiplierUnits.
     const absentDays = workingDays - presentDays;
 
-    // Calculate salary based on salary type
+    // Resolve attendance rules once, before branching by salary type, so preview
+    // and persisted generation use the same employee-specific required minutes.
+    const adjustmentAttendance = attendance.filter((record) => !holidayDates.has(
+      new Date(new Date(record.date).getTime() + 5.5 * 3600000).toISOString().slice(0, 10)
+    ));
+    const adj = computeAttendanceAdjustments(adjustmentAttendance, employee, hrmsSettings);
+    const perDayMinutes = adj.halfDayRequiredMin || adj.requiredMin;
+    const totalWorkingMinutes = computeTotalWorkingMinutes(yNum, mNum, employee, perDayMinutes);
+    const daysInThisMonth = daysInMonth(yNum, mNum);
+
+    // Calculate salary based on salary type.
     let calculatedBasic = 0;
     let calculatedHRA = 0;
     let calculatedConveyance = 0;
@@ -206,103 +288,141 @@ export const generateSalarySlipDirect = async (
     let calculatedTDS = 0;
     let grossSalary = 0;
     let netSalary = 0;
-    let lopDays = 0; // Loss-of-pay days (unpaid leave + unauthorized absence)
-    let lopAmount = 0; // Amount deducted for LOP (fixed salary only)
-    const paidLeaveDays = leaveDays; // leaveDays already excludes Unpaid Leave
+    let lopDays = Math.max(0, absentDays);
+    let lopAmount = 0;
+    let adjustmentGrossBase = 0;
+    let absenceDayRate = 0;
+    let fixedProrationFactor = 1;
+    let payableCalendarDays = daysInThisMonth;
+    const paidLeaveDays = leaveDays;
+    const salaryType = employee.salaryType || "fixed";
 
-    if (employee.salaryType === "fixed" || !employee.salaryType) {
-      // For fixed salary, use the stored salary components with proper null checks
-      calculatedBasic = parseFloat(employee.basicSalary) || 0;
-      calculatedHRA = parseFloat(employee.hra) || 0;
-      calculatedConveyance = parseFloat(employee.conveyance) || 0;
-      calculatedMedical = parseFloat(employee.medicalAllowance) || 0;
-      calculatedSpecial = parseFloat(employee.specialAllowance) || 0;
-      calculatedPF = parseFloat(employee.pf) || 0;
-      calculatedTDS = parseFloat(employee.tds) || 0;
-
-      // If no basic salary is set, use a default minimum wage
-      if (calculatedBasic === 0) {
-        calculatedBasic = 15000; // Default minimum salary
-        console.log(
-          `Using default basic salary for ${employee.name}: ${calculatedBasic}`
-        );
+    if (salaryType === "fixed") {
+      // Keep an unprorated contractual base for per-day/minute penalties. A
+      // mid-month joiner earns only the eligible calendar-day fraction, while
+      // an absence after joining still costs the normal contractual day rate.
+      let contractBasic = parseFloat(employee.basicSalary) || 0;
+      const contractHRA = parseFloat(employee.hra) || 0;
+      const contractConveyance = parseFloat(employee.conveyance) || 0;
+      const contractMedical = parseFloat(employee.medicalAllowance) || 0;
+      const contractSpecial = parseFloat(employee.specialAllowance) || 0;
+      if (contractBasic === 0) {
+        contractBasic = 15000;
+        console.log(`Using default basic salary for ${employee.name}: ${contractBasic}`);
       }
 
-      grossSalary =
-        calculatedBasic +
-        calculatedHRA +
-        calculatedConveyance +
-        calculatedMedical +
-        calculatedSpecial;
-
-      // Loss of Pay: deduct full-month gross per-day for every unpaid-leave /
-      // unauthorized-absent weekday. Paid leave is protected (counted present).
-      lopDays = Math.max(0, absentDays);
-      if (workingDays > 0 && lopDays > 0) {
-        const perDaySalary = grossSalary / workingDays;
-        lopAmount = parseFloat((perDaySalary * lopDays).toFixed(2));
+      const monthFirstKey = `${year}-${String(month).padStart(2, "0")}-01`;
+      const monthLastKey = `${year}-${String(month).padStart(2, "0")}-${String(daysInThisMonth).padStart(2, "0")}`;
+      if (joiningDateKey && joiningDateKey > monthLastKey) {
+        payableCalendarDays = 0;
+      } else if (joiningDateKey && joiningDateKey > monthFirstKey) {
+        payableCalendarDays = daysInThisMonth - Number(joiningDateKey.slice(8, 10)) + 1;
       }
-    } else if (employee.salaryType === "daily") {
-      // For daily wage with proper null checks
+      fixedProrationFactor = daysInThisMonth > 0 ? payableCalendarDays / daysInThisMonth : 0;
+
+      calculatedBasic = contractBasic * fixedProrationFactor;
+      calculatedHRA = contractHRA * fixedProrationFactor;
+      calculatedConveyance = contractConveyance * fixedProrationFactor;
+      calculatedMedical = contractMedical * fixedProrationFactor;
+      calculatedSpecial = contractSpecial * fixedProrationFactor;
+      calculatedPF = (parseFloat(employee.pf) || 0) * fixedProrationFactor;
+      calculatedTDS = (parseFloat(employee.tds) || 0) * fixedProrationFactor;
+      adjustmentGrossBase = contractBasic + contractHRA + contractConveyance + contractMedical + contractSpecial;
+      absenceDayRate = daysInThisMonth > 0 ? adjustmentGrossBase / daysInThisMonth : 0;
+      grossSalary = calculatedBasic + calculatedHRA + calculatedConveyance + calculatedMedical + calculatedSpecial;
+
+      if (absentMultiplierUnits > 0) {
+        lopAmount = parseFloat((absenceDayRate * absentMultiplierUnits).toFixed(2));
+      }
+    } else if (salaryType === "daily") {
       const dailyRate = parseFloat(employee.basicSalary) || 0;
-      calculatedBasic = dailyRate * presentDays; // paid leave already in presentDays
-
+      calculatedBasic = dailyRate * presentDays;
       grossSalary = calculatedBasic;
-      calculatedPF = grossSalary * 0.12; // 12% PF
-      calculatedTDS = grossSalary > 50000 ? grossSalary * 0.05 : 0; // 5% TDS if salary > 50k
-      // Absent / unpaid-leave days are simply unpaid for daily wage (no separate deduction)
-      lopDays = Math.max(0, absentDays);
-    } else if (employee.salaryType === "hourly") {
-      // For hourly wage - total hours actually worked (sessions-aware, excludes breaks)
+      calculatedPF = grossSalary * 0.12;
+      calculatedTDS = grossSalary > 50000 ? grossSalary * 0.05 : 0;
+      absenceDayRate = dailyRate;
+      adjustmentGrossBase = perDayMinutes > 0
+        ? dailyRate * (totalWorkingMinutes / perDayMinutes)
+        : dailyRate * daysInThisMonth;
+      // One unpaid day is already omitted from daily earnings. Only the part
+      // of an admin multiplier above X=1 is an additional deduction.
+      const additionalPenaltyUnits = Math.max(0, absentMultiplierUnits - lopDays);
+      lopAmount = parseFloat((dailyRate * additionalPenaltyUnits).toFixed(2));
+    } else if (salaryType === "hourly") {
       const totalHours = attendance.reduce((total, record) => {
-        if (record.status === "Present" || record.status === "Late") {
-          return total + workedHoursOf(record);
+        if (record.status === "Present" || record.status === "Late" || record.status === "Half Day") {
+          return total + workedHoursOf(record, allowedLunchMinutes);
         }
         return total;
       }, 0);
 
       const hourlyRate = parseFloat(employee.basicSalary) || 0;
-      // Approved paid leave is compensated at a standard 8 hours/day
-      const paidLeaveHours = paidLeaveDays * 8;
+      const paidLeaveHours = paidLeaveDays * (perDayMinutes / 60);
       calculatedBasic = hourlyRate * (totalHours + paidLeaveHours);
       grossSalary = calculatedBasic;
-
       calculatedPF = grossSalary * 0.12;
       calculatedTDS = grossSalary > 50000 ? grossSalary * 0.05 : 0;
-      lopDays = Math.max(0, absentDays);
+      absenceDayRate = hourlyRate * (perDayMinutes / 60);
+      adjustmentGrossBase = hourlyRate * (totalWorkingMinutes / 60);
+      const additionalPenaltyUnits = Math.max(0, absentMultiplierUnits - lopDays);
+      lopAmount = parseFloat((absenceDayRate * additionalPenaltyUnits).toFixed(2));
     }
 
-    // Ensure all values are numbers and not NaN
     calculatedPF = isNaN(calculatedPF) ? 0 : calculatedPF;
     calculatedTDS = isNaN(calculatedTDS) ? 0 : calculatedTDS;
     grossSalary = isNaN(grossSalary) ? 0 : grossSalary;
+    adjustmentGrossBase = isNaN(adjustmentGrossBase) ? 0 : adjustmentGrossBase;
+    absenceDayRate = isNaN(absenceDayRate) ? 0 : absenceDayRate;
     lopAmount = isNaN(lopAmount) ? 0 : lopAmount;
 
-    // ── HRMS adjustments: OT / late / shortfall (Points 5, 7, 2) ──
-    const adj = computeAttendanceAdjustments(attendance, employee, hrmsSettings);
-    const perDaySalary = workingDays > 0 ? grossSalary / workingDays : 0;
+    const actualMonthDaySalary = absenceDayRate;
     const otAmount = parseFloat((adj.otAmount || 0).toFixed(2));
-    const lateDeduction = parseFloat(
-      (computeLateDeduction(adj, hrmsSettings, perDaySalary) || 0).toFixed(2)
+    const lateDeduction = salaryType === "hourly" ? 0 : parseFloat(
+      (computeLateDeduction(adj, adjustmentGrossBase, totalWorkingMinutes) || 0).toFixed(2)
     );
-    const shortfallDeduction = parseFloat((adj.shortfallAmount || 0).toFixed(2));
+    // Hourly gross already contains only worked/paid-leave hours, so applying
+    // separate late, half-day, or shortfall deductions would charge missing
+    // time twice.
+    const halfDayDeduction = salaryType === "hourly" ? 0 : parseFloat(
+      (computeHalfDayDeduction(adj, adjustmentGrossBase, totalWorkingMinutes, actualMonthDaySalary) || 0).toFixed(2)
+    );
+    const shortfallDeduction = salaryType === "hourly"
+      ? 0
+      : (adj.halfDayEnabled
+        ? halfDayDeduction
+        : parseFloat((adj.shortfallAmount || 0).toFixed(2)));
 
     // ── Loan/advance installment for this month (Point 4) ──
     const monthNum = parseInt(month, 10);
     const monthKey = `${year}-${String(monthNum).padStart(2, "0")}`;
-    const dueInstallments = await getDueInstallments(
-      dbConnection,
-      employeeId,
-      monthKey
-    );
-    const loanDeduction = parseFloat(
-      dueInstallments.reduce((sum, d) => sum + (d.amount || 0), 0).toFixed(2)
-    );
+    let dueInstallments;
+    let loanDeduction;
+    if (previewOnly && existingSlip) {
+      // Final generation marks installments paid. Reuse the persisted month's
+      // deduction when comparing an existing slip so the preview does not
+      // falsely drop a legitimately recovered installment.
+      dueInstallments = (existingSlip.loanRefs || []).map((ref) => ({
+        loanId: ref.loanId,
+        amount: Number(ref.amount || 0),
+      }));
+      loanDeduction = parseFloat(Number(existingSlip.loanDeduction || 0).toFixed(2));
+    } else {
+      dueInstallments = await getDueInstallments(dbConnection, employeeId, monthKey);
+      loanDeduction = parseFloat(
+        dueInstallments.reduce((sum, d) => sum + (d.amount || 0), 0).toFixed(2)
+      );
+    }
 
     // ── Manual monthly fields (Point 12) ──
-    const incentiveBonus = parseFloat(extras.incentiveBonus) || 0;
-    const manualAdjustment = parseFloat(extras.manualAdjustment) || 0;
-    const adjustmentReason = extras.adjustmentReason || "";
+    const incentiveBonus = extras.incentiveBonus != null
+      ? (parseFloat(extras.incentiveBonus) || 0)
+      : (previewOnly ? (parseFloat(existingSlip?.incentiveBonus) || 0) : 0);
+    const manualAdjustment = extras.manualAdjustment != null
+      ? (parseFloat(extras.manualAdjustment) || 0)
+      : (previewOnly ? (parseFloat(existingSlip?.manualAdjustment) || 0) : 0);
+    const adjustmentReason = extras.adjustmentReason != null
+      ? extras.adjustmentReason
+      : (previewOnly ? (existingSlip?.adjustmentReason || "") : "");
 
     const totalDeductions =
       calculatedPF +
@@ -353,6 +473,7 @@ export const generateSalarySlipDirect = async (
       leaveDays: paidLeaveDays,
       lopDays: lopDays || 0,
       lopAmount: lopAmount || 0,
+      absentPenaltyUnits: parseFloat((absentMultiplierUnits || 0).toFixed(2)), // Σ of per-day X multipliers
 
       // HRMS earnings
       otMinutes: adj.otMinutes || 0,
@@ -361,8 +482,17 @@ export const generateSalarySlipDirect = async (
 
       // HRMS deductions
       lateDays: adj.lateDaysCount || 0,
+      lateMinutes: adj.lateExcessMinutes || 0,
       lateDeduction: lateDeduction || 0,
-      shortfallMinutes: adj.shortfallMinutes || 0,
+      // OT-Late offset (Scenario 1 & 2) — informational
+      otLateOffsetEnabled: adj.offsetEnabled || false,
+      otRequiredMinutes: adj.offsetRequiredOt || 0,
+      lateEquivalentMinutes: adj.lateEquivalentMinutes || 0,
+      otSurplusMinutes: adj.surplusDisplayMinutes || 0,
+      // Half-day / shortfall
+      halfDayCount: adj.halfDayCount || 0,
+      halfDayShortMinutes: adj.halfDayShortMinutes || 0,
+      shortfallMinutes: adj.halfDayEnabled ? (adj.halfDayShortMinutes || 0) : (adj.shortfallMinutes || 0),
       shortfallDeduction: shortfallDeduction || 0,
       loanDeduction: loanDeduction || 0,
       loanRefs: dueInstallments.map((d) => ({ loanId: d.loanId, amount: d.amount })),
@@ -370,12 +500,22 @@ export const generateSalarySlipDirect = async (
       adjustmentReason,
       hoursWorked:
         attendance.reduce((total, record) => {
-          if (record.status === "Present" || record.status === "Late") {
-            return total + workedHoursOf(record);
+          if (record.status === "Present" || record.status === "Late" || record.status === "Half Day") {
+            return total + workedHoursOf(record, allowedLunchMinutes);
           }
           return total;
         }, 0) || 0,
-      salaryType: employee.salaryType,
+      calculationVersion: "hrms-v2",
+      attendanceCutoff: periodTo,
+      actualDaysInMonth: daysInThisMonth,
+      requiredWorkingMinutes: perDayMinutes,
+      adjustmentGrossBase,
+      absenceDayRate,
+      fixedProrationFactor,
+      payableCalendarDays,
+      perMinuteSalaryRate: totalWorkingMinutes > 0 ? adjustmentGrossBase / totalWorkingMinutes : 0,
+      halfDayThresholdMinutes: adj.halfDayThresholdMin || 0,
+      salaryType,
       bankDetails: {
         bankName: employee.bankName,
         accountNumber: employee.accountNumber,
@@ -385,6 +525,33 @@ export const generateSalarySlipDirect = async (
       generatedBy,
       generationType: type,
     };
+
+    if (previewOnly) {
+      return {
+        success: true,
+        preview: true,
+        salaryData,
+        employee: employee.toObject ? employee.toObject() : employee,
+        attendance: attendance.map((record) => record.toObject ? record.toObject() : record),
+        attendanceAdjustments: adj,
+        hrmsSettings: hrmsSettings.toObject ? hrmsSettings.toObject() : hrmsSettings,
+        existingSalarySlip: existingSlip?.toObject ? existingSlip.toObject() : existingSlip,
+        period: { from: periodFrom, to: periodTo, fullMonthTo: fullPeriodTo, month: mNum, year: yNum },
+        calculation: {
+          daysInMonth: daysInThisMonth,
+          perDayByMonth: actualMonthDaySalary,
+          absenceDayRate,
+          adjustmentGrossBase,
+          fixedProrationFactor,
+          payableCalendarDays,
+          perMinuteRate: totalWorkingMinutes > 0 ? adjustmentGrossBase / totalWorkingMinutes : 0,
+          totalWorkingMinutes,
+          unresolvedDates,
+          holidayDates: [...holidayDates],
+          isTillDate: targetKey === currentKey,
+        },
+      };
+    }
 
     const salary = new SalarySlip(salaryData);
     await salary.save();

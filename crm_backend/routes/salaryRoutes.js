@@ -4,6 +4,7 @@ import { employeeSchema } from "../models/Employee.js";
 import { attendanceSchema } from "../models/Attendance.js";
 import { protect, requireRole } from "../middleware/authMiddleware.js";
 import { attachCompanyDB } from "../middleware/companyMiddleware.js";
+import { enforceRoutePermissions } from "../middleware/routePermissions.js";
 import { generateSalaryPDF } from "../utils/pdfGenerator.js";
 import { logActivity } from "../middleware/activityLogMiddleware.js";
 
@@ -34,6 +35,7 @@ const getModels = (dbConnection) => {
 // All salary routes require authentication and a company database connection
 router.use(protect);
 router.use(attachCompanyDB);
+router.use(enforceRoutePermissions);
 
 // Helper function to calculate salary (company-scoped models passed in)
 const calculateSalary = async (employee, month, year, Attendance) => {
@@ -241,6 +243,9 @@ router.post(
   async (req, res) => {
     try {
       const { month, year } = req.body;
+      if (!month || !year) {
+        return res.status(400).json({ success: false, message: "Month and year are required" });
+      }
       const results = await addBulkSalaryJobs(
         month,
         year,
@@ -293,6 +298,9 @@ router.post(
   async (req, res) => {
     try {
       const { month, year } = req.body;
+      if (!month || !year) {
+        return res.status(400).json({ success: false, message: "Month and year are required" });
+      }
 
       const queueResults = await addBulkSalaryJobs(
         month,
@@ -385,7 +393,7 @@ router.get(
         {
           $facet: {
             currentMonth: [
-              { $match: { month: currentMonth, year: currentYear } },
+              { $match: { month: { $in: [String(currentMonth), String(currentMonth).padStart(2, "0")] }, year: currentYear } },
               { $count: "count" },
             ],
             totalGenerated: [{ $count: "count" }],

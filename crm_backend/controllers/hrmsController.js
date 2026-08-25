@@ -2,6 +2,7 @@ import { hrmsSettingsSchema } from '../models/HrmsSettings.js';
 import { leavePolicySchema } from '../models/LeavePolicy.js';
 import { leaveBalanceSchema } from '../models/LeaveBalance.js';
 import { employeeSchema } from '../models/Employee.js';
+import { calculateAttendanceTime } from '../utils/attendanceTime.js';
 
 // IST midnight: given any date, returns the UTC instant of IST midnight for that calendar day.
 const istMidnight = (d = new Date()) => {
@@ -34,9 +35,38 @@ export const getSettings = async (req, res) => {
 
 export const updateSettings = async (req, res) => {
   try {
-    const { HrmsSettings } = getModels(req.dbConnection);
+    const { HrmsSettings, Employee } = getModels(req.dbConnection);
     const body = { ...req.body };
     delete body.key; delete body._id;
+
+    // Paid OT and late-offset OT are intentionally separate employee groups.
+    // Reject overlapping assignments instead of silently paying and offsetting
+    // the same minutes (or relying on precedence).
+    if (Array.isArray(body.otRules) || Array.isArray(body.otLateOffsetRules)) {
+      const current = await HrmsSettings.findOne({ key: 'default' }).lean();
+      const paidRules = body.otRules ?? current?.otRules ?? [];
+      const offsetRules = body.otLateOffsetRules ?? current?.otLateOffsetRules ?? [];
+      const employees = await Employee.find({ status: 'Active' }).select('_id name empId').lean();
+      const matches = (rules, employeeId) => {
+        const enabled = (rules || []).filter((rule) => rule.enabled !== false);
+        const custom = enabled.find((rule) => rule.applyTo === 'custom' &&
+          (rule.employees || []).map(String).includes(employeeId));
+        if (custom) return true;
+        return enabled.some((rule) => rule.applyTo === 'remaining') ||
+          enabled.some((rule) => rule.applyTo === 'all');
+      };
+      const overlaps = employees.filter((employee) => {
+        const id = String(employee._id);
+        return matches(paidRules, id) && matches(offsetRules, id);
+      });
+      if (overlaps.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: `Paid OT and Late-Offset OT cannot contain the same employee: ${overlaps.slice(0, 5).map((employee) => employee.name || employee.empId).join(', ')}${overlaps.length > 5 ? ' ...' : ''}`,
+        });
+      }
+    }
+
     body.updatedBy = req.user?._id;
     const s = await HrmsSettings.findOneAndUpdate(
       { key: 'default' }, { $set: body }, { new: true, upsert: true, runValidators: true }
@@ -318,10 +348,22 @@ export const markAttendanceDay = async (req, res) => {
 export const getWorkingTimeReport = async (req, res) => {
   try {
     const { Attendance } = getAlertModels(req.dbConnection);
+    const { Employee, HrmsSettings } = getModels(req.dbConnection);
     const { employeeId, from, to } = req.query;
     if (!employeeId || !from || !to) {
       return res.status(400).json({ success: false, message: 'employeeId, from and to are required' });
     }
+    const employee = await Employee.findById(employeeId).select('shiftStart').lean();
+    if (!employee) {
+      return res.status(404).json({ success: false, message: 'Employee not found' });
+    }
+    const settings = await HrmsSettings.findOne({ key: 'default' })
+      .select('allowedLunchMinutes').lean();
+    const allowedLunchMinutes = Math.max(0, Number(settings?.allowedLunchMinutes ?? 45));
+    const [shiftHour, shiftMinute] = String(employee.shiftStart || '10:00').split(':').map(Number);
+    const shiftStartMinutes = (Number.isFinite(shiftHour) && Number.isFinite(shiftMinute))
+      ? shiftHour * 60 + shiftMinute
+      : 600;
     const fromD = istMidnight(new Date(from));
     const toD = new Date(istMidnight(new Date(to)).getTime() + 86400000 - 1);
 
@@ -335,26 +377,50 @@ export const getWorkingTimeReport = async (req, res) => {
         in: s.in?.time || null,
         out: s.out?.time || null,
       }));
+      const attendanceTime = calculateAttendanceTime(r, { allowedLunchMinutes });
+      const eligibleForLate = ['Present', 'Late', 'Half Day'].includes(r.status);
+      const firstIn = eligibleForLate
+        ? (r.sessions?.[0]?.in?.time || r.punchIn?.time || null)
+        : null;
+      let effectiveLateMinutes = eligibleForLate ? Number(r.lateMinutes || 0) : 0;
+      let isEffectivelyLate = eligibleForLate && (r.status === 'Late' || effectiveLateMinutes > 0);
+      if (effectiveLateMinutes <= 0 && firstIn) {
+        const punchIST = new Date(new Date(firstIn).getTime() + 5.5 * 3600000);
+        const punchMinutes = punchIST.getUTCHours() * 60 +
+          punchIST.getUTCMinutes() + punchIST.getUTCSeconds() / 60;
+        const rawDifference = punchMinutes - shiftStartMinutes;
+        effectiveLateMinutes = rawDifference > 0 ? Math.round(rawDifference) : 0;
+        isEffectivelyLate = rawDifference > 0;
+      }
       return {
         date: r.date,
-        status: r.status,
+        status: isEffectivelyLate && r.status === 'Present' ? 'Late' : r.status,
         leaveType: r.leaveType,
         punchIn: r.punchIn?.time || null,
         punchOut: r.punchOut?.time || null,
         sessions,
         sessionCount: sessions.length,
-        workingHours: r.workingHours || 0,
-        breakMinutes: r.breakMinutes || 0,
-        lateMinutes: r.lateMinutes || 0,
+        workingHours: attendanceTime.creditedWorkingHours,
+        workedMinutes: attendanceTime.creditedWorkingMinutes,
+        breakMinutes: attendanceTime.actualBreakMinutes,
+        actualBreakMinutes: attendanceTime.actualBreakMinutes,
+        deductedBreakMinutes: attendanceTime.deductedBreakMinutes,
+        configuredLunchMinutes: attendanceTime.configuredLunchMinutes,
+        workingTimeDataQuality: attendanceTime.dataQuality,
+        lateMinutes: effectiveLateMinutes,
+        rawLateMinutes: effectiveLateMinutes,
       };
     });
 
-    const totalHours = parseFloat(days.reduce((s, d) => s + (d.workingHours || 0), 0).toFixed(2));
+    const totalWorkedMinutes = days.reduce((sum, day) => sum + (day.workedMinutes || 0), 0);
+    const totalHours = Number((totalWorkedMinutes / 60).toFixed(2));
+    const totalLateMinutes = days.reduce((sum, day) => sum + (day.lateMinutes || 0), 0);
+    const lateDays = days.filter((day) => day.lateMinutes > 0).length;
     const presentDays = days.filter((d) => d.status === 'Present' || d.status === 'Late').length;
 
     res.json({
       success: true,
-      report: { days, totalHours, presentDays, totalDays: days.length },
+      report: { days, totalHours, totalLateMinutes, lateDays, presentDays, totalDays: days.length },
     });
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 };

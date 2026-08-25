@@ -19,6 +19,7 @@
 import { biometricPunchSchema } from '../models/BiometricPunch.js';
 import { employeeSchema } from '../models/Employee.js';
 import { attendanceSchema } from '../models/Attendance.js';
+import { holidaySchema } from '../models/Holiday.js';
 
 const DEDUP_SECONDS = 60; // ignore a second scan within 60s of the previous kept one
 
@@ -26,18 +27,11 @@ const getModels = (db) => ({
   BiometricPunch: db.models.BiometricPunch || db.model('BiometricPunch', biometricPunchSchema),
   Employee: db.models.Employee || db.model('Employee', employeeSchema),
   Attendance: db.models.Attendance || db.model('Attendance', attendanceSchema),
+  Holiday: db.models.Holiday || db.model('Holiday', holidaySchema),
 });
 
 // Strip leading zeros for tolerant matching ("00000034" -> "34"). Empty stays "".
 const stripZeros = (s) => String(s || '').trim().replace(/^0+/, '');
-
-// "HH:mm" -> minutes since midnight, with a fallback default.
-const hmToMin = (hm, def = 600) => {
-  if (!hm || typeof hm !== 'string' || !hm.includes(':')) return def;
-  const [h, m] = hm.split(':').map((x) => parseInt(x, 10));
-  if (Number.isNaN(h) || Number.isNaN(m)) return def;
-  return h * 60 + m;
-};
 
 // Day bucket = IST midnight as a UTC Date. The server runs in UTC, but all
 // attendance dates must represent IST calendar days for salary/leave to work.
@@ -180,25 +174,12 @@ export const processBiometricPunches = async (db, { batchLimit = 5000 } = {}) =>
     att.sessions = [...nonBio, ...bioSessions].sort(
       (a, b) => new Date(a.in.time) - new Date(b.in.time)
     );
-    await att.save(); // pre-save derives punchIn/out, workingHours, status
+    await att.save(); // pre-save derives punchIn/out, workingHours, status and raw IST lateness
 
-    // Correct the status/late using THIS employee's shift. We use updateOne (NOT
-    // att.save()) because the Attendance pre-save hook re-derives status/late from
-    // a generic 9:30 threshold and would otherwise overwrite our shift-correct value.
-    const shiftStartMin = hmToMin(emp.shiftStart, 600); // default 10:00
-    const firstIn = att.sessions[0]?.in?.time ? new Date(att.sessions[0].in.time) : null;
-    if (firstIn && att.status !== 'Leave') {
-      const firstInMin = firstIn.getHours() * 60 + firstIn.getMinutes();
-      const lateBy = firstInMin - shiftStartMin;
-      const newStatus = lateBy > 0 ? 'Late' : 'Present';
-      const newLate = lateBy > 0 ? lateBy : 0;
-      if (att.status !== newStatus || (att.lateMinutes || 0) !== newLate) {
-        await Attendance.updateOne(
-          { _id: att._id },
-          { $set: { status: newStatus, lateMinutes: newLate } }
-        );
-      }
-    }
+    // Do not recalculate status here. Attendance's pre-save hook already uses
+    // this employee's shiftStart and explicit IST conversion. A second pass
+    // based on Date#getHours() would depend on the server timezone and can turn
+    // a 10:03 IST punch into 04:33 on a UTC host, incorrectly storing Present/0.
     updatedAttendance += 1;
   }
 
@@ -239,7 +220,7 @@ const DAY_INDEX = {
  * Leave days are never overwritten.
  */
 export const finalizeDayAttendance = async (db, dateInput = null) => {
-  const { Employee, Attendance } = getModels(db);
+  const { Employee, Attendance, Holiday } = getModels(db);
 
   // Default to yesterday (server-local), matching the rest of the system.
   let dayStart;
@@ -255,7 +236,10 @@ export const finalizeDayAttendance = async (db, dateInput = null) => {
   const dayKey = dayStart.toISOString().slice(0, 10);
 
   const employees = await Employee.find({ status: 'Active' })
-    .select('_id weeklyOff').lean();
+    .select('_id weeklyOff department dateOfJoining').lean();
+  const dayEnd = new Date(dayStart.getTime() + 86400000 - 1);
+  const holidays = await Holiday.find({ date: { $gte: dayStart, $lte: dayEnd } })
+    .select('departments').lean();
 
   let marked = 0;
   for (const emp of employees) {
@@ -266,6 +250,9 @@ export const finalizeDayAttendance = async (db, dateInput = null) => {
     };
     const offDays = getOffDays(emp.weeklyOff);
     if (offDays.includes(dow)) continue; // weekly off — paid, skip
+    const appliesHoliday = holidays.some((h) => !h.departments?.length || h.departments.includes(emp.department));
+    if (appliesHoliday) continue; // holiday — paid, skip
+    if (emp.dateOfJoining && dayStart < dayStartOf(emp.dateOfJoining)) continue;
 
     const existing = await Attendance.findOne({ employee: emp._id, date: dayStart }).lean();
 

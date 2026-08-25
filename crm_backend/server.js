@@ -34,6 +34,8 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import employeeRoutes from "./routes/employeeRoutes.js";
 import attendanceRoutes from "./routes/attendanceRoutes.js";
+import absentReviewRoutes from "./routes/absentReviewRoutes.js";
+import salaryBreakdownRoutes from "./routes/salaryBreakdownRoutes.js";
 import "./cron/attendanceCron.js";
 import categoryRoutes from "./routes/categoryRoutes.js"; // Add this
 import subcategoryRoutes from "./routes/subcategoryRoutes.js"; // Add this
@@ -317,6 +319,8 @@ app.use('/api', enforceRoutePermissions);
 app.use("/api/users", userRoutes);
 app.use("/api/employees", employeeRoutes);
 app.use("/api/attendance", attendanceRoutes);
+app.use("/api/absent-review", absentReviewRoutes);
+app.use("/api/salary-breakdown", salaryBreakdownRoutes);
 app.use("/api/biometric-view", biometricViewRoutes);
 app.use("/api/hrms", hrmsRoutes);
 app.use("/api/dealer-types", dealertypeRoutes);

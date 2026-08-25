@@ -14,6 +14,7 @@ import { hrmsSettingsSchema } from '../models/HrmsSettings.js';
 import { hrmsAlertSchema } from '../models/HrmsAlert.js';
 import { employeeSchema } from '../models/Employee.js';
 import { attendanceSchema } from '../models/Attendance.js';
+import { holidaySchema } from '../models/Holiday.js';
 import { processBiometricPunches, finalizeDayAttendance } from '../utils/biometricAttendance.js';
 
 const COMPANIES = ['jain-impex', 'ridhi', 'shree-jain-impex'];
@@ -28,6 +29,7 @@ const getModels = (db) => ({
   HrmsAlert: db.models.HrmsAlert || db.model('HrmsAlert', hrmsAlertSchema),
   Employee: db.models.Employee || db.model('Employee', employeeSchema),
   Attendance: db.models.Attendance || db.model('Attendance', attendanceSchema),
+  Holiday: db.models.Holiday || db.model('Holiday', holidaySchema),
 });
 
 // ── Accrual ──
@@ -70,7 +72,7 @@ const runNoPunchAlert = async () => {
     try {
       const db = getCompanyConnection(company);
       if (!db) continue;
-      const { HrmsSettings, HrmsAlert, Employee, Attendance } = getModels(db);
+      const { HrmsSettings, HrmsAlert, Employee, Attendance, Holiday } = getModels(db);
 
       let settings = await HrmsSettings.findOne({ key: 'default' });
       const alertMin = hmToMin(settings?.noPunchAlertTime || '13:30');
@@ -79,7 +81,9 @@ const runNoPunchAlert = async () => {
       if (nowMin < alertMin || nowMin >= alertMin + 5) continue;
 
       const employees = await Employee.find({ status: 'Active' })
-        .select('_id name weeklyOff').lean();
+        .select('_id name weeklyOff department').lean();
+      const holidays = await Holiday.find({ date: { $gte: startOfDay, $lte: endOfDay } })
+        .select('departments').lean();
 
       for (const emp of employees) {
         // skip weekly off
@@ -90,6 +94,7 @@ const runNoPunchAlert = async () => {
         };
         const offDays = getOffDays(emp.weeklyOff);
         if (offDays.includes(todayDow)) continue;
+        if (holidays.some((holiday) => !holiday.departments?.length || holiday.departments.includes(emp.department))) continue;
 
         const att = await Attendance.findOne({
           employee: emp._id,
@@ -164,6 +169,121 @@ const runBiometricFinalize = async () => {
   }
 };
 
+// ── Absent Review (9 AM IST) ──
+// Scans YESTERDAY's persisted Absent records. For each absent employee:
+//   • If it's within their free monthly paid-leave quota → auto-mark as Paid Leave
+//     (reviewStatus 'auto_paid', status 'Leave', leaveType 'Paid Leave'). No cut, no review.
+//   • Otherwise → mark reviewStatus 'pending' (still status 'Absent') and it appears in
+//     the Absent Review component. One consolidated super-admin notification per company.
+const runAbsentReview = async () => {
+  const now = new Date();
+  const istNow = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
+  const nowMin = istNow.getUTCHours() * 60 + istNow.getUTCMinutes();
+
+  // Yesterday's IST day range
+  const istMidnight = new Date(istNow);
+  istMidnight.setUTCHours(0, 0, 0, 0);
+  const todayStartUtc = new Date(istMidnight.getTime() - 5.5 * 60 * 60 * 1000);
+  const yStart = new Date(todayStartUtc.getTime() - 24 * 60 * 60 * 1000);
+  const yEnd = new Date(todayStartUtc.getTime() - 1);
+
+  // All unresolved persisted absences through yesterday are eligible. This
+  // catch-up range prevents a missed five-minute cron window from stranding
+  // reviewStatus "none" records and permanently blocking payroll.
+
+  for (const company of COMPANIES) {
+    try {
+      const db = getCompanyConnection(company);
+      if (!db) continue;
+      const { HrmsSettings, Employee, Attendance } = getModels(db);
+
+      const settings = await HrmsSettings.findOne({ key: 'default' });
+      const alertMin = hmToMin(settings?.absentReviewAlertTime || '09:00');
+      // Run on every scheduler tick after the configured time. Updates claim
+      // only none/null rows, so this is idempotent and also catches late starts.
+      if (nowMin < alertMin) continue;
+
+      const freeQuota = Number(settings?.freeMonthlyPaidLeaves ?? 1);
+
+      // Catch up every unresolved absence through yesterday, oldest first so
+      // the monthly free quota is consumed deterministically.
+      const absents = await Attendance.find({
+        date: { $lte: yEnd },
+        status: 'Absent',
+        reviewStatus: { $in: ['none', null] },
+      }).sort({ date: 1, createdAt: 1 }).populate('employee', 'name empId').lean();
+
+      if (!absents.length) continue;
+
+      let autoPaid = 0;
+      const pendingNames = [];
+
+      for (const rec of absents) {
+        if (!rec.employee) continue;
+
+        // Count only the dedicated automatic unplanned-absence allowance.
+        // Planned paid leave and manually excused leave do not consume it.
+        const recIst = new Date(new Date(rec.date).getTime() + 5.5 * 3600000);
+        const monthStartUtc = new Date(
+          Date.UTC(recIst.getUTCFullYear(), recIst.getUTCMonth(), 1) - 5.5 * 3600000
+        );
+        const priorPaidCount = await Attendance.countDocuments({
+          employee: rec.employee._id,
+          date: { $gte: monthStartUtc, $lt: rec.date },
+          reviewStatus: 'auto_paid',
+        });
+
+        if (priorPaidCount < freeQuota) {
+          // Auto-apply free monthly paid leave — no review, no cut
+          const claimed = await Attendance.updateOne(
+            { _id: rec._id, status: 'Absent', reviewStatus: { $in: ['none', null] } },
+            {
+              $set: {
+                status: 'Leave',
+                leaveType: 'Paid Leave',
+                reviewStatus: 'auto_paid',
+                reviewReason: 'Auto free monthly paid leave',
+                reviewedAt: new Date(),
+              },
+            }
+          );
+          if (claimed.modifiedCount > 0) autoPaid++;
+        } else {
+          // Needs an authorized attendance reviewer.
+          const claimed = await Attendance.updateOne(
+            { _id: rec._id, status: 'Absent', reviewStatus: { $in: ['none', null] } },
+            { $set: { reviewStatus: 'pending' } }
+          );
+          if (claimed.modifiedCount > 0) pendingNames.push(rec.employee.name || 'Unknown');
+        }
+      }
+
+      // One consolidated notification to super-admin for pending reviews
+      if (pendingNames.length > 0) {
+        try {
+          const { default: sendAdminNotification } = await import('../services/adminNotificationService.js');
+          const dateStr = new Date(yStart.getTime() + 5.5 * 3600000).toISOString().slice(0, 10);
+          await sendAdminNotification({
+            type: 'absent_review',
+            title: `${pendingNames.length} absent employee(s) need review`,
+            message: `Through ${dateStr}: ${pendingNames.slice(0, 5).join(', ')}${pendingNames.length > 5 ? ` +${pendingNames.length - 5} more` : ''}. Mark each absence as paid or unpaid leave.`,
+            priority: 'high',
+            company,
+            data: {
+              route: '/hrms-admin/absent-review', date: dateStr, count: pendingNames.length,
+              visibleToRoles: ['super_admin'],
+            },
+          });
+        } catch (ne) { /* non-blocking */ }
+      }
+
+      console.log(`🟠 [absent-review/${company}] auto-paid ${autoPaid}, pending ${pendingNames.length}`);
+    } catch (e) {
+      console.error(`   ${company} absent-review cron error:`, e.message);
+    }
+  }
+};
+
 export const startHrmsCrons = () => {
   cron.schedule('5 0 * * *', runAccrualAllCompanies, { timezone: 'Asia/Kolkata' });
   // No-punch alert check every 5 minutes
@@ -172,7 +292,10 @@ export const startHrmsCrons = () => {
   cron.schedule('*/5 * * * *', runBiometricProcessing, { timezone: 'Asia/Kolkata' });
   // End-of-day finalizer (mark absentees for yesterday) at 00:20 IST
   cron.schedule('20 0 * * *', runBiometricFinalize, { timezone: 'Asia/Kolkata' });
-  console.log('⏰ HRMS crons scheduled (accrual 00:05, no-punch every 5m, biometric every 5m, finalize 00:20 IST)');
+  // Absent review: check every 5 min, fires at configured time (default 09:00 IST)
+  cron.schedule('*/5 * * * *', runAbsentReview, { timezone: 'Asia/Kolkata' });
+  console.log('⏰ HRMS crons scheduled (accrual 00:05, no-punch every 5m, biometric every 5m, finalize 00:20, absent-review ~09:00 IST)');
 };
 
+export { runAbsentReview };
 export default startHrmsCrons;

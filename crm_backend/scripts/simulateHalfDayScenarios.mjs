@@ -1,0 +1,139 @@
+/**
+ * Simulation: Half-Day & Shortfall deduction for a ₹10,000/month employee.
+ * Uses the REAL hrmsSalaryCalc functions so numbers match production payroll.
+ *
+ * Setup per client:
+ *   Shift 9:00–18:00, 1 hour lunch → required working = 8h (480 min)
+ *   Half-day threshold = 4h (240 min)
+ *   Half-day grace = 30 min  (if short ≤ 30, skip half-day → just shortfall by minutes)
+ *
+ * Run: node crm_backend/scripts/simulateHalfDayScenarios.mjs
+ */
+import {
+  computeAttendanceAdjustments,
+  computeHalfDayDeduction,
+  computeTotalWorkingMinutes,
+} from '../utils/hrmsSalaryCalc.js';
+
+const SALARY = 10000;
+
+// Different employees with different shift lengths — required = shift − lunch (per employee).
+// Lunch is configured in HRMS settings (allowedLunchMinutes), same for all.
+const emp9h = { _id: '1', name: '9h Shift Emp', shiftStart: '09:00', shiftEnd: '18:00', weeklyOff: ['Sunday'] }; // 540 − 60 lunch = 480
+const emp8h = { _id: '2', name: '8h Shift Emp', shiftStart: '09:00', shiftEnd: '17:00', weeklyOff: ['Sunday'] }; // 480 − 60 lunch = 420
+const emp10h = { _id: '3', name: '10h Shift Emp', shiftStart: '09:00', shiftEnd: '19:00', weeklyOff: ['Sunday'] }; // 600 − 60 lunch = 540
+
+// Default employee used by most scenarios (9h shift → 480 required after 1h lunch)
+const employee = emp9h;
+
+// Build one attendance record. WORKED minutes = out − in.
+// Lunch is modelled by the required=480 setting (not deducted from worked here).
+const recWorked = (dateStr, workedMinutes) => {
+  const inMin = 9 * 60; // 09:00
+  const outMin = inMin + workedMinutes;
+  const hh = String(Math.floor(outMin / 60)).padStart(2, '0');
+  const mm = String(outMin % 60).padStart(2, '0');
+  return {
+    date: new Date(dateStr + 'T00:00:00+05:30'),
+    status: 'Present',
+    sessions: [{
+      in:  { time: new Date(dateStr + 'T09:00:00+05:30') },
+      out: { time: new Date(dateStr + 'T' + hh + ':' + mm + ':00+05:30') },
+    }],
+  };
+};
+
+const fmt = (n) => '₹' + Number(n).toFixed(2);
+const hm = (min) => `${Math.floor(min / 60)}h ${min % 60}m`;
+
+// Half-day ON. required is computed PER EMPLOYEE = (shift − allowedLunchMinutes).
+// Fixed 3-band logic (no mode choice):
+//   < half (4h)            → deduct short minutes
+//   half → (full − grace)  → flat half-day salary
+//   ≥ (full − grace)       → deduct only small shortfall
+const settings = {
+  halfDayEnabled: true,
+  allowedLunchMinutes: 60,          // 1 hour lunch (from HRMS settings)
+  // requiredWorkingMinutes intentionally NOT set → auto = shift − lunch per employee
+  halfDayThresholdMinutes: 240,     // half point = 4h
+  halfDayGraceMinutes: 30,
+  halfDayRules: [],
+  lateDeductionRules: [], otLateOffsetRules: [],
+  otBufferMinutes: 0, otRate: 0,
+};
+
+function runScenario(title, _settings, workedMinutes, year, month, emp = employee) {
+  const settings = _settings;
+  const attendance = [ recWorked('2026-04-06', workedMinutes) ]; // Monday
+  const adj = computeAttendanceAdjustments(attendance, emp, settings);
+
+  const nDays = new Date(year, month, 0).getDate();
+  // required minutes now comes from the calc (per employee: shift − lunch)
+  const required = adj.halfDayRequiredMin;
+  const totalWorkingMinutes = computeTotalWorkingMinutes(year, month, emp, required);
+  const perMinuteRate = SALARY / totalWorkingMinutes;
+  const perDaySalary = SALARY / nDays;
+
+  const halfDayDeduction = computeHalfDayDeduction(adj, SALARY, totalWorkingMinutes, perDaySalary);
+  const netSalary = SALARY - halfDayDeduction;
+
+  const short = Math.max(0, required - workedMinutes);
+
+  console.log('\n' + '='.repeat(72));
+  console.log(title);
+  console.log('='.repeat(72));
+  console.log(`Employee: ${emp.name} | Shift ${emp.shiftStart}–${emp.shiftEnd} − 60 min lunch = ${hm(required)} required`);
+  console.log(`Worked: ${hm(workedMinutes)} (${workedMinutes} min) | Required: ${hm(required)} (${required} min) | Short: ${hm(short)}`);
+  console.log(`Threshold: ${hm(adj.halfDayThresholdMin)} (dynamic half of ${required}m) | Grace: ${adj.halfDayGraceMin} min`);
+  console.log(`Month ${month}/${year} = ${nDays} days | Total working min = ${nDays} × ${required} = ${totalWorkingMinutes}`);
+  console.log(`Per-minute rate = ${SALARY} ÷ ${totalWorkingMinutes} = ${fmt(perMinuteRate)}/min | Per-day = ${fmt(perDaySalary)}`);
+  console.log('-'.repeat(72));
+  console.log(`Classified as half-day: ${adj.halfDayCount > 0 ? 'YES' : 'NO'}`);
+  console.log(`Short minutes deducted (by-minute): ${adj.halfDayShortMinutes} min`);
+  console.log(`Flat half-day units: ${adj.halfDayFlatUnits} (× per-day salary)`);
+  console.log('-'.repeat(72));
+  if (adj.halfDayShortMinutes > 0)
+    console.log(`  By-minute deduction = ${adj.halfDayShortMinutes} × ${fmt(perMinuteRate)} = ${fmt(adj.halfDayShortMinutes * perMinuteRate)}`);
+  if (adj.halfDayFlatUnits > 0)
+    console.log(`  Flat deduction = ${adj.halfDayFlatUnits} × ${fmt(perDaySalary)} = ${fmt(adj.halfDayFlatUnits * perDaySalary)}`);
+  console.log(`TOTAL DEDUCTION = ${fmt(halfDayDeduction)}`);
+  console.log(`NET SALARY = ${fmt(SALARY)} − ${fmt(halfDayDeduction)} = ${fmt(netSalary)}`);
+}
+
+const Y = 2026, M = 4; // April = 30 days
+
+console.log('\n\n############# HALF-DAY SIMULATION — SALARY ₹10,000 #############');
+console.log('Required 8h (480 min), Half-day threshold 4h (240 min), Grace 30 min, April (30 days)');
+console.log('Per-day = 10000/30 = ₹333.33 | Per-minute = 10000/(30×480=14400) = ₹0.69/min');
+
+console.log('\n\n████ BAND 1 — WORKED LESS THAN HALF (< 4h) → deduct short minutes ████');
+runScenario('Worked 2h → short 6h → deduct 360 min', settings, 120, Y, M);
+runScenario('Worked 3h → short 5h → deduct 300 min', settings, 180, Y, M);
+runScenario('Worked 3h 59min → short 4h 1min → deduct 241 min', settings, 239, Y, M);
+
+console.log('\n\n████ BAND 2 — HALF to (FULL − GRACE) [4h to 7h30m) → FLAT HALF-DAY ████');
+runScenario('Worked exactly 4h (threshold) → flat half-day', settings, 240, Y, M);
+runScenario('Worked 5h → flat half-day', settings, 300, Y, M);
+runScenario('Worked 6h → flat half-day', settings, 360, Y, M);
+runScenario('Worked 7h → flat half-day', settings, 420, Y, M);
+runScenario('Worked 7h 29min → flat half-day (just below grace zone)', settings, 449, Y, M);
+
+console.log('\n\n████ BAND 3 — GRACE ZONE (≥ 7h30m, short ≤ 30) → deduct only shortfall ████');
+runScenario('Worked 7h 30min → short 30 → deduct 30 min', settings, 450, Y, M);
+runScenario('Worked 7h 40min → short 20 → deduct 20 min', settings, 460, Y, M);
+runScenario('Worked 7h 50min → short 10 → deduct 10 min', settings, 470, Y, M);
+runScenario('Worked 8h (full) → no deduction', settings, 480, Y, M);
+
+console.log('\n\n████ DIFFERENT SHIFT LENGTHS (required = shift − 60 min lunch, PER EMPLOYEE) ████');
+runScenario('8h SHIFT emp (req 7h/420), worked 5h → flat half-day', settings, 300, Y, M, emp8h);
+runScenario('9h SHIFT emp (req 8h/480), worked 5h → flat half-day', settings, 300, Y, M, emp9h);
+runScenario('10h SHIFT emp (req 9h/540), worked 5h → flat half-day', settings, 300, Y, M, emp10h);
+runScenario('10h SHIFT emp (req 9h/540), worked full 9h → no deduction', settings, 540, Y, M, emp10h);
+
+console.log('\n\n████ DYNAMIC HALF THRESHOLD BOUNDARIES ████');
+runScenario('8h SHIFT emp: worked 3h29m (209 < dynamic half 210) → by-minute', settings, 209, Y, M, emp8h);
+runScenario('8h SHIFT emp: worked 3h30m (dynamic half 210) → flat half-day', settings, 210, Y, M, emp8h);
+runScenario('10h SHIFT emp: worked 4h29m (269 < dynamic half 270) → by-minute', settings, 269, Y, M, emp10h);
+runScenario('10h SHIFT emp: worked 4h30m (dynamic half 270) → flat half-day', settings, 270, Y, M, emp10h);
+
+console.log('\n\n############# END #############\n');

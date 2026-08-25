@@ -6,7 +6,10 @@
 // super_admin bypasses all checks. Other roles need the mapped permission
 // (exact match, wildcard *, or module-level module.*).
 
-const userHasPermission = (userPermissions, requiredPermission) => {
+export const userHasPermission = (userPermissions, requiredPermission) => {
+  if (Array.isArray(requiredPermission)) {
+    return requiredPermission.some((permission) => userHasPermission(userPermissions, permission));
+  }
   if (!userPermissions || !Array.isArray(userPermissions)) return false;
   if (userPermissions.includes('*')) return true;
   if (userPermissions.includes(requiredPermission)) return true;
@@ -78,7 +81,9 @@ const ROUTE_PERMISSION_MAP = {
   'stock-adjustments': 'stock',
 
   // HRMS
-  'attendance': 'attendance.master',
+  'attendance': ['attendance.master', 'geo.attendance.monitoring'],
+  'absent-review': 'attendance.master',
+  'salary-breakdown': 'salary.management',
   'hrms': 'attendance.master',
   'salary': 'salary.management',
   'claims': 'expense.claims',

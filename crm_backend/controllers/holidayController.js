@@ -108,7 +108,7 @@ export const deleteHoliday = async (req, res) => {
  * @param {number} month - 1-indexed
  * @returns {Set<string>} - set of 'YYYY-MM-DD' strings in IST
  */
-export const getHolidayDatesForMonth = async (dbConnection, year, month) => {
+export const getHolidayDatesForMonth = async (dbConnection, year, month, employee = null) => {
   const Holiday = dbConnection.models.Holiday || dbConnection.model('Holiday', holidaySchema);
 
   // Month boundaries in IST
@@ -120,7 +120,15 @@ export const getHolidayDatesForMonth = async (dbConnection, year, month) => {
   const from = istMid(new Date(year, month - 1, 1));
   const to = new Date(istMid(new Date(year, month, 0)).getTime() + 86400000 - 1);
 
-  const holidays = await Holiday.find({ date: { $gte: from, $lte: to } }).select('date').lean();
+  const filter = {
+    date: { $gte: from, $lte: to },
+    $or: [
+      { departments: { $exists: false } },
+      { departments: { $size: 0 } },
+      ...(employee?.department ? [{ departments: employee.department }] : []),
+    ],
+  };
+  const holidays = await Holiday.find(filter).select('date name departments').lean();
 
   const set = new Set();
   for (const h of holidays) {

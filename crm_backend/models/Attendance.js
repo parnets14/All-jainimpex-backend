@@ -1,4 +1,6 @@
 import mongoose from 'mongoose';
+import { hrmsSettingsSchema } from './HrmsSettings.js';
+import { calculateAttendanceTime } from '../utils/attendanceTime.js';
 
 const punchMarkSchema = new mongoose.Schema({
   time: Date,
@@ -47,9 +49,28 @@ const attendanceSchema = new mongoose.Schema({
   },
   reason: String,
   workingHours: Number,
-  breakMinutes: Number,   // total gap time between sessions (lunch/breaks)
+  breakMinutes: Number,   // actual positive gaps between completed sessions
+  deductedBreakMinutes: Number, // max(configured lunch, actual break)
+  configuredLunchMinutes: Number,
   lateMinutes: Number,
-  overtime: Number
+  overtime: Number,
+
+  // ── Absent Review & Excuse ──
+  // Set when an absent day is processed (auto free-leave or admin review).
+  //   pending  = absent, waiting for super-admin to review (2nd+ absence of month)
+  //   auto_paid = auto-applied free monthly paid leave (no cut)
+  //   excused  = admin marked Paid Leave (no cut)
+  //   unexcused = admin marked Unpaid (salary cut with multiplier)
+  reviewStatus: {
+    type: String,
+    enum: ['none', 'pending', 'auto_paid', 'excused', 'unexcused'],
+    default: 'none'
+  },
+  reviewReason: { type: String, default: '' },     // reason text (preset or manual "Other")
+  reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  reviewedAt: { type: Date, default: null },
+  // Penalty multiplier for unpaid absence: deduction = (salary/daysInMonth) × this.
+  absentDeductionMultiplier: { type: Number, default: 1 },
 }, {
   timestamps: true
 });
@@ -62,10 +83,12 @@ attendanceSchema.index({ employee: 1, date: 1 }, { unique: true });
 attendanceSchema.pre('save', async function(next) {
   const completed = (this.sessions || []).filter(s => s.in && s.in.time && s.out && s.out.time);
 
-  // Resolve the employee's shift start time for late calculation
-  let shiftStartHour = 10, shiftStartMin = 0; // fallback default (10:00)
+  // Resolve the employee's shift start and company lunch setting.
+  let shiftStartHour = 10, shiftStartMin = 0;
+  let allowedLunchMinutes = 45;
   try {
-    const Employee = this.constructor.db?.models?.Employee || this.model('Employee');
+    const db = this.constructor.db;
+    const Employee = db?.models?.Employee || this.model('Employee');
     if (Employee && this.employee) {
       const emp = await Employee.findById(this.employee).select('shiftStart').lean();
       if (emp && emp.shiftStart && emp.shiftStart.includes(':')) {
@@ -73,7 +96,16 @@ attendanceSchema.pre('save', async function(next) {
         if (!isNaN(h) && !isNaN(m)) { shiftStartHour = h; shiftStartMin = m; }
       }
     }
-  } catch (e) { /* use fallback */ }
+    const HrmsSettings = db?.models?.HrmsSettings || db?.model('HrmsSettings', hrmsSettingsSchema);
+    const settings = HrmsSettings
+      ? await HrmsSettings.findOne({ key: 'default' }).select('allowedLunchMinutes').lean()
+      : null;
+    if (settings?.allowedLunchMinutes != null) {
+      allowedLunchMinutes = Math.max(0, Number(settings.allowedLunchMinutes) || 0);
+    }
+  } catch (e) { /* use fallbacks */ }
+
+  const time = calculateAttendanceTime(this, { allowedLunchMinutes });
 
   if (this.sessions && this.sessions.length > 0) {
     // ── Multi-punch mode ──
@@ -86,35 +118,41 @@ attendanceSchema.pre('save', async function(next) {
       this.punchOut = { time: lastClosed.time, location: lastClosed.location, faceVerified: lastClosed.faceVerified };
     }
 
-    // worked = sum of completed session durations
-    let workedMs = 0;
-    completed.forEach(s => { workedMs += (new Date(s.out.time) - new Date(s.in.time)); });
-    this.workingHours = parseFloat((workedMs / 3600000).toFixed(2));
+    // Credited work excludes at least configured lunch and the full actual
+    // break when it is longer. The shared calculator also merges overlaps.
+    this.workingHours = time.creditedWorkingHours;
+    this.breakMinutes = time.actualBreakMinutes;
+    this.deductedBreakMinutes = time.deductedBreakMinutes;
+    this.configuredLunchMinutes = time.configuredLunchMinutes;
 
-    // break = (last out - first in) - worked  (only when we have a span)
-    if (firstIn && firstIn.time && lastClosed && lastClosed.time) {
-      const spanMs = new Date(lastClosed.time) - new Date(firstIn.time);
-      this.breakMinutes = Math.max(0, Math.round((spanMs - workedMs) / 60000));
-    }
-
-    // Late detection using employee's actual shift start
+    // Late detection using employee's actual shift start in IST (independent
+    // of the Node server's local timezone).
     if (firstIn && firstIn.time) {
-      const t = new Date(firstIn.time);
-      const lt = new Date(t); lt.setHours(shiftStartHour, shiftStartMin, 0, 0);
-      if (t > lt) { this.lateMinutes = Math.round((t - lt) / 60000); this.status = 'Late'; }
-      else if (this.status === 'Absent') { this.status = 'Present'; }
+      const t = new Date(new Date(firstIn.time).getTime() + 5.5 * 3600000);
+      const punchMinutes = t.getUTCHours() * 60 + t.getUTCMinutes() + t.getUTCSeconds() / 60;
+      const shiftMinutes = shiftStartHour * 60 + shiftStartMin;
+      if (punchMinutes > shiftMinutes) {
+        this.lateMinutes = Math.round(punchMinutes - shiftMinutes);
+        this.status = 'Late';
+      } else if (this.status === 'Absent' || this.status === 'Late') {
+        this.lateMinutes = 0;
+        this.status = 'Present';
+      }
     }
   } else if (this.punchIn && this.punchIn.time && this.punchOut && this.punchOut.time) {
     // ── Legacy single-punch fallback ──
-    const hours = (this.punchOut.time - this.punchIn.time) / (1000 * 60 * 60);
-    this.workingHours = parseFloat(hours.toFixed(2));
-    const punchInTime = new Date(this.punchIn.time);
-    const lateThreshold = new Date(punchInTime);
-    lateThreshold.setHours(shiftStartHour, shiftStartMin, 0, 0);
-    if (punchInTime > lateThreshold) {
-      this.lateMinutes = Math.round((punchInTime - lateThreshold) / (1000 * 60));
+    this.workingHours = time.creditedWorkingHours;
+    this.breakMinutes = time.actualBreakMinutes;
+    this.deductedBreakMinutes = time.deductedBreakMinutes;
+    this.configuredLunchMinutes = time.configuredLunchMinutes;
+    const punchInTime = new Date(new Date(this.punchIn.time).getTime() + 5.5 * 3600000);
+    const punchMinutes = punchInTime.getUTCHours() * 60 + punchInTime.getUTCMinutes() + punchInTime.getUTCSeconds() / 60;
+    const shiftMinutes = shiftStartHour * 60 + shiftStartMin;
+    if (punchMinutes > shiftMinutes) {
+      this.lateMinutes = Math.round(punchMinutes - shiftMinutes);
       this.status = 'Late';
     } else {
+      this.lateMinutes = 0;
       this.status = 'Present';
     }
   }
