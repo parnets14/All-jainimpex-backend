@@ -28,9 +28,9 @@ export const calculateAttendanceTime = (
 ) => {
   const sessions = Array.isArray(record?.sessions) ? record.sessions : [];
   const hasSessionFacts = sessions.length > 0;
-  const hasOpenSession = sessions.some(
+  const hasOpenSession = Boolean(sessions.some(
     (session) => session?.in?.time && !session?.out?.time
-  ) || (!hasSessionFacts && record?.punchIn?.time && !record?.punchOut?.time);
+  ) || (!hasSessionFacts && record?.punchIn?.time && !record?.punchOut?.time));
 
   let intervals = sessions
     .map((session) => validInterval(session?.in?.time, session?.out?.time))

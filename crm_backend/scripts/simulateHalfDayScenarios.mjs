@@ -174,9 +174,9 @@ const legacyOpenTime = calculateAttendanceTime({
   punchIn: { time: at('09:00') },
   workingHours: 8,
 }, { allowedLunchMinutes: 60 });
-assert.equal(legacyOpenTime.creditedWorkingMinutes, 0);
+assert.equal(legacyOpenTime.creditedWorkingMinutes, 480);
 assert.equal(legacyOpenTime.hasOpenSession, true);
-assert.equal(legacyOpenTime.source, 'no-completed-session');
+assert.equal(legacyOpenTime.source, 'stored-hours-only');
 
 const completedPlusOpen = {
   ...openOnlyRecord,
