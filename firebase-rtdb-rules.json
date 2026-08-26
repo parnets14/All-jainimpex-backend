@@ -1,0 +1,16 @@
+{
+  "rules": {
+    "tracking": {
+      ".read": true,
+      ".write": true
+    },
+    "se-tracking": {
+      ".read": true,
+      ".write": true
+    },
+    "notifications": {
+      ".read": true,
+      ".write": true
+    }
+  }
+}

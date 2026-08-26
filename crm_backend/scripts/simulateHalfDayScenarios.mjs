@@ -9,11 +9,13 @@
  *
  * Run: node crm_backend/scripts/simulateHalfDayScenarios.mjs
  */
+import assert from 'node:assert/strict';
 import {
   computeAttendanceAdjustments,
   computeHalfDayDeduction,
   computeTotalWorkingMinutes,
 } from '../utils/hrmsSalaryCalc.js';
+import { calculateAttendanceTime } from '../utils/attendanceTime.js';
 
 const SALARY = 10000;
 
@@ -26,11 +28,14 @@ const emp10h = { _id: '3', name: '10h Shift Emp', shiftStart: '09:00', shiftEnd:
 // Default employee used by most scenarios (9h shift → 480 required after 1h lunch)
 const employee = emp9h;
 
-// Build one attendance record. WORKED minutes = out − in.
-// Lunch is modelled by the required=480 setting (not deducted from worked here).
-const recWorked = (dateStr, workedMinutes) => {
+// Build one attendance record for the requested CREDITED working minutes.
+// Production calculates credited time as punch span − max(configured lunch,
+// actual session gaps). These single-session fixtures therefore add the configured
+// 60-minute lunch to the punch span so labels such as "Worked 8h" mean 8h credited.
+const recWorked = (dateStr, creditedWorkingMinutes) => {
   const inMin = 9 * 60; // 09:00
-  const outMin = inMin + workedMinutes;
+  const configuredLunchMinutes = 60;
+  const outMin = inMin + creditedWorkingMinutes + configuredLunchMinutes;
   const hh = String(Math.floor(outMin / 60)).padStart(2, '0');
   const mm = String(outMin % 60).padStart(2, '0');
   return {
@@ -135,5 +140,96 @@ runScenario('8h SHIFT emp: worked 3h29m (209 < dynamic half 210) → by-minute',
 runScenario('8h SHIFT emp: worked 3h30m (dynamic half 210) → flat half-day', settings, 210, Y, M, emp8h);
 runScenario('10h SHIFT emp: worked 4h29m (269 < dynamic half 270) → by-minute', settings, 269, Y, M, emp10h);
 runScenario('10h SHIFT emp: worked 4h30m (dynamic half 270) → flat half-day', settings, 270, Y, M, emp10h);
+
+console.log('\n\n████ CANONICAL WORKING-TIME EDGE ASSERTIONS ████');
+const at = (clock) => new Date(`2026-04-06T${clock}:00+05:30`);
+
+const zeroCreditRecord = recWorked('2026-04-06', 0);
+const zeroCreditTime = calculateAttendanceTime(zeroCreditRecord, { allowedLunchMinutes: 60 });
+assert.equal(zeroCreditTime.creditedWorkingMinutes, 0);
+assert.equal(zeroCreditTime.completedSessionCount, 1);
+assert.equal(zeroCreditTime.source, 'sessions');
+const zeroCreditAdjustment = computeAttendanceAdjustments([zeroCreditRecord], employee, settings);
+assert.equal(zeroCreditAdjustment.halfDayCount, 1);
+assert.equal(zeroCreditAdjustment.halfDayShortMinutes, 480);
+
+const openOnlyRecord = {
+  date: new Date('2026-04-06T00:00:00+05:30'),
+  status: 'Present',
+  sessions: [{ in: { time: at('09:00') } }],
+  punchIn: { time: at('09:00') },
+  punchOut: { time: at('18:00') },
+  workingHours: 8,
+};
+const openOnlyTime = calculateAttendanceTime(openOnlyRecord, { allowedLunchMinutes: 60 });
+assert.equal(openOnlyTime.creditedWorkingMinutes, 0);
+assert.equal(openOnlyTime.completedSessionCount, 0);
+assert.equal(openOnlyTime.source, 'no-completed-session');
+assert.equal(openOnlyTime.dataQuality, 'no-completed-session');
+const openOnlyAdjustment = computeAttendanceAdjustments([openOnlyRecord], employee, settings);
+assert.equal(openOnlyAdjustment.halfDayCount, 0);
+assert.equal(openOnlyAdjustment.halfDayShortMinutes, 0);
+
+const legacyOpenTime = calculateAttendanceTime({
+  punchIn: { time: at('09:00') },
+  workingHours: 8,
+}, { allowedLunchMinutes: 60 });
+assert.equal(legacyOpenTime.creditedWorkingMinutes, 0);
+assert.equal(legacyOpenTime.hasOpenSession, true);
+assert.equal(legacyOpenTime.source, 'no-completed-session');
+
+const completedPlusOpen = {
+  ...openOnlyRecord,
+  sessions: [
+    { in: { time: at('09:00') }, out: { time: at('18:00') } },
+    { in: { time: at('19:00') } },
+  ],
+  workingHours: 99,
+};
+const completedPlusOpenTime = calculateAttendanceTime(completedPlusOpen, { allowedLunchMinutes: 60 });
+assert.equal(completedPlusOpenTime.creditedWorkingMinutes, 480);
+assert.equal(completedPlusOpenTime.hasOpenSession, true);
+assert.equal(completedPlusOpenTime.source, 'sessions');
+
+const legacyOnlyTime = calculateAttendanceTime({
+  punchIn: { time: at('09:00') },
+  punchOut: { time: at('18:00') },
+  workingHours: 99,
+}, { allowedLunchMinutes: 60 });
+assert.equal(legacyOnlyTime.creditedWorkingMinutes, 480);
+assert.equal(legacyOnlyTime.source, 'legacy-punch');
+
+const storedOnlyTime = calculateAttendanceTime({ workingHours: 8 }, { allowedLunchMinutes: 60 });
+assert.equal(storedOnlyTime.creditedWorkingMinutes, 480);
+assert.equal(storedOnlyTime.source, 'stored-hours-only');
+assert.equal(storedOnlyTime.dataQuality, 'stored-hours-only');
+
+const shortGapRecord = {
+  sessions: [
+    { in: { time: at('09:00') }, out: { time: at('12:00') } },
+    { in: { time: at('12:30') }, out: { time: at('18:00') } },
+  ],
+};
+assert.equal(calculateAttendanceTime(shortGapRecord, { allowedLunchMinutes: 60 }).creditedWorkingMinutes, 480);
+const longGapRecord = {
+  sessions: [
+    { in: { time: at('09:00') }, out: { time: at('12:00') } },
+    { in: { time: at('13:15') }, out: { time: at('18:00') } },
+  ],
+};
+const longGapTime = calculateAttendanceTime(longGapRecord, { allowedLunchMinutes: 60 });
+assert.equal(longGapTime.actualBreakMinutes, 75);
+assert.equal(longGapTime.deductedBreakMinutes, 75);
+assert.equal(longGapTime.creditedWorkingMinutes, 465);
+const overlapRecord = {
+  sessions: [
+    { in: { time: at('09:00') }, out: { time: at('13:00') } },
+    { in: { time: at('12:00') }, out: { time: at('18:00') } },
+  ],
+};
+assert.equal(calculateAttendanceTime(overlapRecord, { allowedLunchMinutes: 60 }).creditedWorkingMinutes, 480);
+assert.equal(calculateAttendanceTime(overlapRecord, { allowedLunchMinutes: 0 }).creditedWorkingMinutes, 540);
+assert.equal(calculateAttendanceTime(overlapRecord, { allowedLunchMinutes: 45 }).creditedWorkingMinutes, 495);
+console.log('PASS: zero-credit, open-only, legacy-open, trailing-open, legacy/stored fallback, gap, overlap, and settings-change assertions');
 
 console.log('\n\n############# END #############\n');

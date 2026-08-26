@@ -498,6 +498,18 @@ export const generateSalarySlipDirect = async (
       loanRefs: dueInstallments.map((d) => ({ loanId: d.loanId, amount: d.amount })),
       manualAdjustment: manualAdjustment || 0,
       adjustmentReason,
+      workingTimeDataQualityWarnings: adjustmentAttendance
+        .filter((record) => ["Present", "Late", "Half Day"].includes(record.status))
+        .map((record) => {
+          const time = calculateAttendanceTime(record, { allowedLunchMinutes });
+          return time.dataQuality === "stored-hours-only" ? {
+            date: record.date,
+            dataQuality: time.dataQuality,
+            source: time.source,
+            creditedWorkingMinutes: time.creditedWorkingMinutes,
+          } : null;
+        })
+        .filter(Boolean),
       hoursWorked:
         attendance.reduce((total, record) => {
           if (record.status === "Present" || record.status === "Late" || record.status === "Half Day") {

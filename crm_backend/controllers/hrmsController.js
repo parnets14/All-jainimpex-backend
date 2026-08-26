@@ -407,6 +407,9 @@ export const getWorkingTimeReport = async (req, res) => {
         actualBreakMinutes: attendanceTime.actualBreakMinutes,
         deductedBreakMinutes: attendanceTime.deductedBreakMinutes,
         configuredLunchMinutes: attendanceTime.configuredLunchMinutes,
+        completedSessionCount: attendanceTime.completedSessionCount,
+        hasOpenSession: attendanceTime.hasOpenSession,
+        workingTimeSource: attendanceTime.source,
         workingTimeDataQuality: attendanceTime.dataQuality,
         lateMinutes: effectiveLateMinutes,
         rawLateMinutes: effectiveLateMinutes,
@@ -421,7 +424,15 @@ export const getWorkingTimeReport = async (req, res) => {
 
     res.json({
       success: true,
-      report: { days, totalHours, totalLateMinutes, lateDays, presentDays, totalDays: days.length },
+      report: {
+        days,
+        totalHours,
+        totalLateMinutes,
+        lateDays,
+        presentDays,
+        totalDays: days.length,
+        configuredLunchMinutes: allowedLunchMinutes,
+      },
     });
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 };

@@ -210,6 +210,8 @@ router.get("/:employeeId", async (req, res) => {
         actualBreakMinutes: dayTime.actualBreakMinutes,
         deductedBreakMinutes: dayTime.deductedBreakMinutes,
         configuredLunchMinutes: dayTime.configuredLunchMinutes,
+        workingTimeSource: dayTime.source,
+        workingTimeDataQuality: dayTime.dataQuality,
         requiredMinutes: Number(dailyAdjustment.halfDayRequiredMin || dailyAdjustment.requiredMin || 0),
         halfThresholdMinutes: Number(dailyAdjustment.halfDayThresholdMin || 0),
         calculationBand,
@@ -223,7 +225,9 @@ router.get("/:employeeId", async (req, res) => {
         halfDayDeduction: dailyHalfDeduction,
         absentMultiplier,
         estimatedDayDeduction: round2(estimatedDayDeduction),
-        note,
+        note: dayTime.dataQuality === "stored-hours-only"
+          ? `${note}; WARNING: no completed punch pair — credited from stored hours`
+          : note,
       });
     }
 
@@ -320,6 +324,7 @@ router.get("/:employeeId", async (req, res) => {
         otMinutes: salaryData.otMinutes || 0,
         halfDayCount: salaryData.halfDayCount || 0,
         halfDayShortMinutes: salaryData.halfDayShortMinutes || 0,
+        workingTimeDataQualityWarnings: salaryData.workingTimeDataQualityWarnings || [],
       },
       earnings: {
         gross: round2(gross),

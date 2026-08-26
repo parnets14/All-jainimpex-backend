@@ -27,16 +27,19 @@ export const calculateAttendanceTime = (
   { allowedLunchMinutes = 0, allowStoredHoursFallback = true } = {}
 ) => {
   const sessions = Array.isArray(record?.sessions) ? record.sessions : [];
+  const hasSessionFacts = sessions.length > 0;
   const hasOpenSession = sessions.some(
     (session) => session?.in?.time && !session?.out?.time
-  );
+  ) || (!hasSessionFacts && record?.punchIn?.time && !record?.punchOut?.time);
 
   let intervals = sessions
     .map((session) => validInterval(session?.in?.time, session?.out?.time))
     .filter(Boolean);
   let source = "sessions";
 
-  if (intervals.length === 0) {
+  // Once modern session facts exist they are authoritative. Open-only or
+  // malformed sessions must not resurrect stale legacy punches or cached hours.
+  if (!hasSessionFacts && intervals.length === 0) {
     const legacy = validInterval(record?.punchIn?.time, record?.punchOut?.time);
     if (legacy) {
       intervals = [legacy];
@@ -46,7 +49,10 @@ export const calculateAttendanceTime = (
 
   if (intervals.length === 0) {
     const storedMinutes = Math.max(0, Number(record?.workingHours || 0) * 60);
-    const useStored = allowStoredHoursFallback && storedMinutes > 0;
+    const useStored = !hasSessionFacts && allowStoredHoursFallback && storedMinutes > 0;
+    const historicalBreakMinutes = hasSessionFacts
+      ? 0
+      : Math.max(0, Number(record?.breakMinutes || 0));
     return {
       firstIn: null,
       lastOut: null,
@@ -54,9 +60,9 @@ export const calculateAttendanceTime = (
       hasOpenSession,
       spanMinutes: useStored ? storedMinutes : 0,
       sessionMinutes: useStored ? storedMinutes : 0,
-      actualBreakMinutes: Math.max(0, Number(record?.breakMinutes || 0)),
+      actualBreakMinutes: historicalBreakMinutes,
       configuredLunchMinutes: Math.max(0, Number(allowedLunchMinutes) || 0),
-      deductedBreakMinutes: Math.max(0, Number(record?.breakMinutes || 0)),
+      deductedBreakMinutes: historicalBreakMinutes,
       creditedWorkingMinutes: round2(useStored ? storedMinutes : 0),
       creditedWorkingHours: round2(useStored ? storedMinutes / 60 : 0),
       source: useStored ? "stored-hours-only" : "no-completed-session",

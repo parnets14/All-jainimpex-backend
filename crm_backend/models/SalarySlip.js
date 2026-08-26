@@ -50,6 +50,17 @@ const salarySlipSchema = new mongoose.Schema({
   payableCalendarDays: Number,
   perMinuteSalaryRate: Number,
   halfDayThresholdMinutes: Number,
+  // Punch-less historical values are retained for compatibility, but every
+  // affected date remains visible and auditable in preview and final payroll.
+  workingTimeDataQualityWarnings: {
+    type: [{
+      date: Date,
+      dataQuality: String,
+      source: String,
+      creditedWorkingMinutes: Number,
+    }],
+    default: [],
+  },
 
   // ── HRMS earnings (Points 5, 12) ──
   otMinutes: { type: Number, default: 0 },

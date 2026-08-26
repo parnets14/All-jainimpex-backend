@@ -27,9 +27,11 @@ const dateToMinutes = (d) => {
 
 const round2 = (v) => parseFloat(Number(v || 0).toFixed(2));
 
-// Credited minutes use the shared lunch/break rule for reports and payroll.
-const recordWorkedMinutes = (rec, allowedLunchMinutes = 0) => (
-  calculateAttendanceTime(rec, { allowedLunchMinutes }).creditedWorkingMinutes
+// Credited time uses the shared lunch/break rule for reports and payroll.
+// Keep its evidence metadata so a completed interval credited as zero still
+// enters payroll classification, unlike an open-only record.
+const recordWorkedTime = (rec, allowedLunchMinutes = 0) => (
+  calculateAttendanceTime(rec, { allowedLunchMinutes })
 );
 
 const recordFirstInMinutes = (rec) => {
@@ -260,8 +262,12 @@ export const computeAttendanceAdjustments = (attendance, employee, settings) => 
     }
 
     // ── Half-Day / Shortfall (fixed 3-band logic per client) ──
-    const worked = recordWorkedMinutes(rec, allowedLunch);
-    if (!isWeeklyOff && worked > 0) {
+    const workedTime = recordWorkedTime(rec, allowedLunch);
+    const worked = workedTime.creditedWorkingMinutes;
+    // A completed punch interval can legitimately net to zero after lunch. It
+    // must still be classified; open-only records have no completed evidence.
+    const hasWorkEvidence = worked > 0 || workedTime.completedSessionCount > 0;
+    if (!isWeeklyOff && hasWorkEvidence) {
       if (halfDayEnabled) {
         // required = hdRequiredMin (per employee = shift − lunch, e.g. 8h = 480)
         // threshold = hdThresholdMin (half point, e.g. 4h = 240)

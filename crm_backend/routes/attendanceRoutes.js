@@ -91,6 +91,9 @@ const withCalculatedTime = (record, allowedLunchMinutes) => {
     actualBreakMinutes: time.actualBreakMinutes,
     deductedBreakMinutes: time.deductedBreakMinutes,
     configuredLunchMinutes: time.configuredLunchMinutes,
+    completedSessionCount: time.completedSessionCount,
+    hasOpenSession: time.hasOpenSession,
+    workingTimeSource: time.source,
     workingTimeDataQuality: time.dataQuality,
   };
 };
