@@ -119,29 +119,33 @@ router.get("/:employeeId", async (req, res) => {
       let dailyHalfDeduction = salaryType === "hourly" ? 0 : round2(computeHalfDayDeduction(
         dailyAdjustment, adjustmentGrossBase, totalWorkingMinutes, actualDaySalary
       ));
+      let dailyBreakPenalty = round2(dailyAdjustment.breakPenalty || 0);
 
       let status = record?.status || "Absent";
       let note = "";
       let calculationBand = null;
       let absentMultiplier = null;
-      let estimatedDayDeduction = dailyLateDeduction + dailyHalfDeduction;
+      let estimatedDayDeduction = dailyLateDeduction + dailyHalfDeduction + dailyBreakPenalty;
 
       if (isBeforeJoining) {
         status = "Not Employed";
         dailyLateDeduction = 0;
         dailyHalfDeduction = 0;
+        dailyBreakPenalty = 0;
         estimatedDayDeduction = 0;
         note = "Before employee date of joining";
       } else if (isWeeklyOff) {
         status = "Weekly Off";
         dailyLateDeduction = 0;
         dailyHalfDeduction = 0;
+        dailyBreakPenalty = 0;
         estimatedDayDeduction = 0;
         note = "Paid non-working day";
       } else if (isHoliday) {
         status = "Holiday";
         dailyLateDeduction = 0;
         dailyHalfDeduction = 0;
+        dailyBreakPenalty = 0;
         estimatedDayDeduction = 0;
         note = "Paid company holiday";
       } else if (!record) {
@@ -184,6 +188,9 @@ router.get("/:employeeId", async (req, res) => {
           calculationBand = "full_day";
           note = "Required working time completed";
         }
+        if (dailyAdjustment.excessBreakMinutes > 0) {
+          note += `; excess break ${dailyAdjustment.excessBreakMinutes}m × ₹${dailyAdjustment.excessBreakDeductionPerMinute}/m = ₹${dailyBreakPenalty}`;
+        }
         if (dailyAdjustment.lateExcessMinutes > 0) {
           note += `; late ${dailyAdjustment.lateExcessMinutes}m after grace`;
         }
@@ -208,8 +215,15 @@ router.get("/:employeeId", async (req, res) => {
         workingHours: round2(workedMinutes / 60),
         workedMinutes,
         actualBreakMinutes: dayTime.actualBreakMinutes,
+        observedBreakMinutes: dayTime.observedBreakMinutes,
+        completedActualBreakMinutes: dayTime.completedActualBreakMinutes,
         deductedBreakMinutes: dayTime.deductedBreakMinutes,
         configuredLunchMinutes: dayTime.configuredLunchMinutes,
+        breakGraceMinutes: Number(dailyAdjustment.breakGraceMinutes || 0),
+        breakAllowanceMinutes: Number(dailyAdjustment.breakAllowanceMinutes || 0),
+        excessBreakMinutes: Number(dailyAdjustment.excessBreakMinutes || 0),
+        excessBreakDeductionPerMinute: Number(dailyAdjustment.excessBreakDeductionPerMinute || 0),
+        breakPenalty: dailyBreakPenalty,
         workingTimeSource: dayTime.source,
         workingTimeDataQuality: dayTime.dataQuality,
         requiredMinutes: Number(dailyAdjustment.halfDayRequiredMin || dailyAdjustment.requiredMin || 0),
@@ -261,6 +275,24 @@ router.get("/:employeeId", async (req, res) => {
         day.note += "; late deduction allocated from month-pooled OT offset";
       }
     });
+
+    // Reconcile fractional-minute rounding so day rows equal the shared monthly
+    // break penalty exactly; the final affected row absorbs any cent remainder.
+    const aggregateBreakPenalty = round2(salaryData.breakPenalty || 0);
+    const breakRows = days.filter((day) => day.excessBreakMinutes > 0 && day.breakPenalty > 0);
+    if (breakRows.length > 0) {
+      const allocatedBreakPenalty = round2(
+        breakRows.reduce((sum, day) => sum + Number(day.breakPenalty || 0), 0)
+      );
+      const breakRemainder = round2(aggregateBreakPenalty - allocatedBreakPenalty);
+      if (breakRemainder !== 0) {
+        const lastBreakRow = breakRows[breakRows.length - 1];
+        lastBreakRow.breakPenalty = round2(lastBreakRow.breakPenalty + breakRemainder);
+        lastBreakRow.estimatedDayDeduction = round2(
+          lastBreakRow.estimatedDayDeduction + breakRemainder
+        );
+      }
+    }
 
     const totalDeductions = round2(salaryData.totalDeductions);
     const netSalary = round2(salaryData.netSalary);
@@ -324,6 +356,10 @@ router.get("/:employeeId", async (req, res) => {
         otMinutes: salaryData.otMinutes || 0,
         halfDayCount: salaryData.halfDayCount || 0,
         halfDayShortMinutes: salaryData.halfDayShortMinutes || 0,
+        excessBreakMinutes: salaryData.excessBreakMinutes || 0,
+        excessBreakDays: salaryData.excessBreakDays || 0,
+        breakAllowanceMinutes: salaryData.breakAllowanceMinutes || 0,
+        excessBreakDeductionPerMinute: salaryData.excessBreakDeductionPerMinute || 0,
         workingTimeDataQualityWarnings: salaryData.workingTimeDataQualityWarnings || [],
       },
       earnings: {
@@ -338,6 +374,7 @@ router.get("/:employeeId", async (req, res) => {
         otherDeductions: round2(salaryData.otherDeductions),
         lateDeduction: round2(salaryData.lateDeduction),
         halfDayShortfallDeduction: round2(salaryData.shortfallDeduction),
+        excessBreakPenalty: round2(salaryData.breakPenalty),
         absentLopAmount: round2(salaryData.lopAmount),
         loanDeduction: round2(salaryData.loanDeduction),
         manualAdjustment: round2(salaryData.manualAdjustment),
@@ -350,6 +387,7 @@ router.get("/:employeeId", async (req, res) => {
           ? `per-day ₹${round2(actualDaySalary)} × Σ penalty units ${round2(salaryData.absentPenaltyUnits)} = ₹${round2(salaryData.lopAmount)}`
           : `base absent days are already unpaid in ${salaryType} earnings; extra units ${round2(Math.max(0, Number(salaryData.absentPenaltyUnits || 0) - Number(salaryData.lopDays || 0)))} × per-day ₹${round2(actualDaySalary)} = ₹${round2(salaryData.lopAmount)}`,
         halfDay: `short ${salaryData.halfDayShortMinutes || 0} min × per-min + ${adjustment.halfDayFlatUnits || 0} flat units × per-day = ₹${round2(salaryData.shortfallDeduction)}`,
+        break: `completed break above ${salaryData.breakAllowanceMinutes || 0}m allowance: ${salaryData.excessBreakMinutes || 0} min × ₹${salaryData.excessBreakDeductionPerMinute || 0}/min = ₹${round2(salaryData.breakPenalty)}`,
         net: `gross ₹${round2(gross)} + OT ₹${round2(salaryData.otAmount)} + incentive ₹${round2(salaryData.incentiveBonus)} − deductions ₹${totalDeductions} = ₹${netSalary}`,
       },
       netSalary,

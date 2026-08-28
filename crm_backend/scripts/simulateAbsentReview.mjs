@@ -1,3 +1,9 @@
+import assert from "node:assert/strict";
+import {
+  getAbsentReviewPolicyBounds,
+  isManualAbsentReviewAllowed,
+} from "../utils/absentReviewPolicy.js";
+
 /**
  * Verify Absent Review deduction logic — mirrors the exact loop in
  * queue/salaryQueueFallback.js (fixed-salary branch).
@@ -155,5 +161,36 @@ simulate(
   "7) PERFECT ATTENDANCE → full salary",
   allWorkingDaysPresent()
 );
+
+console.log("\n########  IST REVIEW-WINDOW ASSERTIONS  ########");
+const aug28 = new Date("2026-08-28T12:00:00+05:30");
+const aug29 = new Date("2026-08-29T12:00:00+05:30");
+const aug28Bounds = getAbsentReviewPolicyBounds(aug28);
+const aug29Bounds = getAbsentReviewPolicyBounds(aug29);
+const istDateKey = (date) => new Date(date.getTime() + 5.5 * 3600000).toISOString().slice(0, 10);
+assert.equal(istDateKey(aug28Bounds.yesterdayEndUtc), "2026-08-27");
+assert.equal(istDateKey(aug29Bounds.yesterdayEndUtc), "2026-08-28");
+assert.equal(aug28Bounds.deadlinePassed, true);
+assert.equal(
+  isManualAbsentReviewAllowed(new Date("2026-06-30T00:00:00+05:30"), new Date("2026-08-10T12:00:00+05:30")),
+  false
+);
+assert.equal(
+  isManualAbsentReviewAllowed(new Date("2026-07-01T00:00:00+05:30"), new Date("2026-08-10T12:00:00+05:30")),
+  true
+);
+assert.equal(
+  isManualAbsentReviewAllowed(new Date("2026-07-31T00:00:00+05:30"), new Date("2026-08-15T23:59:59+05:30")),
+  true
+);
+assert.equal(
+  isManualAbsentReviewAllowed(new Date("2026-07-31T00:00:00+05:30"), new Date("2026-08-16T00:00:00+05:30")),
+  false
+);
+assert.equal(
+  isManualAbsentReviewAllowed(new Date("2026-08-01T00:00:00+05:30"), new Date("2026-08-16T00:00:00+05:30")),
+  true
+);
+console.log("PASS: Aug 28/29 through-yesterday cutoff, full 15th access, 16th rollover, and current-month protection");
 
 console.log("\n########  END  ########\n");

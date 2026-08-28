@@ -77,7 +77,11 @@ const hrmsSettingsSchema = new mongoose.Schema({
   lateCountEqualsDays: { type: Number, default: 1 },
 
   // ── Lunch / working-hours shortfall (Point 2) ──
-  allowedLunchMinutes: { type: Number, default: 45 },
+  allowedLunchMinutes: { type: Number, default: 45, min: 0 },
+  // Monetary excess-break rule: actual completed break may use lunch + grace
+  // before the configured per-minute penalty starts.
+  breakGraceMinutes: { type: Number, default: 5, min: 0 },
+  excessBreakDeductionPerMinute: { type: Number, default: 2, min: 0 },
   shortfallGraceMinutes: { type: Number, default: 0 },
   shortfallRateMode: { type: String, enum: ['perHour', 'perMinute'], default: 'perMinute' },
   shortfallRate: { type: Number, default: 0 },
@@ -121,7 +125,7 @@ const hrmsSettingsSchema = new mongoose.Schema({
   freeMonthlyPaidLeaves: { type: Number, default: 1 },
   // Default penalty multiplier for UNPAID (unexcused) absences.
   // Deduction = (salary / daysInMonth) × X. Admin can override per-person at review time.
-  absentDeductionMultiplier: { type: Number, default: 1 },
+  absentDeductionMultiplier: { type: Number, default: 1, min: 0.1 },
   // Time the daily absent-review notification is sent to super-admin (HH:mm IST).
   absentReviewAlertTime: { type: String, default: '09:00' },
   // Preset reasons shown in the review dropdown (for both paid & unpaid). "Other" is always available.

@@ -113,9 +113,15 @@ const autoCloseAttendance = async () => {
           const hrmsAtt = await HRMSAttendance.findOne({ employee: linkedEmp._id, date: dayStart });
           if (hrmsAtt) {
             const sessions = hrmsAtt.sessions || [];
-            const openIdx = sessions.findIndex(s => s.in?.source === 'app' && !s.out?.time);
+            const openIdx = sessions.findIndex(
+              s => ['app', 'sales_executive_app'].includes(s.in?.source) && !s.out?.time
+            );
             if (openIdx >= 0) {
-              sessions[openIdx].out = { time: utcCheckOut, location: 'Auto-closed 23:59 IST', source: 'app' };
+              sessions[openIdx].out = {
+                time: utcCheckOut,
+                location: 'Auto-closed 23:59 IST',
+                source: 'sales_executive_app',
+              };
               hrmsAtt.sessions = sessions;
               hrmsAtt.markModified('sessions');
               await hrmsAtt.save();

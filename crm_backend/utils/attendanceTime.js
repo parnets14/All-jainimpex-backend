@@ -61,6 +61,10 @@ export const calculateAttendanceTime = (
       spanMinutes: useStored ? storedMinutes : 0,
       sessionMinutes: useStored ? storedMinutes : 0,
       actualBreakMinutes: historicalBreakMinutes,
+      observedBreakMinutes: historicalBreakMinutes,
+      // Historical stored values cannot prove a completed inter-session gap,
+      // so they never trigger the new excess-break monetary penalty.
+      completedActualBreakMinutes: 0,
       configuredLunchMinutes: Math.max(0, Number(allowedLunchMinutes) || 0),
       deductedBreakMinutes: historicalBreakMinutes,
       creditedWorkingMinutes: round2(useStored ? storedMinutes : 0),
@@ -81,6 +85,27 @@ export const calculateAttendanceTime = (
     }
   }
 
+  // Compute observable gaps between ALL session in-times (including open ones)
+  // and preceding completed out-times. This captures lunch breaks that are
+  // visible from punch timestamps even before the final punch-out completes.
+  const allSorted = sessions
+    .filter((s) => s?.in?.time)
+    .map((s) => ({
+      inMs: asTimestamp(s.in.time),
+      outMs: asTimestamp(s.out?.time),
+    }))
+    .filter((s) => s.inMs != null)
+    .sort((a, b) => a.inMs - b.inMs);
+  let observedBreakMinutes = 0;
+  for (let i = 1; i < allSorted.length; i++) {
+    const prevOut = allSorted[i - 1].outMs;
+    const curIn = allSorted[i].inMs;
+    if (prevOut != null && curIn > prevOut) {
+      observedBreakMinutes += (curIn - prevOut) / 60000;
+    }
+  }
+  observedBreakMinutes = round2(Math.max(0, observedBreakMinutes));
+
   const firstInMs = merged[0].start;
   const lastOutMs = merged[merged.length - 1].end;
   const spanMinutes = Math.max(0, (lastOutMs - firstInMs) / 60000);
@@ -88,9 +113,15 @@ export const calculateAttendanceTime = (
     (total, interval) => total + (interval.end - interval.start) / 60000,
     0
   );
-  const actualBreakMinutes = Math.max(0, spanMinutes - sessionMinutes);
+  const completedActualBreakMinutes = Math.max(0, spanMinutes - sessionMinutes);
+  // Use observed gaps (from all in/out timestamps, including trailing-open sessions)
+  // when they are larger than the pure completed-interval gap. This makes lunch
+  // visible even when the return session is still open.
+  const effectiveActualBreak = Math.max(completedActualBreakMinutes, observedBreakMinutes);
   const configuredLunchMinutes = Math.max(0, Number(allowedLunchMinutes) || 0);
-  const deductedBreakMinutes = Math.max(configuredLunchMinutes, actualBreakMinutes);
+  // For credited-time/payroll purposes, only completed-interval gaps participate
+  // in deduction. Observed open-session gaps are reported for visibility only.
+  const deductedBreakMinutes = Math.max(configuredLunchMinutes, completedActualBreakMinutes);
   const creditedWorkingMinutes = Math.max(0, spanMinutes - deductedBreakMinutes);
 
   return {
@@ -100,7 +131,9 @@ export const calculateAttendanceTime = (
     hasOpenSession,
     spanMinutes: round2(spanMinutes),
     sessionMinutes: round2(sessionMinutes),
-    actualBreakMinutes: round2(actualBreakMinutes),
+    actualBreakMinutes: round2(effectiveActualBreak),
+    observedBreakMinutes: round2(effectiveActualBreak),
+    completedActualBreakMinutes: round2(completedActualBreakMinutes),
     configuredLunchMinutes: round2(configuredLunchMinutes),
     deductedBreakMinutes: round2(deductedBreakMinutes),
     creditedWorkingMinutes: round2(creditedWorkingMinutes),

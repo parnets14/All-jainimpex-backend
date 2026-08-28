@@ -188,6 +188,7 @@ export const generateSalarySlipDirect = async (
     // days with no review default to X = 1.
     let absentMultiplierUnits = 0;
     const unresolvedDates = [];
+    const openSessionDates = [];
     const joiningDateKey = employee.dateOfJoining
       ? new Date(new Date(employee.dateOfJoining).getTime() + 5.5 * 3600000).toISOString().slice(0, 10)
       : null;
@@ -227,6 +228,15 @@ export const generateSalarySlipDirect = async (
             attendanceRecord.status === "Half Day"
           ) {
             presentDays++;
+            // A trailing open session means the day's completed break evidence
+            // can still change. Preview remains provisional, but a final slip
+            // must not freeze deductions before the employee punches out.
+            const attendanceTime = calculateAttendanceTime(attendanceRecord, {
+              allowedLunchMinutes,
+            });
+            if (attendanceTime.hasOpenSession) {
+              openSessionDates.push(currentIST);
+            }
           } else if (attendanceRecord.status === "Leave") {
             // Check LeavePolicy to determine if this leave type is paid
             const isProtectedReview = ['auto_paid', 'excused'].includes(attendanceRecord.reviewStatus);
@@ -261,6 +271,10 @@ export const generateSalarySlipDirect = async (
       currentDate.setDate(currentDate.getDate() + 1);
     }
 
+    if (!previewOnly && openSessionDates.length > 0) {
+      throw new Error(`Cannot generate final salary: ${openSessionDates.length} attendance day(s) still have an open session (${openSessionDates.slice(0, 5).join(', ')}${openSessionDates.length > 5 ? ', ...' : ''}). Close or resolve these sessions first.`);
+    }
+
     if (!previewOnly && unresolvedDates.length > 0) {
       throw new Error(`Cannot generate final salary: ${unresolvedDates.length} attendance day(s) are missing or pending review (${unresolvedDates.slice(0, 5).join(', ')}${unresolvedDates.length > 5 ? ', ...' : ''})`);
     }
@@ -270,9 +284,13 @@ export const generateSalarySlipDirect = async (
 
     // Resolve attendance rules once, before branching by salary type, so preview
     // and persisted generation use the same employee-specific required minutes.
-    const adjustmentAttendance = attendance.filter((record) => !holidayDates.has(
-      new Date(new Date(record.date).getTime() + 5.5 * 3600000).toISOString().slice(0, 10)
-    ));
+    const adjustmentAttendance = attendance.filter((record) => {
+      const recordDateKey = new Date(new Date(record.date).getTime() + 5.5 * 3600000)
+        .toISOString()
+        .slice(0, 10);
+      return (!joiningDateKey || recordDateKey >= joiningDateKey)
+        && !holidayDates.has(recordDateKey);
+    });
     const adj = computeAttendanceAdjustments(adjustmentAttendance, employee, hrmsSettings);
     const perDayMinutes = adj.halfDayRequiredMin || adj.requiredMin;
     const totalWorkingMinutes = computeTotalWorkingMinutes(yNum, mNum, employee, perDayMinutes);
@@ -391,6 +409,9 @@ export const generateSalarySlipDirect = async (
       : (adj.halfDayEnabled
         ? halfDayDeduction
         : parseFloat((adj.shortfallAmount || 0).toFixed(2)));
+    // Explicit company policy: completed break minutes beyond lunch + grace
+    // incur the configured flat ₹/minute penalty for every salary type.
+    const breakPenalty = parseFloat((adj.breakPenalty || 0).toFixed(2));
 
     // ── Loan/advance installment for this month (Point 4) ──
     const monthNum = parseInt(month, 10);
@@ -432,6 +453,7 @@ export const generateSalarySlipDirect = async (
       lopAmount +
       lateDeduction +
       shortfallDeduction +
+      breakPenalty +
       loanDeduction +
       manualAdjustment;
 
@@ -494,6 +516,12 @@ export const generateSalarySlipDirect = async (
       halfDayShortMinutes: adj.halfDayShortMinutes || 0,
       shortfallMinutes: adj.halfDayEnabled ? (adj.halfDayShortMinutes || 0) : (adj.shortfallMinutes || 0),
       shortfallDeduction: shortfallDeduction || 0,
+      breakGraceMinutes: adj.breakGraceMinutes || 0,
+      breakAllowanceMinutes: adj.breakAllowanceMinutes || 0,
+      excessBreakDeductionPerMinute: adj.excessBreakDeductionPerMinute || 0,
+      excessBreakMinutes: adj.excessBreakMinutes || 0,
+      excessBreakDays: adj.excessBreakDays || 0,
+      breakPenalty: breakPenalty || 0,
       loanDeduction: loanDeduction || 0,
       loanRefs: dueInstallments.map((d) => ({ loanId: d.loanId, amount: d.amount })),
       manualAdjustment: manualAdjustment || 0,
@@ -517,7 +545,7 @@ export const generateSalarySlipDirect = async (
           }
           return total;
         }, 0) || 0,
-      calculationVersion: "hrms-v2",
+      calculationVersion: "hrms-v3-break-penalty",
       attendanceCutoff: periodTo,
       actualDaysInMonth: daysInThisMonth,
       requiredWorkingMinutes: perDayMinutes,

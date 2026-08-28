@@ -89,6 +89,8 @@ const withCalculatedTime = (record, allowedLunchMinutes) => {
     workedMinutes: time.creditedWorkingMinutes,
     breakMinutes: time.actualBreakMinutes,
     actualBreakMinutes: time.actualBreakMinutes,
+    observedBreakMinutes: time.observedBreakMinutes,
+    completedActualBreakMinutes: time.completedActualBreakMinutes,
     deductedBreakMinutes: time.deductedBreakMinutes,
     configuredLunchMinutes: time.configuredLunchMinutes,
     completedSessionCount: time.completedSessionCount,

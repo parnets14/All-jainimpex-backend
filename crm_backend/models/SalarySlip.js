@@ -81,6 +81,13 @@ const salarySlipSchema = new mongoose.Schema({
   halfDayShortMinutes: { type: Number, default: 0 },   // total short minutes deducted by-minutes
   shortfallMinutes: { type: Number, default: 0 },
   shortfallDeduction: { type: Number, default: 0 },
+  // Excess-break monetary penalty snapshot and result.
+  breakGraceMinutes: { type: Number, default: 0 },
+  breakAllowanceMinutes: { type: Number, default: 0 },
+  excessBreakDeductionPerMinute: { type: Number, default: 0 },
+  excessBreakMinutes: { type: Number, default: 0 },
+  excessBreakDays: { type: Number, default: 0 },
+  breakPenalty: { type: Number, default: 0 },
   loanDeduction: { type: Number, default: 0 },
   loanRefs: [{ loanId: mongoose.Schema.Types.ObjectId, amount: Number }],
   manualAdjustment: { type: Number, default: 0 }, // manual one-off deduction

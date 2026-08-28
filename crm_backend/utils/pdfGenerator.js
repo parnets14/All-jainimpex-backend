@@ -176,6 +176,11 @@ export const generateSalaryPDF = (salary) => {
         ["Tax Deducted at Source (TDS)", salary.tds],
         ["Other Deductions", salary.otherDeductions],
         [`Loss of Pay (${salary.lopDays || 0} days)`, salary.lopAmount],
+        [`Late Deduction (${salary.lateMinutes || 0} min)`, salary.lateDeduction],
+        [`Shortfall (${salary.shortfallMinutes || 0} min)`, salary.shortfallDeduction],
+        [`Excess Break (${salary.excessBreakMinutes || 0} min × ₹${salary.excessBreakDeductionPerMinute || 0}/min)`, salary.breakPenalty],
+        ["Loan / Advance Installment", salary.loanDeduction],
+        ["Manual Adjustment", salary.manualAdjustment],
       ];
 
       deductions.forEach(([label, amount]) => {

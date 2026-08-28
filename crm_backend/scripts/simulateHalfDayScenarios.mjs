@@ -59,6 +59,8 @@ const hm = (min) => `${Math.floor(min / 60)}h ${min % 60}m`;
 const settings = {
   halfDayEnabled: true,
   allowedLunchMinutes: 60,          // 1 hour lunch (from HRMS settings)
+  breakGraceMinutes: 5,
+  excessBreakDeductionPerMinute: 2,
   // requiredWorkingMinutes intentionally NOT set → auto = shift − lunch per employee
   halfDayThresholdMinutes: 240,     // half point = 4h
   halfDayGraceMinutes: 30,
@@ -230,6 +232,67 @@ const overlapRecord = {
 assert.equal(calculateAttendanceTime(overlapRecord, { allowedLunchMinutes: 60 }).creditedWorkingMinutes, 480);
 assert.equal(calculateAttendanceTime(overlapRecord, { allowedLunchMinutes: 0 }).creditedWorkingMinutes, 540);
 assert.equal(calculateAttendanceTime(overlapRecord, { allowedLunchMinutes: 45 }).creditedWorkingMinutes, 495);
+
+console.log('\n\n████ EXCESS-BREAK PENALTY ASSERTIONS ████');
+const breakPenaltySettings = {
+  ...settings,
+  allowedLunchMinutes: 45,
+  breakGraceMinutes: 5,
+  excessBreakDeductionPerMinute: 2,
+};
+const addMinutes = (date, minutes) => new Date(date.getTime() + minutes * 60000);
+const breakRecord = (gapMinutes, { trailingOpen = false, date = '2026-04-06' } = {}) => ({
+  date: new Date(`${date}T00:00:00+05:30`),
+  status: 'Present',
+  sessions: [
+    { in: { time: new Date(`${date}T09:00:00+05:30`) }, out: { time: new Date(`${date}T12:00:00+05:30`) } },
+    {
+      in: { time: addMinutes(new Date(`${date}T12:00:00+05:30`), gapMinutes) },
+      ...(trailingOpen ? {} : { out: { time: new Date(`${date}T18:00:00+05:30`) } }),
+    },
+  ],
+});
+
+for (const [actual, expectedExcess, expectedPenalty] of [
+  [45, 0, 0],
+  [50, 0, 0],
+  [51, 1, 2],
+  [75, 25, 50],
+]) {
+  const record = breakRecord(actual);
+  const time = calculateAttendanceTime(record, { allowedLunchMinutes: 45 });
+  const adjustment = computeAttendanceAdjustments([record], employee, breakPenaltySettings);
+  assert.equal(time.completedActualBreakMinutes, actual);
+  assert.equal(adjustment.excessBreakMinutes, expectedExcess);
+  assert.equal(adjustment.breakPenalty, expectedPenalty);
+}
+
+const trailingOpenBreak = breakRecord(75, { trailingOpen: true });
+const trailingOpenBreakTime = calculateAttendanceTime(trailingOpenBreak, { allowedLunchMinutes: 45 });
+const trailingOpenBreakAdjustment = computeAttendanceAdjustments(
+  [trailingOpenBreak], employee, breakPenaltySettings
+);
+assert.equal(trailingOpenBreakTime.observedBreakMinutes, 75);
+assert.equal(trailingOpenBreakTime.completedActualBreakMinutes, 0);
+assert.equal(trailingOpenBreakAdjustment.excessBreakMinutes, 0);
+assert.equal(trailingOpenBreakAdjustment.breakPenalty, 0);
+
+const weeklyOffBreak = breakRecord(75, { date: '2026-04-05' }); // Sunday
+const weeklyOffAdjustment = computeAttendanceAdjustments(
+  [weeklyOffBreak], employee, breakPenaltySettings
+);
+assert.equal(weeklyOffAdjustment.excessBreakMinutes, 0);
+assert.equal(weeklyOffAdjustment.breakPenalty, 0);
+
+const aggregateBreakAdjustment = computeAttendanceAdjustments(
+  [breakRecord(51), breakRecord(75, { date: '2026-04-07' })],
+  employee,
+  breakPenaltySettings
+);
+assert.equal(aggregateBreakAdjustment.excessBreakMinutes, 26);
+assert.equal(aggregateBreakAdjustment.excessBreakDays, 2);
+assert.equal(aggregateBreakAdjustment.breakPenalty, 52);
+console.log('PASS: 45/50/51/75-minute thresholds, trailing-open safety, weekly-off exclusion, and monthly aggregation');
 console.log('PASS: zero-credit, open-only, legacy-open, trailing-open, legacy/stored fallback, gap, overlap, and settings-change assertions');
 
 console.log('\n\n############# END #############\n');

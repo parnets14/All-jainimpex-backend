@@ -719,6 +719,12 @@ const generateSalarySlipHTML = (salarySlip) => {
                     <tr>
                         <td></td>
                         <td></td>
+                        <td>Excess Break (${salarySlip.excessBreakMinutes || 0} min × ₹${salarySlip.excessBreakDeductionPerMinute || 0}/min)</td>
+                        <td>₹${salarySlip.breakPenalty?.toFixed(2) || "0.00"}</td>
+                    </tr>
+                    <tr>
+                        <td></td>
+                        <td></td>
                         <td>Loan / Advance Installment</td>
                         <td>₹${salarySlip.loanDeduction?.toFixed(2) || "0.00"}</td>
                     </tr>

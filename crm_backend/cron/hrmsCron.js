@@ -16,6 +16,10 @@ import { employeeSchema } from '../models/Employee.js';
 import { attendanceSchema } from '../models/Attendance.js';
 import { holidaySchema } from '../models/Holiday.js';
 import { processBiometricPunches, finalizeDayAttendance } from '../utils/biometricAttendance.js';
+import {
+  ABSENT_REVIEW_GRACE_DAYS,
+  getAbsentReviewPolicyBounds,
+} from '../utils/absentReviewPolicy.js';
 
 const COMPANIES = ['jain-impex', 'ridhi', 'shree-jain-impex'];
 
@@ -199,24 +203,50 @@ const runAbsentReview = async () => {
 
       const settings = await HrmsSettings.findOne({ key: 'default' });
       const alertMin = hmToMin(settings?.absentReviewAlertTime || '09:00');
-      // Run on every scheduler tick after the configured time. Updates claim
-      // only none/null rows, so this is idempotent and also catches late starts.
-      if (nowMin < alertMin) continue;
+      const configuredMultiplier = Number(settings?.absentDeductionMultiplier ?? 1);
+      const defaultMultiplier = Number.isFinite(configuredMultiplier) && configuredMultiplier > 0
+        ? configuredMultiplier
+        : 1;
+      const { reviewableFromUtc } = getAbsentReviewPolicyBounds(now);
+
+      // Settle every pending record whose own month-specific review deadline
+      // has passed. On days 1–15, the previous month remains reviewable; from
+      // the 16th, only the current month remains reviewable.
+      const autoResult = await Attendance.updateMany(
+        {
+          date: { $lt: reviewableFromUtc },
+          status: 'Absent',
+          reviewStatus: 'pending',
+        },
+        {
+          $set: {
+            leaveType: 'Unpaid Leave',
+            reviewStatus: 'unexcused',
+            reviewReason: `Auto-marked unexcused after ${ABSENT_REVIEW_GRACE_DAYS}-day review window`,
+            reviewedBy: null,
+            reviewedAt: now,
+            absentDeductionMultiplier: defaultMultiplier,
+          },
+        }
+      );
+      let autoUnexcused = autoResult.modifiedCount || 0;
 
       const freeQuota = Number(settings?.freeMonthlyPaidLeaves ?? 1);
 
-      // Catch up every unresolved absence through yesterday, oldest first so
-      // the monthly free quota is consumed deterministically.
+      // Before the notification time, process only already-expired backlog so
+      // it cannot block payroll. At/after the alert time, classify all records
+      // through yesterday and notify for newly active pending reviews.
+      const classificationDateFilter = nowMin < alertMin
+        ? { $lt: reviewableFromUtc }
+        : { $lte: yEnd };
       const absents = await Attendance.find({
-        date: { $lte: yEnd },
+        date: classificationDateFilter,
         status: 'Absent',
         reviewStatus: { $in: ['none', null] },
       }).sort({ date: 1, createdAt: 1 }).populate('employee', 'name empId').lean();
 
-      if (!absents.length) continue;
-
       let autoPaid = 0;
-      const pendingNames = [];
+      const pendingEntries = [];
 
       for (const rec of absents) {
         if (!rec.employee) continue;
@@ -254,11 +284,45 @@ const runAbsentReview = async () => {
             { _id: rec._id, status: 'Absent', reviewStatus: { $in: ['none', null] } },
             { $set: { reviewStatus: 'pending' } }
           );
-          if (claimed.modifiedCount > 0) pendingNames.push(rec.employee.name || 'Unknown');
+          if (claimed.modifiedCount > 0) {
+            pendingEntries.push({
+              name: rec.employee.name || 'Unknown',
+              date: new Date(rec.date),
+            });
+          }
         }
       }
 
-      // One consolidated notification to super-admin for pending reviews
+      // A late restart may classify an already-expired none/null record during
+      // this same pass. Settle those newly pending prior-month rows immediately.
+      if (pendingEntries.some((entry) => entry.date < reviewableFromUtc)) {
+        const catchUpResult = await Attendance.updateMany(
+          {
+            date: { $lt: reviewableFromUtc },
+            status: 'Absent',
+            reviewStatus: 'pending',
+          },
+          {
+            $set: {
+              leaveType: 'Unpaid Leave',
+              reviewStatus: 'unexcused',
+              reviewReason: `Auto-marked unexcused after ${ABSENT_REVIEW_GRACE_DAYS}-day review window`,
+              reviewedBy: null,
+              reviewedAt: now,
+              absentDeductionMultiplier: defaultMultiplier,
+            },
+          }
+        );
+        autoUnexcused += catchUpResult.modifiedCount || 0;
+      }
+
+      // Do not notify for newly caught-up records that were immediately settled
+      // because their review deadline had already passed.
+      const pendingNames = pendingEntries
+        .filter((entry) => nowMin >= alertMin && entry.date >= reviewableFromUtc)
+        .map((entry) => entry.name);
+
+      // One consolidated notification to super-admin for pending reviews.
       if (pendingNames.length > 0) {
         try {
           const { default: sendAdminNotification } = await import('../services/adminNotificationService.js');
@@ -277,7 +341,9 @@ const runAbsentReview = async () => {
         } catch (ne) { /* non-blocking */ }
       }
 
-      console.log(`🟠 [absent-review/${company}] auto-paid ${autoPaid}, pending ${pendingNames.length}`);
+      if (autoPaid > 0 || pendingEntries.length > 0 || autoUnexcused > 0) {
+        console.log(`🟠 [absent-review/${company}] auto-paid ${autoPaid}, pending ${pendingNames.length}, auto-unexcused ${autoUnexcused}`);
+      }
     } catch (e) {
       console.error(`   ${company} absent-review cron error:`, e.message);
     }

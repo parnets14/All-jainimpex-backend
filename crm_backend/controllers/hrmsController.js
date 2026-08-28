@@ -405,6 +405,8 @@ export const getWorkingTimeReport = async (req, res) => {
         workedMinutes: attendanceTime.creditedWorkingMinutes,
         breakMinutes: attendanceTime.actualBreakMinutes,
         actualBreakMinutes: attendanceTime.actualBreakMinutes,
+        observedBreakMinutes: attendanceTime.observedBreakMinutes,
+        completedActualBreakMinutes: attendanceTime.completedActualBreakMinutes,
         deductedBreakMinutes: attendanceTime.deductedBreakMinutes,
         configuredLunchMinutes: attendanceTime.configuredLunchMinutes,
         completedSessionCount: attendanceTime.completedSessionCount,

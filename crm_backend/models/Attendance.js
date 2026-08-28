@@ -6,7 +6,7 @@ const punchMarkSchema = new mongoose.Schema({
   time: Date,
   location: String,
   faceVerified: Boolean,
-  source: { type: String, default: 'web' }, // web | face | biometric | manual
+  source: { type: String, default: 'web' }, // web | face | biometric | manual | sales_executive_app (legacy: app)
 }, { _id: false });
 
 const sessionSchema = new mongoose.Schema({
@@ -121,7 +121,7 @@ attendanceSchema.pre('save', async function(next) {
     // Credited work excludes at least configured lunch and the full actual
     // break when it is longer. The shared calculator also merges overlaps.
     this.workingHours = time.creditedWorkingHours;
-    this.breakMinutes = time.actualBreakMinutes;
+    this.breakMinutes = time.completedActualBreakMinutes;
     this.deductedBreakMinutes = time.deductedBreakMinutes;
     this.configuredLunchMinutes = time.configuredLunchMinutes;
 
@@ -142,7 +142,7 @@ attendanceSchema.pre('save', async function(next) {
   } else if (this.punchIn && this.punchIn.time && this.punchOut && this.punchOut.time) {
     // ── Legacy single-punch fallback ──
     this.workingHours = time.creditedWorkingHours;
-    this.breakMinutes = time.actualBreakMinutes;
+    this.breakMinutes = time.completedActualBreakMinutes;
     this.deductedBreakMinutes = time.deductedBreakMinutes;
     this.configuredLunchMinutes = time.configuredLunchMinutes;
     const punchInTime = new Date(new Date(this.punchIn.time).getTime() + 5.5 * 3600000);

@@ -129,9 +129,9 @@ export const checkIn = async (req, res) => {
         if (!hrmsAtt) hrmsAtt = new HRMSAttendance({ employee: linkedEmp._id, date: dayStart, sessions: [] });
         // Add a new open session (check-in, no out yet)
         const sessions = hrmsAtt.sessions || [];
-        const hasOpenApp = sessions.some(s => s.in?.source === 'app' && !s.out?.time);
+        const hasOpenApp = sessions.some(s => ['app', 'sales_executive_app'].includes(s.in?.source) && !s.out?.time);
         if (!hasOpenApp) {
-          sessions.push({ in: { time: checkInTime, location: address || 'Field', source: 'app' } });
+          sessions.push({ in: { time: checkInTime, location: address || 'Field', source: 'sales_executive_app' } });
           hrmsAtt.sessions = sessions;
           hrmsAtt.markModified('sessions');
           await hrmsAtt.save();
@@ -202,7 +202,7 @@ export const checkOut = async (req, res) => {
 
     await attendance.save();
 
-    // Sync to HRMS Attendance: close the open 'app' session for this employee today
+    // Sync to HRMS Attendance: close the open Sales Executive app session for this employee today
     // Always syncs to jain-impex HRMS since that's where attendance is managed.
     try {
       const masterConn = getCompanyConnection(ATTENDANCE_MASTER_COMPANY);
@@ -215,9 +215,9 @@ export const checkOut = async (req, res) => {
         const hrmsAtt = await HRMSAttendance.findOne({ employee: linkedEmp._id, date: dayStart });
         if (hrmsAtt) {
           const sessions = hrmsAtt.sessions || [];
-          const openIdx = sessions.findIndex(s => s.in?.source === 'app' && !s.out?.time);
+          const openIdx = sessions.findIndex(s => ['app', 'sales_executive_app'].includes(s.in?.source) && !s.out?.time);
           if (openIdx >= 0) {
-            sessions[openIdx].out = { time: attendance.checkOutTime, location: address || 'Field', source: 'app' };
+            sessions[openIdx].out = { time: attendance.checkOutTime, location: address || 'Field', source: 'sales_executive_app' };
             hrmsAtt.sessions = sessions;
             hrmsAtt.markModified('sessions');
             await hrmsAtt.save();

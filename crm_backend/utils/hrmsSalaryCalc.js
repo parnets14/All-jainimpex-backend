@@ -186,6 +186,12 @@ export const computeAttendanceAdjustments = (attendance, employee, settings) => 
   const surplusFactor = offsetRule ? (Number(offsetRule.config?.surplusFactor) || 1) : 0;
 
   const allowedLunch = Math.max(0, Number(s.allowedLunchMinutes ?? 45) || 0);
+  const breakGraceMinutes = Math.max(0, Number(s.breakGraceMinutes ?? 5) || 0);
+  const excessBreakDeductionPerMinute = Math.max(
+    0,
+    Number(s.excessBreakDeductionPerMinute ?? 2) || 0
+  );
+  const breakAllowanceMinutes = allowedLunch + breakGraceMinutes;
 
   // ── Half-Day / Shortfall lookup ──
   // Prefer a matched per-employee halfDayRule; else fall back to global half-day settings.
@@ -220,6 +226,8 @@ export const computeAttendanceAdjustments = (attendance, employee, settings) => 
   let lateExcessMinutes = 0;   // total late minutes beyond grace (drives Rule 1)
   let lateDaysCount = 0;       // any day late beyond grace
   let offsetOtMinutes = 0;     // OT minutes counted toward late-offset (Type 2)
+  let excessBreakMinutes = 0;  // completed actual break beyond lunch + grace
+  let excessBreakDays = 0;
 
   // Half-day / shortfall aggregates (new)
   let halfDayCount = 0;              // days classified as half-day
@@ -267,6 +275,16 @@ export const computeAttendanceAdjustments = (attendance, employee, settings) => 
     // A completed punch interval can legitimately net to zero after lunch. It
     // must still be classified; open-only records have no completed evidence.
     const hasWorkEvidence = worked > 0 || workedTime.completedSessionCount > 0;
+    if (!isWeeklyOff && workedTime.completedSessionCount > 0) {
+      const dayExcessBreak = Math.max(
+        0,
+        Number(workedTime.completedActualBreakMinutes || 0) - breakAllowanceMinutes
+      );
+      if (dayExcessBreak > 0) {
+        excessBreakMinutes += dayExcessBreak;
+        excessBreakDays++;
+      }
+    }
     if (!isWeeklyOff && hasWorkEvidence) {
       if (halfDayEnabled) {
         // required = hdRequiredMin (per employee = shift − lunch, e.g. 8h = 480)
@@ -310,6 +328,7 @@ export const computeAttendanceAdjustments = (attendance, employee, settings) => 
   shortfallMinutes = Math.round(shortfallMinutes);
   lateExcessMinutes = Math.round(lateExcessMinutes);
   halfDayShortMinutes = Math.round(halfDayShortMinutes);
+  excessBreakMinutes = round2(excessBreakMinutes);
 
   // ── OT-Late Offset (Scenario 1 & 2) ──
   // Required OT = Late Minutes × Dynamic Multiplier
@@ -341,6 +360,7 @@ export const computeAttendanceAdjustments = (attendance, employee, settings) => 
   const shortfallAmount = shortfallRate > 0
     ? round2(shortfallPerMinute ? shortfallMinutes * shortfallRate : (shortfallMinutes / 60) * shortfallRate)
     : 0;
+  const breakPenalty = round2(excessBreakMinutes * excessBreakDeductionPerMinute);
 
   return {
     shiftDurationMin, requiredMin,
@@ -351,6 +371,12 @@ export const computeAttendanceAdjustments = (attendance, employee, settings) => 
     otRateMode: otPerMinute ? 'perMinute' : 'perHour',
     otMinutes, otAmount,
     shortfallMinutes, shortfallAmount,
+    breakGraceMinutes,
+    breakAllowanceMinutes,
+    excessBreakDeductionPerMinute,
+    excessBreakMinutes,
+    excessBreakDays,
+    breakPenalty,
     lateDaysCount, lateExcessMinutes,
     // Rule 1 params
     lateRuleMatched,
