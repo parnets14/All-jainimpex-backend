@@ -4,6 +4,7 @@ import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
 import { dealerSchema } from "../models/Dealer.js";
 import { assertPeriodOpen, handlePeriodLockError } from "../services/periodLockService.js";
 import mongoose from "mongoose";
+import { createHash } from "node:crypto";
 
 // Helper function to get models for the current company database
 const getModels = (dbConnection) => {
@@ -74,9 +75,10 @@ export const getDealerPayments = async (req, res) => {
       finalQuery.status = status;
     }
 
-    // Filter by dealer
-    if (dealer) {
-      finalQuery.dealer = dealer;
+    // App callers are always restricted to the server-resolved dealer.
+    const effectiveDealerId = req.authenticatedDealerId || dealer;
+    if (effectiveDealerId) {
+      finalQuery.dealer = effectiveDealerId;
     }
 
     // Filter by dealer invoice - THIS IS THE FIX
@@ -150,7 +152,12 @@ export const getDealerPayments = async (req, res) => {
 export const getDealerPayment = async (req, res) => {
   const { DealerPayment } = getModels(req.dbConnection);
   try {
-    const payment = await DealerPayment.findById(req.params.id)
+    const paymentQuery = { _id: req.params.id };
+    if (req.authenticatedDealerId) {
+      paymentQuery.dealer = req.authenticatedDealerId;
+    }
+
+    const payment = await DealerPayment.findOne(paymentQuery)
       .populate("dealer", "name code companyName gst phone email address")
       .populate("dealerInvoice", "invoiceNumber totalAmount paymentStatus invoiceDate dueDate")
       .populate("createdBy", "name email")
@@ -178,11 +185,119 @@ export const getDealerPayment = async (req, res) => {
   }
 };
 
+const createPaymentError = (statusCode, message) => {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+};
+
+const getIdempotencyKey = (req) => {
+  const value = req.get?.("Idempotency-Key")
+    || req.headers?.["idempotency-key"]
+    || req.body?.idempotencyKey;
+  if (value == null || value === "") return null;
+  if (typeof value !== "string"
+    || value.length < 8
+    || value.length > 100
+    || !/^[A-Za-z0-9._:-]+$/.test(value)) {
+    throw createPaymentError(400, "Idempotency key must be 8-100 letters, numbers, dots, colons, underscores, or hyphens");
+  }
+  return value;
+};
+
+const canonicalPaymentDate = (value, fieldName) => {
+  if (value == null || value === "") return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw createPaymentError(400, `${fieldName} must be a valid date`);
+  }
+  return date.toISOString();
+};
+
+const createPaymentFingerprint = ({
+  dealerInvoiceId,
+  paymentAmount,
+  paymentMethod,
+  paymentType,
+  paymentDate,
+  remarks,
+  chequeDetails,
+  upiDetails,
+  bankTransferDetails
+}) => {
+  const canonicalRequest = {
+    dealerInvoiceId: String(dealerInvoiceId || ""),
+    paymentAmount: Number(paymentAmount),
+    paymentMethod: paymentMethod || null,
+    paymentType: paymentType || null,
+    paymentDate: canonicalPaymentDate(paymentDate, "Payment date"),
+    remarks: remarks || "",
+    chequeDetails: paymentMethod === "Cheque" && chequeDetails ? {
+      chequeNo: chequeDetails.chequeNo || "",
+      bankName: chequeDetails.bankName || "",
+      chequeDate: canonicalPaymentDate(chequeDetails.chequeDate, "Cheque date"),
+      remarks: chequeDetails.remarks || ""
+    } : null,
+    upiDetails: paymentMethod === "UPI" && upiDetails ? {
+      upiId: upiDetails.upiId || "",
+      transactionId: upiDetails.transactionId || "",
+      remarks: upiDetails.remarks || ""
+    } : null,
+    bankTransferDetails: paymentMethod === "Bank Transfer" && bankTransferDetails ? {
+      bankName: bankTransferDetails.bankName || "",
+      accountNumber: bankTransferDetails.accountNumber || "",
+      transactionId: bankTransferDetails.transactionId || "",
+      remarks: bankTransferDetails.remarks || ""
+    } : null
+  };
+
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalRequest))
+    .digest("hex");
+};
+
+const paymentReplayMatches = (payment, fingerprint) => (
+  typeof payment.idempotencyFingerprint === "string"
+  && payment.idempotencyFingerprint === fingerprint
+);
+
+const isDuplicateKeyFor = (error, field) => error?.code === 11000
+  && (error?.keyPattern?.[field] || error?.keyValue?.[field] !== undefined);
+
+const runPaymentTransaction = async (dbConnection, work, maxNumberRetries = 3) => {
+  for (let attempt = 1; attempt <= maxNumberRetries; attempt += 1) {
+    const session = await dbConnection.startSession();
+    try {
+      return await session.withTransaction(
+        () => work(session),
+        {
+          readConcern: { level: "snapshot" },
+          writeConcern: { w: "majority" }
+        }
+      );
+    } catch (error) {
+      if (isDuplicateKeyFor(error, "paymentNumber")) {
+        if (attempt < maxNumberRetries) {
+          continue;
+        }
+        throw createPaymentError(409, "Could not reserve a unique payment number; please retry");
+      }
+      throw error;
+    } finally {
+      await session.endSession();
+    }
+  }
+  throw createPaymentError(409, "Could not reserve a unique payment number; please retry");
+};
+
 // @desc    Create new dealer payment
 // @route   POST /api/dealer-payments
 // @access  Private
 export const createDealerPayment = async (req, res) => {
   const { DealerPayment, DealerInvoice } = getModels(req.dbConnection);
+  let idempotencyKey = null;
+  let transactionDealerId = null;
+
   try {
     const {
       dealerInvoiceId,
@@ -193,107 +308,205 @@ export const createDealerPayment = async (req, res) => {
       remarks,
       chequeDetails,
       upiDetails,
-      bankTransferDetails,
-      source = "Web" // Default to Web, can be "App" from mobile
+      bankTransferDetails
     } = req.body;
 
-    // Get the invoice details (exclude drafts and cancelled)
-    const invoice = await DealerInvoice.findOne({ 
-      _id: dealerInvoiceId,
-      isDraft: false, // Exclude draft invoices
-      isDeleted: { $ne: true } // Exclude cancelled invoices
-    })
-      .populate("dealer", "name code");
+    const source = req.paymentOrigin === "App" ? "App" : "Web";
+    const isNumericPaymentString = typeof paymentAmount === "string"
+      && paymentAmount.trim() !== ""
+      && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(paymentAmount.trim());
+    const normalizedPaymentAmount = Number(paymentAmount);
 
-    if (!invoice) {
-      return res.status(404).json({
-        success: false,
-        message: "Invoice not found, is a draft, or has been cancelled"
-      });
-    }
-
-    // No approval check needed - payments can be made for any invoice status
-
-    // Block posting into a closed financial year
-    await assertPeriodOpen(req.dbConnection, paymentDate || Date.now(), 'dealer payment');
-
-    // Calculate remaining amount
-    const paidAmount = invoice.paidAmount || 0;
-    const remainingAmount = invoice.totalAmount - paidAmount;
-
-    // Validate payment amount
-    if (paymentAmount > remainingAmount) {
+    if ((typeof paymentAmount !== "number" && !isNumericPaymentString)
+      || !Number.isFinite(normalizedPaymentAmount)
+      || normalizedPaymentAmount <= 0) {
       return res.status(400).json({
         success: false,
-        message: `Payment amount cannot exceed remaining amount of ₹${remainingAmount.toLocaleString()}`
+        message: "Payment amount must be a positive number"
       });
     }
 
-    // Create payment data
-    const paymentData = {
-      dealerInvoice: dealerInvoiceId,
-      dealer: invoice.dealer._id,
-      paymentDate: new Date(paymentDate || Date.now()),
-      paymentAmount: parseFloat(paymentAmount),
+    idempotencyKey = getIdempotencyKey(req);
+    const paymentFingerprint = createPaymentFingerprint({
+      dealerInvoiceId,
+      paymentAmount: normalizedPaymentAmount,
       paymentMethod,
       paymentType,
-      status: source === "App" ? "Approved" : "Pending", // Auto-approve app payments, web needs approval
-      remarks: remarks || "",
-      invoiceNumber: invoice.invoiceNumber,
-      invoiceAmount: invoice.totalAmount,
-      remainingAmount: remainingAmount - parseFloat(paymentAmount),
-      source: source,
-      createdBy: req.user._id
+      paymentDate,
+      remarks,
+      chequeDetails,
+      upiDetails,
+      bankTransferDetails
+    });
+    const invoiceQuery = {
+      _id: dealerInvoiceId,
+      isDraft: false,
+      isDeleted: { $ne: true }
     };
-
-    // Add method-specific details
-    if (paymentMethod === "Cheque" && chequeDetails) {
-      paymentData.chequeDetails = {
-        chequeNo: chequeDetails.chequeNo,
-        bankName: chequeDetails.bankName,
-        chequeDate: new Date(chequeDetails.chequeDate),
-        remarks: chequeDetails.remarks || ""
-      };
-    } else if (paymentMethod === "UPI" && upiDetails) {
-      paymentData.upiDetails = {
-        upiId: upiDetails.upiId,
-        transactionId: upiDetails.transactionId,
-        remarks: upiDetails.remarks || ""
-      };
-    } else if (paymentMethod === "Bank Transfer" && bankTransferDetails) {
-      paymentData.bankTransferDetails = {
-        bankName: bankTransferDetails.bankName,
-        accountNumber: bankTransferDetails.accountNumber,
-        transactionId: bankTransferDetails.transactionId,
-        remarks: bankTransferDetails.remarks || ""
-      };
+    if (req.authenticatedDealerId) {
+      invoiceQuery.dealer = req.authenticatedDealerId;
     }
 
-    const payment = new DealerPayment(paymentData);
-    await payment.save();
+    let transactionResult;
+    try {
+      transactionResult = await runPaymentTransaction(req.dbConnection, async (session) => {
+        if (idempotencyKey) {
+          const replayQuery = { source, idempotencyKey };
+          if (req.authenticatedDealerId) {
+            replayQuery.dealer = req.authenticatedDealerId;
+          } else {
+            replayQuery.dealerInvoice = dealerInvoiceId;
+          }
 
-    // If payment is from App (auto-approved), update invoice and ledger immediately
-    if (source === "App" && payment.status === "Approved") {
-      await updateInvoiceAndLedger(payment, invoice, req.user._id, req.dbConnection);
+          const replayPayment = await DealerPayment.findOne(replayQuery).session(session);
+          if (replayPayment) {
+            if (!paymentReplayMatches(replayPayment, paymentFingerprint)) {
+              throw createPaymentError(409, "Idempotency key was already used for a different payment");
+            }
+            transactionDealerId = replayPayment.dealer;
+            return { paymentId: replayPayment._id, replayed: true };
+          }
+        }
+
+        const invoice = await DealerInvoice.findOne(invoiceQuery)
+          .session(session)
+          .populate("dealer", "name code");
+
+        if (!invoice) {
+          throw createPaymentError(404, "Invoice not found, is a draft, or has been cancelled");
+        }
+
+        transactionDealerId = invoice.dealer._id;
+        if (idempotencyKey) {
+          const existingPayment = await DealerPayment.findOne({
+            dealer: transactionDealerId,
+            source,
+            idempotencyKey
+          }).session(session);
+
+          if (existingPayment) {
+            if (!paymentReplayMatches(existingPayment, paymentFingerprint)) {
+              throw createPaymentError(409, "Idempotency key was already used for a different payment");
+            }
+            return { paymentId: existingPayment._id, replayed: true };
+          }
+        }
+
+        await assertPeriodOpen(req.dbConnection, paymentDate || Date.now(), "dealer payment");
+
+        const invoiceTotal = Number(invoice.totalAmount);
+        const paidAmount = Number(invoice.paidAmount ?? 0);
+        if (!Number.isFinite(invoiceTotal) || invoiceTotal < 0
+          || !Number.isFinite(paidAmount) || paidAmount < 0
+          || paidAmount > invoiceTotal) {
+          throw createPaymentError(400, "Invoice has invalid payment totals");
+        }
+
+        const remainingAmount = invoiceTotal - paidAmount;
+        if (normalizedPaymentAmount > remainingAmount + 0.01) {
+          throw createPaymentError(
+            409,
+            `Payment amount cannot exceed remaining amount of ₹${remainingAmount.toLocaleString()}`
+          );
+        }
+
+        const paymentData = {
+          dealerInvoice: dealerInvoiceId,
+          dealer: transactionDealerId,
+          paymentDate: new Date(paymentDate || Date.now()),
+          paymentAmount: normalizedPaymentAmount,
+          paymentMethod,
+          paymentType,
+          status: source === "App" ? "Approved" : "Pending",
+          remarks: remarks || "",
+          invoiceNumber: invoice.invoiceNumber,
+          invoiceAmount: invoiceTotal,
+          remainingAmount: Math.max(0, remainingAmount - normalizedPaymentAmount),
+          source,
+          idempotencyKey: idempotencyKey || undefined,
+          idempotencyFingerprint: idempotencyKey ? paymentFingerprint : undefined,
+          createdBy: req.user._id,
+          ...(source === "App" ? {
+            approvedBy: req.user._id,
+            approvedAt: new Date()
+          } : {})
+        };
+
+        if (paymentMethod === "Cheque" && chequeDetails) {
+          paymentData.chequeDetails = {
+            chequeNo: chequeDetails.chequeNo,
+            bankName: chequeDetails.bankName,
+            chequeDate: new Date(chequeDetails.chequeDate),
+            remarks: chequeDetails.remarks || ""
+          };
+        } else if (paymentMethod === "UPI" && upiDetails) {
+          paymentData.upiDetails = {
+            upiId: upiDetails.upiId,
+            transactionId: upiDetails.transactionId,
+            remarks: upiDetails.remarks || ""
+          };
+        } else if (paymentMethod === "Bank Transfer" && bankTransferDetails) {
+          paymentData.bankTransferDetails = {
+            bankName: bankTransferDetails.bankName,
+            accountNumber: bankTransferDetails.accountNumber,
+            transactionId: bankTransferDetails.transactionId,
+            remarks: bankTransferDetails.remarks || ""
+          };
+        }
+
+        const payment = new DealerPayment(paymentData);
+        await payment.save({ session });
+
+        if (source === "App") {
+          await updateInvoiceAndLedger(
+            payment,
+            invoice,
+            req.user._id,
+            req.dbConnection,
+            session
+          );
+        }
+
+        return { paymentId: payment._id, replayed: false };
+      });
+    } catch (error) {
+      if (idempotencyKey
+        && transactionDealerId
+        && isDuplicateKeyFor(error, "idempotencyKey")) {
+        const existingPayment = await DealerPayment.findOne({
+          dealer: transactionDealerId,
+          source,
+          idempotencyKey
+        });
+        if (existingPayment && paymentReplayMatches(existingPayment, paymentFingerprint)) {
+          transactionResult = { paymentId: existingPayment._id, replayed: true };
+        } else {
+          throw createPaymentError(409, "Idempotency key was already used for a different payment");
+        }
+      } else {
+        throw error;
+      }
     }
 
-    // Populate the created payment
-    const populatedPayment = await DealerPayment.findById(payment._id)
+    const populatedPayment = await DealerPayment.findById(transactionResult.paymentId)
       .populate("dealer", "name code companyName")
       .populate("dealerInvoice", "invoiceNumber totalAmount")
       .populate("createdBy", "name email");
 
-    res.status(201).json({
+    return res.status(transactionResult.replayed ? 200 : 201).json({
       success: true,
-      message: "Payment created successfully",
+      replayed: transactionResult.replayed,
+      message: transactionResult.replayed
+        ? "Payment already created; returning the original result"
+        : "Payment created successfully",
       payment: populatedPayment
     });
   } catch (error) {
     if (handlePeriodLockError(error, res)) return;
     console.error("Create Dealer Payment Error:", error);
-    res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: "Error creating dealer payment",
+      message: error.statusCode ? error.message : "Error creating dealer payment",
       error: error.message
     });
   }
@@ -302,155 +515,85 @@ export const createDealerPayment = async (req, res) => {
 // @desc    Update dealer payment status
 // @route   PUT /api/dealer-payments/:id/status
 // @access  Private
-export const updateDealerPaymentStatus = async (req, res) => {
-  const { DealerPayment, DealerInvoice } = getModels(req.dbConnection);
-  try {
-    const { status, rejectionReason } = req.body;
-    const paymentId = req.params.id;
-
-    const payment = await DealerPayment.findById(paymentId);
-    if (!payment) {
-      return res.status(404).json({
-        success: false,
-        message: "Payment not found"
-      });
-    }
-
-    // Update payment status
-    payment.status = status;
-    
-    if (status === "Approved") {
-      payment.approvedBy = req.user._id;
-      payment.approvedAt = new Date();
-      
-      // Update invoice payment status (exclude drafts and cancelled)
-      const invoice = await DealerInvoice.findOne({
-        _id: payment.dealerInvoice,
-        isDraft: false, // Exclude draft invoices
-        isDeleted: { $ne: true } // Exclude cancelled invoices
-      })
-        .populate("dealer", "name code");
-      
-      if (invoice) {
-        await updateInvoiceAndLedger(payment, invoice, req.user._id, req.dbConnection);
-      }
-      
-      // Create automatic journal entry for accounting
-      try {
-        const { createDealerPaymentEntry } = await import('../services/accountingService.js');
-        const paymentData = {
-          _id: payment._id,
-          paymentNumber: payment.paymentNumber || `PAY-${payment._id.toString().slice(-8)}`,
-          amount: payment.paymentAmount,
-          paymentDate: payment.paymentDate,
-          paymentMode: payment.paymentMethod,
-          dealerName: invoice?.dealer?.name || 'Dealer'
-        };
-        await createDealerPaymentEntry(paymentData, req.dbConnection, req.user._id);
-      } catch (accountingError) {
-        console.error('⚠️ Failed to create automatic journal entry (non-critical):', accountingError.message);
-        // Don't fail the payment approval if journal entry fails
-      }
-    } else if (status === "Rejected") {
-      payment.rejectedBy = req.user._id;
-      payment.rejectedAt = new Date();
-      payment.rejectionReason = rejectionReason || "";
-    }
-
-    await payment.save();
-
-    // Populate the updated payment
-    const updatedPayment = await DealerPayment.findById(paymentId)
-      .populate("dealer", "name code companyName")
-      .populate("dealerInvoice", "invoiceNumber totalAmount paymentStatus")
-      .populate("createdBy", "name email")
-      .populate("approvedBy", "name email")
-      .populate("rejectedBy", "name email");
-
-    res.json({
-      success: true,
-      message: `Payment ${status.toLowerCase()} successfully`,
-      payment: updatedPayment
-    });
-  } catch (error) {
-    console.error("Update Dealer Payment Status Error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Error updating payment status",
-      error: error.message
-    });
-  }
-};
+export const updateDealerPaymentStatus = async (req, res) => (
+  updateDealerPaymentStatusWithAdvance(req, res)
+);
 
 // Helper function to update invoice and create ledger entry
-async function updateInvoiceAndLedger(payment, invoice, userId, dbConnection) {
-  const { DealerLedger } = getModels(dbConnection);
-  try {
-    // Calculate new paid amount
-    const paidAmount = (invoice.paidAmount || 0) + payment.paymentAmount;
-    invoice.paidAmount = paidAmount;
-    
-    // Update payment status based on remaining amount
-    // Use a small tolerance (0.01 rupee = 1 paisa) to handle floating-point precision issues
-    const remainingAmount = invoice.totalAmount - paidAmount;
-    const TOLERANCE = 0.01; // 1 paisa tolerance
-    
-    if (remainingAmount <= TOLERANCE) {
-      invoice.paymentStatus = "Paid";
-      // Set paidAmount to exactly totalAmount to avoid tiny differences
-      invoice.paidAmount = invoice.totalAmount;
-    } else {
-      invoice.paymentStatus = "Partial";
-    }
-    
-    await invoice.save();
-    
-    // Create dealer ledger entry for the payment
-    try {
-      // Get the last entry for this dealer to calculate running balance
-      const lastEntry = await DealerLedger.findOne(
-        { dealer: payment.dealer },
-        {},
-        { sort: { 'createdAt': -1 } }
-      );
-      
-      let previousBalance = 0;
-      if (lastEntry) {
-        previousBalance = lastEntry.runningBalance;
-      }
-      
-      const ledgerEntry = new DealerLedger({
-        dealer: payment.dealer,
-        dealerName: invoice.dealer.name,
-        dealerCode: invoice.dealer.code,
-        entryDate: payment.paymentDate,
-        transactionType: "Payment",
-        invoice: payment.dealerInvoice,
-        invoiceNumber: payment.invoiceNumber,
-        invoiceValue: payment.invoiceAmount,
-        paymentReceived: payment.paymentAmount,
-        paymentMethod: payment.paymentMethod,
-        chequeDetails: payment.chequeDetails,
-        upiDetails: payment.upiDetails,
-        bankTransferDetails: payment.bankTransferDetails,
-        debitAmount: 0,
-        creditAmount: payment.paymentAmount,
-        runningBalance: previousBalance - payment.paymentAmount,
-        description: `Payment ${payment.paymentNumber} for Invoice ${payment.invoiceNumber}`,
-        remarks: payment.remarks,
-        createdBy: userId
-      });
-      
-      await ledgerEntry.save();
-      console.log(`Created dealer ledger entry for payment: ${payment.paymentNumber}`);
-    } catch (ledgerError) {
-      console.error("Error creating dealer ledger entry for payment:", ledgerError);
-      // Don't fail the payment approval if ledger entry fails
-    }
-  } catch (error) {
-    console.error("Error updating invoice and ledger:", error);
+async function updateInvoiceAndLedger(payment, invoice, userId, dbConnection, session = null) {
+  const { Dealer, DealerLedger } = getModels(dbConnection);
+
+  const invoiceTotal = Number(invoice.totalAmount);
+  const currentPaidAmount = Number(invoice.paidAmount ?? 0);
+  const paymentAmount = Number(payment.paymentAmount);
+  const TOLERANCE = 0.01;
+
+  if (!Number.isFinite(invoiceTotal) || invoiceTotal < 0
+    || !Number.isFinite(currentPaidAmount) || currentPaidAmount < 0
+    || !Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+    const error = new Error("Invoice or payment has invalid totals");
+    error.statusCode = 400;
     throw error;
   }
+
+  const resultingPaidAmount = currentPaidAmount + paymentAmount;
+  if (resultingPaidAmount > invoiceTotal + TOLERANCE) {
+    const error = new Error("Payment exceeds the Invoice's remaining amount");
+    error.statusCode = 409;
+    throw error;
+  }
+
+  const remainingAmount = invoiceTotal - resultingPaidAmount;
+  if (remainingAmount <= TOLERANCE) {
+    invoice.paidAmount = invoiceTotal;
+    invoice.pendingAmount = 0;
+    invoice.paymentStatus = "Paid";
+  } else {
+    invoice.paidAmount = resultingPaidAmount;
+    invoice.pendingAmount = remainingAmount;
+    invoice.paymentStatus = "Partial";
+  }
+  invoice.paymentDate = payment.paymentDate;
+
+  await invoice.save(session ? { session } : undefined);
+
+  // Force concurrent ledger postings for the same dealer to conflict and retry.
+  if (session) {
+    const dealerLock = await Dealer.updateOne(
+      { _id: payment.dealer },
+      { $inc: { ledgerPostingVersion: 1 } },
+      { session }
+    );
+    if (dealerLock.matchedCount !== 1) {
+      throw createPaymentError(404, "Dealer not found while posting payment ledger");
+    }
+  }
+
+  const ledgerEntry = new DealerLedger({
+    dealer: payment.dealer,
+    dealerName: invoice.dealer.name,
+    dealerCode: invoice.dealer.code,
+    entryDate: payment.paymentDate,
+    transactionType: "Payment",
+    dealerPayment: payment._id,
+    invoice: payment.dealerInvoice,
+    invoiceNumber: payment.invoiceNumber,
+    invoiceValue: payment.invoiceAmount,
+    paymentReceived: paymentAmount,
+    paymentMethod: payment.paymentMethod,
+    chequeDetails: payment.chequeDetails,
+    upiDetails: payment.upiDetails,
+    bankTransferDetails: payment.bankTransferDetails,
+    debitAmount: 0,
+    creditAmount: paymentAmount,
+    runningBalance: 0,
+    description: `Payment ${payment.paymentNumber} for Invoice ${payment.invoiceNumber}`,
+    remarks: payment.remarks,
+    createdBy: userId
+  });
+
+  await ledgerEntry.save(session ? { session } : undefined);
+  console.log(`Created dealer ledger entry for payment: ${payment.paymentNumber}`);
 }
 
 // @desc    Get available invoices for payment
@@ -460,8 +603,9 @@ export const getAvailableInvoicesForPayment = async (req, res) => {
   const { DealerInvoice } = getModels(req.dbConnection);
   try {
     const { dealer, page = 1, limit = 50, search } = req.query;
+    const effectiveDealerId = req.authenticatedDealerId || dealer;
     
-    console.log('🔍 Fetching available invoices for payment, dealer:', dealer, 'page:', page, 'limit:', limit);
+    console.log('🔍 Fetching available invoices for payment, dealer:', effectiveDealerId, 'page:', page, 'limit:', limit);
     
     // Show all approved invoices - no drafts
     const query = {
@@ -469,8 +613,8 @@ export const getAvailableInvoicesForPayment = async (req, res) => {
       isDeleted: { $ne: true } // Exclude cancelled invoices
     };
     
-    if (dealer) {
-      query.dealer = dealer;
+    if (effectiveDealerId) {
+      query.dealer = effectiveDealerId;
     }
 
     // Add search functionality
@@ -612,24 +756,24 @@ export const getDealerPaymentStats = async (req, res) => {
 export const deleteDealerPayment = async (req, res) => {
   const { DealerPayment } = getModels(req.dbConnection);
   try {
-    const payment = await DealerPayment.findById(req.params.id);
+    const payment = await DealerPayment.findOneAndDelete({
+      _id: req.params.id,
+      status: "Pending"
+    });
     
     if (!payment) {
-      return res.status(404).json({
+      const existingPayment = await DealerPayment.findById(req.params.id).select("status");
+      if (!existingPayment) {
+        return res.status(404).json({
+          success: false,
+          message: "Payment not found"
+        });
+      }
+      return res.status(409).json({
         success: false,
-        message: "Payment not found"
+        message: `Payment is already ${existingPayment.status.toLowerCase()} and cannot be deleted`
       });
     }
-
-    // Only allow deletion of pending payments
-    if (payment.status !== "Pending") {
-      return res.status(400).json({
-        success: false,
-        message: "Can only delete pending payments"
-      });
-    }
-
-    await DealerPayment.findByIdAndDelete(req.params.id);
 
     res.json({
       success: true,
@@ -660,9 +804,9 @@ export const recordAdvancePayment = async (req, res) => {
       remarks,
       chequeDetails,
       upiDetails,
-      bankTransferDetails,
-      source = "Web"
+      bankTransferDetails
     } = req.body;
+    const source = req.paymentOrigin === "App" ? "App" : "Web";
 
     // Validate required fields
     if (!dealerId || !paymentAmount || !paymentMethod) {
@@ -761,11 +905,12 @@ export const recordAdvancePayment = async (req, res) => {
 };
 
 // Helper function to process advance payment (update dealer and create ledger entry)
-async function processAdvancePayment(payment, dealer, userId, dbConnection) {
+async function processAdvancePayment(payment, dealer, userId, dbConnection, session = null) {
   const { Dealer, DealerLedger } = getModels(dbConnection);
-  try {
-    // Update dealer's advance balance
-    await Dealer.findByIdAndUpdate(dealer._id, {
+
+  await Dealer.findByIdAndUpdate(
+    dealer._id,
+    {
       $inc: { advanceBalance: payment.paymentAmount },
       $push: {
         advancePayments: {
@@ -776,49 +921,36 @@ async function processAdvancePayment(payment, dealer, userId, dbConnection) {
           remainingAmount: payment.paymentAmount
         }
       }
-    });
+    },
+    session ? { session } : undefined
+  );
 
-    // Create ledger entry for advance payment
-    const lastEntry = await DealerLedger.findOne(
-      { dealer: dealer._id },
-      {},
-      { sort: { 'createdAt': -1 } }
-    );
-    
-    let previousBalance = 0;
-    if (lastEntry) {
-      previousBalance = lastEntry.runningBalance;
-    }
-    
-    const ledgerEntry = new DealerLedger({
-      dealer: dealer._id,
-      dealerName: dealer.name,
-      dealerCode: dealer.code,
-      entryDate: payment.paymentDate,
-      transactionType: "Advance Payment",
-      paymentReceived: payment.paymentAmount,
-      paymentMethod: payment.paymentMethod,
-      chequeDetails: payment.chequeDetails,
-      upiDetails: payment.upiDetails,
-      bankTransferDetails: payment.bankTransferDetails,
-      debitAmount: 0,
-      creditAmount: payment.paymentAmount,
-      runningBalance: previousBalance - payment.paymentAmount,
-      description: `Advance payment ${payment.paymentNumber}`,
-      remarks: payment.remarks,
-      advanceDetails: {
-        isAdvance: true,
-        advancePaymentId: payment._id
-      },
-      createdBy: userId
-    });
-    
-    await ledgerEntry.save();
-    console.log(`Created advance payment ledger entry: ${payment.paymentNumber}`);
-  } catch (error) {
-    console.error("Error processing advance payment:", error);
-    throw error;
-  }
+  const ledgerEntry = new DealerLedger({
+    dealer: dealer._id,
+    dealerName: dealer.name,
+    dealerCode: dealer.code,
+    entryDate: payment.paymentDate,
+    transactionType: "Advance Payment",
+    dealerPayment: payment._id,
+    paymentReceived: payment.paymentAmount,
+    paymentMethod: payment.paymentMethod,
+    chequeDetails: payment.chequeDetails,
+    upiDetails: payment.upiDetails,
+    bankTransferDetails: payment.bankTransferDetails,
+    debitAmount: 0,
+    creditAmount: payment.paymentAmount,
+    runningBalance: 0,
+    description: `Advance payment ${payment.paymentNumber}`,
+    remarks: payment.remarks,
+    advanceDetails: {
+      isAdvance: true,
+      advancePaymentId: payment._id
+    },
+    createdBy: userId
+  });
+
+  await ledgerEntry.save(session ? { session } : undefined);
+  console.log(`Created advance payment ledger entry: ${payment.paymentNumber}`);
 }
 
 // @desc    Adjust advance payment against invoice
@@ -1068,67 +1200,101 @@ export const getOverdueInvoices = async (req, res) => {
 // Update the existing updateDealerPaymentStatus to handle advance payments
 const originalUpdateDealerPaymentStatus = updateDealerPaymentStatus;
 export const updateDealerPaymentStatusWithAdvance = async (req, res) => {
+  const { DealerPayment, Dealer, DealerInvoice } = getModels(req.dbConnection);
+
   try {
     const { status, rejectionReason } = req.body;
     const paymentId = req.params.id;
 
-    const payment = await DealerPayment.findById(paymentId);
-    if (!payment) {
-      return res.status(404).json({
+    if (!['Approved', 'Rejected'].includes(status)) {
+      return res.status(400).json({
         success: false,
-        message: "Payment not found"
+        message: "Status must be Approved or Rejected"
       });
     }
 
-    // Update payment status
-    payment.status = status;
-    
-    if (status === "Approved") {
-      payment.approvedBy = req.user._id;
-      payment.approvedAt = new Date();
-      
-      // Handle advance payment approval
-      if (payment.paymentCategory === "Advance Payment") {
-        const dealer = await Dealer.findById(payment.dealer);
-        await processAdvancePayment(payment, dealer, req.user._id);
-      } else {
-        // Handle regular invoice payment approval
-        const invoice = await DealerInvoice.findOne({
-          _id: payment.dealerInvoice,
-          isDraft: false,
-          isDeleted: { $ne: true }
-        }).populate("dealer", "name code");
-        
-        if (invoice) {
-          await updateInvoiceAndLedger(payment, invoice, req.user._id);
-        }
+    const result = await runPaymentTransaction(req.dbConnection, async (session) => {
+      const payment = await DealerPayment.findById(paymentId).session(session);
+      if (!payment) {
+        throw createPaymentError(404, "Payment not found");
       }
-    } else if (status === "Rejected") {
-      payment.rejectedBy = req.user._id;
-      payment.rejectedAt = new Date();
-      payment.rejectionReason = rejectionReason || "";
-    }
+      if (payment.status !== "Pending") {
+        throw createPaymentError(
+          409,
+          `Payment is already ${payment.status.toLowerCase()} and cannot be processed again`
+        );
+      }
 
-    await payment.save();
+      await assertPeriodOpen(req.dbConnection, payment.paymentDate, "dealer payment approval");
 
-    // Populate the updated payment
-    const updatedPayment = await DealerPayment.findById(paymentId)
+      if (status === "Approved") {
+        if (payment.paymentCategory === "Advance Payment") {
+          const dealer = await Dealer.findById(payment.dealer).session(session);
+          if (!dealer) {
+            throw createPaymentError(404, "Dealer not found for advance payment");
+          }
+          await processAdvancePayment(
+            payment,
+            dealer,
+            req.user._id,
+            req.dbConnection,
+            session
+          );
+        } else {
+          const invoice = await DealerInvoice.findOne({
+            _id: payment.dealerInvoice,
+            dealer: payment.dealer,
+            isDraft: false,
+            isDeleted: { $ne: true }
+          })
+            .session(session)
+            .populate("dealer", "name code");
+
+          if (!invoice) {
+            throw createPaymentError(404, "Invoice not found, is a draft, or has been cancelled");
+          }
+
+          await updateInvoiceAndLedger(
+            payment,
+            invoice,
+            req.user._id,
+            req.dbConnection,
+            session
+          );
+        }
+
+        payment.status = "Approved";
+        payment.approvedBy = req.user._id;
+        payment.approvedAt = new Date();
+      } else {
+        payment.status = "Rejected";
+        payment.rejectedBy = req.user._id;
+        payment.rejectedAt = new Date();
+        payment.rejectionReason = rejectionReason || "";
+      }
+
+      await payment.save({ session });
+      return { paymentId: payment._id };
+    });
+
+    const updatedPayment = await DealerPayment.findById(result.paymentId)
       .populate("dealer", "name code companyName")
       .populate("dealerInvoice", "invoiceNumber totalAmount paymentStatus")
       .populate("createdBy", "name email")
       .populate("approvedBy", "name email")
       .populate("rejectedBy", "name email");
 
-    res.json({
+    return res.json({
       success: true,
       message: `Payment ${status.toLowerCase()} successfully`,
       payment: updatedPayment
     });
   } catch (error) {
+    if (handlePeriodLockError(error, res)) return;
     console.error("Update Dealer Payment Status Error:", error);
-    res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: "Error updating payment status",
+      message: error.statusCode ? error.message : "Error updating payment status",
       error: error.message
     });
   }

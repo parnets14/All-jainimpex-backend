@@ -200,6 +200,12 @@ const dealerSchema = new mongoose.Schema(
       default: 0,
       min: [0, "Advance balance cannot be negative"],
     },
+    // Incremented inside payment transactions to serialize ledger postings per dealer.
+    ledgerPostingVersion: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
 
     // Opening balance at go-live (migration from previous books).
     // Dr = dealer owes us (receivable); Cr = we owe the dealer (advance).

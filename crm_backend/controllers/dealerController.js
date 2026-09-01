@@ -63,6 +63,7 @@ export const getDealers = async (req, res) => {
       regionId,
       dealerCategory,
       isActive,
+      compact = "false",
       sortBy = "createdAt",
       sortOrder = "desc",
     } = req.query;
@@ -105,23 +106,37 @@ export const getDealers = async (req, res) => {
     const sort = {};
     sort[sortBy] = sortOrder === "desc" ? -1 : 1;
 
-    // Get total count for pagination
-    const total = await Dealer.countDocuments(filter);
-
-    // Get dealers with pagination
-    const dealers = await Dealer.find(filter)
+    const compactMode = compact === "true";
+    let dealerQuery = Dealer.find(filter)
       .sort(sort)
       .limit(limitNumber)
-      .skip(skip)
-      .populate('regionId', 'name code')
-      .populate('routeId', 'name code')
-      .populate('salesExecutiveId', 'name empId email')
-      .populate('dealerCategory', 'name color description')
-      .populate('allowedBrands', 'name description')
-      .populate('allowedCategories', 'name description')
-      .populate('allowedSubcategories', 'name description')
-      .populate('allowedExtendedSubcategories', 'name level description')
-      .select("-__v");
+      .skip(skip);
+
+    if (compactMode) {
+      // Order/invoice dealer pickers need identity, contact, credit and region
+      // fields only. Avoid document arrays and seven unrelated populations.
+      dealerQuery = dealerQuery
+        .select("code name contactPerson phone email address gst dealerType regionId creditLimit creditDays creditDaysRegular creditDaysCD extraDiscounts isActive")
+        .populate('regionId', 'name code')
+        .lean();
+    } else {
+      dealerQuery = dealerQuery
+        .populate('regionId', 'name code')
+        .populate('routeId', 'name code')
+        .populate('salesExecutiveId', 'name empId email')
+        .populate('dealerCategory', 'name color description')
+        .populate('allowedBrands', 'name description')
+        .populate('allowedCategories', 'name description')
+        .populate('allowedSubcategories', 'name description')
+        .populate('allowedExtendedSubcategories', 'name level description')
+        .select("-__v");
+    }
+
+    // Count and page reads are independent; do not serialize them.
+    const [total, dealers] = await Promise.all([
+      Dealer.countDocuments(filter),
+      dealerQuery
+    ]);
 
     // Calculate pagination metadata
     const totalPages = Math.ceil(total / limitNumber);
@@ -818,12 +833,10 @@ export const getDealerCompleteInfo = async (req, res) => {
     
     const { id } = req.params;
     
-    // Import DiscountMapping schema and create model
-    const { discountMappingSchema } = await import("../models/DiscountMapping.js");
-    const DiscountMapping = req.dbConnection.models.DiscountMapping || req.dbConnection.model('DiscountMapping', discountMappingSchema);
-    
-    // 1. Get dealer basic info
-    const dealer = await Dealer.findById(id);
+    // 1. Get only dealer fields consumed by the order form.
+    const dealer = await Dealer.findById(id)
+      .select('code name creditLimit creditDays creditDaysRegular creditDaysCD dealerType extraDiscounts')
+      .lean();
     if (!dealer) {
       return res.status(404).json({ 
         success: false, 
@@ -831,11 +844,59 @@ export const getDealerCompleteInfo = async (req, res) => {
       });
     }
     
-    // 2. Calculate credit status from ledger AND payment allocations
-    const ledgerEntries = await DealerLedger.find({ dealer: id }).sort({ entryDate: 1 });
-    
-    // Get payment allocations (these are NOT in DealerLedger but should be counted)
-    const paymentAllocations = await PaymentAllocation.find({ partyId: id }).lean();
+    // Independent dealer summary reads run together. Projections avoid loading
+    // full ledger, allocation and order documents into memory.
+    const [
+      ledgerEntries,
+      paymentAllocations,
+      confirmedOrders,
+      invoicedOrderIds,
+      lastOrder,
+      lastLedgerPayment,
+      lastAllocationPayment,
+      orderSummaryRows
+    ] = await Promise.all([
+      DealerLedger.find({ dealer: id })
+        .select('entryDate dueDate debitAmount creditAmount transactionType')
+        .sort({ entryDate: 1 })
+        .lean(),
+      PaymentAllocation.find({ partyId: id })
+        .select('totalAllocated allocationDate')
+        .lean(),
+      SalesOrder.find({
+        dealer: id,
+        status: { $in: ['Confirmed', 'Processing', 'In Transit'] }
+      })
+        .select('_id creditAmount totalAmount')
+        .lean(),
+      DealerInvoice.distinct('salesOrder', {
+        dealer: id,
+        salesOrder: { $ne: null },
+        status: { $nin: ['Cancelled', 'Rejected'] }
+      }),
+      SalesOrder.findOne({ dealer: id })
+        .select('orderDate orderNumber totalAmount products status')
+        .sort({ orderDate: -1 })
+        .lean(),
+      DealerLedger.findOne({ dealer: id, transactionType: 'Payment' })
+        .select('entryDate creditAmount')
+        .sort({ entryDate: -1 })
+        .lean(),
+      PaymentAllocation.findOne({ partyId: id })
+        .select('allocationDate totalAllocated')
+        .sort({ allocationDate: -1 })
+        .lean(),
+      SalesOrder.aggregate([
+        { $match: { dealer: dealer._id } },
+        {
+          $group: {
+            _id: null,
+            totalOrders: { $sum: 1 },
+            totalPurchaseValue: { $sum: { $ifNull: ['$totalAmount', 0] } }
+          }
+        }
+      ])
+    ]);
     
     // Calculate outstanding from ledger entries
     let currentOutstanding = ledgerEntries.reduce((sum, entry) => {
@@ -850,24 +911,11 @@ export const getDealerCompleteInfo = async (req, res) => {
     // Adjust outstanding by subtracting allocated payments
     currentOutstanding = currentOutstanding - totalAllocatedPayments;
     
-    // Calculate confirmed orders amount (orders confirmed but not yet invoiced)
-    // These are orders in Confirmed/Processing/In Transit status that don't have an invoice yet
-    const confirmedOrders = await SalesOrder.find({
-      dealer: id,
-      status: { $in: ['Confirmed', 'Processing', 'In Transit'] }
-    }).lean();
+    const invoicedOrderIdStrings = new Set(invoicedOrderIds.map(orderId => orderId.toString()));
     
-    // Check which confirmed orders already have invoices (to avoid double counting)
-    const invoicedOrderIds = await DealerInvoice.distinct('salesOrder', {
-      dealer: id,
-      salesOrder: { $ne: null },
-      status: { $nin: ['Cancelled', 'Rejected'] }
-    });
-    const invoicedOrderIdStrings = invoicedOrderIds.map(id => id.toString());
-    
-    // Sum up confirmed orders that are NOT yet invoiced
+    // Sum confirmed orders that are not yet invoiced.
     const confirmedOrdersAmount = confirmedOrders.reduce((sum, order) => {
-      const isInvoiced = invoicedOrderIdStrings.includes(order._id.toString());
+      const isInvoiced = invoicedOrderIdStrings.has(order._id.toString());
       // Use creditAmount (conservative: excludes level discount) if available,
       // otherwise fall back to totalAmount for older orders.
       return isInvoiced ? sum : sum + (order.creditAmount || order.totalAmount || 0);
@@ -875,13 +923,6 @@ export const getDealerCompleteInfo = async (req, res) => {
     
     // Total credit used = actual ledger outstanding + confirmed-but-not-invoiced orders
     const totalCreditUsed = currentOutstanding + confirmedOrdersAmount;
-    
-    console.log(`📊 Dealer ${dealer.name} Outstanding Calculation:`);
-    console.log(`   Ledger Balance: ₹${(currentOutstanding + totalAllocatedPayments).toLocaleString()}`);
-    console.log(`   Payment Allocations: ₹${totalAllocatedPayments.toLocaleString()}`);
-    console.log(`   Invoice Outstanding: ₹${currentOutstanding.toLocaleString()}`);
-    console.log(`   Confirmed Orders (not invoiced): ₹${confirmedOrdersAmount.toLocaleString()} (${confirmedOrders.filter(o => !invoicedOrderIdStrings.includes(o._id.toString())).length} orders)`);
-    console.log(`   Total Credit Used: ₹${totalCreditUsed.toLocaleString()}`);
     
     const availableCredit = Math.max(0, dealer.creditLimit - totalCreditUsed);
     const utilizationPercent = dealer.creditLimit > 0 
@@ -894,11 +935,6 @@ export const getDealerCompleteInfo = async (req, res) => {
     } else if (utilizationPercent > 70) {
       creditStatusType = 'warning';
     }
-    
-    // 3. Get last purchase
-    const lastOrder = await SalesOrder.findOne({ dealer: id })
-      .sort({ orderDate: -1 })
-      .populate('products.product', 'itemName');
     
     // 4. Calculate payment status and overdue amounts
     const today = new Date();
@@ -933,21 +969,7 @@ export const getDealerCompleteInfo = async (req, res) => {
       }
     }
     
-    console.log(`📊 Overdue Calculation:`);
-    console.log(`   Current Outstanding: ₹${currentOutstanding.toLocaleString()}`);
-    console.log(`   Overdue Amount: ₹${overdueAmount.toLocaleString()}`);
-    
-    // Get last payment - check both DealerLedger and PaymentAllocation
-    const lastLedgerPayment = await DealerLedger.findOne({ 
-      dealer: id, 
-      transactionType: 'Payment' 
-    }).sort({ entryDate: -1 });
-    
-    const lastAllocationPayment = await PaymentAllocation.findOne({ 
-      partyId: id 
-    }).sort({ allocationDate: -1 });
-    
-    // Determine which is the most recent payment
+    // Determine which payment source is the most recent.
     let lastPayment = null;
     let lastPaymentDate = null;
     let lastPaymentAmount = 0;
@@ -999,10 +1021,10 @@ export const getDealerCompleteInfo = async (req, res) => {
     // 5. Get dealer's extra discounts (instead of global available discounts)
     const extraDiscounts = dealer.extraDiscounts?.filter(discount => discount.isActive) || [];
     
-    // 6. Calculate summary statistics
-    const allOrders = await SalesOrder.find({ dealer: id });
-    const totalOrders = allOrders.length;
-    const totalPurchaseValue = allOrders.reduce((sum, order) => sum + (order.totalAmount || 0), 0);
+    // 6. Summary comes from the database instead of materializing every order.
+    const orderSummary = orderSummaryRows[0] || { totalOrders: 0, totalPurchaseValue: 0 };
+    const totalOrders = orderSummary.totalOrders;
+    const totalPurchaseValue = orderSummary.totalPurchaseValue;
     const averageOrderValue = totalOrders > 0 ? Math.round(totalPurchaseValue / totalOrders) : 0;
     const lastOrderDaysAgo = lastOrder 
       ? Math.floor((today - new Date(lastOrder.orderDate)) / (1000 * 60 * 60 * 24))
@@ -1141,7 +1163,7 @@ export const getDealerAccessibleProducts = async (req, res) => {
 
     // Use smart hierarchical filtering
     console.log("🎯 Calculating smart hierarchical product filter...");
-    const productFilter = await calculateProductFilter(dealer);
+    const productFilter = await calculateProductFilter(dealer, req.dbConnection);
     console.log("🔍 Smart filter result:", JSON.stringify(productFilter, null, 2));
 
     // Apply search filter if provided
@@ -1251,6 +1273,7 @@ export const getDealerAccessibleProducts = async (req, res) => {
     // If no products match the hierarchy filter, it might be because products don't have hierarchy fields set
     // In this case, return all products as a fallback (temporary solution)
     let finalFilter = productFilter;
+    let finalTotal = total;
     if (total === 0) {
       console.log("⚠️ No products match hierarchy filter. Checking if products have hierarchy fields...");
       
@@ -1259,11 +1282,10 @@ export const getDealerAccessibleProducts = async (req, res) => {
       if (sampleProduct && !sampleProduct.brand && !sampleProduct.category && !sampleProduct.subcategory && !sampleProduct.subcategory1) {
         console.log("⚠️ Products don't have hierarchy fields set. Returning all products as fallback.");
         finalFilter = { status: 'active' }; // Return all active products
+        finalTotal = await Product.countDocuments(finalFilter);
       }
     }
 
-    // Recalculate total with final filter
-    const finalTotal = await Product.countDocuments(finalFilter);
     console.log("📊 Final total products:", finalTotal);
 
     // Get products with pagination
@@ -1276,7 +1298,8 @@ export const getDealerAccessibleProducts = async (req, res) => {
       .populate('subcategory', '_id name')
       .populate('subcategory1', '_id name level')
       .populate('subcategory2', '_id name level')
-      .select("-__v");
+      .select("-__v")
+      .lean();
 
     console.log("📦 Products returned:", products.length);
     console.log("📦 Sample products:", products.slice(0, 3).map(p => ({

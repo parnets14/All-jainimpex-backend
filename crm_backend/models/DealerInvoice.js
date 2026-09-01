@@ -1,10 +1,18 @@
 import mongoose from "mongoose";
+import {
+  calculateDiscountLine,
+  calculateOneTimeInvoicePriceIncrease
+} from "../utils/sequentialDiscountPolicy.js";
 
 const invoiceItemSchema = new mongoose.Schema({
   product: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Product",
     required: true
+  },
+  sourceSalesOrderLineId: {
+    type: mongoose.Schema.Types.ObjectId,
+    default: null
   },
   productCode: String,
   productName: String,
@@ -44,6 +52,50 @@ const invoiceItemSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  promisedEffectiveDiscountPercentage: {
+    type: Number,
+    default: null,
+    min: 0,
+    max: 100
+  },
+  requiredSequentialStageRatePercentage: {
+    type: Number,
+    default: null,
+    min: 0,
+    max: 100
+  },
+  effectiveDiscountPercentage: {
+    type: Number,
+    default: null,
+    min: 0,
+    max: 100
+  },
+  masterDiscountCapApplied: {
+    type: Boolean,
+    default: false
+  },
+  combinedLevelDiscountCapApplied: {
+    type: Boolean,
+    default: false
+  },
+  levelDiscountTotalPercentage: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  discountFamilyKey: {
+    type: String,
+    default: null,
+    trim: true
+  },
+  discountPolicySnapshot: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null
+  },
+  discountPermissionSnapshot: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null
+  },
   // Detailed discount information
   selectedDiscountLevels: [String], // Array of selected level names
   manualDiscountLevels: {
@@ -68,7 +120,19 @@ const invoiceItemSchema = new mongoose.Schema({
       discountPercentage: Number
     }],
     targetType: String,
-    maxDiscountPercentage: Number
+    maxDiscountPercentage: Number,
+    masterDiscountCap: {
+      type: Number,
+      default: null,
+      min: 0,
+      max: 100
+    },
+    combinedLevelDiscountCap: {
+      type: Number,
+      default: null,
+      min: 0,
+      max: 100
+    }
   }],
   mrp: {
     type: Number,
@@ -79,6 +143,39 @@ const invoiceItemSchema = new mongoose.Schema({
   pointsEarned: {
     type: Number,
     default: 0
+  },
+  // Exceptional invoice-only increase applied after all discount stages.
+  // Discount amount/effective percentage remain the pre-increase authority.
+  priceBeforeIncrease: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  oneTimePriceIncreasePercentage: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 100
+  },
+  oneTimePriceIncreaseAmount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  oneTimePriceIncreaseReason: {
+    type: String,
+    default: null,
+    trim: true,
+    maxlength: 500
+  },
+  oneTimePriceIncreaseAppliedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    default: null
+  },
+  oneTimePriceIncreaseAppliedAt: {
+    type: Date,
+    default: null
   },
   totalPrice: {
     type: Number,
@@ -156,6 +253,11 @@ const dealerInvoiceSchema = new mongoose.Schema({
   totalDiscount: {
     type: Number,
     default: 0
+  },
+  totalIncrease: {
+    type: Number,
+    default: 0,
+    min: 0
   },
   totalGst: {
     type: Number,
@@ -283,93 +385,109 @@ dealerInvoiceSchema.pre("save", function(next) {
   next();
 });
 
-// Pre-save for item calculations — Sequential discount on MRP (GST inclusive)
+// Pre-save for item calculations — Sequential discount on MRP (GST inclusive).
+// Status/payment-only saves must never rewrite historical invoice amounts.
 dealerInvoiceSchema.pre("save", function(next) {
-  this.items.forEach(item => {
-    // Determine MRP per unit (GST inclusive price used as discount base):
-    // 1. If item.mrp is explicitly set → use it directly (post-migration: mrp IS the GST-inclusive price)
-    // 2. Otherwise → calculate from unitPrice + GST (legacy behavior for pre-migration data)
-    const mrpPerUnit = item.mrp && item.mrp > 0
-      ? item.mrp
-      : item.unitPrice * (1 + (item.gst || 0) / 100);
-    const grossAmount = item.quantity * mrpPerUnit; // Total MRP for all units
-    
-    // Apply discounts SEQUENTIALLY (not flat additive)
-    // Order: Direct discount first, then each selected level discount, then dealer extra
-    let currentAmount = grossAmount;
-    let totalDiscountAmount = 0;
-    
-    // Get the applied discount mapping details
-    const appliedDiscount = item.appliedDiscounts?.[0];
-    
-    // 1. Apply direct discount first (from the discount mapping)
-    const directDiscountPct = (appliedDiscount?.discountType === 'both' || appliedDiscount?.discountType === 'direct')
-      ? (appliedDiscount?.directDiscountPercentage || 0)
-      : 0;
-    
-    if (directDiscountPct > 0) {
-      const discAmt = currentAmount * (directDiscountPct / 100);
-      currentAmount -= discAmt;
-      totalDiscountAmount += discAmt;
-    }
-    
-    // 2. Apply each SELECTED level discount sequentially
-    const selectedLevels = item.selectedDiscountLevels || [];
-    const manualLevels = item.manualDiscountLevels instanceof Map 
-      ? Object.fromEntries(item.manualDiscountLevels) 
-      : (item.manualDiscountLevels || {});
-    const allLevels = appliedDiscount?.levels || [];
-    
-    if (selectedLevels.length > 0) {
-      for (const levelName of selectedLevels) {
-        const levelDef = allLevels.find(l => l.levelName === levelName);
-        const pct = manualLevels[levelName] !== undefined 
-          ? Number(manualLevels[levelName]) 
-          : (levelDef?.discountPercentage || 0);
-        if (pct > 0) {
-          const levelAmt = currentAmount * (pct / 100);
-          currentAmount -= levelAmt;
-          totalDiscountAmount += levelAmt;
-        }
+  if (!this.isNew && !this.isModified("items")) return next();
+
+  try {
+    this.items.forEach(item => {
+      const mrpPerUnit = item.mrp && item.mrp > 0
+        ? item.mrp
+        : item.unitPrice * (1 + (item.gst || 0) / 100);
+      const grossAmount = item.quantity * mrpPerUnit;
+      const appliedDiscount = item.appliedDiscounts?.[0];
+      const policySnapshot = item.discountPolicySnapshot || {};
+      const permissionSnapshot = item.discountPermissionSnapshot || {};
+      const persistedOrderedStages = policySnapshot.orderedStages;
+      const hasPersistedDiscountSignal = Number(item.discountAmount || 0) > 0
+        || Number(item.discountPercentage || 0) > 0
+        || Number(item.dealerExtraDiscount || 0) > 0
+        || Number(appliedDiscount?.directDiscountPercentage || 0) > 0
+        || (item.selectedDiscountLevels || []).length > 0;
+
+      if ((!Array.isArray(persistedOrderedStages) || persistedOrderedStages.length === 0)
+          && hasPersistedDiscountSignal) {
+        const error = new Error(
+          `Invoice line ${item.productName || item.product} has a discount but no ordered policy snapshot. Reprice the source Sales Order or invoice line before saving.`
+        );
+        error.name = "DiscountPolicyError";
+        error.code = "REPRICE_DISCOUNTS_REQUIRED";
+        throw error;
       }
-    }
-    
-    // 3. Apply dealer extra discount (if any)
-    if (item.dealerExtraDiscount && item.dealerExtraDiscount > 0) {
-      const extraAmt = currentAmount * (item.dealerExtraDiscount / 100);
-      currentAmount -= extraAmt;
-      totalDiscountAmount += extraAmt;
-    }
-    
-    // Final amount already includes GST (since MRP includes GST)
-    item.totalPrice = parseFloat(currentAmount.toFixed(2));
-    item.discountAmount = parseFloat(totalDiscountAmount.toFixed(2));
-    
-    // Reverse-calculate GST amount for tax breakdown display
-    // GST portion = finalAmount - finalAmount / (1 + gst/100)
-    const gstRate = item.gst || 0;
-    if (gstRate > 0) {
-      item.gstAmount = parseFloat((currentAmount - currentAmount / (1 + gstRate / 100)).toFixed(2));
-    } else {
-      item.gstAmount = 0;
-    }
-  });
 
-  // Calculate invoice-level totals from the processed items
-  // subtotal = MRP × qty for all items (GST inclusive)
-  this.subtotal = this.items.reduce((sum, item) => {
-    const mrpPerUnit = item.mrp && item.mrp > 0 ? item.mrp : item.unitPrice * (1 + (item.gst || 0) / 100);
-    return sum + (item.quantity * mrpPerUnit);
-  }, 0);
+      const stages = (persistedOrderedStages || []).map(stage => ({
+        key: stage.key,
+        kind: stage.kind,
+        levelName: stage.levelName || null,
+        ratePercentage: Number(stage.ratePercentage || 0)
+      }));
+      const masterDiscountCap = policySnapshot.masterDiscountCap
+        ?? appliedDiscount?.masterDiscountCap
+        ?? null;
+      const combinedLevelDiscountCap = policySnapshot.combinedLevelDiscountCap
+        ?? appliedDiscount?.combinedLevelDiscountCap
+        ?? appliedDiscount?.maxDiscountPercentage
+        ?? null;
+      const calculation = calculateDiscountLine({
+        baseAmount: grossAmount,
+        stages,
+        gstPercentage: item.gst || 0,
+        promisedEffectiveDiscountPercentage: item.promisedEffectiveDiscountPercentage,
+        masterDiscountCap,
+        combinedLevelDiscountCap,
+        allowedDiscountLevels: permissionSnapshot.allowedDiscountLevels || [],
+        enforceLevelPermissions: permissionSnapshot.enforceLevelPermissions === true,
+        bypassLevelPermission: permissionSnapshot.bypassLevelPermission === true
+      });
 
-  this.totalDiscount = this.items.reduce((sum, item) => sum + (item.discountAmount || 0), 0);
-  this.totalGst = this.items.reduce((sum, item) => sum + (item.gstAmount || 0), 0);
-  this.totalPoints = this.items.reduce((sum, item) => sum + (item.pointsEarned || 0), 0);
+      const priceIncrease = calculateOneTimeInvoicePriceIncrease({
+        priceBeforeIncrease: calculation.finalAmount,
+        increasePercentage: item.oneTimePriceIncreasePercentage || 0,
+        gstPercentage: item.gst || 0,
+        maximumFinalAmount: grossAmount
+      });
+      if (priceIncrease.oneTimePriceIncreasePercentage > 0
+          && !String(item.oneTimePriceIncreaseReason || '').trim()) {
+        const error = new Error(
+          `Invoice line ${item.productName || item.product} requires a reason for its one-time price increase.`
+        );
+        error.name = "DiscountPolicyError";
+        error.code = "ONE_TIME_PRICE_INCREASE_REASON_REQUIRED";
+        throw error;
+      }
 
-  // totalAmount = sum of item totalPrices (MRP after sequential discounts, GST already included)
-  this.totalAmount = this.items.reduce((sum, item) => sum + (item.totalPrice || 0), 0);
+      item.priceBeforeIncrease = priceIncrease.priceBeforeIncrease;
+      item.oneTimePriceIncreasePercentage = priceIncrease.oneTimePriceIncreasePercentage;
+      item.oneTimePriceIncreaseAmount = priceIncrease.oneTimePriceIncreaseAmount;
+      item.totalPrice = priceIncrease.finalAmount;
+      item.discountAmount = calculation.discountAmount;
+      item.gstAmount = priceIncrease.gstAmount;
+      item.effectiveDiscountPercentage = calculation.effectiveDiscountPercentage;
+      item.requiredSequentialStageRatePercentage = calculation.requiredSequentialStageRatePercentage;
+      item.masterDiscountCapApplied = calculation.masterDiscountCapApplied;
+      item.combinedLevelDiscountCapApplied = calculation.combinedLevelDiscountCapApplied;
+      item.levelDiscountTotalPercentage = calculation.levelDiscountTotalPercentage;
+    });
 
-  next();
+    this.subtotal = this.items.reduce((sum, item) => {
+      const mrpPerUnit = item.mrp && item.mrp > 0
+        ? item.mrp
+        : item.unitPrice * (1 + (item.gst || 0) / 100);
+      return sum + item.quantity * mrpPerUnit;
+    }, 0);
+    this.totalDiscount = this.items.reduce((sum, item) => sum + (item.discountAmount || 0), 0);
+    this.totalIncrease = this.items.reduce(
+      (sum, item) => sum + (item.oneTimePriceIncreaseAmount || 0),
+      0
+    );
+    this.totalGst = this.items.reduce((sum, item) => sum + (item.gstAmount || 0), 0);
+    this.totalPoints = this.items.reduce((sum, item) => sum + (item.pointsEarned || 0), 0);
+    this.totalAmount = this.items.reduce((sum, item) => sum + (item.totalPrice || 0), 0);
+    next();
+  } catch (error) {
+    next(error);
+  }
 });
 
 // Generate invoice number (only for non-draft invoices)
@@ -417,6 +535,7 @@ dealerInvoiceSchema.post("save", async function(doc, next) {
 // Index for better query performance
 // Note: invoiceNumber index is defined on the field itself with sparse:true - no duplicate needed
 dealerInvoiceSchema.index({ dealer: 1 });
+dealerInvoiceSchema.index({ dealer: 1, status: 1, salesOrder: 1 });
 dealerInvoiceSchema.index({ invoiceDate: -1 });
 dealerInvoiceSchema.index({ status: 1 });
 dealerInvoiceSchema.index({ paymentStatus: 1 });

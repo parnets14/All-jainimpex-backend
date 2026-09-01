@@ -11,6 +11,7 @@ import { dealerPricingSchema } from "../models/DealerPricing.js";
 import { productPriceListHistorySchema } from "../models/ProductPriceListHistory.js";
 import { warehouseSchema } from "../models/Warehouse.js";
 import StockMovementService from "../services/stockMovementService.js";
+import { getLowStockSnapshot } from "../services/dashboardStockService.js";
 import mongoose from "mongoose";
 
 // Helper function to get models from company-specific connection
@@ -54,7 +55,11 @@ export const getProducts = async (req, res) => {
       status,
       salesType,
       productType,
+      includeStock = "true",
+      compact = "false",
     } = req.query;
+    const shouldIncludeStock = includeStock !== "false";
+    const compactMode = compact === "true";
 
     const filter = {};
 
@@ -169,29 +174,50 @@ export const getProducts = async (req, res) => {
       filter.productType = productType;
     }
 
-    const products = await Product.find(filter)
-      .populate("category", "name")
-      .populate("subcategory", "name")
-      .populate("subcategory1", "name")
-      .populate("subcategory2", "name")
-      .populate("subcategory3", "name")
-      .populate("subcategory4", "name")
-      .populate("subcategory5", "name")
-      .populate("brand", "name")
-      .populate("createdBy", "name email")
+    let productsQuery = Product.find(filter);
+
+    if (compactMode) {
+      // Order/invoice forms need product identity, hierarchy, units and pricing
+      // inputs only. Exclude large descriptions/audit fields from bulk preload.
+      productsQuery = productsQuery
+        .select("productCode itemName description HSNCode internalRate mrp totalAmount gst unitPrice rateSlabs brand category subcategory subcategory1 subcategory2 subcategory3 subcategory4 subcategory5 status salesType productType unit alternateUnit alternateUnitQuantity minStockLevel")
+        .populate("category", "name")
+        .populate("subcategory", "name")
+        .populate("subcategory1", "name")
+        .populate("subcategory2", "name")
+        .populate("subcategory3", "name")
+        .populate("subcategory4", "name")
+        .populate("subcategory5", "name")
+        .populate("brand", "name");
+    } else {
+      productsQuery = productsQuery
+        .populate("category", "name")
+        .populate("subcategory", "name")
+        .populate("subcategory1", "name")
+        .populate("subcategory2", "name")
+        .populate("subcategory3", "name")
+        .populate("subcategory4", "name")
+        .populate("subcategory5", "name")
+        .populate("brand", "name")
+        .populate("createdBy", "name email");
+    }
+
+    productsQuery = productsQuery
       .limit(limit * 1)
       .skip((page - 1) * limit)
       .sort({ createdAt: -1 });
 
-    const total = await Product.countDocuments(filter);
+    const [products, total] = await Promise.all([
+      productsQuery,
+      Product.countDocuments(filter)
+    ]);
 
-    // OPTIMIZED: Fetch stock information for all products in bulk
+    // Order/invoice forms request includeStock=false because they load live
+    // warehouse stock separately. Skip the movement scan entirely in that mode.
     const productIds = products.map(p => p._id);
-    
-    // Get all stock movements for these products in one query
-    const allStockMovements = await StockMovement.find({ 
-      productId: { $in: productIds } 
-    }).lean();
+    const allStockMovements = shouldIncludeStock
+      ? await StockMovement.find({ productId: { $in: productIds } }).lean()
+      : [];
     
     // Group movements by product and warehouse
     const productWarehouseMap = {};
@@ -209,7 +235,8 @@ export const getProducts = async (req, res) => {
     });
     
     // Calculate stock for all products
-    const productsWithStock = await Promise.all(
+    const productsWithStock = shouldIncludeStock
+      ? await Promise.all(
       products.map(async (product) => {
         try {
           const productId = product._id.toString();
@@ -296,7 +323,8 @@ export const getProducts = async (req, res) => {
           };
         }
       })
-    );
+    )
+      : products.map(product => product.toObject());
 
     res.json({
       success: true,
@@ -894,65 +922,14 @@ export const deleteProduct = async (req, res) => {
 // @access  Private
 export const getProductStats = async (req, res) => {
   try {
-    // Get models from company-specific connection
-    const { Product, GRN } = getModels(req.dbConnection);
-    
-    // Run all count queries in parallel for speed
-    const [totalProducts, activeProducts, inactiveProducts] = await Promise.all([
+    const { Product, StockMovement, Warehouse } = getModels(req.dbConnection);
+
+    const [totalProducts, activeProducts, inactiveProducts, lowStockRows] = await Promise.all([
       Product.countDocuments(),
       Product.countDocuments({ status: "active" }),
-      Product.countDocuments({ status: "inactive" })
+      Product.countDocuments({ status: "inactive" }),
+      getLowStockSnapshot({ Product, StockMovement, Warehouse })
     ]);
-
-    // Calculate low stock items - products where current stock <= minStockLevel
-    let lowStockCount = 0;
-    try {
-      // Get all products with minStockLevel > 0
-      const productsWithMinStock = await Product.countDocuments({ minStockLevel: { $gt: 0 } });
-      console.log(`Products with minStockLevel > 0: ${productsWithMinStock}`);
-      
-      if (productsWithMinStock > 0) {
-        const productsWithMin = await Product.find(
-          { minStockLevel: { $gt: 0 } },
-          { _id: 1, minStockLevel: 1 }
-        ).lean();
-
-        // Get GRN stock totals per product (across all warehouses)
-        const stockAgg = await GRN.aggregate([
-          { $unwind: "$items" },
-          {
-            $group: {
-              _id: "$items.productId",
-              totalQty: { $sum: "$items.acceptedQuantity" },
-              damagedQty: { $sum: "$items.damageQuantity" }
-            }
-          }
-        ]);
-
-        // Build a map of productId -> netStock
-        const stockMap = {};
-        stockAgg.forEach(item => {
-          if (item._id) {
-            stockMap[item._id.toString()] = Math.max(0, (item.totalQty || 0) - (item.damagedQty || 0));
-          }
-        });
-
-        // Count products where netStock <= minStockLevel
-        // Products with no GRN data have stock = 0, which is <= any minStockLevel > 0
-        productsWithMin.forEach(product => {
-          const netStock = stockMap[product._id.toString()] ?? 0;
-          if (netStock <= product.minStockLevel) {
-            lowStockCount++;
-          }
-        });
-
-        console.log(`Low stock count: ${lowStockCount}`);
-      }
-    } catch (lowStockError) {
-      console.warn("Low stock calculation failed, defaulting to 0:", lowStockError.message);
-    }
-
-    console.log("Product stats:", { totalProducts, activeProducts, lowStockCount });
 
     res.json({
       success: true,
@@ -960,8 +937,8 @@ export const getProductStats = async (req, res) => {
         totalProducts,
         activeProducts,
         inactiveProducts,
-        lowStockItems: lowStockCount,
-        lowStock: lowStockCount,
+        lowStockItems: lowStockRows.length,
+        lowStock: lowStockRows.length,
       },
     });
   } catch (error) {

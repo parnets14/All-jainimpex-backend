@@ -260,37 +260,56 @@ export const getExpenseStats = asyncHandler(async (req, res) => {
     if (endDate) matchStage.date.$lte = new Date(endDate);
   }
 
-  const stats = await Expense.aggregate([
-    { $match: matchStage },
-    {
-      $lookup: {
-        from: "expensetypes",
-        localField: "type",
-        foreignField: "_id",
-        as: "typeInfo",
+  const [stats, totalStats] = await Promise.all([
+    Expense.aggregate([
+      { $match: { ...matchStage, status: 'Approved' } },
+      {
+        $lookup: {
+          from: "expensetypes",
+          localField: "type",
+          foreignField: "_id",
+          as: "typeInfo",
+        },
       },
-    },
-    { $unwind: "$typeInfo" },
-    {
-      $group: {
-        _id: "$typeInfo.name",
-        totalAmount: { $sum: "$amount" },
-        count: { $sum: 1 },
+      { $unwind: { path: "$typeInfo", preserveNullAndEmptyArrays: true } },
+      {
+        $group: {
+          _id: { $ifNull: ["$typeInfo.name", "Uncategorized"] },
+          totalAmount: { $sum: "$amount" },
+          count: { $sum: 1 },
+        },
       },
-    },
-    { $sort: { totalAmount: -1 } },
-  ]);
-
-  const totalStats = await Expense.aggregate([
-    { $match: matchStage },
-    {
-      $group: {
-        _id: null,
-        totalAmount: { $sum: "$amount" },
-        totalCount: { $sum: 1 },
-        averageAmount: { $avg: "$amount" },
+      { $sort: { totalAmount: -1 } },
+    ]),
+    Expense.aggregate([
+      { $match: matchStage },
+      {
+        $group: {
+          _id: null,
+          totalAmount: { $sum: "$amount" },
+          totalCount: { $sum: 1 },
+          averageAmount: { $avg: "$amount" },
+          approvedAmount: {
+            $sum: { $cond: [{ $eq: ["$status", "Approved"] }, "$amount", 0] }
+          },
+          approvedCount: {
+            $sum: { $cond: [{ $eq: ["$status", "Approved"] }, 1, 0] }
+          },
+          pendingAmount: {
+            $sum: { $cond: [{ $eq: ["$status", "Pending"] }, "$amount", 0] }
+          },
+          pendingCount: {
+            $sum: { $cond: [{ $eq: ["$status", "Pending"] }, 1, 0] }
+          },
+          rejectedAmount: {
+            $sum: { $cond: [{ $eq: ["$status", "Rejected"] }, "$amount", 0] }
+          },
+          rejectedCount: {
+            $sum: { $cond: [{ $eq: ["$status", "Rejected"] }, 1, 0] }
+          }
+        },
       },
-    },
+    ])
   ]);
 
   res.json({
@@ -301,6 +320,12 @@ export const getExpenseStats = asyncHandler(async (req, res) => {
         totalAmount: 0,
         totalCount: 0,
         averageAmount: 0,
+        approvedAmount: 0,
+        approvedCount: 0,
+        pendingAmount: 0,
+        pendingCount: 0,
+        rejectedAmount: 0,
+        rejectedCount: 0
       },
     },
   });

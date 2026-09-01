@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { paymentAllocationSchema } from '../models/PaymentAllocation.js';
 import { voucherSchema } from '../models/Voucher.js';
 import { dealerInvoiceSchema } from '../models/DealerInvoice.js';
@@ -18,116 +19,252 @@ const getModels = (dbConnection) => {
   };
 };
 
-/**
- * Create payment allocation
- * POST /api/payment-allocations
- */
-export const createPaymentAllocation = async (req, res) => {
-  try {
-    const { PaymentAllocation, Voucher, DealerInvoice, SupplierInvoice } = getModels(req.dbConnection);
-    const {
-      voucherId,
-      allocations
-    } = req.body;
-    
-    // Validate
-    if (!voucherId || !allocations || allocations.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Voucher ID and allocations are required'
-      });
-    }
-    
-    // Get voucher
-    const voucher = await Voucher.findById(voucherId);
-    
-    if (!voucher) {
-      return res.status(404).json({
-        success: false,
-        message: 'Voucher not found'
-      });
+const createAllocationError = (statusCode, message) => {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+};
+
+const MONEY_SCALE = 100;
+const toMinorUnits = (value) => {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return null;
+  const scaled = amount * MONEY_SCALE;
+  const units = Math.round(scaled);
+  return Math.abs(scaled - units) <= 1e-6 ? units : null;
+};
+const fromMinorUnits = (units) => units / MONEY_SCALE;
+
+const isAllocationNumberDuplicate = (error) => error?.code === 11000
+  && (error?.keyPattern?.allocationNumber
+    || error?.keyValue?.allocationNumber
+    || /allocationNumber/i.test(error?.message || ''));
+
+const expectedNumericCondition = (field, expected, allowLegacyMissing = expected === 0) => {
+  if (!allowLegacyMissing) {
+    return { [field]: expected };
+  }
+
+  return {
+    $or: [
+      { [field]: expected },
+      { [field]: null },
+      { [field]: { $exists: false } }
+    ]
+  };
+};
+
+const normalizeAllocationRows = (rows) => {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw createAllocationError(400, 'A valid voucher ID and a non-empty allocations array are required');
+  }
+
+  const seenInvoiceIds = new Set();
+  return rows.map((row) => {
+    const rawInvoiceId = String(row?.invoiceId || '');
+    const rawAmount = row?.allocatedAmount;
+    const isNumericString = typeof rawAmount === 'string'
+      && rawAmount.trim() !== ''
+      && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(rawAmount.trim());
+
+    if (!mongoose.isValidObjectId(rawInvoiceId)) {
+      throw createAllocationError(400, 'Every allocation must reference a valid invoice');
     }
 
-    // Pick the right invoice collection based on who the voucher is for.
-    // Supplier vouchers (Payments) allocate against purchase invoices.
+    const invoiceId = new mongoose.Types.ObjectId(rawInvoiceId).toString();
+    const normalizedAmount = Number(rawAmount);
+    const amountInMinorUnits = toMinorUnits(normalizedAmount);
+    if ((typeof rawAmount !== 'number' && !isNumericString)
+      || !Number.isFinite(normalizedAmount)
+      || amountInMinorUnits == null
+      || amountInMinorUnits <= 0) {
+      throw createAllocationError(400, 'Every allocation amount must be a positive number with at most two decimal places');
+    }
+
+    if (seenInvoiceIds.has(invoiceId)) {
+      throw createAllocationError(400, 'An invoice cannot appear more than once in one allocation request');
+    }
+    seenInvoiceIds.add(invoiceId);
+
+    return { invoiceId, allocatedAmount: fromMinorUnits(amountInMinorUnits) };
+  });
+};
+
+const runAllocationTransaction = async (dbConnection, work, maxAttempts = 5) => {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const session = await dbConnection.startSession();
+    try {
+      let result;
+      await session.withTransaction(async () => {
+        result = await work(session);
+      });
+      return result;
+    } catch (error) {
+      if (isAllocationNumberDuplicate(error)) {
+        if (attempt < maxAttempts) {
+          continue;
+        }
+        throw createAllocationError(409, 'Could not reserve a unique allocation number; please retry');
+      }
+      throw error;
+    } finally {
+      await session.endSession();
+    }
+  }
+
+  throw createAllocationError(409, 'Could not reserve a unique allocation number; please retry');
+};
+
+/**
+ * Atomically allocates one voucher across one or more invoices. Every persisted
+ * balance is read again in the transaction and all writes use expected-value
+ * filters so a stale concurrent request fails instead of over-allocating.
+ */
+const allocateVoucherBatch = async ({
+  dbConnection,
+  voucherId,
+  rows,
+  userId,
+  notes,
+  expectedPartyId = null,
+  expectedPartyType = null,
+  expectedVoucherType = null,
+  requireOutstandingDealerInvoice = false,
+  staleStateStatus = 400
+}, { session: existingSession = null } = {}) => {
+  if (!mongoose.isValidObjectId(voucherId)) {
+    throw createAllocationError(400, 'A valid voucher ID and a non-empty allocations array are required');
+  }
+
+  const normalizedRows = normalizeAllocationRows(rows);
+  const execute = async (session) => {
+    const { PaymentAllocation, Voucher, DealerInvoice, SupplierInvoice } = getModels(dbConnection);
+    const voucher = await Voucher.findById(voucherId).session(session);
+
+    if (!voucher) {
+      throw createAllocationError(404, 'Voucher not found');
+    }
+    if (!['Dealer', 'Supplier'].includes(voucher.partyType)
+      || !voucher.partyId
+      || !mongoose.isValidObjectId(voucher.partyId)) {
+      throw createAllocationError(400, 'Voucher must have a valid Dealer or Supplier party');
+    }
+    if (voucher.status !== 'Posted') {
+      throw createAllocationError(staleStateStatus, 'Can only allocate posted vouchers');
+    }
+    if ((expectedPartyId && String(voucher.partyId) !== String(expectedPartyId))
+      || (expectedPartyType && voucher.partyType !== expectedPartyType)
+      || (expectedVoucherType && voucher.voucherType !== expectedVoucherType)) {
+      throw createAllocationError(409, 'Voucher details changed while planning the allocation; please retry');
+    }
+
+    const voucherTotal = Number(voucher.totalAmount);
+    const allocatedAmount = Number(voucher.allocatedAmount ?? 0);
+    const voucherTotalInMinorUnits = toMinorUnits(voucherTotal);
+    const allocatedInMinorUnits = toMinorUnits(allocatedAmount);
+    const expectedUnallocatedInMinorUnits = voucherTotalInMinorUnits == null
+      || allocatedInMinorUnits == null
+      ? null
+      : voucherTotalInMinorUnits - allocatedInMinorUnits;
+    const expectedUnallocatedAmount = expectedUnallocatedInMinorUnits == null
+      ? NaN
+      : fromMinorUnits(expectedUnallocatedInMinorUnits);
+    const storedUnallocatedAmount = voucher.unallocatedAmount == null
+      ? expectedUnallocatedAmount
+      : Number(voucher.unallocatedAmount);
+    const storedUnallocatedInMinorUnits = toMinorUnits(storedUnallocatedAmount);
+
+    if (voucherTotalInMinorUnits == null || voucherTotalInMinorUnits < 0
+      || allocatedInMinorUnits == null || allocatedInMinorUnits < 0
+      || storedUnallocatedInMinorUnits == null || storedUnallocatedInMinorUnits < 0
+      || expectedUnallocatedInMinorUnits == null || expectedUnallocatedInMinorUnits < 0
+      || allocatedInMinorUnits > voucherTotalInMinorUnits
+      || storedUnallocatedInMinorUnits !== expectedUnallocatedInMinorUnits) {
+      throw createAllocationError(400, 'Voucher has invalid or inconsistent allocation balances');
+    }
+
+    const totalAllocatedInMinorUnits = normalizedRows.reduce(
+      (sum, row) => sum + toMinorUnits(row.allocatedAmount),
+      0
+    );
+    const totalAllocated = fromMinorUnits(totalAllocatedInMinorUnits);
+    if (totalAllocatedInMinorUnits <= 0
+      || totalAllocatedInMinorUnits > expectedUnallocatedInMinorUnits) {
+      throw createAllocationError(
+        staleStateStatus,
+        `Total allocation (₹${totalAllocated}) must be positive and cannot exceed unallocated amount (₹${expectedUnallocatedAmount})`
+      );
+    }
+
     const isSupplier = voucher.partyType === 'Supplier';
     const InvoiceModel = isSupplier ? SupplierInvoice : DealerInvoice;
-    
-    if (voucher.status !== 'Posted') {
-      return res.status(400).json({
-        success: false,
-        message: 'Can only allocate posted vouchers'
-      });
-    }
-    
-    // Calculate unallocatedAmount on-the-fly if undefined (for legacy vouchers)
-    const allocatedAmount = voucher.allocatedAmount || 0;
-    const unallocatedAmount = voucher.unallocatedAmount !== undefined 
-      ? voucher.unallocatedAmount 
-      : voucher.totalAmount - allocatedAmount;
-    
-    // Initialize fields if they were undefined
-    if (voucher.allocatedAmount === undefined) {
-      voucher.allocatedAmount = 0;
-    }
-    if (voucher.unallocatedAmount === undefined) {
-      voucher.unallocatedAmount = voucher.totalAmount;
-    }
-    
-    // Calculate total allocation
-    const totalAllocated = allocations.reduce((sum, alloc) => sum + alloc.allocatedAmount, 0);
-    
-    // Check if allocation exceeds unallocated amount
-    if (totalAllocated > unallocatedAmount) {
-      return res.status(400).json({
-        success: false,
-        message: `Total allocation (₹${totalAllocated}) exceeds unallocated amount (₹${unallocatedAmount})`
-      });
-    }
-    
-    // Validate and prepare allocations
-    const preparedAllocations = [];
-    
-    for (const alloc of allocations) {
-      const invoice = await InvoiceModel.findById(alloc.invoiceId);
-      
+    const ownerField = isSupplier ? 'supplier' : 'dealer';
+    const invoiceIds = normalizedRows.map((row) => row.invoiceId);
+    const invoices = await InvoiceModel.find({ _id: { $in: invoiceIds } }).session(session);
+    const invoicesById = new Map(invoices.map((invoice) => [String(invoice._id), invoice]));
+    const allocationDate = new Date();
+
+    const preparedAllocations = normalizedRows.map((row) => {
+      const invoice = invoicesById.get(row.invoiceId);
       if (!invoice) {
-        return res.status(404).json({
-          success: false,
-          message: `Invoice ${alloc.invoiceNumber} not found`
-        });
+        throw createAllocationError(404, `Invoice ${row.invoiceId} not found`);
       }
-      
-      const previouslyPaid = invoice.paidAmount || 0;
-      const invoiceTotal = invoice.supplierBilledTotal || invoice.totalAmount;
-      const remainingAmount = invoiceTotal - previouslyPaid - alloc.allocatedAmount;
-      
-      if (remainingAmount < 0) {
-        return res.status(400).json({
-          success: false,
-          message: `Allocation for invoice ${invoice.invoiceNumber} exceeds pending amount`
-        });
+      if (!invoice[ownerField]
+        || String(invoice[ownerField]) !== String(voucher.partyId)) {
+        throw createAllocationError(400, `Invoice ${invoice.invoiceNumber} does not belong to the voucher party`);
       }
-      
-      preparedAllocations.push({
+      if (requireOutstandingDealerInvoice
+        && (isSupplier
+          || invoice.status !== 'Approved'
+          || invoice.isDeleted === true
+          || invoice.isDraft === true
+          || invoice.paymentStatus === 'Paid')) {
+        throw createAllocationError(409, `Invoice ${invoice.invoiceNumber} is no longer eligible for auto-allocation`);
+      }
+
+      const expectedPaidAmount = Number(invoice.paidAmount ?? 0);
+      const rawInvoiceTotal = Number(
+        isSupplier
+          ? (invoice.supplierBilledTotal ?? invoice.totalAmount)
+          : invoice.totalAmount
+      );
+      const paidInMinorUnits = toMinorUnits(expectedPaidAmount);
+      const invoiceTotalInMinorUnits = toMinorUnits(rawInvoiceTotal);
+      const rowAmountInMinorUnits = toMinorUnits(row.allocatedAmount);
+      if (invoiceTotalInMinorUnits == null || invoiceTotalInMinorUnits < 0
+        || paidInMinorUnits == null || paidInMinorUnits < 0
+        || paidInMinorUnits > invoiceTotalInMinorUnits) {
+        throw createAllocationError(400, `Invoice ${invoice.invoiceNumber} has invalid payment totals`);
+      }
+
+      const remainingInMinorUnits = invoiceTotalInMinorUnits
+        - paidInMinorUnits
+        - rowAmountInMinorUnits;
+      if (remainingInMinorUnits < 0) {
+        throw createAllocationError(staleStateStatus, `Allocation for invoice ${invoice.invoiceNumber} exceeds pending amount`);
+      }
+
+      const invoiceTotal = fromMinorUnits(invoiceTotalInMinorUnits);
+      const previouslyPaid = fromMinorUnits(paidInMinorUnits);
+      const remainingAmount = fromMinorUnits(remainingInMinorUnits);
+      return {
+        invoice,
+        expectedPaidAmount,
         invoiceId: invoice._id,
         invoiceNumber: invoice.invoiceNumber,
         invoiceDate: invoice.invoiceDate,
-        invoiceAmount: invoice.totalAmount,
+        invoiceAmount: invoiceTotal,
         previouslyPaid,
-        allocatedAmount: alloc.allocatedAmount,
+        allocatedAmount: row.allocatedAmount,
         remainingAmount,
-        paymentStatus: remainingAmount === 0 ? 'Full' : 'Partial'
-      });
-    }
-    
-    // Generate allocation number
-    const allocationNumber = await generateAllocationNumber(new Date(), req.dbConnection);
-    
-    // Create payment allocation
-    const paymentAllocation = new PaymentAllocation({
+        paymentStatus: remainingInMinorUnits === 0 ? 'Full' : 'Partial'
+      };
+    });
+
+    const allocationNumber = await generateAllocationNumber(allocationDate, dbConnection, session);
+    const [paymentAllocation] = await PaymentAllocation.create([{
       allocationNumber,
-      allocationDate: new Date(),
+      allocationDate,
       voucherId: voucher._id,
       voucherNumber: voucher.voucherNumber,
       voucherType: voucher.voucherType,
@@ -135,66 +272,142 @@ export const createPaymentAllocation = async (req, res) => {
       partyId: voucher.partyId,
       partyType: voucher.partyType,
       partyName: voucher.partyName,
-      allocations: preparedAllocations,
+      allocations: preparedAllocations.map(({
+        invoice,
+        expectedPaidAmount,
+        ...allocation
+      }) => allocation),
       totalAllocated,
-      createdBy: req.user._id
-    });
-    
-    await paymentAllocation.save();
-    
-    // Update voucher
-    voucher.allocatedAmount += totalAllocated;
-    voucher.unallocatedAmount -= totalAllocated;
-    voucher.allocationType = voucher.allocatedAmount === voucher.totalAmount ? 'AgainstReference' : 'Mixed';
-    
-    // Add allocations to voucher
-    for (const alloc of preparedAllocations) {
-      voucher.allocations.push({
-        invoiceId: alloc.invoiceId,
-        invoiceNumber: alloc.invoiceNumber,
-        allocatedAmount: alloc.allocatedAmount,
-        allocationDate: new Date()
-      });
-    }
-    
-    await voucher.save();
-    
-    // Update invoices
-    for (const alloc of preparedAllocations) {
-      const invoice = await InvoiceModel.findById(alloc.invoiceId);
-      if (invoice) {
-        invoice.paidAmount = (invoice.paidAmount || 0) + alloc.allocatedAmount;
-        const invoiceTotal = invoice.supplierBilledTotal || invoice.totalAmount;
-        if (!isSupplier) {
-          invoice.pendingAmount = invoice.totalAmount - invoice.paidAmount;
+      notes,
+      createdBy: userId
+    }], { session });
+
+    const nextAllocatedInMinorUnits = allocatedInMinorUnits + totalAllocatedInMinorUnits;
+    const nextUnallocatedInMinorUnits = voucherTotalInMinorUnits - nextAllocatedInMinorUnits;
+    const nextAllocatedAmount = fromMinorUnits(nextAllocatedInMinorUnits);
+    const nextUnallocatedAmount = fromMinorUnits(nextUnallocatedInMinorUnits);
+    const voucherResult = await Voucher.updateOne({
+      _id: voucher._id,
+      status: 'Posted',
+      partyType: voucher.partyType,
+      partyId: voucher.partyId,
+      totalAmount: voucher.totalAmount,
+      $and: [
+        expectedNumericCondition('allocatedAmount', allocatedAmount),
+        expectedNumericCondition('unallocatedAmount', storedUnallocatedAmount, voucher.unallocatedAmount == null)
+      ]
+    }, {
+      $set: {
+        allocatedAmount: nextAllocatedAmount,
+        unallocatedAmount: nextUnallocatedAmount,
+        allocationType: nextAllocatedInMinorUnits >= voucherTotalInMinorUnits
+          ? 'AgainstReference'
+          : 'Mixed'
+      },
+      $push: {
+        allocations: {
+          $each: preparedAllocations.map((allocation) => ({
+            invoiceId: allocation.invoiceId,
+            invoiceNumber: allocation.invoiceNumber,
+            allocatedAmount: allocation.allocatedAmount,
+            allocationDate
+          }))
         }
-        
-        if (invoice.paidAmount >= invoiceTotal) {
-          invoice.paymentStatus = 'Paid';
-        } else if (invoice.paidAmount > 0) {
-          invoice.paymentStatus = 'Partial';
-        }
-        
-        await invoice.save();
       }
+    }, { session });
+
+    if (voucherResult.matchedCount !== 1) {
+      throw createAllocationError(409, 'Voucher balance changed while allocating; please retry');
     }
-    
-    res.status(201).json({
+
+    const invoiceOperations = preparedAllocations.map((allocation) => {
+      const totalConditions = isSupplier && allocation.invoice.supplierBilledTotal == null
+        ? [
+            {
+              $or: [
+                { supplierBilledTotal: null },
+                { supplierBilledTotal: { $exists: false } }
+              ]
+            },
+            { totalAmount: allocation.invoice.totalAmount }
+          ]
+        : [{
+            [isSupplier ? 'supplierBilledTotal' : 'totalAmount']:
+              isSupplier ? allocation.invoice.supplierBilledTotal : allocation.invoice.totalAmount
+          }];
+      const nextPaidAmount = fromMinorUnits(
+        toMinorUnits(allocation.previouslyPaid) + toMinorUnits(allocation.allocatedAmount)
+      );
+      const invoiceUpdate = {
+        paidAmount: nextPaidAmount,
+        paymentStatus: allocation.remainingAmount === 0 ? 'Paid' : 'Partial'
+      };
+      if (!isSupplier) {
+        invoiceUpdate.pendingAmount = allocation.remainingAmount;
+      }
+
+      return {
+        updateOne: {
+          filter: {
+            _id: allocation.invoiceId,
+            [ownerField]: voucher.partyId,
+            $and: [
+              expectedNumericCondition('paidAmount', allocation.expectedPaidAmount),
+              ...totalConditions
+            ]
+          },
+          update: { $set: invoiceUpdate }
+        }
+      };
+    });
+
+    const invoiceResult = await InvoiceModel.bulkWrite(invoiceOperations, { session, ordered: true });
+    if (invoiceResult.matchedCount !== preparedAllocations.length) {
+      throw createAllocationError(409, 'An invoice balance changed while allocating; please retry');
+    }
+
+    return paymentAllocation;
+  };
+
+  if (existingSession) {
+    return execute(existingSession);
+  }
+  return runAllocationTransaction(dbConnection, execute);
+};
+
+/**
+ * Create payment allocation
+ * POST /api/payment-allocations
+ */
+export const createPaymentAllocation = async (req, res) => {
+  try {
+    const paymentAllocation = await allocateVoucherBatch({
+      dbConnection: req.dbConnection,
+      voucherId: req.body.voucherId,
+      rows: req.body.allocations,
+      userId: req.user._id,
+      notes: req.body.notes
+    });
+
+    return res.status(201).json({
       success: true,
       message: 'Payment allocation created successfully',
       data: paymentAllocation
     });
-    
   } catch (error) {
-    console.error('❌ Error creating payment allocation:', error);
-    console.error('Error stack:', error.stack);
-    console.error('Request body:', req.body);
-    console.error('User:', req.user);
-    res.status(500).json({
+    const statusCode = error.statusCode || 500;
+    if (statusCode >= 500) {
+      console.error('❌ Error creating payment allocation:', error);
+      console.error('Error stack:', error.stack);
+    }
+
+    return res.status(statusCode).json({
       success: false,
-      message: 'Error creating payment allocation',
-      error: error.message,
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      message: statusCode >= 500 ? 'Error creating payment allocation' : error.message,
+      error: statusCode >= 500 ? error.message : undefined,
+      details: statusCode >= 500 && process.env.NODE_ENV === 'development'
+        ? error.stack
+        : undefined
     });
   }
 };
@@ -470,33 +683,53 @@ export const getUnadjustedPayments = async (req, res) => {
  */
 export const autoAllocatePayments = async (req, res) => {
   try {
-    const { PaymentAllocation, Voucher, DealerInvoice } = getModels(req.dbConnection);
+    const { Voucher, DealerInvoice } = getModels(req.dbConnection);
     const { partyId } = req.body;
 
-    if (!partyId) {
+    if (!mongoose.isValidObjectId(partyId)) {
       return res.status(400).json({
         success: false,
-        message: 'Party ID (partyId) is required'
+        message: 'A valid dealer partyId is required'
       });
     }
 
     // 1. Get all unadjusted payments (Receipts) for this dealer, oldest first (FIFO)
     const vouchers = await Voucher.find({
       partyId,
+      partyType: 'Dealer',
       voucherType: 'Receipt',
       status: 'Posted'
     }).sort({ voucherDate: 1 });
 
-    // Calculate actual unallocated amounts (handle legacy vouchers)
-    const unadjustedVouchers = vouchers
-      .map(voucher => {
-        const allocatedAmount = voucher.allocatedAmount || 0;
-        const unallocatedAmount = voucher.unallocatedAmount !== undefined
-          ? voucher.unallocatedAmount
-          : voucher.totalAmount - allocatedAmount;
-        return { voucher, unallocatedAmount };
-      })
-      .filter(v => v.unallocatedAmount > 0);
+    // Validate persisted balances before building an automatic allocation plan.
+    const unadjustedVouchers = [];
+    for (const voucher of vouchers) {
+      const voucherTotal = Number(voucher.totalAmount);
+      const allocatedAmount = Number(voucher.allocatedAmount ?? 0);
+      const expectedUnallocatedAmount = voucherTotal - allocatedAmount;
+      const storedUnallocatedAmount = voucher.unallocatedAmount == null
+        ? expectedUnallocatedAmount
+        : Number(voucher.unallocatedAmount);
+
+      if (!Number.isFinite(voucherTotal) || voucherTotal < 0
+        || !Number.isFinite(allocatedAmount) || allocatedAmount < 0
+        || !Number.isFinite(storedUnallocatedAmount) || storedUnallocatedAmount < 0
+        || !Number.isFinite(expectedUnallocatedAmount) || expectedUnallocatedAmount < 0
+        || allocatedAmount > voucherTotal
+        || Math.abs(storedUnallocatedAmount - expectedUnallocatedAmount) > 0.01) {
+        return res.status(400).json({
+          success: false,
+          message: `Voucher ${voucher.voucherNumber} has invalid or inconsistent allocation balances`
+        });
+      }
+
+      if (expectedUnallocatedAmount > 0) {
+        unadjustedVouchers.push({
+          voucher,
+          unallocatedAmount: expectedUnallocatedAmount
+        });
+      }
+    }
 
     if (unadjustedVouchers.length === 0) {
       return res.status(400).json({
@@ -526,6 +759,24 @@ export const autoAllocatePayments = async (req, res) => {
         success: false,
         message: 'No outstanding invoices found for this dealer'
       });
+    }
+
+    for (const invoice of invoices) {
+      const invoiceTotal = Number(invoice.totalAmount);
+      const paidAmount = Number(invoice.paidAmount ?? 0);
+      const pendingAmount = Number(
+        invoice.pendingAmount ?? (invoiceTotal - paidAmount)
+      );
+      if (!Number.isFinite(invoiceTotal) || invoiceTotal < 0
+        || !Number.isFinite(paidAmount) || paidAmount < 0
+        || !Number.isFinite(pendingAmount) || pendingAmount <= 0
+        || paidAmount > invoiceTotal
+        || pendingAmount > invoiceTotal) {
+        return res.status(400).json({
+          success: false,
+          message: `Invoice ${invoice.invoiceNumber} has invalid payment balances`
+        });
+      }
     }
 
     // 3. Sort invoices by priority
@@ -611,142 +862,65 @@ export const autoAllocatePayments = async (req, res) => {
       });
     }
 
-    // 5. Group allocations by voucher for creating PaymentAllocation records
-    const allocationsByVoucher = {};
+    // 5. Group only stable IDs and amounts; no stale documents are used for writes.
+    const allocationsByVoucher = new Map();
     for (const item of allocationPlan) {
-      const vId = item.voucher._id.toString();
-      if (!allocationsByVoucher[vId]) {
-        allocationsByVoucher[vId] = {
-          voucher: item.voucher,
-          allocations: []
-        };
+      const voucherId = item.voucher._id.toString();
+      if (!allocationsByVoucher.has(voucherId)) {
+        allocationsByVoucher.set(voucherId, {
+          voucherId,
+          rows: []
+        });
       }
-      allocationsByVoucher[vId].allocations.push({
-        invoice: item.invoice,
-        amount: item.amount
+      allocationsByVoucher.get(voucherId).rows.push({
+        invoiceId: item.invoice._id.toString(),
+        allocatedAmount: item.amount
       });
     }
 
-    // 6. Create PaymentAllocation records and update vouchers/invoices
-    const createdAllocations = [];
-    const updatedInvoices = new Map(); // Track cumulative updates per invoice
-
-    for (const [voucherId, group] of Object.entries(allocationsByVoucher)) {
-      const { voucher, allocations: voucherAllocations } = group;
-
-      // Prepare allocations array for this voucher
-      const preparedAllocations = [];
-      let totalAllocatedForVoucher = 0;
-
-      for (const { invoice, amount } of voucherAllocations) {
-        const previouslyPaid = invoice.paidAmount || 0;
-        // Account for any amounts already allocated to this invoice in this batch
-        const batchPrevious = updatedInvoices.get(invoice._id.toString()) || 0;
-        const effectivePaid = previouslyPaid + batchPrevious;
-        const remainingAfter = invoice.totalAmount - effectivePaid - amount;
-
-        preparedAllocations.push({
-          invoiceId: invoice._id,
-          invoiceNumber: invoice.invoiceNumber,
-          invoiceDate: invoice.invoiceDate,
-          invoiceAmount: invoice.totalAmount,
-          previouslyPaid: effectivePaid,
-          allocatedAmount: amount,
-          remainingAmount: Math.max(0, remainingAfter),
-          paymentStatus: remainingAfter <= 0 ? 'Full' : 'Partial'
-        });
-
-        totalAllocatedForVoucher += amount;
-
-        // Track cumulative allocation for this invoice
-        updatedInvoices.set(
-          invoice._id.toString(),
-          batchPrevious + amount
-        );
-      }
-
-      // Generate allocation number
-      const allocationNumber = await generateAllocationNumber(new Date(), req.dbConnection);
-
-      // Create PaymentAllocation record
-      const paymentAllocation = new PaymentAllocation({
-        allocationNumber,
-        allocationDate: new Date(),
-        voucherId: voucher._id,
-        voucherNumber: voucher.voucherNumber,
-        voucherType: voucher.voucherType,
-        totalAmount: voucher.totalAmount,
-        partyId: voucher.partyId,
-        partyType: voucher.partyType || 'Dealer',
-        partyName: voucher.partyName,
-        allocations: preparedAllocations,
-        totalAllocated: totalAllocatedForVoucher,
-        notes: 'Auto-allocated',
-        createdBy: req.user._id
-      });
-
-      await paymentAllocation.save();
-      createdAllocations.push(paymentAllocation);
-
-      // Update voucher
-      // Initialize fields if undefined (legacy vouchers)
-      if (voucher.allocatedAmount === undefined) {
-        voucher.allocatedAmount = 0;
-      }
-      if (voucher.unallocatedAmount === undefined) {
-        voucher.unallocatedAmount = voucher.totalAmount;
-      }
-
-      voucher.allocatedAmount += totalAllocatedForVoucher;
-      voucher.unallocatedAmount -= totalAllocatedForVoucher;
-      voucher.allocationType = voucher.allocatedAmount >= voucher.totalAmount
-        ? 'AgainstReference'
-        : 'Mixed';
-
-      // Add allocations to voucher's allocations array
-      for (const alloc of preparedAllocations) {
-        voucher.allocations.push({
-          invoiceId: alloc.invoiceId,
-          invoiceNumber: alloc.invoiceNumber,
-          allocatedAmount: alloc.allocatedAmount,
-          allocationDate: new Date()
-        });
-      }
-
-      await voucher.save();
-    }
-
-    // 7. Update all affected invoices
-    for (const [invoiceId, totalAllocatedToInvoice] of updatedInvoices.entries()) {
-      const invoice = await DealerInvoice.findById(invoiceId);
-      if (invoice) {
-        invoice.paidAmount = (invoice.paidAmount || 0) + totalAllocatedToInvoice;
-        invoice.pendingAmount = invoice.totalAmount - invoice.paidAmount;
-
-        if (invoice.paidAmount >= invoice.totalAmount) {
-          invoice.paymentStatus = 'Paid';
-          invoice.pendingAmount = 0;
-        } else if (invoice.paidAmount > 0) {
-          invoice.paymentStatus = 'Partial';
+    // 6. Execute the complete plan in one transaction through the canonical primitive.
+    // Every voucher and invoice is re-read and conditionally updated in this snapshot.
+    const createdAllocations = await runAllocationTransaction(
+      req.dbConnection,
+      async (session) => {
+        const results = [];
+        for (const group of allocationsByVoucher.values()) {
+          const allocation = await allocateVoucherBatch({
+            dbConnection: req.dbConnection,
+            voucherId: group.voucherId,
+            rows: group.rows,
+            userId: req.user._id,
+            notes: 'Auto-allocated',
+            expectedPartyId: partyId,
+            expectedPartyType: 'Dealer',
+            expectedVoucherType: 'Receipt',
+            requireOutstandingDealerInvoice: true,
+            staleStateStatus: 409
+          }, { session });
+          results.push(allocation);
         }
+        return results;
+      }
+    );
 
-        await invoice.save();
+    // 7. Build the summary only from committed allocation rows.
+    const totalAllocated = createdAllocations.reduce(
+      (sum, allocation) => sum + Number(allocation.totalAllocated || 0),
+      0
+    );
+    const invoiceOutcomes = new Map();
+    for (const allocation of createdAllocations) {
+      for (const row of allocation.allocations) {
+        invoiceOutcomes.set(String(row.invoiceId), Number(row.remainingAmount));
       }
     }
-
-    // 8. Build response summary
-    const totalAllocated = allocationPlan.reduce((sum, item) => sum + item.amount, 0);
-    const invoicesFullyPaid = [...updatedInvoices.entries()].filter(([id]) => {
-      const inv = sortedInvoices.find(s => s.invoice._id.toString() === id);
-      if (!inv) return false;
-      const totalPaid = (inv.invoice.paidAmount || 0) + updatedInvoices.get(id);
-      return totalPaid >= inv.invoice.totalAmount;
-    }).length;
-    const invoicesPartiallyPaid = updatedInvoices.size - invoicesFullyPaid;
+    const invoicesFullyPaid = [...invoiceOutcomes.values()]
+      .filter((remainingAmount) => remainingAmount === 0).length;
+    const invoicesPartiallyPaid = invoiceOutcomes.size - invoicesFullyPaid;
 
     res.status(201).json({
       success: true,
-      message: `Auto-allocation complete. ₹${totalAllocated.toLocaleString('en-IN')} allocated across ${updatedInvoices.size} invoice(s)`,
+      message: `Auto-allocation complete. ₹${totalAllocated.toLocaleString('en-IN')} allocated across ${invoiceOutcomes.size} invoice(s)`,
       data: {
         allocations: createdAllocations,
         summary: {
@@ -755,20 +929,25 @@ export const autoAllocatePayments = async (req, res) => {
           remainingUnallocated: totalAvailable - totalAllocated,
           invoicesFullyPaid,
           invoicesPartiallyPaid,
-          totalInvoicesProcessed: updatedInvoices.size,
-          vouchersUsed: Object.keys(allocationsByVoucher).length
+          totalInvoicesProcessed: invoiceOutcomes.size,
+          vouchersUsed: allocationsByVoucher.size
         }
       }
     });
 
   } catch (error) {
-    console.error('❌ Error in auto-allocate payments:', error);
-    console.error('Error stack:', error.stack);
-    res.status(500).json({
+    const statusCode = error.statusCode || 500;
+    if (statusCode >= 500) {
+      console.error('❌ Error in auto-allocate payments:', error);
+      console.error('Error stack:', error.stack);
+    }
+    return res.status(statusCode).json({
       success: false,
-      message: 'Error in auto-allocate payments',
-      error: error.message,
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      message: statusCode >= 500 ? 'Error in auto-allocate payments' : error.message,
+      error: statusCode >= 500 ? error.message : undefined,
+      details: statusCode >= 500 && process.env.NODE_ENV === 'development'
+        ? error.stack
+        : undefined
     });
   }
 };

@@ -401,6 +401,11 @@ export const AVAILABLE_PERMISSIONS = {
       description: "Approve draft invoices"
     },
     {
+      id: "invoices.cancel",
+      name: "Cancel Invoices",
+      description: "Cancel approved dealer invoices"
+    },
+    {
       id: "credit.note",
       name: "Credit Note",
       description: "Manage credit notes"

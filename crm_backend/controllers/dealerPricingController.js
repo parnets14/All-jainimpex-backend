@@ -58,6 +58,7 @@ export const getDealerPricing = async (req, res) => {
       subcategoryId,
       hasScheduledChange,
       hasDirectDiscount,
+      compact = 'false',
       sortBy = 'updatedAt',
       sortOrder = 'desc'
     } = req.query;
@@ -132,24 +133,71 @@ export const getDealerPricing = async (req, res) => {
     const sort = {};
     sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
 
-    const pricingRecords = await DealerPricing.find(filter)
-      .populate({
-        path: 'product',
-        select: 'itemName productCode brand category subcategory internalRate',
-        populate: [
-          { path: 'brand', select: 'name' },
-          { path: 'category', select: 'name' },
-          { path: 'subcategory', select: 'name' }
-        ]
-      })
-      .populate('lastPurchaseSupplier', 'name companyName')
-      .populate('createdBy', 'name email')
-      .populate('updatedBy', 'name email')
-      .sort(sort)
-      .limit(parseInt(limit))
-      .skip(skip);
+    if (compact === 'true') {
+      const [compactRecords, compactTotal] = await Promise.all([
+        DealerPricing.find(filter)
+          .select([
+            'product',
+            'sellingPrice',
+            'purchasePrice',
+            'mrp',
+            'profitMargin',
+            'profitAmount',
+            'hasScheduledChange',
+            'nextScheduledPrice',
+            'nextScheduledDate',
+            'hasDirectDiscount',
+            'directDiscountPercentage',
+            'maxDiscountPercentage',
+            'salesDiscountSource',
+            'salesDiscountSourceName',
+            'purchaseDiscountInfo',
+            'effectivePurchasePrice',
+            'effectiveSellingPrice',
+            'grossMargin',
+            'netMargin',
+            'marginRange',
+            'purchasePriceSource'
+          ].join(' '))
+          .sort(sort)
+          .limit(parseInt(limit))
+          .skip(skip)
+          .lean(),
+        DealerPricing.countDocuments(filter)
+      ]);
 
-    const total = await DealerPricing.countDocuments(filter);
+      return res.json({
+        success: true,
+        data: compactRecords,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: Math.ceil(compactTotal / parseInt(limit)),
+          totalRecords: compactTotal,
+          hasNext: skip + compactRecords.length < compactTotal,
+          hasPrev: parseInt(page) > 1
+        }
+      });
+    }
+
+    const [pricingRecords, total] = await Promise.all([
+      DealerPricing.find(filter)
+        .populate({
+          path: 'product',
+          select: 'itemName productCode brand category subcategory internalRate',
+          populate: [
+            { path: 'brand', select: 'name' },
+            { path: 'category', select: 'name' },
+            { path: 'subcategory', select: 'name' }
+          ]
+        })
+        .populate('lastPurchaseSupplier', 'name companyName')
+        .populate('createdBy', 'name email')
+        .populate('updatedBy', 'name email')
+        .sort(sort)
+        .limit(parseInt(limit))
+        .skip(skip),
+      DealerPricing.countDocuments(filter)
+    ]);
 
     // Filter out records with null products and enhance records with additional information
     const validRecords = pricingRecords.filter(pricing => pricing.product != null);
@@ -178,10 +226,11 @@ export const getDealerPricing = async (req, res) => {
           product: { $in: productIds },
           status: 'Scheduled',
           isActive: true,
-        }).sort({ effectiveDate: 1 }),
+        }).sort({ effectiveDate: 1 }).lean(),
         DealerPricingHistory.find({ product: { $in: productIds } })
           .populate('changedBy', 'name')
-          .sort({ changeDate: -1 }),
+          .sort({ changeDate: -1 })
+          .lean(),
       ]);
 
       const scheduleByProduct = new Map();
@@ -1574,25 +1623,26 @@ export const getComprehensivePricing = async (req, res) => {
     const sort = {};
     sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
 
-    const pricingRecords = await DealerPricing.find(filter)
-      .populate({
-        path: 'product',
-        select: 'itemName productCode brand category subcategory gst mrp totalAmount internalRate',
-        populate: [
-          { path: 'brand', select: 'name' },
-          { path: 'category', select: 'name' },
-          { path: 'subcategory', select: 'name' }
-        ]
-      })
-      .populate('lastPurchaseSupplier', 'name companyName')
-      .populate('lastSupplierInvoice', 'invoiceNumber invoiceDate')
-      .populate('createdBy', 'name email')
-      .populate('updatedBy', 'name email')
-      .sort(sort)
-      .limit(parseInt(limit))
-      .skip(skip);
-
-    const total = await DealerPricing.countDocuments(filter);
+    const [pricingRecords, total] = await Promise.all([
+      DealerPricing.find(filter)
+        .populate({
+          path: 'product',
+          select: 'itemName productCode brand category subcategory gst mrp totalAmount internalRate',
+          populate: [
+            { path: 'brand', select: 'name' },
+            { path: 'category', select: 'name' },
+            { path: 'subcategory', select: 'name' }
+          ]
+        })
+        .populate('lastPurchaseSupplier', 'name companyName')
+        .populate('lastSupplierInvoice', 'invoiceNumber invoiceDate')
+        .populate('createdBy', 'name email')
+        .populate('updatedBy', 'name email')
+        .sort(sort)
+        .limit(parseInt(limit))
+        .skip(skip),
+      DealerPricing.countDocuments(filter)
+    ]);
 
     // Filter out records with null products and enhance records with additional information
     const validRecords = pricingRecords.filter(pricing => pricing.product != null);
@@ -1621,10 +1671,11 @@ export const getComprehensivePricing = async (req, res) => {
           product: { $in: productIds },
           status: 'Scheduled',
           isActive: true,
-        }).sort({ effectiveDate: 1 }),
+        }).sort({ effectiveDate: 1 }).lean(),
         DealerPricingHistory.find({ product: { $in: productIds } })
           .populate('changedBy', 'name')
-          .sort({ changeDate: -1 }),
+          .sort({ changeDate: -1 })
+          .lean(),
       ]);
 
       // Group: first scheduled change per product, and up to 3 history rows per product

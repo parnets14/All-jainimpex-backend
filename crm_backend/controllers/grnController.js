@@ -934,9 +934,8 @@ export const deleteGRN = async (req, res) => {
 
 export const getGRNStats = async (req, res) => {
   try {
-    // Get models from company-specific connection
     const { GRN, PurchaseOrder } = getModels(req.dbConnection);
-    
+
     const today = new Date();
     const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
     const startOfYear = new Date(today.getFullYear(), 0, 1);
@@ -945,35 +944,80 @@ export const getGRNStats = async (req, res) => {
       totalGRNs,
       monthlyGRNs,
       yearlyGRNs,
-      statusCounts
+      statusCounts,
+      totalValue,
+      pendingResult
     ] = await Promise.all([
       GRN.countDocuments(),
       GRN.countDocuments({ createdAt: { $gte: startOfMonth } }),
       GRN.countDocuments({ createdAt: { $gte: startOfYear } }),
       GRN.aggregate([
         { $group: { _id: '$status', count: { $sum: 1 } } }
+      ]),
+      GRN.aggregate([
+        { $match: { status: { $ne: 'Cancelled' } } },
+        { $group: { _id: null, total: { $sum: '$totalAmount' } } }
+      ]),
+      PurchaseOrder.aggregate([
+        { $match: { status: 'Approved' } },
+        { $unwind: '$lines' },
+        {
+          $group: {
+            _id: { poId: '$_id', productId: '$lines.productId' },
+            orderedQuantity: { $sum: '$lines.quantity' }
+          }
+        },
+        {
+          $lookup: {
+            from: GRN.collection.name,
+            let: { poId: '$_id.poId', productId: '$_id.productId' },
+            pipeline: [
+              { $match: { status: { $ne: 'Cancelled' } } },
+              { $unwind: '$items' },
+              {
+                $match: {
+                  $expr: {
+                    $and: [
+                      { $eq: ['$items.productId', '$$productId'] },
+                      {
+                        $eq: [
+                          { $ifNull: ['$items.sourcePOId', '$poId'] },
+                          '$$poId'
+                        ]
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                $group: {
+                  _id: null,
+                  receivedQuantity: { $sum: { $ifNull: ['$items.receivedQuantity', 0] } }
+                }
+              }
+            ],
+            as: 'receipt'
+          }
+        },
+        {
+          $set: {
+            receivedQuantity: {
+              $ifNull: [{ $arrayElemAt: ['$receipt.receivedQuantity', 0] }, 0]
+            }
+          }
+        },
+        {
+          $set: {
+            remainingQuantity: {
+              $max: [{ $subtract: ['$orderedQuantity', '$receivedQuantity'] }, 0]
+            }
+          }
+        },
+        { $match: { remainingQuantity: { $gt: 0 } } },
+        { $group: { _id: '$_id.poId' } },
+        { $count: 'count' }
       ])
     ]);
-
-    const totalValue = await GRN.aggregate([
-      { $group: { _id: null, total: { $sum: '$totalAmount' } } }
-    ]);
-
-    // Pending GRN = Approved POs that don't have any GRN created yet
-    const approvedPOs = await PurchaseOrder.find(
-      { status: 'Approved' },
-      { _id: 1 }
-    ).lean();
-
-    const approvedPOIds = approvedPOs.map(po => po._id);
-
-    // Find which approved POs already have at least one GRN (any status except Cancelled)
-    const poIdsWithGRN = await GRN.distinct('poId', {
-      poId: { $in: approvedPOIds },
-      status: { $ne: 'Cancelled' }
-    });
-
-    const pendingGRN = Math.max(0, approvedPOIds.length - poIdsWithGRN.length);
 
     res.json({
       success: true,
@@ -983,7 +1027,8 @@ export const getGRNStats = async (req, res) => {
         yearlyGRNs,
         statusCounts,
         totalValue: totalValue[0]?.total || 0,
-        pendingGRN: Math.max(0, pendingGRN)
+        pendingGRN: pendingResult[0]?.count || 0,
+        partialGRNs: statusCounts.find((status) => status._id === 'Partially Received')?.count || 0
       }
     });
   } catch (error) {

@@ -1,10 +1,13 @@
 // middleware/routePermissions.js
 // Centralized route-to-permission mapping.
-// Applied as a global middleware AFTER protect (auth) — checks that the
-// authenticated user actually has permission for the route they're hitting.
+// Mapped CRM routes are authenticated here before their permission is checked.
+// Feature routers may call protect again; authMiddleware reuses the authenticated
+// request so the user is not loaded from the database twice.
 //
 // super_admin bypasses all checks. Other roles need the mapped permission
 // (exact match, wildcard *, or module-level module.*).
+
+import { protect } from './authMiddleware.js';
 
 export const userHasPermission = (userPermissions, requiredPermission) => {
   if (Array.isArray(requiredPermission)) {
@@ -17,6 +20,25 @@ export const userHasPermission = (userPermissions, requiredPermission) => {
   if (userPermissions.includes(`${module}.*`)) return true;
   if (userPermissions.includes(module)) return true;
   return false;
+};
+
+export const requireAnyPermission = (requiredPermissions) => (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({
+      success: false,
+      message: 'Not authorized to access this route. Please login.'
+    });
+  }
+
+  if (req.user.role === 'super_admin'
+    || userHasPermission(req.user.permissions, requiredPermissions)) {
+    return next();
+  }
+
+  return res.status(403).json({
+    success: false,
+    message: `Access denied. Required permission: ${requiredPermissions.join(' or ')}`
+  });
 };
 
 // Map: route prefix (after /api/) → required permission string
@@ -39,7 +61,15 @@ const ROUTE_PERMISSION_MAP = {
 
   // Sales & Purchase
   'sales-orders': 'sales.order.dashboard',
-  'dealer-invoices': 'invoice',
+  'dealer-invoices': [
+    'invoice',
+    'invoices.view',
+    'invoices.create',
+    'invoices.update',
+    'invoices.approve',
+    'invoices.delete',
+    'invoices.cancel'
+  ],
   'supplier-invoices': 'invoice',
   'purchase-orders': 'po.management',
   'grn': 'grn.entry',
@@ -105,7 +135,7 @@ const ROUTE_PERMISSION_MAP = {
   'sales-analytics': 'reports.salesAnalytics',
 
   // System
-  'users': 'user.management',
+  'users': ['user.management', 'users.manage'],
   'notifications': null, // all authenticated users can receive notifications
   'app-settings': 'system.management',
 
@@ -121,35 +151,48 @@ const ROUTE_PERMISSION_MAP = {
 
 /**
  * Global permission enforcement middleware.
- * Mount AFTER protect middleware on the app level.
- * Skips: auth routes, public routes, and super_admin users.
+ *
+ * Mapped CRM routes are authenticated here before authorization. Prefixes with
+ * no permission mapping continue to their own public, dealer-app, SE, or DE
+ * authentication middleware for backward compatibility.
  */
 export const enforceRoutePermissions = (req, res, next) => {
-  // Skip for unauthenticated requests (protect middleware handles that)
-  if (!req.user) return next();
-
-  // Super admin bypasses everything
-  if (req.user.role === 'super_admin') return next();
-
-  // Extract the first path segment after /api/
+  // Extract the first path segment after /api/ before deciding whether this
+  // request belongs to the centralized CRM permission system.
   const pathAfterApi = req.originalUrl.replace(/^\/api\//, '').split('/')[0].split('?')[0];
-
-  // Look up required permission
   const requiredPermission = ROUTE_PERMISSION_MAP[pathAfterApi];
 
-  // If no mapping exists (null or undefined), allow access (route is either
-  // public, auth-only, or not yet mapped — fail-open for backward compat)
+  // Null and unmapped prefixes are intentionally handled by their own routers.
   if (!requiredPermission) return next();
 
-  // Check permission
-  if (!userHasPermission(req.user.permissions, requiredPermission)) {
-    return res.status(403).json({
-      success: false,
-      message: `Access denied. You don't have permission for this action. Required: ${requiredPermission}`
-    });
+  const authorize = () => {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Not authorized to access this route. Please login.'
+      });
+    }
+
+    // Super admin bypasses permission checks after authentication.
+    if (req.user.role === 'super_admin') return next();
+
+    if (!userHasPermission(req.user.permissions, requiredPermission)) {
+      return res.status(403).json({
+        success: false,
+        message: `Access denied. You don't have permission for this action. Required: ${requiredPermission}`
+      });
+    }
+
+    return next();
+  };
+
+  // Feature routers authenticate later in the middleware chain, so mapped
+  // routes must establish req.user here instead of silently skipping checks.
+  if (!req.user) {
+    return protect(req, res, authorize);
   }
 
-  next();
+  return authorize();
 };
 
 export default enforceRoutePermissions;

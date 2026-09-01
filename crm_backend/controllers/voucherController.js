@@ -91,10 +91,20 @@ export const createReceiptVoucher = async (req, res) => {
     }
     
     // Validate amount
-    if (totalAmount <= 0) {
+    const normalizedTotalAmount = Number(totalAmount);
+    if (!Number.isFinite(normalizedTotalAmount) || normalizedTotalAmount <= 0) {
       return res.status(400).json({
         success: false,
         message: 'Amount must be greater than zero'
+      });
+    }
+
+    // Invoice allocations must use the canonical allocation endpoint after voucher creation.
+    if (allocations !== undefined
+      && (!Array.isArray(allocations) || allocations.length > 0)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Create the voucher first, then allocate it through Payment Allocations'
       });
     }
 
@@ -324,6 +334,23 @@ export const createPaymentVoucher = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Missing required fields'
+      });
+    }
+
+    const normalizedTotalAmount = Number(totalAmount);
+    if (!Number.isFinite(normalizedTotalAmount) || normalizedTotalAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Amount must be greater than zero'
+      });
+    }
+
+    // Invoice allocations must use the canonical allocation endpoint after voucher creation.
+    if (allocations !== undefined
+      && (!Array.isArray(allocations) || allocations.length > 0)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Create the voucher first, then allocate it through Payment Allocations'
       });
     }
 
@@ -1030,7 +1057,7 @@ const updateInvoicePaymentStatus = async (invoiceId, paidAmount, dbConnection) =
     if (invoice.paidAmount >= invoice.totalAmount) {
       invoice.paymentStatus = 'Paid';
     } else if (invoice.paidAmount > 0) {
-      invoice.paymentStatus = 'Partially Paid';
+      invoice.paymentStatus = 'Partial';
     }
     
     await invoice.save();

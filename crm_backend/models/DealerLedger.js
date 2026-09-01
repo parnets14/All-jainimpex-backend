@@ -58,6 +58,10 @@ const dealerLedgerSchema = new mongoose.Schema({
   },
   
   // Payment Information
+  dealerPayment: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "DealerPayment"
+  },
   paymentReceived: {
     type: Number,
     default: 0
@@ -179,11 +183,14 @@ dealerLedgerSchema.pre("save", async function(next) {
   if (this.isNew) {
     // Get the last entry for this dealer sorted by entryDate (not createdAt)
     // to ensure correct running balance even for backdated entries
-    const lastEntry = await this.constructor.findOne(
+    let lastEntryQuery = this.constructor.findOne(
       { dealer: this.dealer, entryDate: { $lte: this.entryDate } },
       {},
       { sort: { entryDate: -1, createdAt: -1 } }
     );
+    const session = this.$session();
+    if (session) lastEntryQuery = lastEntryQuery.session(session);
+    const lastEntry = await lastEntryQuery;
     
     let previousBalance = 0;
     if (lastEntry && lastEntry._id.toString() !== this._id?.toString()) {
@@ -210,6 +217,13 @@ dealerLedgerSchema.index({ invoice: 1 });
 dealerLedgerSchema.index({ creditNote: 1 });
 dealerLedgerSchema.index({ entryDate: -1 });
 dealerLedgerSchema.index({ runningBalance: 1 });
+dealerLedgerSchema.index(
+  { dealerPayment: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { dealerPayment: { $type: "objectId" } }
+  }
+);
 
 // Virtual for outstanding amount
 dealerLedgerSchema.virtual('outstandingAmount').get(function() {

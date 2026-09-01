@@ -6,6 +6,7 @@ import { supplierSchema } from '../models/Supplier.js';
 import { warehouseSchema } from '../models/Warehouse.js';
 import { salesOrderSchema } from '../models/SalesOrder.js';
 import StockMovementService from '../services/stockMovementService.js';
+import { getLowStockSnapshot } from '../services/dashboardStockService.js';
 
 // Helper function to get models from company-specific connection
 const getModels = (dbConnection) => {
@@ -134,8 +135,69 @@ export const getStock = async (req, res) => {
       categoryId,
       subcategoryId,
       extendedSubcategoryId,
-      level2Id
+      level2Id,
+      summary = false
     } = req.query;
+
+    // Lightweight order/invoice stock mode: one aggregation returns the latest
+    // movement balance per product and warehouse, avoiding the GRN/order N+1 path.
+    if (summary === true || summary === 'true') {
+      const summaryMatch = {};
+      if (warehouseId && mongoose.isValidObjectId(warehouseId)) {
+        summaryMatch.warehouseId = new mongoose.Types.ObjectId(warehouseId);
+      }
+      const summaryPage = Math.max(parseInt(page) || 1, 1);
+      const summaryLimit = Math.min(Math.max(parseInt(limit) || 5000, 1), 20000);
+      const summarySkip = (summaryPage - 1) * summaryLimit;
+      const stockRows = await StockMovement.aggregate([
+        { $match: summaryMatch },
+        { $sort: { productId: 1, warehouseId: 1, date: -1, createdAt: -1 } },
+        {
+          $group: {
+            _id: { productId: '$productId', warehouseId: '$warehouseId' },
+            netStock: { $first: '$balance' }
+          }
+        },
+        { $sort: { '_id.productId': 1, '_id.warehouseId': 1 } },
+        { $skip: summarySkip },
+        // Read one extra row so clients can page to completion without running
+        // an additional grouped count over the full movement collection.
+        { $limit: summaryLimit + 1 },
+        {
+          $lookup: {
+            from: Warehouse.collection.name,
+            localField: '_id.warehouseId',
+            foreignField: '_id',
+            as: 'warehouseInfo'
+          }
+        },
+        {
+          $project: {
+            _id: 0,
+            productId: '$_id.productId',
+            warehouseId: '$_id.warehouseId',
+            warehouseName: { $ifNull: [{ $first: '$warehouseInfo.name' }, 'Unknown Warehouse'] },
+            warehouse: { $ifNull: [{ $first: '$warehouseInfo.name' }, 'Unknown Warehouse'] },
+            netStock: 1
+          }
+        }
+      ]);
+      const hasNextPage = stockRows.length > summaryLimit;
+      const stockData = hasNextPage ? stockRows.slice(0, summaryLimit) : stockRows;
+
+      return res.json({
+        success: true,
+        data: stockData,
+        pagination: {
+          currentPage: summaryPage,
+          totalPages: hasNextPage ? null : summaryPage,
+          totalRecords: null,
+          hasNextPage,
+          hasPrevPage: summaryPage > 1,
+          limit: summaryLimit
+        }
+      });
+    }
 
     const pageNum = parseInt(page);
     const limitNum = parseInt(limit);
@@ -1390,70 +1452,13 @@ export const debugTransfers = async (req, res) => {
 
 export const getStockAlerts = async (req, res) => {
   try {
-    const { GRN, Product } = getModels(req.dbConnection);
-    
-    const { page = 1, limit = 10 } = req.query;
+    const { Product, StockMovement, Warehouse } = getModels(req.dbConnection);
+    const pageNum = Math.max(Number.parseInt(req.query.page, 10) || 1, 1);
+    const limitNum = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 10, 1), 100);
 
-    // Get all products with minStockLevel > 0
-    const productsWithMin = await Product.find(
-      { minStockLevel: { $gt: 0 } },
-      { _id: 1, itemName: 1, productCode: 1, minStockLevel: 1 }
-    ).lean();
-
-    if (productsWithMin.length === 0) {
-      return res.json({
-        success: true,
-        data: [],
-        pagination: { currentPage: 1, totalPages: 0, totalRecords: 0 }
-      });
-    }
-
-    const productIds = productsWithMin.map(p => p._id);
-
-    // Get GRN stock totals per product (across all warehouses)
-    const stockAgg = await GRN.aggregate([
-      { $unwind: "$items" },
-      { $match: { "items.productId": { $in: productIds } } },
-      {
-        $group: {
-          _id: "$items.productId",
-          totalQty: { $sum: "$items.acceptedQuantity" },
-          damagedQty: { $sum: "$items.damageQuantity" }
-        }
-      }
-    ]);
-
-    // Build stock map
-    const stockMap = {};
-    stockAgg.forEach(item => {
-      if (item._id) {
-        stockMap[item._id.toString()] = Math.max(0, (item.totalQty || 0) - (item.damagedQty || 0));
-      }
-    });
-
-    // Build low stock items list
-    const lowStockItems = productsWithMin
-      .map(product => {
-        const currentStock = stockMap[product._id.toString()] ?? 0;
-        const shortage = product.minStockLevel - currentStock;
-        return {
-          productId: product._id,
-          productCode: product.productCode,
-          itemName: product.itemName,
-          currentStock,
-          minStockLevel: product.minStockLevel,
-          shortage
-        };
-      })
-      .filter(item => item.currentStock <= item.minStockLevel)
-      .sort((a, b) => b.shortage - a.shortage);
-
-    // Pagination
-    const pageNum = parseInt(page);
-    const limitNum = parseInt(limit);
+    const lowStockItems = await getLowStockSnapshot({ Product, StockMovement, Warehouse });
     const startIndex = (pageNum - 1) * limitNum;
-    const endIndex = pageNum * limitNum;
-    const paginatedData = lowStockItems.slice(startIndex, endIndex);
+    const paginatedData = lowStockItems.slice(startIndex, startIndex + limitNum);
 
     res.json({
       success: true,
@@ -1462,8 +1467,8 @@ export const getStockAlerts = async (req, res) => {
         currentPage: pageNum,
         totalPages: Math.ceil(lowStockItems.length / limitNum),
         totalRecords: lowStockItems.length,
-        hasNextPage: endIndex < lowStockItems.length,
-        hasPrevPage: startIndex > 0,
+        hasNextPage: startIndex + limitNum < lowStockItems.length,
+        hasPrevPage: pageNum > 1,
         limit: limitNum
       }
     });

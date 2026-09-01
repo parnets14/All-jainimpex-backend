@@ -50,6 +50,12 @@ import { userSchema } from '../models/User.js';
 
 export const protect = async (req, res, next) => {
   try {
+    // Centralized route permission enforcement may have authenticated this
+    // request already. Reuse that trusted context in feature routers.
+    if (req.user && req.dbConnection && req.company) {
+      return next();
+    }
+
     let token;
     let tokenSource = 'none';
 

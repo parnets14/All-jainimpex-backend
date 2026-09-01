@@ -8,6 +8,11 @@
 
 import { getModels }                    from '../utils/getModels.js';
 import { dealerOrderRequestSchema }     from '../../models/DealerOrderRequest.js';
+import { calculateDiscountLine }        from '../../utils/sequentialDiscountPolicy.js';
+import {
+  findDealerExtraDiscount,
+  findProductDiscount
+} from './salesOrderController.js';
 
 const getOrCreateDOR = (conn) =>
   conn.models.DealerOrderRequest || conn.model('DealerOrderRequest', dealerOrderRequestSchema);
@@ -49,53 +54,100 @@ export const createOrderRequest = async (req, res) => {
         // Use MRP (GST inclusive) as the base price
         const dealerPrice = product.mrp || product.totalAmount || ((pricing?.sellingPrice || product.rateSlabs?.[0]?.rate || 0) * (1 + (product.gst || 0) / 100));
 
-        // Use discount data passed from the cart (already calculated on client)
-        const directDiscountPct      = item.directDiscountPct      || 0;
-        const dealerExtraDiscountPct = item.dealerExtraDiscountPct || 0;
-        const manualDiscountLevels   = item.manualDiscountLevels   || {};
+        // Resolve every discount driver on the server. Client cap/direct/extra
+        // fields are informational only and cannot authorize an invalid request.
+        const discountInfo = await findProductDiscount(
+          product._id,
+          product,
+          dealer.dealerType,
+          req.dbConnection,
+          user.allowedDiscountLevels || []
+        );
+        const directDiscountPct = discountInfo?.directDiscountPct || 0;
+        const masterDiscountCap = discountInfo?.masterDiscountCap ?? null;
+        const combinedLevelDiscountCap = discountInfo?.combinedLevelDiscountCap ?? null;
+        const configuredLevels = discountInfo?.configuredLevels || [];
+        const manualDiscountLevels = item.manualDiscountLevels || {};
+        const selectedDiscountLevels = [];
+        const stages = [];
+        let levelDiscountPct = 0;
 
-        // Derive selectedDiscountLevels (level names with pct > 0) and levelDiscountPct
-        const selectedDiscountLevels = Object.entries(manualDiscountLevels)
-          .filter(([, pct]) => (pct || 0) > 0)
-          .map(([name]) => name);
-        const levelDiscountPct = Object.values(manualDiscountLevels)
-          .reduce((sum, pct) => sum + (parseFloat(pct) || 0), 0);
-
-        const totalDiscountPct = directDiscountPct + levelDiscountPct + dealerExtraDiscountPct;
-
-        // Apply discounts SEQUENTIALLY on MRP (not flat additive)
-        const lineSubtotal = dealerPrice * item.quantity;
-        let currentAmount = lineSubtotal;
-        let discountAmount = 0;
-
-        // 1. Direct discount
         if (directDiscountPct > 0) {
-          const amt = currentAmount * (directDiscountPct / 100);
-          currentAmount -= amt;
-          discountAmount += amt;
+          stages.push({ key: 'direct', kind: 'direct', ratePercentage: directDiscountPct });
         }
-        // 2. Level discounts sequentially
-        Object.entries(manualDiscountLevels).forEach(([, pct]) => {
-          const p = parseFloat(pct) || 0;
-          if (p > 0) {
-            const amt = currentAmount * (p / 100);
-            currentAmount -= amt;
-            discountAmount += amt;
+        for (const [levelName, rawRate] of Object.entries(manualDiscountLevels)) {
+          const enteredPct = Number(rawRate || 0);
+          if (enteredPct <= 0) continue;
+          const configuredLevel = configuredLevels.find(level => level.levelName === levelName);
+          if (!configuredLevel) {
+            const error = new Error(`Discount level "${levelName}" is not configured for ${product.itemName}`);
+            error.name = 'DiscountPolicyError';
+            error.code = 'DISCOUNT_LEVEL_NOT_FOUND';
+            throw error;
           }
-        });
-        // 3. Dealer extra discount
-        if (dealerExtraDiscountPct > 0) {
-          const amt = currentAmount * (dealerExtraDiscountPct / 100);
-          currentAmount -= amt;
-          discountAmount += amt;
+          if (!(user.allowedDiscountLevels || []).includes(levelName)) {
+            const error = new Error(`Not allowed to use discount level: ${levelName}`);
+            error.name = 'DiscountPolicyError';
+            error.code = 'DISCOUNT_LEVEL_NOT_ALLOWED';
+            throw error;
+          }
+          const maximum = Number(configuredLevel.discountPercentage || 0);
+          if (!Number.isFinite(enteredPct) || enteredPct < 0 || enteredPct > maximum) {
+            const error = new Error(`Discount level "${levelName}" must be between 0 and ${maximum}%`);
+            error.name = 'DiscountPolicyError';
+            error.code = 'DISCOUNT_LEVEL_RATE_EXCEEDED';
+            throw error;
+          }
+          selectedDiscountLevels.push(levelName);
+          levelDiscountPct += enteredPct;
+          stages.push({ key: `level:${levelName}`, kind: 'level', levelName, ratePercentage: enteredPct });
         }
 
-        discountAmount = Math.round(discountAmount * 100) / 100;
-        const finalPrice = Math.round(currentAmount * 100) / 100;
-        // GST is reverse-calculated (MRP already includes GST)
-        const gstRate = product.gst || 0;
-        const gstAmount = gstRate > 0 ? Math.round((finalPrice - finalPrice / (1 + gstRate / 100)) * 100) / 100 : 0;
-        const lineTotal = finalPrice; // MRP after sequential discounts (GST already included)
+        const dealerExtraDiscountPct = findDealerExtraDiscount(product, dealer);
+        if (dealerExtraDiscountPct > 0) {
+          stages.push({ key: 'dealer-extra', kind: 'dealer_extra', ratePercentage: dealerExtraDiscountPct });
+        }
+        if (!discountInfo && stages.length > 0) {
+          const error = new Error(`No applicable discount mapping exists for ${product.itemName}`);
+          error.name = 'DiscountPolicyError';
+          error.code = 'DISCOUNT_MAPPING_NOT_FOUND';
+          throw error;
+        }
+        const hasDiscountStages = stages.some(
+          (stage) => Number(stage.ratePercentage || 0) > 0
+        );
+        const hasPositiveLevelStages = stages.some(
+          (stage) => stage.kind === 'level' && Number(stage.ratePercentage || 0) > 0
+        );
+        if (discountInfo && hasDiscountStages && masterDiscountCap === null) {
+          const error = new Error(`Master discount cap is not configured for ${product.itemName}`);
+          error.name = 'DiscountPolicyError';
+          error.code = 'MASTER_DISCOUNT_CAP_NOT_CONFIGURED';
+          throw error;
+        }
+        if (hasPositiveLevelStages && combinedLevelDiscountCap === null) {
+          const error = new Error(`Combined selected-level discount cap is not configured for ${product.itemName}`);
+          error.name = 'DiscountPolicyError';
+          error.code = 'COMBINED_LEVEL_DISCOUNT_CAP_NOT_CONFIGURED';
+          throw error;
+        }
+
+        const lineSubtotal = dealerPrice * item.quantity;
+        const calculation = calculateDiscountLine({
+          baseAmount: lineSubtotal,
+          stages,
+          gstPercentage: Number(product.gst || 0),
+          masterDiscountCap,
+          combinedLevelDiscountCap,
+          allowedDiscountLevels: user.allowedDiscountLevels || [],
+          enforceLevelPermissions: true,
+          bypassLevelPermission: false
+        });
+        const totalDiscountPct = calculation.effectiveDiscountPercentage;
+        const discountAmount = calculation.discountAmount;
+        const finalPrice = calculation.finalAmount;
+        const gstAmount = calculation.gstAmount;
+        const lineTotal = calculation.finalAmount;
 
         grossAmount += lineSubtotal;
         totalGst    += gstAmount;
@@ -118,14 +170,18 @@ export const createOrderRequest = async (req, res) => {
           warehouseName: item.warehouseName || '',
           isOutOfStock:  item.isOutOfStock || false,
           // Discount fields
-          discountMappingId:       item.discountMappingId || null,
-          discountMappingName:     item.discountMappingName || '',
+          discountMappingId:       discountInfo?.discountMappingId || null,
+          discountMappingName:     discountInfo?.discountMappingName || '',
           directDiscountPct,
           selectedDiscountLevels,
-          manualDiscountLevels:    item.manualDiscountLevels || {},
+          manualDiscountLevels,
           levelDiscountPct,
           dealerExtraDiscountPct,
           totalDiscountPct,
+          masterDiscountCap,
+          combinedLevelDiscountCap,
+          masterDiscountCapApplied: calculation.masterDiscountCapApplied,
+          combinedLevelDiscountCapApplied: calculation.combinedLevelDiscountCapApplied,
           discountAmount,
           finalPrice,
           gstAmount,
@@ -185,7 +241,13 @@ export const createOrderRequest = async (req, res) => {
     });
   } catch (error) {
     console.error('createOrderRequest error:', error);
-    res.status(500).json({ success: false, message: 'Failed to submit order request', error: error.message });
+    const isPolicyError = error?.name === 'DiscountPolicyError' || error instanceof RangeError;
+    return res.status(isPolicyError ? 400 : 500).json({
+      success: false,
+      message: isPolicyError ? error.message : 'Failed to submit order request',
+      ...(error.code ? { code: error.code } : {}),
+      ...(!isPolicyError ? { error: error.message } : {})
+    });
   }
 };
 

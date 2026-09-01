@@ -104,9 +104,10 @@ const generateVoucherNumber = async (voucherType, date = new Date(), dbConnectio
  * 
  * @param {Date} date - Date for the allocation
  * @param {Object} dbConnection - Database connection for multi-company support
+ * @param {Object} session - Optional MongoDB session
  * @returns {Promise<String>} Generated allocation number
  */
-const generateAllocationNumber = async (date = new Date(), dbConnection = null) => {
+const generateAllocationNumber = async (date = new Date(), dbConnection = null, session = null) => {
   if (!dbConnection) {
     throw new Error('dbConnection is required for generateAllocationNumber');
   }
@@ -116,10 +117,14 @@ const generateAllocationNumber = async (date = new Date(), dbConnection = null) 
   const fy = getFinancialYear(date);
   const prefix = 'PA';
   
-  // Find last allocation number for this FY
-  const lastAllocation = await PaymentAllocation.findOne({
+  // Find last allocation number for this FY using the caller's transaction snapshot.
+  let lastAllocationQuery = PaymentAllocation.findOne({
     allocationNumber: { $regex: `^${prefix}-${fy}-` }
   }).sort({ allocationNumber: -1 });
+  if (session) {
+    lastAllocationQuery = lastAllocationQuery.session(session);
+  }
+  const lastAllocation = await lastAllocationQuery;
   
   let sequence = 1;
   if (lastAllocation && lastAllocation.allocationNumber) {

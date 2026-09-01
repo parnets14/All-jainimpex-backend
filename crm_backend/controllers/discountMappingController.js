@@ -163,7 +163,8 @@ export const createDiscountMapping = async (req, res) => {
       extendedSubcategory1,
       extendedSubcategory2,
       directDiscountPercentage,
-      maxDiscountPercentage,
+      masterDiscountCap,
+      combinedLevelDiscountCap,
       levels,
       validFrom,
       validTo,
@@ -185,12 +186,58 @@ export const createDiscountMapping = async (req, res) => {
       });
     }
 
-    // Validate maxDiscountPercentage
-    if (!maxDiscountPercentage || maxDiscountPercentage < 1 || maxDiscountPercentage > 100) {
+    const hasMasterDiscountCap = masterDiscountCap !== null
+      && masterDiscountCap !== undefined
+      && masterDiscountCap !== '';
+    if (mappingType === 'sales' && !hasMasterDiscountCap) {
       return res.status(400).json({
         success: false,
-        message: 'Max discount percentage is required and must be between 1 and 100'
+        message: 'Master discount cap is required for sales discount mappings'
       });
+    }
+
+    const hasLevelDiscounts = discountType === 'level_based' || discountType === 'both';
+    const hasCombinedLevelDiscountCap = combinedLevelDiscountCap !== null
+      && combinedLevelDiscountCap !== undefined
+      && combinedLevelDiscountCap !== '';
+    if (mappingType === 'sales' && hasLevelDiscounts && !hasCombinedLevelDiscountCap) {
+      return res.status(400).json({
+        success: false,
+        message: 'Combined selected-level discount cap is required for level-based sales mappings'
+      });
+    }
+
+    let parsedMasterCap = null;
+    if (hasMasterDiscountCap) {
+      parsedMasterCap = Number(masterDiscountCap);
+      if (!Number.isFinite(parsedMasterCap) || parsedMasterCap < 0 || parsedMasterCap > 100) {
+        return res.status(400).json({
+          success: false,
+          message: 'Master discount cap must be a finite number between 0 and 100'
+        });
+      }
+      const directRate = discountType === 'direct' || discountType === 'both'
+        ? Number(directDiscountPercentage || 0)
+        : 0;
+      if (directRate > parsedMasterCap) {
+        return res.status(400).json({
+          success: false,
+          message: `Master discount cap (${parsedMasterCap}%) cannot be lower than the direct discount (${directRate}%)`
+        });
+      }
+    }
+
+    let parsedCombinedLevelCap = null;
+    if (hasCombinedLevelDiscountCap) {
+      parsedCombinedLevelCap = Number(combinedLevelDiscountCap);
+      if (!Number.isFinite(parsedCombinedLevelCap)
+          || parsedCombinedLevelCap < 0
+          || parsedCombinedLevelCap > 100) {
+        return res.status(400).json({
+          success: false,
+          message: 'Combined selected-level discount cap must be a finite number between 0 and 100'
+        });
+      }
     }
 
     // Validate target reference based on target type
@@ -336,7 +383,8 @@ export const createDiscountMapping = async (req, res) => {
       discountType,
       mappingType,
       targetType,
-      maxDiscountPercentage,
+      masterDiscountCap: parsedMasterCap,
+      combinedLevelDiscountCap: parsedCombinedLevelCap,
       validFrom: new Date(validFrom),
       validTo: new Date(validTo),
       includeExtendedSubcategories: includeExtendedSubcategories !== false,
@@ -420,12 +468,49 @@ export const updateDiscountMapping = async (req, res) => {
     const { id } = req.params;
     const updateData = { ...req.body };
 
+    // Parse a submitted master cap. Final sales-mapping requirements are checked
+    // after merging the update with the persisted mapping.
+    if (Object.prototype.hasOwnProperty.call(updateData, 'masterDiscountCap')) {
+      if (updateData.masterDiscountCap === '' || updateData.masterDiscountCap === undefined) {
+        updateData.masterDiscountCap = null;
+      } else if (updateData.masterDiscountCap !== null) {
+        const parsedMasterCap = Number(updateData.masterDiscountCap);
+        if (!Number.isFinite(parsedMasterCap) || parsedMasterCap < 0 || parsedMasterCap > 100) {
+          return res.status(400).json({
+            success: false,
+            message: 'Master discount cap must be a finite number between 0 and 100'
+          });
+        }
+        updateData.masterDiscountCap = parsedMasterCap;
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(updateData, 'combinedLevelDiscountCap')) {
+      if (updateData.combinedLevelDiscountCap === ''
+          || updateData.combinedLevelDiscountCap === undefined) {
+        updateData.combinedLevelDiscountCap = null;
+      } else if (updateData.combinedLevelDiscountCap !== null) {
+        const parsedCombinedLevelCap = Number(updateData.combinedLevelDiscountCap);
+        if (!Number.isFinite(parsedCombinedLevelCap)
+            || parsedCombinedLevelCap < 0
+            || parsedCombinedLevelCap > 100) {
+          return res.status(400).json({
+            success: false,
+            message: 'Combined selected-level discount cap must be a finite number between 0 and 100'
+          });
+        }
+        updateData.combinedLevelDiscountCap = parsedCombinedLevelCap;
+      }
+    }
+
     // Remove fields that shouldn't be updated directly
     delete updateData.createdBy;
     delete updateData.createdAt;
     delete updateData.currentUsageCount;
     delete updateData.approvedBy;
     delete updateData.approvedAt;
+    // Historical compatibility only; active mapping updates no longer write this field.
+    delete updateData.maxDiscountPercentage;
 
     // Find existing discount mapping
     const existingMapping = await DiscountMapping.findById(id);
@@ -475,19 +560,61 @@ export const updateDiscountMapping = async (req, res) => {
       }
     }
 
-    const discountMapping = await DiscountMapping.findByIdAndUpdate(
-      id,
-      updateData,
-      { new: true, runValidators: true }
-    )
-      .populate('product', 'itemName productCode')
-      .populate('brand', 'name')
-      .populate('category', 'name')
-      .populate('subcategory', 'name')
-      .populate('extendedSubcategory1', 'name')
-      .populate('extendedSubcategory2', 'name')
-      .populate('createdBy', 'name email')
-      .populate('approvedBy', 'name email');
+    existingMapping.set(updateData);
+    if (existingMapping.mappingType === 'sales') {
+      const finalMasterCap = Number(existingMapping.masterDiscountCap);
+      if (existingMapping.masterDiscountCap === null
+          || existingMapping.masterDiscountCap === undefined
+          || !Number.isFinite(finalMasterCap)
+          || finalMasterCap < 0
+          || finalMasterCap > 100) {
+        return res.status(400).json({
+          success: false,
+          message: 'Master discount cap is required for sales discount mappings and must be a finite number between 0 and 100'
+        });
+      }
+      const directRate = existingMapping.discountType === 'direct' || existingMapping.discountType === 'both'
+        ? Number(existingMapping.directDiscountPercentage || 0)
+        : 0;
+      if (directRate > finalMasterCap) {
+        return res.status(400).json({
+          success: false,
+          message: `Master discount cap (${finalMasterCap}%) cannot be lower than the direct discount (${directRate}%)`
+        });
+      }
+
+      const hasLevelDiscounts = existingMapping.discountType === 'level_based'
+        || existingMapping.discountType === 'both';
+      if (hasLevelDiscounts) {
+        const resolvedCombinedLevelCap = existingMapping.combinedLevelDiscountCap
+          ?? existingMapping.maxDiscountPercentage;
+        const finalCombinedLevelCap = Number(resolvedCombinedLevelCap);
+        if (resolvedCombinedLevelCap === null
+            || resolvedCombinedLevelCap === undefined
+            || !Number.isFinite(finalCombinedLevelCap)
+            || finalCombinedLevelCap < 0
+            || finalCombinedLevelCap > 100) {
+          return res.status(400).json({
+            success: false,
+            message: 'Combined selected-level discount cap is required for level-based sales mappings and must be a finite number between 0 and 100'
+          });
+        }
+        // Persist the canonical field when an old mapping is edited.
+        existingMapping.combinedLevelDiscountCap = finalCombinedLevelCap;
+      }
+    }
+    await existingMapping.save();
+    await existingMapping.populate([
+      { path: 'product', select: 'itemName productCode' },
+      { path: 'brand', select: 'name' },
+      { path: 'category', select: 'name' },
+      { path: 'subcategory', select: 'name' },
+      { path: 'extendedSubcategory1', select: 'name' },
+      { path: 'extendedSubcategory2', select: 'name' },
+      { path: 'createdBy', select: 'name email' },
+      { path: 'approvedBy', select: 'name email' }
+    ]);
+    const discountMapping = existingMapping;
 
     let message = 'Discount mapping updated successfully';
     let requiresReapproval = false;
@@ -555,6 +682,56 @@ export const updateDiscountMappingStatus = async (req, res) => {
         success: false,
         message: 'Only Super Admin can approve or reject discount mappings'
       });
+    }
+
+    // Every sales-mapping update, including status changes, must result in an
+    // explicitly configured valid master cap.
+    const existingMapping = await DiscountMapping.findById(id).lean();
+    if (!existingMapping) {
+      return res.status(404).json({
+        success: false,
+        message: 'Discount mapping not found'
+      });
+    }
+    if (existingMapping.mappingType === 'sales') {
+      const masterCap = Number(existingMapping.masterDiscountCap);
+      const directRate = existingMapping.discountType === 'direct' || existingMapping.discountType === 'both'
+        ? Number(existingMapping.directDiscountPercentage || 0)
+        : 0;
+      if (existingMapping.masterDiscountCap === null
+          || existingMapping.masterDiscountCap === undefined
+          || !Number.isFinite(masterCap)
+          || masterCap < 0
+          || masterCap > 100) {
+        return res.status(400).json({
+          success: false,
+          message: 'Master discount cap must be configured before updating a sales discount mapping'
+        });
+      }
+      if (directRate > masterCap) {
+        return res.status(400).json({
+          success: false,
+          message: `Master discount cap (${masterCap}%) cannot be lower than the direct discount (${directRate}%)`
+        });
+      }
+
+      const hasLevelDiscounts = existingMapping.discountType === 'level_based'
+        || existingMapping.discountType === 'both';
+      if (hasLevelDiscounts) {
+        const resolvedCombinedLevelCap = existingMapping.combinedLevelDiscountCap
+          ?? existingMapping.maxDiscountPercentage;
+        const combinedLevelCap = Number(resolvedCombinedLevelCap);
+        if (resolvedCombinedLevelCap === null
+            || resolvedCombinedLevelCap === undefined
+            || !Number.isFinite(combinedLevelCap)
+            || combinedLevelCap < 0
+            || combinedLevelCap > 100) {
+          return res.status(400).json({
+            success: false,
+            message: 'Combined selected-level discount cap must be configured before approving a level-based sales discount mapping'
+          });
+        }
+      }
     }
 
     const updateData = { status };

@@ -26,7 +26,11 @@ const requestProductSchema = new mongoose.Schema({
   manualDiscountLevels:    { type: mongoose.Schema.Types.Mixed, default: {} }, // { levelName: enteredPct }
   levelDiscountPct:        { type: Number, default: 0 },   // sum of selected level %s
   dealerExtraDiscountPct:  { type: Number, default: 0 },   // from dealer.extraDiscounts
-  totalDiscountPct:        { type: Number, default: 0 },   // direct + level + extra
+  totalDiscountPct:        { type: Number, default: 0 },   // effective reducing-basis percentage
+  masterDiscountCap:       { type: Number, default: null, min: 0, max: 100 },
+  combinedLevelDiscountCap:{ type: Number, default: null, min: 0, max: 100 },
+  masterDiscountCapApplied:{ type: Boolean, default: false },
+  combinedLevelDiscountCapApplied: { type: Boolean, default: false },
   discountAmount:          { type: Number, default: 0 },   // ₹ discount on this line
   finalPrice:              { type: Number, default: 0 },   // after discount, before GST
   gstAmount:               { type: Number, default: 0 },   // GST on finalPrice

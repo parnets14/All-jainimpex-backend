@@ -148,6 +148,10 @@ import deAdminDeliveryRoutes from './DeliveryExecutiveAppBackend/routes/adminDel
 // Seed controller
 import { seedTypesForAllCompanies } from './controllers/seedController.js';
 
+import dns from 'dns';
+
+dns.setServers(['8.8.8.8', '8.8.4.4']);
+
 dotenv.config();
 
 const numCPUs = cpus().length;
@@ -312,8 +316,9 @@ app.use("/api/auth", authRoutes);
 // permission middleware so it isn't blocked by user-permission enforcement.
 app.use("/api/biometric", biometricRoutes);
 
-// Enforce route-level permissions globally (after auth, before feature routes).
-// Auth routes are excluded (mounted above). Super_admin bypasses automatically.
+// Enforce route-level permissions globally before feature routes. For mapped
+// CRM prefixes the middleware authenticates first; app-specific/null mappings
+// continue to their own router authentication. Super_admin bypasses authorization.
 app.use('/api', enforceRoutePermissions);
 
 app.use("/api/users", userRoutes);
@@ -595,6 +600,15 @@ app.use("/public", express.static(join(__dirname, "public")));
     scheduleStockStatusRefresh();
   } catch (error) {
     console.error('❌ Failed to initialize stock status refresh cron job:', error);
+  }
+
+  // Expire pending Sales Orders centrally instead of making every open browser
+  // run the same global mutation job.
+  try {
+    const { startSalesOrderExpirationCron } = await import('./cron/salesOrderExpiration.js');
+    startSalesOrderExpirationCron();
+  } catch (error) {
+    console.error('❌ Failed to initialize Sales Order expiration cron job:', error);
   }
 
   // Initialize overdue payment reminder cron (daily 9 AM IST)

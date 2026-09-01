@@ -174,6 +174,19 @@ const dealerPaymentSchema = new mongoose.Schema({
     enum: ["App", "Web"],
     default: "Web"
   },
+
+  // Optional client request key used to return the original payment on retries.
+  idempotencyKey: {
+    type: String,
+    trim: true,
+    maxlength: 100
+  },
+  // SHA-256 of every behaviorally persisted request field for safe replay checks.
+  idempotencyFingerprint: {
+    type: String,
+    minlength: 64,
+    maxlength: 64
+  },
   
   // Audit fields
   createdBy: {
@@ -209,10 +222,13 @@ dealerPaymentSchema.pre("save", async function(next) {
       const today = new Date();
       const dateStr = today.toISOString().split('T')[0].replace(/-/g, '');
       
-      // Find the last payment of today
-      const lastPayment = await this.constructor.findOne({
+      // Find the last payment of today using the caller's transaction snapshot.
+      const session = this.$session();
+      let lastPaymentQuery = this.constructor.findOne({
         paymentNumber: { $regex: `^DP-${dateStr}-` }
       }).sort({ paymentNumber: -1 });
+      if (session) lastPaymentQuery = lastPaymentQuery.session(session);
+      const lastPayment = await lastPaymentQuery;
       
       let sequence = 1;
       if (lastPayment) {
@@ -230,13 +246,20 @@ dealerPaymentSchema.pre("save", async function(next) {
   next();
 });
 
-// Index for better performance
-dealerPaymentSchema.index({ paymentNumber: 1 });
+// Indexes for better performance
+// paymentNumber already has a unique index from the field declaration.
 dealerPaymentSchema.index({ dealerInvoice: 1 });
 dealerPaymentSchema.index({ dealer: 1 });
 dealerPaymentSchema.index({ paymentDate: -1 });
 dealerPaymentSchema.index({ status: 1 });
 dealerPaymentSchema.index({ source: 1 });
+dealerPaymentSchema.index(
+  { dealer: 1, source: 1, idempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { idempotencyKey: { $type: "string" } }
+  }
+);
 
 const DealerPayment = mongoose.model("DealerPayment", dealerPaymentSchema);
 

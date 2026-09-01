@@ -123,18 +123,7 @@ const userSchema = new mongoose.Schema({
   }],
   allowedDiscountLevels: [{
     type: String,
-    enum: [
-      'Loyalty Discount',
-      'Bulk Discount',
-      'Load Discount',
-      'Consistency Discount',
-      'Prompt Discount',
-      'Executive Discount',
-      'MD Discount',
-      'ACD Discount',
-      'CD Discount',
-      'Others'
-    ]
+    trim: true
   }],
   lastLogin: {
     type: Date,

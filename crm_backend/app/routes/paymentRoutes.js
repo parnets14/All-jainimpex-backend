@@ -7,7 +7,7 @@ import {
 } from '../../controllers/dealerPaymentController.js';
 import { protect } from '../../middleware/authMiddleware.js';
 import { generalLimiter } from '../../middleware/rateLimit.js';
-import Dealer from '../../models/Dealer.js';
+import { dealerSchema } from '../../models/Dealer.js';
 
 const router = express.Router();
 
@@ -17,73 +17,51 @@ router.use(generalLimiter);
 // All routes are protected
 router.use(protect);
 
-// Get dealer's payments (for app - only their own payments)
-router.get('/', async (req, res) => {
+// Bind every app payment request to the authenticated dealer in the company database.
+const bindAuthenticatedDealer = async (req, res, next) => {
   try {
-    // Get dealer by username (dealer code) - same as invoice routes
-    const dealer = await Dealer.findOne({ code: req.user.username });
+    if (req.user?.role !== 'dealer') {
+      return res.status(403).json({
+        success: false,
+        message: 'Dealer access required'
+      });
+    }
+
+    const Dealer = req.dbConnection.models.Dealer
+      || req.dbConnection.model('Dealer', dealerSchema);
+    const dealer = await Dealer.findOne({ code: req.user.username }).select('_id');
+
     if (!dealer) {
       return res.status(404).json({
         success: false,
         message: 'Dealer not found'
       });
     }
-    const dealerId = dealer._id;
 
-    // Call the main controller but filter by dealer
-    req.query.dealer = dealerId;
-    return getDealerPayments(req, res);
+    req.authenticatedDealerId = dealer._id;
+    req.paymentOrigin = 'App';
+    next();
   } catch (error) {
+    console.error('Bind Authenticated Dealer Error:', error);
     res.status(500).json({
       success: false,
-      message: 'Error fetching payments',
-      error: error.message
+      message: 'Error validating dealer access'
     });
   }
-});
+};
 
-// Get available invoices for payment (for the logged-in dealer)
-router.get('/available-invoices', async (req, res) => {
-  try {
-    // Get dealer by username (dealer code) - same as invoice routes
-    const dealer = await Dealer.findOne({ code: req.user.username });
-    if (!dealer) {
-      return res.status(404).json({
-        success: false,
-        message: 'Dealer not found'
-      });
-    }
-    const dealerId = dealer._id;
+router.use(bindAuthenticatedDealer);
 
-    // Filter by dealer
-    req.query.dealer = dealerId;
-    return getAvailableInvoicesForPayment(req, res);
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching available invoices',
-      error: error.message
-    });
-  }
-});
+// Get only the authenticated dealer's payments.
+router.get('/', getDealerPayments);
 
-// Create payment (from app - auto-approved)
-router.post('/', async (req, res) => {
-  try {
-    // Set source to App and auto-approve
-    req.body.source = 'App';
-    return createDealerPayment(req, res);
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Error creating payment',
-      error: error.message
-    });
-  }
-});
+// Get only the authenticated dealer's available invoices.
+router.get('/available-invoices', getAvailableInvoicesForPayment);
 
-// Get single payment details
+// App origin and dealer ownership are derived from trusted server context.
+router.post('/', createDealerPayment);
+
+// Get one payment only when it belongs to the authenticated dealer.
 router.get('/:id', getDealerPayment);
 
 export default router;
-

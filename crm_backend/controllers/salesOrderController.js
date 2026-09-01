@@ -13,6 +13,12 @@ import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
 import { dealerLedgerSchema } from "../models/DealerLedger.js";
 import { paymentAllocationSchema } from "../models/PaymentAllocation.js";
 import { sendPushNotification } from '../services/firebaseNotificationService.js';
+import {
+  calculateDiscountLine,
+  calculateRequiredSequentialStageRatePercentage,
+  normalizeRateMap,
+  resolveDealerExtraDiscountBySpecificity
+} from '../utils/sequentialDiscountPolicy.js';
 
 // Helper function to get models from company-specific connection
 const getModels = (dbConnection) => {
@@ -32,28 +38,525 @@ const getModels = (dbConnection) => {
   };
 };
 
+const createDiscountPolicyError = (message, code) => {
+  const error = new Error(message);
+  error.name = 'DiscountPolicyError';
+  error.code = code;
+  return error;
+};
+
+const objectIdString = (value) => value?._id?.toString?.() || value?.toString?.() || '';
+
+const resolveAndValidateDealerExtraDiscount = ({ submittedItem, dealer, product }) => {
+  const configuredRate = resolveDealerExtraDiscountBySpecificity(dealer, product);
+  if (Object.prototype.hasOwnProperty.call(submittedItem, 'dealerExtraDiscount')) {
+    const submittedRate = Number(submittedItem.dealerExtraDiscount);
+    if (!Number.isFinite(submittedRate) || Math.abs(submittedRate - configuredRate) > 0.01) {
+      throw createDiscountPolicyError(
+        `Dealer extra discount for ${product.itemName} is configured at ${configuredRate}%; remove the submitted value or send the configured rate.`,
+        'DEALER_EXTRA_DISCOUNT_MISMATCH'
+      );
+    }
+  }
+  return configuredRate;
+};
+
+const sendDiscountPolicyError = (res, error) => {
+  if (error?.name !== 'DiscountPolicyError' && !(error instanceof RangeError)) return false;
+
+  res.status(400).json({
+    success: false,
+    message: error.message,
+    code: error.code || (error instanceof RangeError ? 'INVALID_DISCOUNT_RATE' : 'DISCOUNT_POLICY_INVALID'),
+    ...(error.violations ? { violations: error.violations } : {})
+  });
+  return true;
+};
+
+const canonicalizeSalesOrderProducts = async ({ products, dealer, dbConnection, actorId }) => {
+  const { Product, DiscountMapping, User } = getModels(dbConnection);
+  const actor = actorId
+    ? await User.findById(actorId).select('role allowedDiscountLevels').lean()
+    : null;
+  const enforceLevelPermissions = true;
+  const bypassLevelPermission = false;
+  const allowedDiscountLevels = actor?.allowedDiscountLevels || [];
+
+  return Promise.all((products || []).map(async (submittedItem) => {
+    const productId = submittedItem.product?._id || submittedItem.product || submittedItem.productId;
+    const product = await Product.findById(productId)
+      .select('itemName productCode HSNCode internalRate brand category subcategory subcategory1 subcategory2 subcategory3 subcategory4 subcategory5 gst rateSlabs salesType')
+      .lean();
+    if (!product) {
+      throw createDiscountPolicyError(
+        `Product not found for sales order line ${submittedItem.productName || productId}`,
+        'PRODUCT_NOT_FOUND'
+      );
+    }
+
+    const applicableDiscounts = await DiscountMapping.findApplicableDiscounts(
+      product._id,
+      'sales',
+      dealer?.dealerType || null,
+      dbConnection
+    );
+    const mapping = applicableDiscounts[0] || null;
+    const combinedLevelDiscountCap = mapping?.combinedLevelDiscountCap
+      ?? mapping?.maxDiscountPercentage
+      ?? null;
+    // Sales Orders capture only automatic commercial terms. User-assigned
+    // level discounts are retained in the mapping snapshot for reference and
+    // become executable only when an invoice creator explicitly selects them.
+    const selectedDiscountLevels = [];
+    const manualDiscountLevels = {};
+    const dealerExtraDiscount = resolveAndValidateDealerExtraDiscount({
+      submittedItem,
+      dealer,
+      product
+    });
+    const mappingLevels = mapping?.levels || [];
+    const stages = [];
+
+    const directDiscountPercentage = mapping && (mapping.discountType === 'direct' || mapping.discountType === 'both')
+      ? Number(mapping.directDiscountPercentage || 0)
+      : 0;
+    if (directDiscountPercentage > 0) {
+      stages.push({ key: 'direct', kind: 'direct', ratePercentage: directDiscountPercentage });
+    }
+
+    if (dealerExtraDiscount > 0) {
+      stages.push({ key: 'dealer-extra', kind: 'dealer_extra', ratePercentage: dealerExtraDiscount });
+    }
+    if (!mapping && stages.length > 0) {
+      throw createDiscountPolicyError(
+        `No applicable discount mapping exists for ${product.itemName}`,
+        'DISCOUNT_MAPPING_NOT_FOUND'
+      );
+    }
+    if (stages.some((stage) => stage.ratePercentage > 0)
+        && mapping
+        && (mapping.masterDiscountCap === null
+        || mapping.masterDiscountCap === undefined
+        || mapping.masterDiscountCap === '')) {
+      throw createDiscountPolicyError(
+        `Master discount cap is not configured for the applicable sales mapping on ${product.itemName}.`,
+        'MASTER_DISCOUNT_CAP_NOT_CONFIGURED'
+      );
+    }
+    const hasSelectedLevelStages = stages.some(
+      (stage) => stage.kind === 'level' && stage.ratePercentage > 0
+    );
+    if (hasSelectedLevelStages && combinedLevelDiscountCap === null) {
+      throw createDiscountPolicyError(
+        `Combined selected-level discount cap is not configured for the applicable sales mapping on ${product.itemName}.`,
+        'COMBINED_LEVEL_DISCOUNT_CAP_NOT_CONFIGURED'
+      );
+    }
+
+    const quantity = Number(submittedItem.quantity || 0);
+    const unitPrice = Number(submittedItem.unitPrice ?? product.rateSlabs?.[0]?.rate ?? 0);
+    const calculation = calculateDiscountLine({
+      baseAmount: quantity * unitPrice,
+      stages,
+      gstPercentage: Number(submittedItem.gst ?? product.gst ?? 0),
+      promisedEffectiveDiscountPercentage: submittedItem.promisedEffectiveDiscountPercentage,
+      masterDiscountCap: mapping?.masterDiscountCap ?? null,
+      combinedLevelDiscountCap,
+      allowedDiscountLevels,
+      enforceLevelPermissions,
+      bypassLevelPermission
+    });
+
+    const discountFamilyKey = product.subcategory
+      ? `subcategory:${product.subcategory}`
+      : null;
+    const capturedAt = new Date();
+    const normalizedLevels = mappingLevels.map((level) => ({
+      levelName: level.levelName,
+      discountPercentage: Number(level.discountPercentage || 0),
+      description: level.description || ''
+    }));
+    const discountPolicySnapshot = mapping ? {
+      flowVersion: 'sales-order-base-v2',
+      discountMappingId: mapping._id,
+      discountMappingName: mapping.discountName,
+      mappingUpdatedAt: mapping.updatedAt || null,
+      discountFamilyKey,
+      discountType: mapping.discountType,
+      directDiscountPercentage,
+      levels: normalizedLevels,
+      dealerExtraDiscountPercentage: dealerExtraDiscount,
+      masterDiscountCap: mapping.masterDiscountCap,
+      combinedLevelDiscountCap,
+      orderedStages: calculation.stages.map((stage) => ({
+        key: stage.key,
+        kind: stage.kind,
+        levelName: stage.levelName || null,
+        ratePercentage: stage.ratePercentage
+      })),
+      capturedAt
+    } : null;
+    const discountPermissionSnapshot = {
+      actorUserId: actor?._id || actorId || null,
+      actorRole: actor?.role || null,
+      allowedDiscountLevels,
+      enforceLevelPermissions,
+      bypassLevelPermission,
+      capturedAt
+    };
+
+    return {
+      ...submittedItem,
+      product: product._id,
+      productCode: product.productCode,
+      productName: product.itemName,
+      HSNCode: product.HSNCode,
+      internalRate: product.internalRate || null,
+      quantity,
+      unitPrice,
+      gst: Number(submittedItem.gst ?? product.gst ?? 0),
+      salesType: submittedItem.salesType || product.salesType || 'Regular Sale',
+      selectedDiscountLevels,
+      manualDiscountLevels,
+      dealerExtraDiscount,
+      discountPercentage: stages
+        .filter((stage) => stage.kind === 'direct' || stage.kind === 'level')
+        .reduce((sum, stage) => sum + stage.ratePercentage, 0),
+      discountAmount: calculation.discountAmount,
+      gstAmount: calculation.gstAmount,
+      totalPrice: calculation.finalAmount,
+      effectiveDiscountPercentage: calculation.effectiveDiscountPercentage,
+      promisedEffectiveDiscountPercentage: calculation.promisedEffectiveDiscountPercentage,
+      requiredSequentialStageRatePercentage: calculation.requiredSequentialStageRatePercentage,
+      masterDiscountCapApplied: calculation.masterDiscountCapApplied,
+      combinedLevelDiscountCapApplied: calculation.combinedLevelDiscountCapApplied,
+      levelDiscountTotalPercentage: calculation.levelDiscountTotalPercentage,
+      discountFamilyKey,
+      discountType: mapping?.discountType || null,
+      discountPolicySnapshot,
+      discountPermissionSnapshot,
+      appliedDiscount: mapping ? {
+        discountId: mapping._id,
+        discountName: mapping.discountName,
+        discountType: mapping.discountType,
+        targetType: mapping.targetType,
+        directDiscountPercentage,
+        levels: normalizedLevels,
+        masterDiscountCap: mapping.masterDiscountCap,
+        combinedLevelDiscountCap
+      } : null
+    };
+  }));
+};
+
+const calculateCanonicalCreditLineAmount = (product) => {
+  const grossAmount = Number(product.quantity || 0) * Number(product.unitPrice || 0);
+  const orderedStages = product.discountPolicySnapshot?.orderedStages || [];
+  let creditStages = orderedStages.filter(
+    (stage) => stage.kind === 'direct' || stage.kind === 'dealer_extra'
+  );
+
+  // Legacy persisted lines may predate ordered snapshots. Reconstruct only the
+  // conservative direct + dealer-extra stages from server-persisted fields.
+  if (orderedStages.length === 0) {
+    creditStages = [];
+    const directRate = Number(product.appliedDiscount?.directDiscountPercentage || 0);
+    const dealerExtraRate = Number(product.dealerExtraDiscount || 0);
+    if (directRate > 0) {
+      creditStages.push({ key: 'direct', kind: 'direct', ratePercentage: directRate });
+    }
+    if (dealerExtraRate > 0) {
+      creditStages.push({
+        key: 'dealer-extra',
+        kind: 'dealer_extra',
+        ratePercentage: dealerExtraRate
+      });
+    }
+  }
+
+  return calculateDiscountLine({
+    baseAmount: grossAmount,
+    stages: creditStages,
+    // Legacy lines predate policy caps. A neutral 100% ceiling preserves their
+    // persisted direct/dealer-extra terms without weakening current snapshots.
+    masterDiscountCap: orderedStages.length === 0
+      ? 100
+      : (product.discountPolicySnapshot?.masterDiscountCap ?? null)
+  }).finalAmount;
+};
+
+const isCreditEligibleProduct = (product) => Boolean(
+  product?.warehouse
+  && product.warehouse !== 'No Stock'
+  && product.warehouseName !== 'No Stock'
+);
+
+const hasCreditEligibilityChanged = (storedProducts = [], updatedProducts = []) => {
+  if (storedProducts.length !== updatedProducts.length) return true;
+  return updatedProducts.some((product, index) => (
+    isCreditEligibleProduct(product) !== isCreditEligibleProduct(storedProducts[index])
+  ));
+};
+
+const calculateCanonicalOrderTotals = (products = []) => ({
+  grossAmount: products.reduce((sum, product) => sum + Number(product.quantity || 0) * Number(product.unitPrice || 0), 0),
+  totalGst: products.reduce((sum, product) => sum + Number(product.gstAmount || 0), 0),
+  discountAmount: products.reduce((sum, product) => sum + Number(product.discountAmount || 0), 0),
+  totalAmount: products.reduce((sum, product) => sum + Number(product.totalPrice || 0), 0)
+});
+
+const normalizeComparableLevels = (levels) => JSON.stringify([...(levels || [])].map(String).sort());
+const normalizeComparableRateMap = (rates) => JSON.stringify(
+  Object.entries(normalizeRateMap(rates)).sort(([left], [right]) => left.localeCompare(right))
+);
+const normalizeComparableStages = (stages) => JSON.stringify((stages || []).map((stage) => ({
+  key: stage?.key || null,
+  kind: stage?.kind || null,
+  levelName: stage?.levelName || null,
+  ratePercentage: Number(stage?.ratePercentage || 0)
+})));
+const isFinalizedSalesOrderStatus = (status) => (
+  ['Confirmed', 'Processing', 'In Transit', 'Delivered'].includes(String(status || '').trim())
+);
+
+const getDiscountDriverChangeReasons = (storedProducts = [], submittedProducts = []) => {
+  if (storedProducts.length !== submittedProducts.length) return ['product line count'];
+
+  const reasons = [];
+  submittedProducts.forEach((submitted, index) => {
+    const stored = storedProducts[index];
+    const lineLabel = stored?.productName || submitted?.productName || `line ${index + 1}`;
+    const submittedProductId = submitted.product?._id || submitted.product || submitted.productId;
+    const storedProductId = stored.product?._id || stored.product;
+    if (String(submittedProductId) !== String(storedProductId)) reasons.push(`${lineLabel}: product identity`);
+    if (Number(submitted.gst ?? 0) !== Number(stored.gst ?? 0)) reasons.push(`${lineLabel}: GST`);
+    if (Number(submitted.dealerExtraDiscount || 0) !== Number(stored.dealerExtraDiscount || 0)) {
+      reasons.push(`${lineLabel}: dealer extra discount`);
+    }
+    if (normalizeComparableLevels(submitted.selectedDiscountLevels)
+        !== normalizeComparableLevels(stored.selectedDiscountLevels)) {
+      reasons.push(`${lineLabel}: selected discount levels`);
+    }
+    if (normalizeComparableRateMap(submitted.manualDiscountLevels)
+        !== normalizeComparableRateMap(stored.manualDiscountLevels)) {
+      reasons.push(`${lineLabel}: manual discount levels`);
+    }
+    if (Object.prototype.hasOwnProperty.call(submitted, 'discountPolicySnapshot')
+        && normalizeComparableStages(submitted.discountPolicySnapshot?.orderedStages)
+          !== normalizeComparableStages(stored.discountPolicySnapshot?.orderedStages)) {
+      reasons.push(`${lineLabel}: direct/persisted discount policy`);
+    }
+    if (Object.prototype.hasOwnProperty.call(submitted, 'appliedDiscount')) {
+      const submittedMappingId = objectIdString(submitted.appliedDiscount?.discountId);
+      const storedMappingId = objectIdString(stored.appliedDiscount?.discountId);
+      const submittedDirectRate = Number(submitted.appliedDiscount?.directDiscountPercentage || 0);
+      const storedDirectRate = Number(stored.appliedDiscount?.directDiscountPercentage || 0);
+      if (submittedMappingId !== storedMappingId || submittedDirectRate !== storedDirectRate) {
+        reasons.push(`${lineLabel}: direct discount policy`);
+      }
+    }
+  });
+  return [...new Set(reasons)];
+};
+
+const haveReplayableAmountInputsChanged = (storedProducts = [], submittedProducts = []) => {
+  if (storedProducts.length !== submittedProducts.length) return false;
+  return submittedProducts.some((submitted, index) => (
+    Number(submitted.quantity) !== Number(storedProducts[index].quantity)
+    || Number(submitted.unitPrice) !== Number(storedProducts[index].unitPrice)
+  ));
+};
+
+const mergeMissingCanonicalInputs = (storedProducts, submittedProducts) => submittedProducts.map((submitted, index) => {
+  const stored = storedProducts[index];
+  const submittedProductId = submitted.product?._id || submitted.product || submitted.productId;
+  const storedProductId = stored?.product?._id || stored?.product;
+  if (!stored || String(submittedProductId) !== String(storedProductId)) return submitted;
+
+  const hasSubmitted = (field) => Object.prototype.hasOwnProperty.call(submitted, field);
+  return {
+    ...submitted,
+    quantity: hasSubmitted('quantity') ? submitted.quantity : stored.quantity,
+    unitPrice: hasSubmitted('unitPrice') ? submitted.unitPrice : stored.unitPrice,
+    gst: hasSubmitted('gst') ? submitted.gst : stored.gst,
+    selectedDiscountLevels: hasSubmitted('selectedDiscountLevels')
+      ? (submitted.selectedDiscountLevels || [])
+      : stored.selectedDiscountLevels,
+    manualDiscountLevels: hasSubmitted('manualDiscountLevels')
+      ? (submitted.manualDiscountLevels || {})
+      : stored.manualDiscountLevels,
+    dealerExtraDiscount: hasSubmitted('dealerExtraDiscount')
+      ? submitted.dealerExtraDiscount
+      : stored.dealerExtraDiscount,
+    promisedEffectiveDiscountPercentage: hasSubmitted('promisedEffectiveDiscountPercentage')
+      ? submitted.promisedEffectiveDiscountPercentage
+      : stored.promisedEffectiveDiscountPercentage
+  };
+});
+
+const mergeNonFinancialProductUpdates = (storedProducts, submittedProducts) => submittedProducts.map((submitted, index) => {
+  const stored = storedProducts[index]?.toObject ? storedProducts[index].toObject() : storedProducts[index];
+  const warehouseWasSubmitted = Object.prototype.hasOwnProperty.call(submitted, 'warehouse');
+  const submittedRealWarehouse = warehouseWasSubmitted
+    && submitted.warehouse
+    && submitted.warehouse !== 'No Stock';
+  const promiseWasSubmitted = Object.prototype.hasOwnProperty.call(
+    submitted,
+    'promisedEffectiveDiscountPercentage'
+  );
+  const promisedEffectiveDiscountPercentage = promiseWasSubmitted
+    ? (submitted.promisedEffectiveDiscountPercentage === ''
+      ? null
+      : submitted.promisedEffectiveDiscountPercentage)
+    : stored.promisedEffectiveDiscountPercentage;
+  const requiredSequentialStageRatePercentage = calculateRequiredSequentialStageRatePercentage({
+    currentEffectiveDiscountPercentage: Number(stored.effectiveDiscountPercentage || 0),
+    promisedEffectiveDiscountPercentage
+  });
+  return {
+    ...stored,
+    warehouse: submitted.warehouse ?? stored.warehouse,
+    warehouseName: submitted.warehouseName
+      ?? (submittedRealWarehouse && stored.warehouseName === 'No Stock' ? null : stored.warehouseName),
+    promisedEffectiveDiscountPercentage,
+    requiredSequentialStageRatePercentage,
+    // Stock availability fields are server-owned and recalculated after warehouse edits.
+    stockStatus: stored.stockStatus,
+    availableQuantity: stored.availableQuantity,
+    stockArrivedAt: stored.stockArrivedAt,
+    stockCheckedAt: stored.stockCheckedAt
+  };
+});
+
+const replayPersistedSalesOrderProducts = (storedProducts, submittedProducts) => {
+  const nonFinancialProducts = mergeNonFinancialProductUpdates(storedProducts, submittedProducts);
+  return submittedProducts.map((submitted, index) => {
+    const stored = storedProducts[index]?.toObject
+      ? storedProducts[index].toObject()
+      : storedProducts[index];
+    const policySnapshot = stored?.discountPolicySnapshot || null;
+    const permissionSnapshot = stored?.discountPermissionSnapshot || null;
+    let stages = policySnapshot?.orderedStages;
+    const hasPersistedDiscountSignal = Number(stored?.discountAmount || 0) > 0
+      || Number(stored?.discountPercentage || 0) > 0
+      || Number(stored?.dealerExtraDiscount || 0) > 0
+      || Number(stored?.appliedDiscount?.directDiscountPercentage || 0) > 0
+      || (stored?.selectedDiscountLevels || []).length > 0;
+    if (!Array.isArray(stages) || stages.length === 0) {
+      if (hasPersistedDiscountSignal) {
+        throw createDiscountPolicyError(
+          `Sales order line ${stored?.productName || index + 1} has no ordered discount snapshot. Send repriceDiscounts: true to use current policy.`,
+          'REPRICE_DISCOUNTS_REQUIRED'
+        );
+      }
+      stages = [];
+    }
+
+    const normalizedStages = stages.map((stage) => ({
+      key: stage.key,
+      kind: stage.kind,
+      levelName: stage.levelName || null,
+      ratePercentage: Number(stage.ratePercentage || 0)
+    }));
+    if (normalizedStages.some((stage) => stage.ratePercentage > 0)
+        && (policySnapshot?.masterDiscountCap === null
+          || policySnapshot?.masterDiscountCap === undefined
+          || policySnapshot?.masterDiscountCap === '')) {
+      throw createDiscountPolicyError(
+        `Sales order line ${stored?.productName || index + 1} has a discounted snapshot without a master discount cap. Send repriceDiscounts: true after configuring the mapping.`,
+        'MASTER_DISCOUNT_CAP_NOT_CONFIGURED'
+      );
+    }
+    const combinedLevelDiscountCap = policySnapshot?.combinedLevelDiscountCap
+      ?? stored?.appliedDiscount?.combinedLevelDiscountCap
+      ?? stored?.appliedDiscount?.maxDiscountPercentage
+      ?? null;
+    if (normalizedStages.some((stage) => stage.kind === 'level' && stage.ratePercentage > 0)
+        && combinedLevelDiscountCap === null) {
+      throw createDiscountPolicyError(
+        `Sales order line ${stored?.productName || index + 1} has selected level discounts without a combined level cap. Send repriceDiscounts: true after configuring the mapping.`,
+        'COMBINED_LEVEL_DISCOUNT_CAP_NOT_CONFIGURED'
+      );
+    }
+
+    const quantity = Number(submitted.quantity);
+    const unitPrice = Number(submitted.unitPrice);
+    const gstPercentage = Number(stored.gst || 0);
+    const calculation = calculateDiscountLine({
+      baseAmount: quantity * unitPrice,
+      stages: normalizedStages,
+      gstPercentage,
+      promisedEffectiveDiscountPercentage: nonFinancialProducts[index].promisedEffectiveDiscountPercentage,
+      masterDiscountCap: policySnapshot?.masterDiscountCap ?? null,
+      combinedLevelDiscountCap,
+      allowedDiscountLevels: permissionSnapshot?.allowedDiscountLevels || [],
+      enforceLevelPermissions: permissionSnapshot?.enforceLevelPermissions === true,
+      bypassLevelPermission: permissionSnapshot?.bypassLevelPermission === true
+    });
+
+    return {
+      ...nonFinancialProducts[index],
+      quantity,
+      unitPrice,
+      discountAmount: calculation.discountAmount,
+      gstAmount: calculation.gstAmount,
+      totalPrice: calculation.finalAmount,
+      effectiveDiscountPercentage: calculation.effectiveDiscountPercentage,
+      requiredSequentialStageRatePercentage: calculation.requiredSequentialStageRatePercentage,
+      masterDiscountCapApplied: calculation.masterDiscountCapApplied,
+      combinedLevelDiscountCapApplied: calculation.combinedLevelDiscountCapApplied,
+      levelDiscountTotalPercentage: calculation.levelDiscountTotalPercentage
+    };
+  });
+};
+
+const getPersistedEffectiveDiscountPercentage = (product) => {
+  const persistedEffective = Number(product.effectiveDiscountPercentage);
+  if (product.effectiveDiscountPercentage !== null
+      && product.effectiveDiscountPercentage !== undefined
+      && Number.isFinite(persistedEffective)) {
+    return persistedEffective;
+  }
+  const grossAmount = Number(product.quantity || 0) * Number(product.unitPrice || 0);
+  return grossAmount > 0 ? Number(product.discountAmount || 0) / grossAmount * 100 : 0;
+};
+
+const discountAmountForQuantity = (product, quantity, effectiveDiscountPercentage) => {
+  const grossAmount = Number(quantity || 0) * Number(product.unitPrice || 0);
+  return Math.round((grossAmount * effectiveDiscountPercentage / 100 + Number.EPSILON) * 100) / 100;
+};
+
 /**
  * Calculate the true current credit outstanding for a dealer.
  * Matches the logic in dealerController.getDealerPaymentStatus:
  *   outstanding = (ledger debit - ledger credit) - paymentAllocations + confirmedOrdersNotYetInvoiced
- * 
+ *
  * @param {object} dbConnection - Company-specific database connection
  * @param {string} dealerId
  * @param {string|null} excludeOrderId  - pass a sales order _id to exclude it from confirmed-orders sum (for edit re-check)
+ * @param {object|null} session - optional MongoDB session for transactional callers
  * @returns {Promise<number>}
  */
-const getDealerCreditOutstanding = async (dbConnection, dealerId, excludeOrderId = null) => {
+const getDealerCreditOutstanding = async (
+  dbConnection,
+  dealerId,
+  excludeOrderId = null,
+  session = null
+) => {
   const { DealerLedger, DealerInvoice, PaymentAllocation, SalesOrder, Dealer } = getModels(dbConnection);
+  const applySession = (query) => session ? query.session(session) : query;
 
   // 1. Ledger balance (invoices - payments)
-  const ledgerEntries = await DealerLedger.find({ dealer: dealerId });
+  const ledgerEntries = await applySession(DealerLedger.find({ dealer: dealerId }));
   const ledgerBalance = ledgerEntries.reduce(
     (sum, e) => sum + (e.debitAmount || 0) - (e.creditAmount || 0),
     0
   );
 
   // 2. Payment allocations (reduce outstanding)
-  const paymentAllocations = await PaymentAllocation.find({ partyId: dealerId }).lean();
+  const paymentAllocations = await applySession(
+    PaymentAllocation.find({ partyId: dealerId }).lean()
+  );
   const totalAllocated = paymentAllocations.reduce(
     (sum, a) => sum + (a.totalAllocated || 0),
     0
@@ -62,52 +565,50 @@ const getDealerCreditOutstanding = async (dbConnection, dealerId, excludeOrderId
   const invoiceOutstanding = ledgerBalance - totalAllocated;
 
   // 3. Confirmed/Processing orders not yet invoiced
-  const confirmedOrders = await SalesOrder.find({
+  const confirmedOrders = await applySession(SalesOrder.find({
     dealer: dealerId,
     status: { $in: ['Confirmed', 'Processing', 'In Transit'] }
-  }).populate('products.product', 'brand category subcategory').lean();
+  }).populate(
+    'products.product',
+    'brand category subcategory subcategory1 subcategory2 subcategory3 subcategory4 subcategory5'
+  ).lean());
 
-  const invoicedOrderIds = await DealerInvoice.distinct('salesOrder', {
+  const invoicedOrderIds = await applySession(DealerInvoice.distinct('salesOrder', {
     dealer: dealerId,
     salesOrder: { $ne: null },
     status: { $nin: ['Cancelled', 'Rejected', 'Draft'] },
     isDraft: { $ne: true }
-  });
+  }));
   const invoicedSet = new Set(invoicedOrderIds.map(id => id.toString()));
 
   // Fetch dealer extra discounts once for matching
-  const dealerData = await Dealer.findById(dealerId).select('extraDiscounts').lean();
+  const dealerData = await applySession(
+    Dealer.findById(dealerId).select('extraDiscounts').lean()
+  );
   const extraDiscounts = (dealerData?.extraDiscounts || []).filter(d => d.isActive !== false);
 
-  // Helper: get dealer extra discount % for a product
-  const getDealerExtraDiscountPct = (productDoc) => {
-    if (!productDoc || !extraDiscounts.length) return 0;
-    const productId = productDoc._id?.toString();
-    const brandId = productDoc.brand?.toString();
-    const categoryId = productDoc.category?.toString();
-    const subcategoryId = productDoc.subcategory?.toString();
-    for (const ed of extraDiscounts) {
-      const targetId = ed.targetId?.toString();
-      if (ed.targetType === 'product' && targetId === productId) return ed.discountPercentage || 0;
-      if (ed.targetType === 'brand' && targetId === brandId) return ed.discountPercentage || 0;
-      if (ed.targetType === 'category' && targetId === categoryId) return ed.discountPercentage || 0;
-      if (ed.targetType === 'subcategory' && targetId === subcategoryId) return ed.discountPercentage || 0;
-    }
-    return 0;
-  };
+  // Legacy lines without creditAmount are resolved with the same authoritative
+  // Product hierarchy and specificity order as current Sales Order pricing.
+  const getDealerExtraDiscountPct = (productDoc) => (
+    resolveDealerExtraDiscountBySpecificity({ extraDiscounts }, productDoc)
+  );
 
   const confirmedAmount = confirmedOrders.reduce((sum, order) => {
     if (invoicedSet.has(order._id.toString())) return sum;
     if (excludeOrderId && order._id.toString() === excludeOrderId.toString()) return sum;
-    // Compute discounted total: direct discount (stored) + dealer extra discount
-    const orderTotal = (order.products || []).reduce((s, p) => {
-      const gross = p.quantity * p.unitPrice;
-      const directDiscount = p.discountAmount || 0;
-      const extraPct = getDealerExtraDiscountPct(p.product);
-      const extraDiscount = (gross * extraPct) / 100;
-      const base = gross - directDiscount - extraDiscount;
-      const gst = (base * (p.gst || 0)) / 100;
-      return s + base + gst;
+
+    const storedCreditAmount = Number(order.creditAmount);
+    if (order.creditAmount !== null && order.creditAmount !== undefined && Number.isFinite(storedCreditAmount)) {
+      return sum + storedCreditAmount;
+    }
+
+    // Legacy fallback: MRP is GST inclusive. Preserve the stored line discount,
+    // then apply the current dealer-extra percentage sequentially without adding GST again.
+    const orderTotal = (order.products || []).reduce((lineSum, productLine) => {
+      const grossAmount = Number(productLine.quantity || 0) * Number(productLine.unitPrice || 0);
+      const amountAfterStoredDiscount = grossAmount - Number(productLine.discountAmount || 0);
+      const extraPercentage = getDealerExtraDiscountPct(productLine.product);
+      return lineSum + amountAfterStoredDiscount * (1 - extraPercentage / 100);
     }, 0);
     return sum + orderTotal;
   }, 0);
@@ -116,36 +617,38 @@ const getDealerCreditOutstanding = async (dbConnection, dealerId, excludeOrderId
 };
 
 // Generate unique order number
-const generateOrderNumber = async (dbConnection) => {
+const generateOrderNumber = async (dbConnection, session = null) => {
   try {
     const { SalesOrder } = getModels(dbConnection);
+    const applySession = (query) => session ? query.session(session) : query;
     const currentYear = new Date().getFullYear();
     const prefix = `SO-${currentYear}-`;
-    
+
     // Find the highest order number for this year
-    const lastOrder = await SalesOrder.findOne({
+    const lastOrder = await applySession(SalesOrder.findOne({
       orderNumber: { $regex: `^${prefix}` }
-    }).sort({ orderNumber: -1 });
-    
+    }).sort({ orderNumber: -1 }));
+
     let nextNumber = 1;
     if (lastOrder) {
       // Extract the number from the last order
       const lastNumber = parseInt(lastOrder.orderNumber.split('-')[2]);
       nextNumber = lastNumber + 1;
     }
-    
+
     // Format with leading zeros (4 digits)
     const orderNumber = `${prefix}${nextNumber.toString().padStart(4, '0')}`;
-    
+
     // Double-check uniqueness (in case of race conditions)
-    const existingOrder = await SalesOrder.findOne({ orderNumber });
+    const existingOrder = await applySession(SalesOrder.findOne({ orderNumber }));
     if (existingOrder) {
       // If somehow it exists, try the next number
       return `${prefix}${(nextNumber + 1).toString().padStart(4, '0')}`;
     }
-    
+
     return orderNumber;
   } catch (error) {
+    if (session) throw error;
     console.error('Error generating order number:', error);
     // Fallback to timestamp-based number
     const timestamp = Date.now().toString().slice(-6);
@@ -160,7 +663,7 @@ export const getSalesOrders = async (req, res) => {
   try {
     // Get models from company-specific connection
     const { SalesOrder, Dealer, Product, User, DealerInvoice } = getModels(req.dbConnection);
-    
+
     const {
       page = 1,
       limit = 10,
@@ -210,8 +713,12 @@ export const getSalesOrders = async (req, res) => {
 
     // Filter by stock arrived
     if (stockArrived === 'true' || stockArrived === true) {
+      // Stock Arrived is an actionable queue: historically out-of-stock,
+      // currently ready, and still awaiting confirmation.
+      query.status = 'Pending';
+      query.isExpired = { $ne: true };
       query.isOutOfStock = true;
-      query.stockAvailable = true;
+      query['orderStockStatus.overallStatus'] = 'ready';
     }
 
     // Filter by dealer
@@ -254,7 +761,7 @@ export const getSalesOrders = async (req, res) => {
     }
 
     // Advanced: Expiry status filter
-    if (expired && expired !== "all") {
+    if (!(stockArrived === 'true' || stockArrived === true) && expired && expired !== "all") {
       const now = new Date();
       if (expired === "expired") {
         query.isExpired = true;
@@ -324,7 +831,7 @@ export const getSalesOrders = async (req, res) => {
     const salesOrders = await SalesOrder.find(query)
       .populate("dealer", "name code contactPerson phone email address dealerType")
       .populate("region", "name")
-      .populate("products.product", "productCode itemName HSNCode gst rateSlabs")
+      .populate("products.product", "productCode itemName HSNCode gst rateSlabs salesType")
       .populate("products.warehouse", "name")
       .populate("products.appliedDiscount.discountId", "discountName discountType targetType")
       .populate("approvedBy", "name email")
@@ -334,8 +841,16 @@ export const getSalesOrders = async (req, res) => {
       .skip((page - 1) * limit)
       .lean();
 
-    // Get total count for pagination
-    const total = await SalesOrder.countDocuments(query);
+    // Get total count for pagination and the authoritative actionable Stock Arrived count.
+    const [total, stockArrivedCount] = await Promise.all([
+      SalesOrder.countDocuments(query),
+      SalesOrder.countDocuments({
+        status: 'Pending',
+        isExpired: { $ne: true },
+        isOutOfStock: true,
+        'orderStockStatus.overallStatus': 'ready'
+      })
+    ]);
 
     // Calculate additional analytics for each order
     // Bulk-lookup which orders have invoices (one query instead of N)
@@ -360,6 +875,7 @@ export const getSalesOrders = async (req, res) => {
     res.json({
       success: true,
       salesOrders: ordersWithAnalytics,
+      stockArrivedCount,
       pagination: {
         currentPage: parseInt(page),
         totalPages: Math.ceil(total / limit),
@@ -388,8 +904,8 @@ export const getSalesOrders = async (req, res) => {
 export const getSalesOrder = async (req, res) => {
   try {
     // Get models from company-specific connection
-    const { SalesOrder } = getModels(req.dbConnection);
-    
+    const { SalesOrder, DealerInvoice } = getModels(req.dbConnection);
+
     const salesOrder = await SalesOrder.findById(req.params.id)
       .populate("dealer", "name code contactPerson phone email address dealerType gstNumber panNumber")
       .populate("region", "name")
@@ -397,7 +913,8 @@ export const getSalesOrder = async (req, res) => {
       .populate("products.warehouse", "name")
       .populate("products.appliedDiscount.discountId", "discountName discountType targetType")
       .populate("approvedBy", "name email")
-      .populate("createdBy", "name email");
+      .populate("createdBy", "name email")
+      .lean();
 
     if (!salesOrder) {
       return res.status(404).json({
@@ -406,9 +923,22 @@ export const getSalesOrder = async (req, res) => {
       });
     }
 
+    const invoice = await DealerInvoice.findOne({
+      salesOrder: salesOrder._id,
+      status: { $nin: ['Cancelled', 'Rejected', 'Draft'] },
+      isDraft: { $ne: true }
+    })
+      .select('_id invoiceNumber invoiceDate status totalAmount paymentStatus')
+      .sort({ createdAt: -1 })
+      .lean();
+
     res.json({
       success: true,
-      salesOrder
+      salesOrder: {
+        ...salesOrder,
+        hasInvoice: Boolean(invoice),
+        invoice: invoice || null
+      }
     });
   } catch (error) {
     console.error("Get Sales Order Error:", error);
@@ -427,9 +957,9 @@ export const createSalesOrder = async (req, res) => {
   try {
     // Get models from company-specific connection
     const { SalesOrder, Product, Dealer, StockMovement, User, Notification, Warehouse } = getModels(req.dbConnection);
-    
+
     console.log("Received request body:", req.body);
-    
+
     const {
       dealer,
       region,
@@ -458,16 +988,23 @@ export const createSalesOrder = async (req, res) => {
         message: "Dealer not found"
       });
     }
-    
+
+    const canonicalProducts = await canonicalizeSalesOrderProducts({
+      products,
+      dealer: dealerData,
+      dbConnection: req.dbConnection,
+      actorId: req.user._id
+    });
+
     // Use dealer's credit days if not provided in request
-    const finalCreditDays = creditDays !== undefined && creditDays !== null 
-      ? parseInt(creditDays) 
+    const finalCreditDays = creditDays !== undefined && creditDays !== null
+      ? parseInt(creditDays)
       : (dealerData.creditDays || 30);
 
     // Validate credit days don't exceed dealer's limits
     if (creditDays !== undefined && creditDays !== null) {
       const requestedCreditDays = parseInt(creditDays);
-      
+
       // Determine which limit to check based on salesType
       let maxCreditDays = 0;
       if (salesType === 'Regular Sale') {
@@ -478,7 +1015,7 @@ export const createSalesOrder = async (req, res) => {
         // Default to regular if not specified
         maxCreditDays = dealerData.creditDaysRegular || dealerData.creditDays || 0;
       }
-      
+
       if (requestedCreditDays > maxCreditDays && maxCreditDays > 0) {
         return res.status(400).json({
           success: false,
@@ -490,53 +1027,23 @@ export const createSalesOrder = async (req, res) => {
     // Calculate order totals first (needed for credit limit check)
     // IMPORTANT: Only include IN-STOCK products in credit limit calculation
     const tempValidatedProducts = [];
-    for (const item of products) {
-      const product = await Product.findById(item.product);
-      if (!product) continue;
-      
+    for (const item of canonicalProducts) {
       // Skip out-of-stock products (no warehouse or warehouse is "No Stock")
       const hasStock = item.warehouse && item.warehouse !== "No Stock";
       if (!hasStock) {
-        console.log(`⏭️ Skipping product ${product.itemName} from credit limit calculation (out of stock)`);
+        console.log(`⏭️ Skipping product ${item.productName} from credit limit calculation (out of stock)`);
         continue;
       }
-      
-      const unitPrice = item.unitPrice || product.rateSlabs[0]?.rate || 0;
-      const gst = item.gst || product.gst || 0;
-      // Use direct discount + dealer extra discount for credit limit calculation
-      const directDiscountAmt = item.discountAmount || 0;
-      const extraPct = (dealerData.extraDiscounts || [])
-        .filter(d => d.isActive !== false)
-        .reduce((pct, ed) => {
-          if (pct > 0) return pct; // already found one
-          const targetId = ed.targetId?.toString();
-          if (ed.targetType === 'product' && targetId === product._id.toString()) return ed.discountPercentage || 0;
-          if (ed.targetType === 'brand' && targetId === product.brand?.toString()) return ed.discountPercentage || 0;
-          if (ed.targetType === 'category' && targetId === product.category?.toString()) return ed.discountPercentage || 0;
-          if (ed.targetType === 'subcategory' && targetId === product.subcategory?.toString()) return ed.discountPercentage || 0;
-          return 0;
-        }, 0);
-      const gross = item.quantity * unitPrice;
-      const extraDiscountAmt = (gross * extraPct) / 100;
-      const baseAmount = gross - directDiscountAmt - extraDiscountAmt;
-      const gstAmount = (baseAmount * gst) / 100;
-      
+
       tempValidatedProducts.push({
-        quantity: item.quantity,
-        unitPrice: unitPrice,
-        gstAmount: gstAmount,
-        discountAmount: directDiscountAmt + extraDiscountAmt,
-        effectiveBaseAmount: baseAmount
+        effectiveBaseAmount: calculateCanonicalCreditLineAmount(item)
       });
     }
-    
-    const orderGrossAmount = tempValidatedProducts.reduce((sum, p) => sum + p.effectiveBaseAmount, 0);
-    const orderTotalGst = tempValidatedProducts.reduce((sum, p) => sum + p.gstAmount, 0);
-    // effectiveBaseAmount is MRP after discount (GST already included) — don't add GST again
-    const orderTotalAmount = orderGrossAmount;
+
+    const orderTotalAmount = tempValidatedProducts.reduce((sum, p) => sum + p.effectiveBaseAmount, 0);
 
     console.log(`💰 Credit Limit Calculation - In-Stock Products Only:`, {
-      totalProducts: products.length,
+      totalProducts: canonicalProducts.length,
       inStockProducts: tempValidatedProducts.length,
       orderAmount: orderTotalAmount
     });
@@ -545,9 +1052,9 @@ export const createSalesOrder = async (req, res) => {
     if (dealerData.creditLimit && dealerData.creditLimit > 0) {
       const currentOutstanding = await getDealerCreditOutstanding(req.dbConnection, dealerData._id);
       // Use creditAmount (conservative: direct + dealer extra only) for the check
-      const creditCheckAmount = req.body.creditAmount || orderTotalAmount;
+      const creditCheckAmount = orderTotalAmount;
       const newOutstanding = currentOutstanding + creditCheckAmount;
-      
+
       console.log(`💳 Credit Limit Check (createSalesOrder):`, {
         creditLimit: dealerData.creditLimit,
         currentOutstanding,
@@ -555,7 +1062,7 @@ export const createSalesOrder = async (req, res) => {
         newOutstanding,
         overlimit: newOutstanding - dealerData.creditLimit
       });
-      
+
       if (newOutstanding > dealerData.creditLimit) {
         const overlimitAmount = newOutstanding - dealerData.creditLimit;
         console.log(`⚠️ Credit limit exceeded by ₹${overlimitAmount.toFixed(2)} - forcing status to Pending`);
@@ -581,15 +1088,14 @@ export const createSalesOrder = async (req, res) => {
     // Resolve the company's single (default) warehouse — used for out-of-stock
     // lines so incoming stock (GRN or manual adjustment) can auto-update them.
     let defaultWarehouse = null;
-    if (isOutOfStock || products.some(it => !it.warehouse || it.warehouse === "No Stock")) {
+    if (isOutOfStock || canonicalProducts.some(it => !it.warehouse || it.warehouse === "No Stock")) {
       defaultWarehouse =
         (await Warehouse.findOne({ isActive: true, status: "active" }).sort({ createdAt: 1 })) ||
         (await Warehouse.findOne({ isActive: true }).sort({ createdAt: 1 })) ||
         (await Warehouse.findOne({}).sort({ createdAt: 1 }));
     }
 
-    for (const item of products) {
-      // Validate product exists
+    for (const item of canonicalProducts) {
       const product = await Product.findById(item.product);
       if (!product) {
         return res.status(404).json({
@@ -601,7 +1107,7 @@ export const createSalesOrder = async (req, res) => {
       // Validate warehouse exists (skip if warehouse is "No Stock" for out-of-stock orders)
       if (item.warehouse && item.warehouse !== "No Stock") {
         const warehouse = await Warehouse.findById(item.warehouse);
-        
+
         if (!warehouse) {
           return res.status(400).json({
             success: false,
@@ -630,56 +1136,25 @@ export const createSalesOrder = async (req, res) => {
         console.log(`Product ${product.itemName} has no warehouse assigned (out-of-stock order)`);
       }
 
-      // Calculate product details
-      const unitPrice = item.unitPrice || product.rateSlabs[0]?.rate || 0;
-      const gst = item.gst || product.gst || 0;
-      const baseAmount = item.quantity * unitPrice;
-      // Guard: discountAmount must never exceed baseAmount (prevents negative totals)
-      const rawDiscountAmt = item.discountAmount || 0;
-      const discountAmt = Math.min(rawDiscountAmt, baseAmount);
-      if (rawDiscountAmt > baseAmount) {
-        console.warn(`⚠️ discountAmount (${rawDiscountAmt}) exceeded baseAmount (${baseAmount}) for product ${product.itemName} — capped to baseAmount`);
-      }
-      const discountedBase = baseAmount - discountAmt;
-      // unitPrice IS MRP (GST inclusive) — reverse-calculate GST, do NOT add on top
-      const gstAmount = gst > 0
-        ? parseFloat((discountedBase - discountedBase / (1 + gst / 100)).toFixed(2))
-        : 0;
-      const totalPrice = discountedBase;
-
-      // Build product object
+      // Build the persisted line from server-canonical discount amounts.
       validatedProducts.push({
-        product: item.product,
+        ...item,
+        product: product._id,
         productCode: product.productCode,
         productName: product.itemName,
         HSNCode: product.HSNCode,
         internalRate: product.internalRate || null,
-        quantity: item.quantity,
-        unitPrice: unitPrice,
-        gst: gst,
-        gstAmount: gstAmount,
-        totalPrice: totalPrice,
-        salesType: product.salesType || 'Regular Sale', // Add salesType from product
         warehouse: (item.warehouse && item.warehouse !== "No Stock")
           ? item.warehouse
-          : (defaultWarehouse?._id || null), // Out-of-stock lines get the single default warehouse for stock tracking
+          : (defaultWarehouse?._id || null),
         warehouseName: (item.warehouse && item.warehouse !== "No Stock")
           ? item.warehouseName
-          : "No Stock",
-        discountPercentage: item.discountPercentage || 0,
-        discountAmount: discountAmt,
-        discountType: item.discountType || null,
-        selectedDiscountLevel: item.selectedDiscountLevel || null,
-        appliedDiscount: item.appliedDiscount || null
+          : "No Stock"
       });
     }
 
-    // Calculate order totals
-    const grossAmount = validatedProducts.reduce((sum, product) => sum + (product.quantity * product.unitPrice), 0);
-    const totalGst = validatedProducts.reduce((sum, product) => sum + product.gstAmount, 0);
-    const discountAmount = validatedProducts.reduce((sum, product) => sum + (product.discountAmount || 0), 0);
-    // MRP is GST inclusive — total = gross − discount (GST already inside, not added)
-    const totalAmount = grossAmount - discountAmount;
+    // Calculate order totals from canonical lines.
+    const { grossAmount, totalGst, discountAmount, totalAmount } = calculateCanonicalOrderTotals(validatedProducts);
 
     // Calculate due date
     let dueDate = null;
@@ -691,7 +1166,7 @@ export const createSalesOrder = async (req, res) => {
     // Determine initial status based on stock availability
     // Use req.body.status in case credit limit check overrode it to "Pending"
     let initialStatus = req.body.status || status || "Pending";
-    
+
     // For out-of-stock orders, force status to Pending and prevent status changes
     if (isOutOfStock) {
       initialStatus = "Pending";
@@ -700,27 +1175,27 @@ export const createSalesOrder = async (req, res) => {
 
     // Create sales order
     console.log("Creating sales order with orderNumber:", orderNumber);
-    console.log("All values:", { 
-      orderNumber, 
-      dealer, 
-      dealerName: dealerData.name, 
-      dealerCode: dealerData.code, 
-      dealerType: dealerData.dealerType, 
-      region, 
-      pinCode, 
-      products: validatedProducts.length, 
-      orderDate, 
-      deliveryDate, 
-      creditDays: finalCreditDays, 
-      grossAmount, 
-      totalGst, 
-      totalAmount, 
-      type, 
+    console.log("All values:", {
+      orderNumber,
+      dealer,
+      dealerName: dealerData.name,
+      dealerCode: dealerData.code,
+      dealerType: dealerData.dealerType,
+      region,
+      pinCode,
+      products: validatedProducts.length,
+      orderDate,
+      deliveryDate,
+      creditDays: finalCreditDays,
+      grossAmount,
+      totalGst,
+      totalAmount,
+      type,
       remarks,
       isOutOfStock: isOutOfStock || false,
       stockValidation: stockValidation || []
     });
-    
+
     // Initialize stock tracking fields for ALL orders (not just out-of-stock)
     // This ensures stock status is always available for display
     for (const product of validatedProducts) {
@@ -736,7 +1211,7 @@ export const createSalesOrder = async (req, res) => {
         product.stockCheckedAt = new Date();
       }
     }
-    
+
     const salesOrder = new SalesOrder({
       orderNumber,
       dealer,
@@ -758,14 +1233,15 @@ export const createSalesOrder = async (req, res) => {
       salesType: salesType || 'Regular Sale',
       remarks,
       status: initialStatus,
+      discountFinalizedAt: isFinalizedSalesOrderStatus(initialStatus) ? new Date() : null,
       createdBy: req.user._id,
       // Out-of-stock fields
       isOutOfStock: isOutOfStock || false,
       stockValidation: stockValidation || [],
       // Credit overlimit fields
       creditOverlimit: req.body.creditOverlimit || undefined,
-      // Credit check amount (direct + dealer extra only, excludes level discount)
-      creditAmount: req.body.creditAmount || null,
+      // Credit check amount is derived from canonical direct + dealer-extra stages.
+      creditAmount: orderTotalAmount,
       // Initialize order-level stock status for ALL orders
       orderStockStatus: {
         totalProducts: validatedProducts.length,
@@ -781,7 +1257,7 @@ export const createSalesOrder = async (req, res) => {
     if (salesOrder.status === "Pending") {
       const expiryDate = new Date();
       expiryDate.setDate(expiryDate.getDate() + 15); // 15 days from now
-      
+
       salesOrder.expiryDate = expiryDate;
       salesOrder.expiryReason = 'Automatic 15-day expiry for pending order';
       salesOrder.expiryHistory.push({
@@ -792,7 +1268,7 @@ export const createSalesOrder = async (req, res) => {
         performedBy: req.user._id,
         performedAt: new Date()
       });
-      
+
       console.log(`📅 Automatic expiry set for pending order ${orderNumber}: ${expiryDate.toISOString()}`);
     }
 
@@ -810,10 +1286,10 @@ export const createSalesOrder = async (req, res) => {
               productId: product.product,
               warehouseId: product.warehouse
             }).sort({ date: -1, createdAt: -1 });
-            
+
             const currentBalance = latestMovement ? latestMovement.balance : 0;
             const newBalance = currentBalance - product.quantity;
-            
+
             const blockMovement = new StockMovement({
               productId: product.product,
               warehouseId: product.warehouse,
@@ -839,10 +1315,10 @@ export const createSalesOrder = async (req, res) => {
               productId: product.product,
               warehouseId: product.warehouse
             }).sort({ date: -1, createdAt: -1 });
-            
+
             const currentBalance = latestMovement ? latestMovement.balance : 0;
             const newBalance = currentBalance - product.quantity;
-            
+
             // Create stock movement for delivered order (permanent reduction)
             const deliveryMovement = new StockMovement({
               productId: product.product,
@@ -875,7 +1351,7 @@ export const createSalesOrder = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: isOutOfStock ? 
+      message: isOutOfStock ?
         "Out-of-stock sales order created successfully. Status is locked to Pending until stock is available." :
         "Sales order created successfully",
       salesOrder: populatedOrder
@@ -913,7 +1389,9 @@ export const createSalesOrder = async (req, res) => {
     if (error.errors) {
       console.error("Validation errors:", JSON.stringify(error.errors, null, 2));
     }
-    
+
+    if (sendDiscountPolicyError(res, error)) return;
+
     // Handle duplicate order number error
     if (error.code === 11000) {
       return res.status(400).json({
@@ -954,8 +1432,8 @@ export const createSalesOrder = async (req, res) => {
 export const updateSalesOrderStatus = async (req, res) => {
   try {
     // Get models from company-specific connection
-    const { SalesOrder, Product, StockMovement, Dealer, User, Notification, DealerLedger } = getModels(req.dbConnection);
-    
+    const { SalesOrder, Product, StockMovement, Dealer, User, Notification, DealerInvoice, DealerLedger } = getModels(req.dbConnection);
+
     const { status, remarks, products } = req.body; // products array with warehouse info
     const { id } = req.params;
 
@@ -968,17 +1446,52 @@ export const updateSalesOrderStatus = async (req, res) => {
       });
     }
 
-    // Validate status transition
-    const allowedStatuses = ["Confirmed", "Rejected", "Cancelled", "Processing", "Delivered"];
-    if (!allowedStatuses.includes(status)) {
+    // Enforce the order lifecycle on the server so every UI and API caller
+    // receives the same legal transitions and stock/credit safeguards.
+    const originalStatus = salesOrder.status ? String(salesOrder.status).trim() : '';
+    const allowedTransitions = {
+      Pending: ['Confirmed', 'Cancelled', 'Rejected'],
+      Confirmed: ['Processing', 'Delivered', 'Cancelled', 'Rejected'],
+      Processing: ['In Transit', 'Delivered', 'Cancelled', 'Rejected'],
+      'In Transit': ['Delivered', 'Cancelled', 'Rejected']
+    };
+    const stockReservedStatuses = ['Confirmed', 'Processing', 'In Transit'];
+    const allowedNextStatuses = allowedTransitions[originalStatus] || [];
+
+    if (!allowedNextStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid status update"
+        message: allowedNextStatuses.length > 0
+          ? `Cannot change Sales Order status from ${originalStatus} to ${status}. Allowed next statuses: ${allowedNextStatuses.join(', ')}.`
+          : `Sales Order status ${originalStatus || 'Unknown'} is terminal and cannot be changed.`
       });
     }
 
-    // Store original status for rollback if needed
-    const originalStatus = salesOrder.status;
+    if (['Cancelled', 'Rejected'].includes(status) && !String(remarks || '').trim()) {
+      return res.status(400).json({
+        success: false,
+        message: `Remarks are required when marking a Sales Order as ${status}.`
+      });
+    }
+
+    if (['Cancelled', 'Rejected'].includes(status)) {
+      const activeInvoice = await DealerInvoice.findOne({
+        salesOrder: salesOrder._id,
+        status: { $nin: ['Cancelled', 'Rejected', 'Draft'] },
+        isDraft: { $ne: true }
+      })
+        .select('invoiceNumber status')
+        .lean();
+      if (activeInvoice) {
+        const invoiceLabel = activeInvoice.invoiceNumber
+          ? `invoice ${activeInvoice.invoiceNumber}`
+          : 'an active invoice';
+        return res.status(400).json({
+          success: false,
+          message: `Cannot mark this Sales Order as ${status} while ${invoiceLabel} exists. Cancel or reject the invoice first.`
+        });
+      }
+    }
 
     // Update product warehouses if provided in request (when status is updated from web)
     let warehouseAssigned = false;
@@ -988,14 +1501,27 @@ export const updateSalesOrderStatus = async (req, res) => {
           // Check if warehouse changed from null/"No Stock" to actual warehouse
           const oldWarehouse = salesOrder.products[i].warehouse;
           const newWarehouse = products[i].warehouse;
-          
+
           if (!oldWarehouse && newWarehouse) {
             warehouseAssigned = true;
           }
-          
+
           salesOrder.products[i].warehouse = newWarehouse;
           salesOrder.products[i].warehouseName = products[i].warehouseName || null;
         }
+      }
+    }
+
+    const statusesRequiringWarehouse = ['Confirmed', 'Processing', 'In Transit', 'Delivered'];
+    if (statusesRequiringWarehouse.includes(status)) {
+      const missingWarehouseLine = salesOrder.products.find(
+        (product) => !product.warehouse || product.warehouse === 'No Stock'
+      );
+      if (missingWarehouseLine) {
+        return res.status(400).json({
+          success: false,
+          message: `Warehouse must be assigned for ${missingWarehouseLine.productName || 'every product'} before changing status to ${status}.`
+        });
       }
     }
 
@@ -1007,68 +1533,100 @@ export const updateSalesOrderStatus = async (req, res) => {
       salesOrder.stockValidation = [];  // Clear validation since warehouse is now assigned
     }
 
-    // CRITICAL: Prevent status changes for out-of-stock orders ONLY if stock is not ready
-    // Allow status change if stock is ready (all products available)
-    if (salesOrder.isOutOfStock && 
-        status !== "Cancelled" && 
-        status !== "Rejected" &&
-        salesOrder.orderStockStatus?.overallStatus !== 'ready') {
+    // Out-of-stock orders may enter the normal lifecycle only after every line
+    // has been rechecked as ready. A ready Pending order is converted to normal
+    // reserved-stock handling as part of the same Confirmed transition.
+    const readyOutOfStockConfirmation = salesOrder.isOutOfStock
+      && status === 'Confirmed'
+      && salesOrder.orderStockStatus?.overallStatus === 'ready';
+    if (salesOrder.isOutOfStock
+        && status !== 'Cancelled'
+        && status !== 'Rejected'
+        && !readyOutOfStockConfirmation) {
       return res.status(400).json({
         success: false,
         message: "Cannot change status of out-of-stock orders until stock arrives. Current stock status: " + (salesOrder.orderStockStatus?.overallStatus || 'unknown')
       });
     }
 
-    // CRITICAL: Prevent status change to Confirmed if credit limit is exceeded and not approved
-    if (status === "Confirmed" &&
-        salesOrder.creditOverlimit && 
-        salesOrder.creditOverlimit.isOverlimit && 
-        !salesOrder.creditOverlimit.approvedBy) {
-      return res.status(400).json({
-        success: false,
-        message: `Cannot confirm order - Credit limit exceeded by ₹${(salesOrder.creditOverlimit.overlimitAmount || 0).toLocaleString()}. Super Admin approval required before this order can be confirmed.`
-      });
-    }
+    // Recalculate confirmation exposure from the same conservative canonical
+    // basis used by create/edit/partial-dispatch (direct + dealer-extra only).
+    // Ready out-of-stock lines become credit-eligible when they are confirmed.
+    if (status === 'Confirmed') {
+      const creditEligibleProducts = readyOutOfStockConfirmation
+        ? salesOrder.products
+        : salesOrder.products.filter(isCreditEligibleProduct);
+      const confirmationCreditAmount = creditEligibleProducts.reduce(
+        (sum, product) => sum + calculateCanonicalCreditLineAmount(product),
+        0
+      );
+      salesOrder.creditAmount = confirmationCreditAmount;
 
-    // Also check live credit limit when confirming, in case it wasn't checked at creation
-    // Skip if order was already approved by Super Admin
-    if (status === "Confirmed" && originalStatus !== "Confirmed") {
-      const alreadyApproved = salesOrder.creditOverlimit &&
-                              salesOrder.creditOverlimit.isOverlimit &&
-                              salesOrder.creditOverlimit.approvedBy;
+      const dealerData = await Dealer.findById(salesOrder.dealer);
+      const previousCreditOverlimit = salesOrder.creditOverlimit?.toObject?.()
+        || salesOrder.creditOverlimit
+        || {};
 
-      if (!alreadyApproved) {
-        const dealerData = await Dealer.findById(salesOrder.dealer);
-        if (dealerData && dealerData.creditLimit && dealerData.creditLimit > 0) {
-          const currentOutstanding = await getDealerCreditOutstanding(req.dbConnection, salesOrder.dealer, salesOrder._id);
-          const newOutstanding = currentOutstanding + salesOrder.totalAmount;
-          if (newOutstanding > dealerData.creditLimit) {
-            const overlimitAmount = newOutstanding - dealerData.creditLimit;
-            salesOrder.creditOverlimit = {
-              isOverlimit: true,
-              creditLimit: dealerData.creditLimit,
-              currentOutstanding,
-              orderAmount: salesOrder.totalAmount,
-              newOutstanding,
-              overlimitAmount,
-              requiresApproval: true
-            };
-            await salesOrder.save();
-            return res.status(400).json({
-              success: false,
-              message: `Cannot confirm order - Credit limit exceeded by ₹${overlimitAmount.toLocaleString()}. Super Admin approval required.`,
-              creditOverlimit: salesOrder.creditOverlimit
-            });
-          }
+      if (dealerData?.creditLimit && dealerData.creditLimit > 0) {
+        const currentOutstanding = await getDealerCreditOutstanding(
+          req.dbConnection,
+          salesOrder.dealer,
+          salesOrder._id
+        );
+        const newOutstanding = currentOutstanding + confirmationCreditAmount;
+        const overlimitAmount = Math.max(0, newOutstanding - dealerData.creditLimit);
+        const isOverlimit = overlimitAmount > 0;
+        const approvedExposure = Number(previousCreditOverlimit.newOutstanding);
+        const approvalCoversCurrentExposure = isOverlimit
+          && Boolean(previousCreditOverlimit.approvedBy)
+          && Number.isFinite(approvedExposure)
+          && newOutstanding <= approvedExposure + 0.01;
+
+        salesOrder.creditOverlimit = {
+          isOverlimit,
+          creditLimit: dealerData.creditLimit,
+          currentOutstanding,
+          orderAmount: confirmationCreditAmount,
+          newOutstanding,
+          overlimitAmount,
+          requiresApproval: isOverlimit && !approvalCoversCurrentExposure,
+          approvedBy: approvalCoversCurrentExposure ? previousCreditOverlimit.approvedBy : null,
+          approvedAt: approvalCoversCurrentExposure ? previousCreditOverlimit.approvedAt : null,
+          approvalNotes: approvalCoversCurrentExposure ? previousCreditOverlimit.approvalNotes : null
+        };
+
+        if (isOverlimit && !approvalCoversCurrentExposure) {
+          // Persist the refreshed exposure for the Super Admin approval flow,
+          // but leave status and stock unchanged.
+          await salesOrder.save();
+          return res.status(400).json({
+            success: false,
+            message: `Cannot confirm order - Credit limit exceeded by ₹${overlimitAmount.toLocaleString()}. Super Admin approval required.`,
+            creditOverlimit: salesOrder.creditOverlimit
+          });
         }
+      } else {
+        salesOrder.creditOverlimit = {
+          isOverlimit: false,
+          creditLimit: Number(dealerData?.creditLimit || 0),
+          currentOutstanding: 0,
+          orderAmount: confirmationCreditAmount,
+          newOutstanding: confirmationCreditAmount,
+          overlimitAmount: 0,
+          requiresApproval: false,
+          approvedBy: null,
+          approvedAt: null,
+          approvalNotes: null
+        };
       }
     }
 
-    // Special handling for Confirmed status (stock allocation) - only for in-stock orders
-    if (status === "Confirmed" && !salesOrder.isOutOfStock) {
+    // Recheck and reserve stock for normal orders and for ready out-of-stock
+    // orders entering the normal lifecycle.
+    if (status === 'Confirmed' && (!salesOrder.isOutOfStock || readyOutOfStockConfirmation)) {
       // CRITICAL: Verify stock availability for all products BEFORE confirming
       const stockShortages = [];
-      
+
       for (const product of salesOrder.products) {
         if (product.warehouse) {
           // Get current balance
@@ -1076,9 +1634,9 @@ export const updateSalesOrderStatus = async (req, res) => {
             productId: product.product,
             warehouseId: product.warehouse
           }).sort({ date: -1, createdAt: -1 });
-          
+
           const currentBalance = latestMovement ? latestMovement.balance : 0;
-          
+
           // Check if enough stock available
           if (currentBalance < product.quantity) {
             const productDetails = await Product.findById(product.product);
@@ -1092,21 +1650,21 @@ export const updateSalesOrderStatus = async (req, res) => {
           }
         }
       }
-      
+
       // If there are stock shortages, provide guidance on splitting the order
       if (stockShortages.length > 0) {
         console.log("⚠️ Stock shortage detected during confirmation:", stockShortages);
-        
+
         // Calculate total available vs required
         const totalRequired = stockShortages.reduce((sum, s) => sum + s.required, 0);
         const totalAvailable = stockShortages.reduce((sum, s) => sum + s.available, 0);
         const totalShortage = stockShortages.reduce((sum, s) => sum + s.shortage, 0);
-        
+
         // Build detailed error message with splitting suggestion
-        const shortageDetails = stockShortages.map(s => 
+        const shortageDetails = stockShortages.map(s =>
           `  • ${s.productName} (${s.productCode}): Need ${s.required}, Available ${s.available}, Short ${s.shortage}`
         ).join('\n');
-        
+
         return res.status(400).json({
           success: false,
           message: `Cannot confirm order - Insufficient stock for ${stockShortages.length} product(s)`,
@@ -1115,7 +1673,7 @@ export const updateSalesOrderStatus = async (req, res) => {
           suggestion: {
             action: 'split_order',
             message: `This order should be split into two orders:
-            
+
 📦 Order 1 (In-Stock): ${totalAvailable} units - Can be confirmed immediately
 ⏳ Order 2 (Pending): ${totalShortage} units - Will be fulfilled when stock arrives
 
@@ -1139,9 +1697,10 @@ OR wait for stock to arrive and this order will be auto-processed.`,
 
     // Handle stock restoration for rejected or cancelled orders (only for previously confirmed orders)
     // Note: Stock restoration is handled via StockMovement IN records below
-    
-    // Handle stock management based on status changes (only for in-stock orders)
-    if (!salesOrder.isOutOfStock) {
+
+    // Handle stock management based on status changes. Ready out-of-stock
+    // confirmations use this same reservation path before the tracking flag is cleared.
+    if (!salesOrder.isOutOfStock || readyOutOfStockConfirmation) {
       if (status === "Confirmed" && originalStatus !== "Confirmed") {
         // Block stock for confirmed orders - but check if already blocked
         const existingBlock = await StockMovement.findOne({
@@ -1150,7 +1709,7 @@ OR wait for stock to arrive and this order will be auto-processed.`,
           type: 'OUT',
           remarks: { $regex: /Stock Blocked/ }
         });
-        
+
         if (existingBlock) {
           console.log(`Stock already blocked for order ${salesOrder.orderNumber} - skipping duplicate block`);
         } else {
@@ -1163,10 +1722,10 @@ OR wait for stock to arrive and this order will be auto-processed.`,
               productId: product.product,
               warehouseId: product.warehouse
             }).sort({ date: -1, createdAt: -1 });
-            
+
             const currentBalance = latestMovement ? latestMovement.balance : 0;
             const newBalance = currentBalance - product.quantity;
-            
+
             const blockMovement = new StockMovement({
               productId: product.product,
               warehouseId: product.warehouse,
@@ -1185,8 +1744,8 @@ OR wait for stock to arrive and this order will be auto-processed.`,
         }
         } // end if !existingBlock
       } else if (status === "Delivered") {
-        // Handle delivered orders - either from Confirmed or directly from Pending
-        console.log(`Order delivered - ${originalStatus === "Confirmed" ? "unblocking and permanently reducing stock" : "permanently reducing stock"}`);
+        // Confirmed and Processing orders already have reserved stock.
+        console.log(`Order delivered - ${stockReservedStatuses.includes(originalStatus) ? "unblocking and permanently reducing stock" : "permanently reducing stock"}`);
         for (const product of salesOrder.products) {
           if (product.warehouse) {
             // Get current balance before creating the movement
@@ -1195,11 +1754,11 @@ OR wait for stock to arrive and this order will be auto-processed.`,
               productId: product.product,
               warehouseId: product.warehouse
             }).sort({ date: -1, createdAt: -1 });
-            
+
             const currentBalance = latestMovement ? latestMovement.balance : 0;
-            
-            if (originalStatus === "Confirmed") {
-              // Step 1: Unblock the previously blocked stock
+
+            if (stockReservedStatuses.includes(originalStatus)) {
+              // Step 1: Unblock the stock reserved when the order was confirmed
               const unblockMovement = new StockMovement({
                 productId: product.product,
                 warehouseId: product.warehouse,
@@ -1214,7 +1773,7 @@ OR wait for stock to arrive and this order will be auto-processed.`,
               });
               await unblockMovement.save();
               console.log(`Unblocked ${product.quantity} units for order ${salesOrder.orderNumber} - product ${product.product} in warehouse ${product.warehouse}`);
-              
+
               // Step 2: Permanently reduce stock
               const newBalance = currentBalance; // Balance stays same because we unblocked then reduced
               const deliveryMovement = new StockMovement({
@@ -1251,140 +1810,135 @@ OR wait for stock to arrive and this order will be auto-processed.`,
             }
           }
         }
-      } else if ((status === "Cancelled" || status === "Rejected") && originalStatus === "Confirmed") {
-        // Unblock stock for cancelled/rejected orders
+      } else if ((status === "Cancelled" || status === "Rejected") && stockReservedStatuses.includes(originalStatus)) {
+        // Restore stock reserved when the order entered Confirmed, including
+        // orders that subsequently advanced to Processing.
         console.log("Unblocking stock for cancelled/rejected order");
-        
-        // ALWAYS check stock movements first (more reliable than products array)
 
-        
-        // Find all OUT movements for this order that haven't been restored
-        const outMovements = await StockMovement.find({
-          referenceNo: salesOrder.orderNumber,
-          type: 'OUT'
-        });
-        
-        console.log(`Found ${outMovements.length} OUT movements for order ${salesOrder.orderNumber}`);
-        
-        if (outMovements.length > 0) {
-          console.log("Restoring stock from stock movements...");
-          
-          for (const outMovement of outMovements) {
-            // Check if already restored
-            const existingInMovement = await StockMovement.findOne({
-              referenceNo: salesOrder.orderNumber,
-              type: 'IN',
-              productId: outMovement.productId,
-              warehouseId: outMovement.warehouseId
-            });
-            
-            if (existingInMovement) {
-              console.log(`Stock already restored for product ${outMovement.productId} in warehouse ${outMovement.warehouseId}`);
-              continue;
-            }
-            
-            // Get current balance
-            const latestMovement = await StockMovement.findOne({
-              productId: outMovement.productId,
-              warehouseId: outMovement.warehouseId
-            }).sort({ date: -1, createdAt: -1 });
-            
-            const currentBalance = latestMovement ? latestMovement.balance : 0;
-            const newBalance = currentBalance + outMovement.quantity;
-            
-            // Create IN movement to restore stock
-            const unblockMovement = new StockMovement({
-              productId: outMovement.productId,
-              warehouseId: outMovement.warehouseId,
-              type: 'IN',
-              quantity: outMovement.quantity,
-              balance: newBalance,
-              referenceNo: salesOrder.orderNumber,
-              referenceType: 'SALE',
-              date: new Date(),
-              remarks: `Order ${salesOrder.orderNumber} - Stock Unblocked (${status})`,
-              createdBy: req.user._id
-            });
-            await unblockMovement.save();
-            console.log(`✅ Restored ${outMovement.quantity} units of product ${outMovement.productId} in warehouse ${outMovement.warehouseId}. Balance: ${currentBalance} -> ${newBalance}`);
-          }
-        } else if (!salesOrder.products || salesOrder.products.length === 0) {
-          console.log("⚠️ WARNING: No OUT movements found and products array is empty!");
-        } else {
-          // Fallback: Use products array if no movements found (shouldn't happen normally)
-          console.log("No OUT movements found, using products array as fallback");
-          
-          for (const product of salesOrder.products) {
-            if (product.warehouse) {
-              // Check if already restored
-              const existingInMovement = await StockMovement.findOne({
-                referenceNo: salesOrder.orderNumber,
-                type: 'IN',
-                productId: product.product,
-                warehouseId: product.warehouse
-              });
-              
-              if (existingInMovement) {
-                console.log(`Stock already restored for product ${product.product} in warehouse ${product.warehouse}`);
-                continue;
-              }
-              
-              // Get current balance
-              const latestMovement = await StockMovement.findOne({
-                productId: product.product,
-                warehouseId: product.warehouse
-              }).sort({ date: -1, createdAt: -1 });
-              
-              const currentBalance = latestMovement ? latestMovement.balance : 0;
-              const newBalance = currentBalance + product.quantity;
-              
-              const unblockMovement = new StockMovement({
-                productId: product.product,
-                warehouseId: product.warehouse,
-                type: 'IN',
-                quantity: product.quantity,
-                balance: newBalance,
-                referenceNo: salesOrder.orderNumber,
-                referenceType: 'SALE',
-                date: new Date(),
-                remarks: `Order ${salesOrder.orderNumber} - Stock Unblocked (${status})`,
-                createdBy: req.user._id
-              });
-              await unblockMovement.save();
-              console.log(`Unblocked ${product.quantity} units of product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
-            }
-          }
+        // Restore only the still-reserved quantity for each product/warehouse.
+        // This is quantity-aware, so partial-dispatch IN movements release only
+        // their reduced quantity and do not suppress restoration of the remainder.
+        const [outMovements, priorReleaseMovements] = await Promise.all([
+          StockMovement.find({
+            referenceNo: salesOrder.orderNumber,
+            referenceType: 'SALE',
+            type: 'OUT'
+          }),
+          StockMovement.find({
+            referenceNo: salesOrder.orderNumber,
+            referenceType: 'SALE',
+            type: 'IN'
+          })
+        ]);
+
+        const movementKey = (productId, warehouseId) => `${productId}:${warehouseId}`;
+        const reservationGroups = new Map();
+        for (const movement of outMovements) {
+          const key = movementKey(movement.productId, movement.warehouseId);
+          const group = reservationGroups.get(key) || {
+            productId: movement.productId,
+            warehouseId: movement.warehouseId,
+            blockedQuantity: 0,
+            releasedQuantity: 0
+          };
+          group.blockedQuantity += Number(movement.quantity || 0);
+          reservationGroups.set(key, group);
         }
-        
-        // Check if any waiting orders can now be fulfilled
-        for (const outMovement of outMovements) {
+        for (const movement of priorReleaseMovements) {
+          const key = movementKey(movement.productId, movement.warehouseId);
+          const group = reservationGroups.get(key);
+          if (group) group.releasedQuantity += Number(movement.quantity || 0);
+        }
+
+        const restoredGroups = [];
+        for (const group of reservationGroups.values()) {
+          const quantityToRestore = Math.max(0, group.blockedQuantity - group.releasedQuantity);
+          if (quantityToRestore <= 0) continue;
+
+          const latestMovement = await StockMovement.findOne({
+            productId: group.productId,
+            warehouseId: group.warehouseId
+          }).sort({ date: -1, createdAt: -1 });
+          const currentBalance = latestMovement ? latestMovement.balance : 0;
+          const newBalance = currentBalance + quantityToRestore;
+
+          await new StockMovement({
+            productId: group.productId,
+            warehouseId: group.warehouseId,
+            type: 'IN',
+            quantity: quantityToRestore,
+            balance: newBalance,
+            referenceNo: salesOrder.orderNumber,
+            referenceType: 'SALE',
+            date: new Date(),
+            remarks: `Order ${salesOrder.orderNumber} - Stock Unblocked (${status})`,
+            createdBy: req.user._id
+          }).save();
+          restoredGroups.push(group);
+          console.log(`Restored ${quantityToRestore} units for ${group.productId} in ${group.warehouseId}. Balance: ${currentBalance} -> ${newBalance}`);
+        }
+
+        if (outMovements.length === 0) {
+          console.log(`No reserved OUT movements found for order ${salesOrder.orderNumber}; no stock restoration was required.`);
+        }
+
+        // Check whether released stock can fulfill waiting orders.
+        for (const group of restoredGroups) {
           try {
             const StockArrivalService = (await import("../services/stockArrivalService.js")).default;
             const checkResult = await StockArrivalService.checkWaitingOrdersForStock(
-              outMovement.productId,
-              outMovement.warehouseId,
+              group.productId,
+              group.warehouseId,
               0,
               req.dbConnection
             );
             if (checkResult.notifiedOrders > 0) {
-              console.log(`✅ Notified ${checkResult.notifiedOrders} waiting orders about stock availability`);
+              console.log(`Notified ${checkResult.notifiedOrders} waiting orders about stock availability`);
             }
           } catch (error) {
             console.error("Error checking waiting orders:", error);
           }
         }
-      } else if ((status === "Cancelled" || status === "Rejected") && originalStatus !== "Confirmed") {
-        console.log("Order was not confirmed, no stock to restore");
+      } else if ((status === "Cancelled" || status === "Rejected") && !stockReservedStatuses.includes(originalStatus)) {
+        console.log("Order had no reserved stock to restore");
       }
     } else {
       console.log("🚨 Out-of-stock order - no stock movements will be made");
     }
 
+    if (readyOutOfStockConfirmation) {
+      // Reservation succeeded using freshly rechecked stock. The order now uses
+      // the normal reserved-stock lifecycle and must no longer bypass movement handling.
+      salesOrder.isOutOfStock = false;
+      salesOrder.stockValidation = [];
+      for (const product of salesOrder.products) {
+        product.stockStatus = 'available';
+        product.availableQuantity = product.quantity;
+        product.stockCheckedAt = new Date();
+      }
+      salesOrder.orderStockStatus = {
+        totalProducts: salesOrder.products.length,
+        availableProducts: salesOrder.products.length,
+        partialProducts: 0,
+        waitingProducts: 0,
+        overallStatus: 'ready',
+        lastChecked: new Date()
+      };
+    }
+
     // Credit limit is tracked via getDealerCreditOutstanding which reads confirmed orders
     // directly from SalesOrder collection - no ledger entries needed for credit blocking.
 
-    // Update order status and remarks
+    // Update order status and remarks. Record the discount finalization event only
+    // when the order first enters a finalized status; unrelated edits do not refresh it.
+    if (!isFinalizedSalesOrderStatus(originalStatus) && isFinalizedSalesOrderStatus(status)) {
+      salesOrder.discountFinalizedAt = new Date();
+    }
     salesOrder.status = status;
+    if (status !== 'Pending') {
+      // Stock Arrived is an actionable Pending-order queue, not a historical status.
+      salesOrder.stockAvailable = false;
+    }
     if (remarks) {
       salesOrder.remarks = remarks;
     }
@@ -1392,7 +1946,7 @@ OR wait for stock to arrive and this order will be auto-processed.`,
     // IMPORTANT: Cancel expiry when status changes from Pending to any other status
     if (originalStatus === "Pending" && status !== "Pending" && salesOrder.expiryDate) {
       console.log(`📅 Cancelling expiry for order ${salesOrder.orderNumber} - status changed from Pending to ${status}`);
-      
+
       salesOrder.expiryHistory.push({
         action: 'cancelled',
         previousDate: salesOrder.expiryDate,
@@ -1401,7 +1955,7 @@ OR wait for stock to arrive and this order will be auto-processed.`,
         performedBy: req.user._id,
         performedAt: new Date()
       });
-      
+
       salesOrder.expiryDate = null;
       salesOrder.expiryReason = null;
       salesOrder.isExpired = false;
@@ -1412,26 +1966,26 @@ OR wait for stock to arrive and this order will be auto-processed.`,
     // NOTE: Credit limit blocking moved to invoice approval stage
     // Sales orders no longer block credit limit on confirmation
     // Credit limit is blocked when invoice is approved, not when order is confirmed
-    
+
     // REMOVE/REVERSE LEDGER ENTRY when order is CANCELLED or REJECTED (if it was previously Confirmed)
     // NOTE: This is kept for backward compatibility with old orders that had ledger entries
-    if ((status === "Cancelled" || status === "Rejected") && originalStatus === "Confirmed") {
+    if ((status === "Cancelled" || status === "Rejected") && stockReservedStatuses.includes(originalStatus)) {
       try {
         console.log(`💳 Checking for ledger entry to reverse for order ${salesOrder.orderNumber}`);
-        
 
 
-        
+
+
         // Check if there's a ledger entry for this order (old orders might have one)
         const existingLedgerEntry = await DealerLedger.findOne({
           dealer: salesOrder.dealer,
           transactionType: "Order Confirmed",
           description: { $regex: salesOrder.orderNumber }
         });
-        
+
         if (existingLedgerEntry) {
           console.log(`✅ Found existing ledger entry to reverse`);
-          
+
           // Get dealer details
           const dealer = await Dealer.findById(salesOrder.dealer);
           if (!dealer) {
@@ -1452,7 +2006,7 @@ OR wait for stock to arrive and this order will be auto-processed.`,
               status: "Active",
               createdBy: req.user._id
             });
-            
+
             await reverseLedgerEntry.save();
             console.log(`✅ Reverse ledger entry created - Credit limit unblocked: ₹${salesOrder.totalAmount.toLocaleString()} for order ${salesOrder.orderNumber}`);
             console.log(`   Running Balance: ₹${reverseLedgerEntry.runningBalance.toLocaleString()}`);
@@ -1472,6 +2026,7 @@ OR wait for stock to arrive and this order will be auto-processed.`,
         const statusMessages = {
           'Confirmed': `Your order ${salesOrder.orderNumber} has been confirmed.`,
           'Processing': `Your order ${salesOrder.orderNumber} is now being processed.`,
+          'In Transit': `Your order ${salesOrder.orderNumber} is in transit.`,
           'Delivered': `Your order ${salesOrder.orderNumber} has been delivered.`,
           'Rejected': `Your order ${salesOrder.orderNumber} has been rejected.`,
           'Cancelled': `Your order ${salesOrder.orderNumber} has been cancelled.`
@@ -1480,6 +2035,7 @@ OR wait for stock to arrive and this order will be auto-processed.`,
         const statusTitles = {
           'Confirmed': 'Order Confirmed',
           'Processing': 'Order Processing',
+          'In Transit': 'Order In Transit',
           'Delivered': 'Order Delivered',
           'Rejected': 'Order Rejected',
           'Cancelled': 'Order Cancelled'
@@ -1487,7 +2043,7 @@ OR wait for stock to arrive and this order will be auto-processed.`,
 
         const message = statusMessages[status] || `Your order ${salesOrder.orderNumber} status has been updated to ${status}.`;
         const title = statusTitles[status] || `Order ${status}`;
-        
+
         // Determine priority based on status
         let priority = 'medium';
         if (status === 'Delivered' || status === 'Confirmed') {
@@ -1495,7 +2051,7 @@ OR wait for stock to arrive and this order will be auto-processed.`,
         } else if (status === 'Rejected' || status === 'Cancelled') {
           priority = 'high';
         }
-        
+
         // Create and save notification
         await Notification.create({
           dealer: salesOrder.dealer,
@@ -1567,7 +2123,7 @@ export const assignWarehouseToOutOfStockOrder = async (req, res) => {
   try {
     // Get models from company-specific connection
     const { SalesOrder, Product, StockMovement } = getModels(req.dbConnection);
-    
+
     const { id } = req.params;
     const { products } = req.body; // Array of { productIndex, warehouse, warehouseName }
 
@@ -1591,7 +2147,7 @@ export const assignWarehouseToOutOfStockOrder = async (req, res) => {
     // Verify stock availability for all products with assigned warehouses
     for (const productUpdate of products) {
       const product = salesOrder.products[productUpdate.productIndex];
-      
+
       if (!product) {
         return res.status(400).json({
           success: false,
@@ -1668,9 +2224,9 @@ export const updateSalesOrder = async (req, res) => {
   try {
     // Get models from company-specific connection
     const { SalesOrder, Product, Dealer, StockMovement, User, Notification, DealerLedger } = getModels(req.dbConnection);
-    
+
     const { id } = req.params;
-    
+
     // Find the sales order
     const salesOrder = await SalesOrder.findById(id);
     if (!salesOrder) {
@@ -1683,10 +2239,10 @@ export const updateSalesOrder = async (req, res) => {
     // Only allow editing of Pending, Confirmed, and Processing orders
     // Delivered, Cancelled, and Rejected orders cannot be edited
     const editableStatuses = ["Pending", "Confirmed", "Processing"];
-    
+
     // Normalize status for comparison (trim whitespace, ensure proper case)
     const currentStatus = salesOrder.status ? String(salesOrder.status).trim() : null;
-    
+
     // Debug logging
     console.log("🔍 Update Sales Order - Status Check:");
     console.log("  - Order ID:", id);
@@ -1696,7 +2252,7 @@ export const updateSalesOrder = async (req, res) => {
     console.log("  - Status Type:", typeof salesOrder.status);
     console.log("  - Editable Statuses:", editableStatuses);
     console.log("  - Is Editable:", editableStatuses.includes(currentStatus));
-    
+
     if (!currentStatus || !editableStatuses.includes(currentStatus)) {
       const errorMessage = `Can only edit orders with status "Pending", "Confirmed", or "Processing". Current status: ${currentStatus || 'undefined'}. Orders with status "Delivered", "Cancelled", or "Rejected" cannot be edited.`;
       console.log("❌ Edit Rejected:", errorMessage);
@@ -1705,8 +2261,128 @@ export const updateSalesOrder = async (req, res) => {
         message: errorMessage
       });
     }
-    
+
     console.log("✅ Edit Allowed for status:", currentStatus);
+
+    const unsafeUpdateKey = Object.keys(req.body).find(
+      (key) => key.startsWith('$') || key.includes('.')
+    );
+    if (unsafeUpdateKey) {
+      throw createDiscountPolicyError(
+        `Unsupported Sales Order update field "${unsafeUpdateKey}". Submit products as a complete array so discount policy can be validated.`,
+        'UNSAFE_SALES_ORDER_UPDATE_SHAPE'
+      );
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body, 'products')
+        && (!Array.isArray(req.body.products) || req.body.products.length === 0)) {
+      throw createDiscountPolicyError(
+        'products must be submitted as a non-empty array for Sales Order updates.',
+        'INVALID_SALES_ORDER_PRODUCTS'
+      );
+    }
+
+    // Current stock lifecycle fields are server-owned. Clients may submit only
+    // business inputs such as products, quantities, warehouses, and status.
+    delete req.body.orderStockStatus;
+    delete req.body.stockAvailable;
+    delete req.body.stockAvailableNotifiedAt;
+    if (Array.isArray(req.body.products)) {
+      req.body.products = req.body.products.map((product) => {
+        const sanitizedProduct = { ...product };
+        delete sanitizedProduct.stockStatus;
+        delete sanitizedProduct.availableQuantity;
+        delete sanitizedProduct.stockArrivedAt;
+        delete sanitizedProduct.stockCheckedAt;
+        return sanitizedProduct;
+      });
+    }
+
+    // This recency field is server-owned and cannot be refreshed or forged by
+    // unrelated client edits.
+    delete req.body.discountFinalizedAt;
+
+    if (Object.prototype.hasOwnProperty.call(req.body, 'repriceDiscounts')
+        && typeof req.body.repriceDiscounts !== 'boolean') {
+      throw createDiscountPolicyError(
+        'repriceDiscounts must be a boolean when provided.',
+        'INVALID_REPRICE_DISCOUNTS_FLAG'
+      );
+    }
+    const repriceDiscounts = req.body.repriceDiscounts === true;
+    delete req.body.repriceDiscounts;
+
+    const requestedDealerId = req.body.dealer?._id || req.body.dealer;
+    const dealerChanged = Boolean(requestedDealerId)
+      && objectIdString(requestedDealerId) !== objectIdString(salesOrder.dealer);
+    if (dealerChanged && !repriceDiscounts) {
+      throw createDiscountPolicyError(
+        'Changing the dealer changes discount policy. Resubmit with repriceDiscounts: true to apply current policy and permissions.',
+        'REPRICE_DISCOUNTS_REQUIRED'
+      );
+    }
+
+    // Explicit repricing may omit products; in that case reprice every persisted line.
+    if (repriceDiscounts && !Array.isArray(req.body.products)) {
+      req.body.products = salesOrder.products.map((product) => product.toObject());
+    }
+
+    let canonicalProductInputsChanged = false;
+    let creditEligibilityChanged = false;
+    if (Array.isArray(req.body.products)) {
+      req.body.products = mergeMissingCanonicalInputs(salesOrder.products, req.body.products);
+      const driverChangeReasons = getDiscountDriverChangeReasons(
+        salesOrder.products,
+        req.body.products
+      );
+      if (driverChangeReasons.length > 0 && !repriceDiscounts) {
+        throw createDiscountPolicyError(
+          `Discount-driving changes require explicit repricing (${driverChangeReasons.join('; ')}). Resubmit with repriceDiscounts: true.`,
+          'REPRICE_DISCOUNTS_REQUIRED'
+        );
+      }
+
+      const replayableAmountInputsChanged = haveReplayableAmountInputsChanged(
+        salesOrder.products,
+        req.body.products
+      );
+      if (repriceDiscounts) {
+        const dealerData = await Dealer.findById(requestedDealerId || salesOrder.dealer);
+        if (!dealerData) {
+          return res.status(404).json({ success: false, message: "Dealer not found" });
+        }
+        const productsForRepricing = req.body.products.map((productLine) => {
+          const serverResolvedLine = { ...productLine };
+          delete serverResolvedLine.dealerExtraDiscount;
+          delete serverResolvedLine.discountPolicySnapshot;
+          delete serverResolvedLine.discountPermissionSnapshot;
+          delete serverResolvedLine.appliedDiscount;
+          return serverResolvedLine;
+        });
+        req.body.products = await canonicalizeSalesOrderProducts({
+          products: productsForRepricing,
+          dealer: dealerData,
+          dbConnection: req.dbConnection,
+          actorId: req.user._id
+        });
+      } else if (replayableAmountInputsChanged) {
+        req.body.products = replayPersistedSalesOrderProducts(
+          salesOrder.products,
+          req.body.products
+        );
+      } else {
+        req.body.products = mergeNonFinancialProductUpdates(salesOrder.products, req.body.products);
+      }
+
+      canonicalProductInputsChanged = repriceDiscounts || replayableAmountInputsChanged;
+      creditEligibilityChanged = hasCreditEligibilityChanged(salesOrder.products, req.body.products);
+    }
+
+    // Client-computed order totals are never authoritative.
+    delete req.body.grossAmount;
+    delete req.body.totalGst;
+    delete req.body.discountAmount;
+    delete req.body.totalAmount;
+    delete req.body.creditAmount;
 
     // Validate products if they are being updated
     if (req.body.products) {
@@ -1714,14 +2390,14 @@ export const updateSalesOrder = async (req, res) => {
       for (const item of req.body.products) {
         console.log("Validating product item:", item);
         console.log("Product ID to validate:", item.product);
-        
+
         if (!item.product) {
           return res.status(400).json({
             success: false,
             message: `Product ID is missing in product data: ${JSON.stringify(item)}`
           });
         }
-        
+
         const product = await Product.findById(item.product);
         if (!product) {
           return res.status(404).json({
@@ -1752,14 +2428,14 @@ export const updateSalesOrder = async (req, res) => {
           }
         }
       }
-      
+
       // RE-CHECK CREDIT LIMIT when products are being edited
       // CRITICAL FIX: Only re-check credit limit when products ACTUALLY CHANGE (quantity, price, or products added/removed)
       // Do NOT recalculate when just changing status from Pending to Confirmed
       console.log("🔍 Checking if products actually changed...");
-      
+
       // Compare new products with existing products to detect actual changes
-      let productsActuallyChanged = false;
+      let productsActuallyChanged = canonicalProductInputsChanged || creditEligibilityChanged;
 
       // If order is already approved by Super Admin, still re-check if amount increased
       const orderAlreadyApproved = salesOrder.creditOverlimit &&
@@ -1769,7 +2445,7 @@ export const updateSalesOrder = async (req, res) => {
       if (orderAlreadyApproved) {
         console.log("   ℹ️ Order was previously approved - will still re-check if amount increased");
       }
-      
+
       // Check if number of products changed
       if (req.body.products.length !== salesOrder.products.length) {
         productsActuallyChanged = true;
@@ -1779,29 +2455,29 @@ export const updateSalesOrder = async (req, res) => {
         for (let i = 0; i < req.body.products.length; i++) {
           const newProduct = req.body.products[i];
           const oldProduct = salesOrder.products[i];
-          
+
           // Extract IDs for comparison
           const newProductId = typeof newProduct.product === 'object' ? newProduct.product._id : newProduct.product;
           const oldProductId = typeof oldProduct.product === 'object' ? oldProduct.product._id : oldProduct.product;
-          
+
           if (newProductId.toString() !== oldProductId.toString()) {
             productsActuallyChanged = true;
             console.log(`   ✓ Product changed at index ${i}`);
             break;
           }
-          
+
           if (Number(newProduct.quantity) !== Number(oldProduct.quantity)) {
             productsActuallyChanged = true;
             console.log(`   ✓ Quantity changed at index ${i}: ${oldProduct.quantity} → ${newProduct.quantity}`);
             break;
           }
-          
+
           if (Math.abs(Number(newProduct.unitPrice) - Number(oldProduct.unitPrice)) > 0.001) {
             productsActuallyChanged = true;
             console.log(`   ✓ Unit price changed at index ${i}: ${oldProduct.unitPrice} → ${newProduct.unitPrice}`);
             break;
           }
-          
+
           if (Math.abs(Number(newProduct.discountAmount || 0) - Number(oldProduct.discountAmount || 0)) > 0.001) {
             productsActuallyChanged = true;
             console.log(`   ✓ Discount changed at index ${i}`);
@@ -1809,7 +2485,7 @@ export const updateSalesOrder = async (req, res) => {
           }
         }
       }
-      
+
       if (!productsActuallyChanged) {
         console.log("   ✅ No product changes detected - skipping credit limit recalculation");
         console.log("   ℹ️ This is likely just a status change (e.g., Pending → Confirmed)");
@@ -1818,7 +2494,7 @@ export const updateSalesOrder = async (req, res) => {
         console.log("   Order creditOverlimit:", salesOrder.creditOverlimit);
         console.log("   Previously approved?", salesOrder.creditOverlimit?.approvedBy ? 'YES' : 'NO');
         console.log("   Original order amount:", salesOrder.totalAmount);
-        
+
         // Get dealer data
         const dealerData = await Dealer.findById(salesOrder.dealer);
         if (!dealerData) {
@@ -1827,62 +2503,37 @@ export const updateSalesOrder = async (req, res) => {
             message: "Dealer not found"
           });
         }
-        
+
         // Calculate new order totals with updated products
         const updatedValidatedProducts = [];
         for (const item of req.body.products) {
           const product = await Product.findById(item.product);
           if (!product) continue;
-          
+
           // Skip out-of-stock products from credit calculation
-          const hasStock = item.warehouse && item.warehouse !== "No Stock";
+          const hasStock = item.warehouse
+            && item.warehouse !== "No Stock"
+            && item.warehouseName !== "No Stock";
           if (!hasStock) {
             console.log(`⏭️ Skipping product ${product.itemName} from credit limit calculation (out of stock)`);
             continue;
           }
-          
-          const unitPrice = item.unitPrice || product.rateSlabs[0]?.rate || 0;
-          const gst = item.gst || product.gst || 0;
-          // Use direct discount + dealer extra discount for credit limit calculation
-          const directDiscountAmt = item.discountAmount || 0;
-          const extraPct = (dealerData.extraDiscounts || [])
-            .filter(d => d.isActive !== false)
-            .reduce((pct, ed) => {
-              if (pct > 0) return pct;
-              const targetId = ed.targetId?.toString();
-              if (ed.targetType === 'product' && targetId === product._id.toString()) return ed.discountPercentage || 0;
-              if (ed.targetType === 'brand' && targetId === product.brand?.toString()) return ed.discountPercentage || 0;
-              if (ed.targetType === 'category' && targetId === product.category?.toString()) return ed.discountPercentage || 0;
-              if (ed.targetType === 'subcategory' && targetId === product.subcategory?.toString()) return ed.discountPercentage || 0;
-              return 0;
-            }, 0);
-          const gross = item.quantity * unitPrice;
-          const extraDiscountAmt = (gross * extraPct) / 100;
-          const baseAmount = gross - directDiscountAmt - extraDiscountAmt;
-          const gstAmount = (baseAmount * gst) / 100;
-          
+
           updatedValidatedProducts.push({
-            quantity: item.quantity,
-            unitPrice: unitPrice,
-            gstAmount: gstAmount,
-            discountAmount: directDiscountAmt + extraDiscountAmt,
-            effectiveBaseAmount: baseAmount
+            effectiveBaseAmount: calculateCanonicalCreditLineAmount(item)
           });
         }
 
-        const newGrossAmount = updatedValidatedProducts.reduce((sum, p) => sum + p.effectiveBaseAmount, 0);
-        const newTotalGst = updatedValidatedProducts.reduce((sum, p) => sum + p.gstAmount, 0);
-        // effectiveBaseAmount is MRP after discount (GST already included) — don't add GST again
-        const newTotalAmount = newGrossAmount;
-        const originalOrderAmount = salesOrder.totalAmount || 0;
-        
+        const newTotalAmount = updatedValidatedProducts.reduce((sum, p) => sum + p.effectiveBaseAmount, 0);
+        const originalOrderAmount = salesOrder.creditAmount ?? salesOrder.totalAmount ?? 0;
+
         console.log(`💰 Order Amount Comparison:`, {
           original: originalOrderAmount,
           new: newTotalAmount,
           difference: newTotalAmount - originalOrderAmount,
           increased: newTotalAmount > originalOrderAmount
         });
-        
+
         // Check credit limit if dealer has one set
         if (dealerData.creditLimit && dealerData.creditLimit > 0) {
           // Get correct outstanding: exclude this order itself (it's being edited), then add new amount
@@ -1890,7 +2541,7 @@ export const updateSalesOrder = async (req, res) => {
           // baseOutstanding already excludes this order, so just add the new total
           const newOutstanding = baseOutstanding + newTotalAmount;
           const adjustedOutstanding = baseOutstanding; // for logging clarity
-          
+
           console.log(`💳 Credit Limit Re-Check:`, {
             creditLimit: dealerData.creditLimit,
             baseOutstanding,
@@ -1900,19 +2551,19 @@ export const updateSalesOrder = async (req, res) => {
             overlimit: newOutstanding - dealerData.creditLimit,
             wasApproved: !!salesOrder.creditOverlimit?.approvedBy
           });
-          
+
           // If credit limit exceeded, check if we need new approval
           if (newOutstanding > dealerData.creditLimit) {
             const overlimitAmount = newOutstanding - dealerData.creditLimit;
-            
+
             // Check if amount increased from previously approved amount
             const amountIncreased = newTotalAmount > originalOrderAmount;
             const wasApproved = salesOrder.creditOverlimit && salesOrder.creditOverlimit.approvedBy;
-            
+
             if (amountIncreased && wasApproved) {
               console.log(`⚠️ CRITICAL: Order amount increased from ₹${originalOrderAmount.toFixed(2)} to ₹${newTotalAmount.toFixed(2)}`);
               console.log(`⚠️ Previous approval is NO LONGER VALID - Requires NEW Super Admin approval`);
-              
+
               // Store previous approval info for audit trail
               const previousApproval = {
                 approvedBy: salesOrder.creditOverlimit.approvedBy,
@@ -1920,7 +2571,7 @@ export const updateSalesOrder = async (req, res) => {
                 approvedAmount: originalOrderAmount,
                 approvalNotes: salesOrder.creditOverlimit.approvalNotes
               };
-              
+
               // Reset credit approval and force status back to Pending
               req.body.status = "Pending";
               req.body.creditOverlimit = {
@@ -1936,12 +2587,12 @@ export const updateSalesOrder = async (req, res) => {
                 approvalNotes: null,
                 previousApproval: previousApproval // Store history
               };
-              
+
               console.log(`🔄 Order status RESET to Pending - Requires NEW Super Admin approval`);
               console.log(`📋 Previous approval stored in history for audit trail`);
             } else if (!wasApproved) {
               console.log(`⚠️ Credit limit exceeded by ₹${overlimitAmount.toFixed(2)} - Requires approval`);
-              
+
               // First time exceeding limit or not previously approved
               req.body.status = "Pending";
               req.body.creditOverlimit = {
@@ -1955,7 +2606,7 @@ export const updateSalesOrder = async (req, res) => {
                 approvedBy: null,
                 approvedAt: null
               };
-              
+
               console.log(`🔄 Order status set to Pending - Requires Super Admin approval`);
             } else {
               // Amount decreased or stayed same, keep existing approval
@@ -1986,7 +2637,7 @@ export const updateSalesOrder = async (req, res) => {
     if (newStatus === "Confirmed" && originalStatus !== "Confirmed") {
       // Check both the saved order AND any updated creditOverlimit from this request
       const effectiveCreditOverlimit = req.body.creditOverlimit || salesOrder.creditOverlimit;
-      
+
       // Block if flagged as overlimit and not approved (including freshly reset approvals)
       if (effectiveCreditOverlimit &&
           effectiveCreditOverlimit.isOverlimit &&
@@ -2007,7 +2658,11 @@ export const updateSalesOrder = async (req, res) => {
         const dealerForCheck = await Dealer.findById(salesOrder.dealer);
         if (dealerForCheck && dealerForCheck.creditLimit && dealerForCheck.creditLimit > 0) {
           const currentOutstanding = await getDealerCreditOutstanding(req.dbConnection, salesOrder.dealer, salesOrder._id);
-          const orderAmount = req.body.totalAmount || salesOrder.totalAmount;
+          const orderAmount = req.body.products
+            ? req.body.products
+              .filter(isCreditEligibleProduct)
+              .reduce((sum, product) => sum + calculateCanonicalCreditLineAmount(product), 0)
+            : (salesOrder.creditAmount ?? salesOrder.totalAmount);
           const newOutstanding = currentOutstanding + orderAmount;
 
           if (newOutstanding > dealerForCheck.creditLimit) {
@@ -2059,10 +2714,10 @@ export const updateSalesOrder = async (req, res) => {
               productId: product.product,
               warehouseId: product.warehouse
             }).sort({ date: -1, createdAt: -1 });
-            
+
             const currentBalance = latestMovement ? latestMovement.balance : 0;
             const newBalance = currentBalance - product.quantity;
-            
+
             const blockMovement = new StockMovement({
               productId: product.product,
               warehouseId: product.warehouse,
@@ -2088,7 +2743,7 @@ export const updateSalesOrder = async (req, res) => {
               productId: product.product,
               warehouseId: product.warehouse
             }).sort({ date: -1, createdAt: -1 });
-            
+
             const currentBalance = latestMovement ? latestMovement.balance : 0;
             if (originalStatus === "Confirmed") {
               // Step 1: Unblock the previously blocked stock
@@ -2105,7 +2760,7 @@ export const updateSalesOrder = async (req, res) => {
                 createdBy: req.user._id
               });
               await unblockMovement.save();
-              
+
               // Step 2: Permanently reduce stock
               const newBalance = currentBalance; // Balance stays same because we unblocked then reduced
               const deliveryMovement = new StockMovement({
@@ -2150,10 +2805,10 @@ export const updateSalesOrder = async (req, res) => {
               productId: product.product,
               warehouseId: product.warehouse
             }).sort({ date: -1, createdAt: -1 });
-            
+
             const currentBalance = latestMovement ? latestMovement.balance : 0;
             const newBalance = currentBalance + product.quantity;
-            
+
             const unblockMovement = new StockMovement({
               productId: product.product,
               warehouseId: product.warehouse,
@@ -2188,44 +2843,42 @@ export const updateSalesOrder = async (req, res) => {
       }
     }
 
-    // Recalculate product amounts with discounts (findByIdAndUpdate bypasses pre-save hook)
-    if (req.body.products) {
-      let recalcGross = 0;
-      let recalcGst = 0;
-      let recalcDiscount = 0;
-
-      req.body.products = req.body.products.map(p => {
-        const baseAmount = p.quantity * p.unitPrice;
-        // Guard: discountAmount must never exceed baseAmount
-        const rawDiscAmt = p.discountAmount || 0;
-        const discAmt = Math.min(rawDiscAmt, baseAmount);
-        const discountedBase = baseAmount - discAmt;
-        // unitPrice IS MRP (GST inclusive) — reverse-calculate GST, do NOT add on top
-        const gstAmt = (p.gst || 0) > 0
-          ? parseFloat((discountedBase - discountedBase / (1 + (p.gst || 0) / 100)).toFixed(2))
-          : 0;
-        const totalPrice = discountedBase;
-
-        recalcGross += baseAmount;
-        recalcGst += gstAmt;
-        recalcDiscount += discAmt;
-
-        return { ...p, gstAmount: gstAmt, totalPrice };
-      });
-
-      req.body.grossAmount = recalcGross;
-      req.body.totalGst = recalcGst;
-      req.body.discountAmount = recalcDiscount;
-      // MRP is GST inclusive — total = gross − discount (GST already inside)
-      req.body.totalAmount = recalcGross - recalcDiscount;
+    // Derive aggregate totals from canonical lines (or unchanged persisted lines).
+    if (req.body.products && canonicalProductInputsChanged) {
+      const canonicalTotals = calculateCanonicalOrderTotals(req.body.products);
+      req.body.grossAmount = canonicalTotals.grossAmount;
+      req.body.totalGst = canonicalTotals.totalGst;
+      req.body.discountAmount = canonicalTotals.discountAmount;
+      req.body.totalAmount = canonicalTotals.totalAmount;
+    }
+    if (req.body.products && (canonicalProductInputsChanged || creditEligibilityChanged)) {
+      req.body.creditAmount = req.body.products
+        .filter(isCreditEligibleProduct)
+        .reduce((sum, product) => sum + calculateCanonicalCreditLineAmount(product), 0);
     }
 
-    const updatedOrder = await SalesOrder.findByIdAndUpdate(
+    const effectiveUpdatedStatus = req.body.status || salesOrder.status;
+    const effectiveExpiredState = req.body.isExpired ?? salesOrder.isExpired;
+    if (effectiveUpdatedStatus !== 'Pending' || effectiveExpiredState === true) {
+      req.body.stockAvailable = false;
+    } else if (salesOrder.isOutOfStock && salesOrder.orderStockStatus?.overallStatus === 'ready') {
+      req.body.stockAvailable = true;
+      if (!salesOrder.stockAvailableNotifiedAt) {
+        req.body.stockAvailableNotifiedAt = new Date();
+      }
+    }
+    const enteredFinalizedStatus = !isFinalizedSalesOrderStatus(salesOrder.status)
+      && isFinalizedSalesOrderStatus(effectiveUpdatedStatus);
+    if (enteredFinalizedStatus || (repriceDiscounts && isFinalizedSalesOrderStatus(effectiveUpdatedStatus))) {
+      req.body.discountFinalizedAt = new Date();
+    }
+
+    let updatedOrder = await SalesOrder.findByIdAndUpdate(
       id,
       req.body,
-      { 
-        new: true, 
-        runValidators: true 
+      {
+        new: true,
+        runValidators: true
       }
     )
       .populate("dealer", "name code contactPerson phone email address dealerType")
@@ -2233,6 +2886,26 @@ export const updateSalesOrder = async (req, res) => {
       .populate("products.product")
       .populate("products.warehouse", "name")
       .populate("createdBy", "name email");
+
+    if (req.body.products
+        && !updatedOrder.isExpired
+        && !['Delivered', 'Cancelled', 'Rejected', 'Expired'].includes(updatedOrder.status)) {
+      const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
+      const stockRefresh = await StockArrivalService.checkOrderStockStatus(
+        updatedOrder._id,
+        req.dbConnection,
+        { force: true }
+      );
+
+      if (stockRefresh.success) {
+        updatedOrder = await SalesOrder.findById(id)
+          .populate("dealer", "name code contactPerson phone email address dealerType")
+          .populate("region", "name")
+          .populate("products.product")
+          .populate("products.warehouse", "name")
+          .populate("createdBy", "name email");
+      }
+    }
 
     // If status changed, trigger notification (for any status change)
     if (newStatus && newStatus !== originalStatus) {
@@ -2256,14 +2929,14 @@ export const updateSalesOrder = async (req, res) => {
 
         const message = statusMessages[newStatus] || `Your order ${updatedOrder.orderNumber} status has been updated to ${newStatus}.`;
         const title = statusTitles[newStatus] || `Order ${newStatus}`;
-        
+
         let priority = 'medium';
         if (newStatus === 'Delivered' || newStatus === 'Confirmed') {
           priority = 'high';
         } else if (newStatus === 'Rejected' || newStatus === 'Cancelled') {
           priority = 'high';
         }
-        
+
         await Notification.create({
           dealer: updatedOrder.dealer,
           type: 'order_status',
@@ -2300,30 +2973,30 @@ export const updateSalesOrder = async (req, res) => {
       } catch (notificationError) {
         console.error('Error creating notification:', notificationError);
       }
-      
+
       // NOTE: Credit limit blocking moved to invoice approval stage
       // Sales orders no longer block credit limit on confirmation
       // Credit limit is blocked when invoice is approved, not when order is confirmed
-      
+
       // REMOVE/REVERSE LEDGER ENTRY when order is CANCELLED or REJECTED (if it was previously Confirmed)
       // NOTE: This is kept for backward compatibility with old orders that had ledger entries
       if ((newStatus === "Cancelled" || newStatus === "Rejected") && originalStatus === "Confirmed") {
         try {
           console.log(`💳 Checking for ledger entry to reverse for order ${updatedOrder.orderNumber}`);
-          
-  
-  
-          
+
+
+
+
           // Check if there's a ledger entry for this order (old orders might have one)
           const existingLedgerEntry = await DealerLedger.findOne({
             dealer: updatedOrder.dealer._id || updatedOrder.dealer,
             transactionType: "Order Confirmed",
             description: { $regex: updatedOrder.orderNumber }
           });
-          
+
           if (existingLedgerEntry) {
             console.log(`✅ Found existing ledger entry to reverse`);
-            
+
             // Get dealer details
             const dealer = await Dealer.findById(updatedOrder.dealer);
             if (!dealer) {
@@ -2344,7 +3017,7 @@ export const updateSalesOrder = async (req, res) => {
                 status: "Active",
                 createdBy: req.user._id
               });
-              
+
               await reverseLedgerEntry.save();
               console.log(`✅ Reverse ledger entry created - Credit limit unblocked: ₹${updatedOrder.totalAmount.toLocaleString()} for order ${updatedOrder.orderNumber}`);
               console.log(`   Running Balance: ₹${reverseLedgerEntry.runningBalance.toLocaleString()}`);
@@ -2366,7 +3039,9 @@ export const updateSalesOrder = async (req, res) => {
     });
   } catch (error) {
     console.error("Update Sales Order Error:", error);
-    
+
+    if (sendDiscountPolicyError(res, error)) return;
+
     if (error.name === 'ValidationError') {
       const messages = Object.values(error.errors).map(err => err.message);
       return res.status(400).json({
@@ -2391,7 +3066,7 @@ export const deleteSalesOrder = async (req, res) => {
   try {
     // Get models from company-specific connection
     const { SalesOrder } = getModels(req.dbConnection);
-    
+
     const { id } = req.params;
 
     // Find the sales order
@@ -2435,7 +3110,7 @@ export const getProductStock = async (req, res) => {
   try {
     // Get models from company-specific connection
     const { Product, StockMovement } = getModels(req.dbConnection);
-    
+
     const { productId } = req.params;
     const { warehouse } = req.query;
 
@@ -2505,132 +3180,147 @@ export const getProductStock = async (req, res) => {
 // @access  Private
 export const getSalesOrderStats = async (req, res) => {
   try {
-    // Get models from company-specific connection
     const { SalesOrder } = getModels(req.dbConnection);
-    
     const { startDate, endDate, dealer, region, type } = req.query;
-
-    // Build match query for filters
     const matchQuery = {};
-    
+
     if (startDate || endDate) {
       matchQuery.orderDate = {};
       if (startDate) matchQuery.orderDate.$gte = new Date(startDate);
       if (endDate) matchQuery.orderDate.$lte = new Date(endDate);
     }
-    
     if (dealer) matchQuery.dealer = dealer;
     if (region) matchQuery.region = region;
     if (type) matchQuery.type = type;
 
-    // Get overall statistics
-    const stats = await SalesOrder.aggregate([
-      { $match: matchQuery },
-      {
-        $group: {
-          _id: null,
-          totalOrders: { $sum: 1 },
-          totalValue: { $sum: "$totalAmount" },
-          pendingOrders: {
-            $sum: { $cond: [{ $eq: ["$status", "Pending"] }, 1, 0] }
-          },
-          confirmedOrders: {
-            $sum: { $cond: [{ $eq: ["$status", "Confirmed"] }, 1, 0] }
-          },
-          processingOrders: {
-            $sum: { $cond: [{ $eq: ["$status", "Processing"] }, 1, 0] }
-          },
-          deliveredOrders: {
-            $sum: { $cond: [{ $eq: ["$status", "Delivered"] }, 1, 0] }
-          },
-          cancelledOrders: {
-            $sum: { $cond: [{ $eq: ["$status", "Cancelled"] }, 1, 0] }
-          },
-          totalItems: { $sum: { $sum: "$products.quantity" } }
+    const finalizedStatuses = ['Confirmed', 'Delivered'];
+    const finalizedMatch = { ...matchQuery, status: { $in: finalizedStatuses } };
+
+    const [stats, statusStats, monthlyTrendsDescending, topDealers, topProducts] = await Promise.all([
+      SalesOrder.aggregate([
+        { $match: matchQuery },
+        {
+          $group: {
+            _id: null,
+            totalOrders: { $sum: 1 },
+            allOrderValue: { $sum: '$totalAmount' },
+            totalValue: {
+              $sum: {
+                $cond: [{ $in: ['$status', finalizedStatuses] }, '$totalAmount', 0]
+              }
+            },
+            pendingOrders: { $sum: { $cond: [{ $eq: ['$status', 'Pending'] }, 1, 0] } },
+            confirmedOrders: { $sum: { $cond: [{ $eq: ['$status', 'Confirmed'] }, 1, 0] } },
+            processingOrders: { $sum: { $cond: [{ $eq: ['$status', 'Processing'] }, 1, 0] } },
+            inTransitOrders: { $sum: { $cond: [{ $eq: ['$status', 'In Transit'] }, 1, 0] } },
+            deliveredOrders: { $sum: { $cond: [{ $eq: ['$status', 'Delivered'] }, 1, 0] } },
+            cancelledOrders: { $sum: { $cond: [{ $eq: ['$status', 'Cancelled'] }, 1, 0] } },
+            pendingCreditApprovals: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $eq: ['$creditOverlimit.requiresApproval', true] },
+                      { $eq: [{ $ifNull: ['$creditOverlimit.approvedBy', null] }, null] }
+                    ]
+                  },
+                  1,
+                  0
+                ]
+              }
+            },
+            totalItems: { $sum: { $sum: '$products.quantity' } }
+          }
         }
-      }
+      ]),
+      SalesOrder.aggregate([
+        { $match: matchQuery },
+        {
+          $group: {
+            _id: '$status',
+            count: { $sum: 1 },
+            totalValue: { $sum: '$totalAmount' },
+            avgOrderValue: { $avg: '$totalAmount' },
+            minOrderValue: { $min: '$totalAmount' },
+            maxOrderValue: { $max: '$totalAmount' }
+          }
+        },
+        { $sort: { count: -1, _id: 1 } }
+      ]),
+      SalesOrder.aggregate([
+        { $match: finalizedMatch },
+        {
+          $group: {
+            _id: {
+              year: { $year: '$orderDate' },
+              month: { $month: '$orderDate' }
+            },
+            orderCount: { $sum: 1 },
+            totalValue: { $sum: '$totalAmount' },
+            avgOrderValue: { $avg: '$totalAmount' }
+          }
+        },
+        { $sort: { '_id.year': -1, '_id.month': -1 } },
+        { $limit: 12 }
+      ]),
+      SalesOrder.aggregate([
+        { $match: finalizedMatch },
+        {
+          $group: {
+            _id: '$dealer',
+            dealerName: { $first: '$dealerName' },
+            orderCount: { $sum: 1 },
+            totalValue: { $sum: '$totalAmount' },
+            avgOrderValue: { $avg: '$totalAmount' }
+          }
+        },
+        { $sort: { totalValue: -1 } },
+        { $limit: 10 }
+      ]),
+      SalesOrder.aggregate([
+        { $match: finalizedMatch },
+        { $unwind: '$products' },
+        {
+          $group: {
+            _id: '$products.product',
+            productName: { $first: '$products.productName' },
+            totalQuantity: { $sum: '$products.quantity' },
+            totalValue: { $sum: '$products.totalPrice' },
+            orderCount: { $sum: 1 }
+          }
+        },
+        { $sort: { totalValue: -1 } },
+        { $limit: 10 }
+      ])
     ]);
 
-    // Get status-wise statistics
-    const statusStats = await SalesOrder.aggregate([
-      { $match: matchQuery },
-      {
-        $group: {
-          _id: "$status",
-          count: { $sum: 1 },
-          totalValue: { $sum: "$totalAmount" },
-          avgOrderValue: { $avg: "$totalAmount" },
-          minOrderValue: { $min: "$totalAmount" },
-          maxOrderValue: { $max: "$totalAmount" }
-        }
-      }
-    ]);
-
-    // Get monthly trends
-    const monthlyTrends = await SalesOrder.aggregate([
-      { $match: matchQuery },
-      {
-        $group: {
-          _id: {
-            year: { $year: "$orderDate" },
-            month: { $month: "$orderDate" }
-          },
-          orderCount: { $sum: 1 },
-          totalValue: { $sum: "$totalAmount" },
-          avgOrderValue: { $avg: "$totalAmount" }
-        }
-      },
-      { $sort: { "_id.year": 1, "_id.month": 1 } },
-      { $limit: 12 }
-    ]);
-
-    // Get top dealers
-    const topDealers = await SalesOrder.aggregate([
-      { $match: matchQuery },
-      {
-        $group: {
-          _id: "$dealer",
-          dealerName: { $first: "$dealerName" },
-          orderCount: { $sum: 1 },
-          totalValue: { $sum: "$totalAmount" },
-          avgOrderValue: { $avg: "$totalAmount" }
-        }
-      },
-      { $sort: { totalValue: -1 } },
-      { $limit: 10 }
-    ]);
-
-    // Get top products
-    const topProducts = await SalesOrder.aggregate([
-      { $match: matchQuery },
-      { $unwind: "$products" },
-      {
-        $group: {
-          _id: "$products.product",
-          productName: { $first: "$products.productName" },
-          totalQuantity: { $sum: "$products.quantity" },
-          totalValue: { $sum: "$products.totalPrice" },
-          orderCount: { $sum: 1 }
-        }
-      },
-      { $sort: { totalValue: -1 } },
-      { $limit: 10 }
-    ]);
+    const summary = stats[0] || {
+      totalOrders: 0,
+      allOrderValue: 0,
+      totalValue: 0,
+      pendingOrders: 0,
+      confirmedOrders: 0,
+      processingOrders: 0,
+      inTransitOrders: 0,
+      deliveredOrders: 0,
+      cancelledOrders: 0,
+      pendingCreditApprovals: 0,
+      totalItems: 0
+    };
+    const finalizedOrderCount = Number(summary.confirmedOrders || 0)
+      + Number(summary.deliveredOrders || 0);
 
     res.json({
       success: true,
-      stats: stats[0] || {
-        totalOrders: 0,
-        totalValue: 0,
-        pendingOrders: 0,
-        confirmedOrders: 0,
-        processingOrders: 0,
-        deliveredOrders: 0,
-        cancelledOrders: 0,
-        totalItems: 0
+      stats: {
+        ...summary,
+        confirmedDeliveredValue: Number(summary.totalValue || 0),
+        averageFinalizedOrderValue: finalizedOrderCount > 0
+          ? Number(summary.totalValue || 0) / finalizedOrderCount
+          : 0
       },
       statusStats,
-      monthlyTrends,
+      monthlyTrends: [...monthlyTrendsDescending].reverse(),
       topDealers,
       topProducts
     });
@@ -2651,7 +3341,7 @@ export const getSalesOrdersByDealer = async (req, res) => {
   try {
     // Get models from company-specific connection
     const { SalesOrder } = getModels(req.dbConnection);
-    
+
     const { dealerId } = req.params;
     const { page = 1, limit = 10, status } = req.query;
 
@@ -2739,7 +3429,7 @@ export const getOverdueSalesOrders = async (req, res) => {
   try {
     // Get models from company-specific connection
     const { SalesOrder } = getModels(req.dbConnection);
-    
+
     const { page = 1, limit = 10 } = req.query;
     const today = new Date();
 
@@ -2799,7 +3489,7 @@ export const getPendingQuantities = async (req, res) => {
   try {
     // Get models from company-specific connection
     const { SalesOrder } = getModels(req.dbConnection);
-    
+
     const { productId, warehouseId } = req.query;
 
     // Build query for out-of-stock orders that are still pending (exclude expired)
@@ -2815,11 +3505,11 @@ export const getPendingQuantities = async (req, res) => {
     // If specific product or warehouse requested, filter further
     if (productId || warehouseId) {
       query.$and = [];
-      
+
       if (productId) {
         query.$and.push({ "products.product": productId });
       }
-      
+
       if (warehouseId) {
         query.$and.push({ "products.warehouse": warehouseId });
       }
@@ -2838,7 +3528,7 @@ export const getPendingQuantities = async (req, res) => {
     outOfStockOrders.forEach(order => {
       order.products.forEach(product => {
         const productKey = `${product.product._id}-${product.warehouse}`;
-        
+
         if (!pendingQuantities[productKey]) {
           pendingQuantities[productKey] = {
             productId: product.product._id,
@@ -2850,7 +3540,7 @@ export const getPendingQuantities = async (req, res) => {
             orders: []
           };
         }
-        
+
         pendingQuantities[productKey].totalPendingQuantity += product.quantity;
         pendingQuantities[productKey].orders.push({
           orderNumber: order.orderNumber,
@@ -2895,7 +3585,7 @@ export const getPendingQuantities = async (req, res) => {
  */
 async function createSingleSalesOrder(dbConnection, orderData, userId) {
   const { SalesOrder, Product, Dealer, StockMovement, User, Notification, Warehouse } = getModels(dbConnection);
-  
+
   const {
     dealer,
     region,
@@ -2929,10 +3619,17 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
     throw new Error("Dealer not found");
   }
 
+  const canonicalProducts = await canonicalizeSalesOrderProducts({
+    products,
+    dealer: dealerData,
+    dbConnection,
+    actorId: userId
+  });
+
   // Validate credit days don't exceed dealer's limits
   if (creditDays !== undefined && creditDays !== null) {
     const requestedCreditDays = parseInt(creditDays);
-    
+
     // Determine which limit to check based on salesType
     let maxCreditDays = 0;
     if (salesType === 'Regular Sale') {
@@ -2943,7 +3640,7 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
       // Default to regular if not specified
       maxCreditDays = dealerData.creditDaysRegular || dealerData.creditDays || 0;
     }
-    
+
     if (requestedCreditDays > maxCreditDays && maxCreditDays > 0) {
       throw new Error(`Credit days (${requestedCreditDays}) cannot exceed dealer's limit of ${maxCreditDays} days for ${salesType || 'Regular Sale'}.`);
     }
@@ -2955,15 +3652,14 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
   // Resolve the company's single (default) warehouse — used for out-of-stock
   // lines so incoming stock (GRN or manual adjustment) can auto-update them.
   let defaultWarehouse = null;
-  if (isOutOfStock || products.some(it => !it.warehouse || it.warehouse === "No Stock")) {
+  if (isOutOfStock || canonicalProducts.some(it => !it.warehouse || it.warehouse === "No Stock")) {
     defaultWarehouse =
       (await Warehouse.findOne({ isActive: true, status: "active" }).sort({ createdAt: 1 })) ||
       (await Warehouse.findOne({ isActive: true }).sort({ createdAt: 1 })) ||
       (await Warehouse.findOne({}).sort({ createdAt: 1 }));
   }
 
-  for (const item of products) {
-    // Validate product exists
+  for (const item of canonicalProducts) {
     const product = await Product.findById(item.product);
     if (!product) {
       throw new Error(`Product not found: ${item.productName || item.product}`);
@@ -2972,7 +3668,7 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
     // Validate warehouse exists (skip if warehouse is "No Stock" for out-of-stock orders)
     if (item.warehouse && item.warehouse !== "No Stock") {
       const warehouse = await Warehouse.findById(item.warehouse);
-      
+
       if (!warehouse) {
         throw new Error(`Warehouse not found: ${item.warehouse}`);
       }
@@ -2995,65 +3691,33 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
       console.log(`Product ${product.itemName} has no warehouse assigned (out-of-stock order)`);
     }
 
-    // Calculate product details
-    const unitPrice = item.unitPrice || product.rateSlabs[0]?.rate || 0;
-    const gst = item.gst || product.gst || 0;
-    const baseAmount = item.quantity * unitPrice;
-    // Guard: discountAmount must never exceed baseAmount
-    const rawDiscountAmt = item.discountAmount || 0;
-    const discountAmt = Math.min(rawDiscountAmt, baseAmount);
-    if (rawDiscountAmt > baseAmount) {
-      console.warn(`⚠️ discountAmount (${rawDiscountAmt}) exceeded baseAmount (${baseAmount}) for product ${product.itemName} — capped`);
-    }
-    const discountedBase = baseAmount - discountAmt;
-    // unitPrice IS MRP (GST inclusive) — reverse-calculate GST, do NOT add on top
-    const gstAmount = gst > 0
-      ? parseFloat((discountedBase - discountedBase / (1 + gst / 100)).toFixed(2))
-      : 0;
-    const totalPrice = discountedBase;
-
-    // Build product object
+    // Build the persisted line from server-canonical discount amounts.
     validatedProducts.push({
-      product: item.product,
+      ...item,
+      product: product._id,
       productCode: product.productCode,
       productName: product.itemName,
       HSNCode: product.HSNCode,
       internalRate: product.internalRate || null,
-      quantity: item.quantity,
-      unitPrice: unitPrice,
-      gst: gst,
-      gstAmount: gstAmount,
-      totalPrice: totalPrice,
-      salesType: item.salesType || product.salesType || 'Regular Sale', // Add salesType from item or product
+      salesType: item.salesType || product.salesType || 'Regular Sale',
       warehouse: (item.warehouse && item.warehouse !== "No Stock")
         ? item.warehouse
-        : (defaultWarehouse?._id || null), // Out-of-stock lines get the single default warehouse for stock tracking
+        : (defaultWarehouse?._id || null),
       warehouseName: (item.warehouse && item.warehouse !== "No Stock")
         ? item.warehouseName
         : "No Stock",
-      // Stock tracking fields (so status shows correctly + can auto-update on stock arrival)
       stockStatus: isOutOfStock ? 'waiting' : 'available',
       availableQuantity: isOutOfStock ? 0 : item.quantity,
-      stockCheckedAt: new Date(),
-      // Copy discount fields if present
-      discountPercentage: item.discountPercentage || 0,
-      discountAmount: discountAmt,
-      discountType: item.discountType || null,
-      selectedDiscountLevel: item.selectedDiscountLevel || null,
-      appliedDiscount: item.appliedDiscount || null
+      stockCheckedAt: new Date()
     });
   }
 
-  // Calculate order totals
-  const grossAmount = validatedProducts.reduce((sum, product) => sum + (product.quantity * product.unitPrice), 0);
-  const totalGst = validatedProducts.reduce((sum, product) => sum + product.gstAmount, 0);
-  const discountAmount = validatedProducts.reduce((sum, product) => sum + (product.discountAmount || 0), 0);
-  // MRP is GST inclusive — total = gross − discount (GST already inside, not added)
-  const totalAmount = grossAmount - discountAmount;
+  // Calculate order totals from canonical lines.
+  const { grossAmount, totalGst, discountAmount, totalAmount } = calculateCanonicalOrderTotals(validatedProducts);
 
   // Determine initial status (declare before credit limit check)
   let initialStatus = status || "Pending";
-  
+
   // For out-of-stock orders, force status to Pending
   if (isOutOfStock) {
     initialStatus = "Pending";
@@ -3063,14 +3727,16 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
   // Check credit limit if dealer has one set
   // IMPORTANT: Only count IN-STOCK products towards credit limit
   let creditOverlimitData = undefined;
+  const inStockProductsForCredit = validatedProducts.filter(p => p.stockStatus === 'available');
+  const canonicalCreditAmount = inStockProductsForCredit.reduce(
+    (sum, product) => sum + calculateCanonicalCreditLineAmount(product),
+    0
+  );
   if (dealerData.creditLimit && dealerData.creditLimit > 0) {
     // Calculate amount for IN-STOCK products only
-    const inStockProducts = validatedProducts.filter(p => p.stockStatus === 'available');
-    const inStockGrossAmount = inStockProducts.reduce((sum, product) => sum + (product.quantity * product.unitPrice), 0);
-    const inStockTotalGst = inStockProducts.reduce((sum, product) => sum + product.gstAmount, 0);
-    const inStockDiscountAmount = inStockProducts.reduce((sum, product) => sum + (product.discountAmount || 0), 0);
-    const inStockTotalAmount = inStockGrossAmount - inStockDiscountAmount; // MRP incl GST
-    
+    const inStockProducts = inStockProductsForCredit;
+    const inStockTotalAmount = canonicalCreditAmount;
+
     console.log(`� Credit Limit Calculation - In-eStock Products Only:`, {
       totalProducts: validatedProducts.length,
       inStockProducts: inStockProducts.length,
@@ -3078,11 +3744,11 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
       inStockAmount: inStockTotalAmount,
       totalOrderAmount: totalAmount
     });
-    
+
     // Get dealer's current outstanding balance (correct calculation)
     const currentOutstanding = await getDealerCreditOutstanding(dbConnection, dealer);
     const newOutstanding = currentOutstanding + inStockTotalAmount;
-    
+
     console.log(`💳 Credit Limit Check (Single Order):`, {
       creditLimit: dealerData.creditLimit,
       currentOutstanding,
@@ -3090,12 +3756,12 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
       newOutstanding,
       overlimit: newOutstanding - dealerData.creditLimit
     });
-    
+
     // If credit limit exceeded, force status to Pending and add credit overlimit info
     if (newOutstanding > dealerData.creditLimit) {
       const overlimitAmount = newOutstanding - dealerData.creditLimit;
       console.log(`⚠️ Credit limit exceeded by ₹${overlimitAmount.toFixed(2)}`);
-      
+
       // Force status to Pending for approval
       initialStatus = "Pending";
       creditOverlimitData = {
@@ -3146,10 +3812,12 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
     type,
     remarks,
     status: initialStatus,
+    discountFinalizedAt: isFinalizedSalesOrderStatus(initialStatus) ? new Date() : null,
     createdBy: userId,
     isOutOfStock: isOutOfStock || false,
     stockValidation: stockValidation || [],
     creditOverlimit: creditOverlimitData, // Add credit overlimit data
+    creditAmount: canonicalCreditAmount,
     // Initialize order-level stock status (fixes "Unknown" display + enables tracking)
     orderStockStatus: {
       totalProducts: validatedProducts.length,
@@ -3165,7 +3833,7 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
   if (salesOrder.status === "Pending") {
     const expiryDate = new Date();
     expiryDate.setDate(expiryDate.getDate() + 15); // 15 days from now
-    
+
     salesOrder.expiryDate = expiryDate;
     salesOrder.expiryReason = 'Automatic 15-day expiry for pending order';
     salesOrder.expiryHistory.push({
@@ -3176,7 +3844,7 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
       performedBy: userId,
       performedAt: new Date()
     });
-    
+
     console.log(`📅 Automatic expiry set for pending order ${orderNumber}: ${expiryDate.toISOString()}`);
   }
 
@@ -3193,10 +3861,10 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
             productId: product.product,
             warehouseId: product.warehouse
           }).sort({ date: -1, createdAt: -1 });
-          
+
           const currentBalance = latestMovement ? latestMovement.balance : 0;
           const newBalance = currentBalance - product.quantity;
-          
+
           const blockMovement = new StockMovement({
             productId: product.product,
             warehouseId: product.warehouse,
@@ -3220,10 +3888,10 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
             productId: product.product,
             warehouseId: product.warehouse
           }).sort({ date: -1, createdAt: -1 });
-          
+
           const currentBalance = latestMovement ? latestMovement.balance : 0;
           const newBalance = currentBalance - product.quantity;
-          
+
           const deliveryMovement = new StockMovement({
             productId: product.product,
             warehouseId: product.warehouse,
@@ -3262,12 +3930,12 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
   try {
     // Get models from company-specific connection
     const { SalesOrder, Product, Dealer, StockMovement, User, Notification } = getModels(req.dbConnection);
-    
+
     console.log("🚀 createSalesOrderWithAutoSplit called");
     console.log("Request body:", JSON.stringify(req.body, null, 2));
-    
+
     const { dealer, products, ...orderData } = req.body;
-    
+
     // Validate dealer exists
     const dealerData = await Dealer.findById(dealer);
     if (!dealerData) {
@@ -3276,16 +3944,16 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
         message: "Dealer not found"
       });
     }
-    
+
     console.log("✅ Dealer found:", dealerData.name);
     console.log("📊 Dealer credit days - Regular:", dealerData.creditDaysRegular, "CD:", dealerData.creditDaysCD);
-    
+
     // Get full product details to check salesType
     const productDetails = await Promise.all(
       products.map(async (item) => {
         const product = await Product.findById(item.product);
         if (!product) {
-          throw new Error(`Product not found: ${item.product}`);
+          throw createDiscountPolicyError(`Product not found: ${item.product}`, 'PRODUCT_NOT_FOUND');
         }
         return {
           ...item,
@@ -3293,18 +3961,38 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
         };
       })
     );
-    
+
     console.log("📦 Product details loaded:", productDetails.length, "products");
-    
+
     // Separate products by salesType
     const regularProducts = productDetails.filter(p => p.salesType === 'Regular Sale');
     const cdProducts = productDetails.filter(p => p.salesType === 'CD Sales');
-    
+
     console.log("🔵 Regular Sale products:", regularProducts.length);
     console.log("🟢 CD Sales products:", cdProducts.length);
-    
+
+    // Validate every split group's discount policy before the first order is persisted.
+    await Promise.all([
+      regularProducts.length > 0
+        ? canonicalizeSalesOrderProducts({
+          products: regularProducts,
+          dealer: dealerData,
+          dbConnection: req.dbConnection,
+          actorId: req.user._id
+        })
+        : Promise.resolve([]),
+      cdProducts.length > 0
+        ? canonicalizeSalesOrderProducts({
+          products: cdProducts,
+          dealer: dealerData,
+          dbConnection: req.dbConnection,
+          actorId: req.user._id
+        })
+        : Promise.resolve([])
+    ]);
+
     const createdOrders = [];
-    
+
     // Create Regular Sales Order if there are regular products
     if (regularProducts.length > 0) {
       console.log("\n📝 Creating Regular Sales Order...");
@@ -3316,12 +4004,12 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
         creditDays: dealerData.creditDaysRegular || dealerData.creditDays || 30,
         creditDaysApplied: dealerData.creditDaysRegular || dealerData.creditDays || 30
       };
-      
+
       const regularOrder = await createSingleSalesOrder(req.dbConnection, regularOrderData, req.user._id);
       createdOrders.push(regularOrder);
       console.log("✅ Regular Sales Order created:", regularOrder.orderNumber);
     }
-    
+
     // Create CD Sales Order if there are CD products
     if (cdProducts.length > 0) {
       console.log("\n📝 Creating CD Sales Order...");
@@ -3333,12 +4021,12 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
         creditDays: dealerData.creditDaysCD || dealerData.creditDays || 30,
         creditDaysApplied: dealerData.creditDaysCD || dealerData.creditDays || 30
       };
-      
+
       const cdOrder = await createSingleSalesOrder(req.dbConnection, cdOrderData, req.user._id);
       createdOrders.push(cdOrder);
       console.log("✅ CD Sales Order created:", cdOrder.orderNumber);
     }
-    
+
     // Return response
     if (createdOrders.length === 0) {
       return res.status(400).json({
@@ -3364,10 +4052,12 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
         cdOrder: createdOrders.find(o => o.salesType === 'CD Sales')
       });
     }
-    
+
   } catch (error) {
     console.error("❌ Create Sales Order with Auto-Split Error:", error);
-    
+
+    if (sendDiscountPolicyError(res, error)) return;
+
     // Handle duplicate order number error
     if (error.code === 11000) {
       return res.status(400).json({
@@ -3522,21 +4212,29 @@ export const extendOrderExpiry = async (req, res) => {
       performedAt: new Date()
     });
 
+    const wasExpired = salesOrder.isExpired === true;
     salesOrder.expiryDate = extendedDate;
     salesOrder.expiryExtendedCount += 1;
     salesOrder.isExpired = false; // Reset if was expired
-    
-    // If order was expired, change status back to Pending
-    if (salesOrder.status === "Expired") {
+
+    // Both automatic expiry (Expired) and manual expiry (Cancelled) reopen to Pending.
+    if (wasExpired && ['Expired', 'Cancelled'].includes(salesOrder.status)) {
       salesOrder.status = "Pending";
     }
 
     await salesOrder.save();
 
+    let responseOrder = salesOrder;
+    if (salesOrder.status === 'Pending') {
+      const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
+      await StockArrivalService.checkOrderStockStatus(salesOrder._id, req.dbConnection, { force: true });
+      responseOrder = await SalesOrder.findById(salesOrder._id);
+    }
+
     res.json({
       success: true,
       message: "Expiry date extended successfully",
-      salesOrder
+      salesOrder: responseOrder
     });
   } catch (error) {
     console.error("Extend Order Expiry Error:", error);
@@ -3585,6 +4283,7 @@ export const expireOrderNow = async (req, res) => {
     salesOrder.isExpired = true;
     salesOrder.expiredAt = new Date();
     salesOrder.status = "Cancelled"; // Auto-cancel expired orders
+    salesOrder.stockAvailable = false;
     salesOrder.remarks = (salesOrder.remarks || '') + ` [EXPIRED: ${reason || 'Manually expired'}]`;
 
     await salesOrder.save();
@@ -3635,7 +4334,7 @@ export const getOrdersExpiringSoon = async (req, res) => {
       const timeLeft = order.expiryDate - now;
       const hoursLeft = Math.floor(timeLeft / (1000 * 60 * 60));
       const daysLeft = Math.floor(hoursLeft / 24);
-      
+
       return {
         ...order,
         hoursUntilExpiry: hoursLeft,
@@ -3783,17 +4482,19 @@ export const approveCreditOverlimit = async (req, res) => {
 // Check stock availability for out-of-stock orders (called after purchase order received)
 export const checkStockAvailabilityForOutOfStockOrders = async (req, res) => {
   try {
-    const { SalesOrder, StockMovement, Notification } = getModels(req.dbConnection);
-    const { productIds, warehouseId } = req.body;
+    const { SalesOrder } = getModels(req.dbConnection);
+    const { productIds = [], warehouseId } = req.body;
+    const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
 
     console.log('🔍 Checking stock availability for products:', productIds);
-    console.log('📦 Warehouse:', warehouseId);
+    console.log('📦 Trigger warehouse:', warehouseId);
 
-    // Find all out-of-stock orders that contain these products
+    // Candidate lookup is only a trigger optimization. The canonical refresh below
+    // checks each line against its own assigned warehouse.
     const outOfStockOrders = await SalesOrder.find({
       isOutOfStock: true,
-      stockAvailable: false,
       status: 'Pending',
+      isExpired: { $ne: true },
       'products.product': { $in: productIds }
     }).populate('dealer', 'name code');
 
@@ -3803,45 +4504,16 @@ export const checkStockAvailabilityForOutOfStockOrders = async (req, res) => {
     const notifiedOrders = [];
 
     for (const order of outOfStockOrders) {
-      let allProductsAvailable = true;
-      const stockStatus = [];
+      const result = await StockArrivalService.checkOrderStockStatus(order._id, req.dbConnection);
+      const enteredReadyQueue = result.success && result.enteredReadyQueue === true;
 
-      // Check each product in the order
-      for (const orderProduct of order.products) {
-        const stock = await StockMovement.findOne({
-          productId: orderProduct.product,
-          warehouseId: warehouseId
-        });
-
-        const availableStock = stock ? stock.netStock : 0;
-        const hasEnoughStock = availableStock >= orderProduct.quantity;
-
-        stockStatus.push({
-          productName: orderProduct.productName,
-          required: orderProduct.quantity,
-          available: availableStock,
-          sufficient: hasEnoughStock
-        });
-
-        if (!hasEnoughStock) {
-          allProductsAvailable = false;
-        }
-      }
-
-      // If all products are now available, mark order
-      if (allProductsAvailable && stockStatus.length > 0) {
-        order.stockAvailable = true;
-        order.stockAvailableNotifiedAt = new Date();
-        await order.save();
-
+      if (enteredReadyQueue) {
         console.log(`✅ Stock available for order ${order.orderNumber}`);
-
         notifiedOrders.push({
           orderNumber: order.orderNumber,
           dealerName: order.dealerName,
-          stockStatus
+          stockStatus: result.products
         });
-
         notifiedCount++;
       } else {
         console.log(`⏳ Stock not yet sufficient for order ${order.orderNumber}`);
@@ -3875,7 +4547,7 @@ export const autoExpireOrders = async (req, res) => {
   try {
     const { SalesOrder } = getModels(req.dbConnection);
     const now = new Date();
-    
+
     // Find all orders with expiry date in the past that are not yet expired
     const ordersToExpire = await SalesOrder.find({
       expiryDate: { $lt: now },
@@ -3889,7 +4561,8 @@ export const autoExpireOrders = async (req, res) => {
       order.isExpired = true;
       order.expiredAt = now;
       order.status = "Expired"; // Change status to Expired
-      
+      order.stockAvailable = false;
+
       order.expiryHistory.push({
         action: 'expired',
         previousDate: order.expiryDate,
@@ -3927,9 +4600,9 @@ export const autoExpireOrders = async (req, res) => {
 export const getOrderStockStatus = async (req, res) => {
   try {
     const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
-    
+
     const result = await StockArrivalService.checkOrderStockStatus(req.params.id, req.dbConnection);
-    
+
     res.json(result);
   } catch (error) {
     console.error('Get Order Stock Status Error:', error);
@@ -3947,9 +4620,9 @@ export const getOrderStockStatus = async (req, res) => {
 export const refreshOrderStockStatus = async (req, res) => {
   try {
     const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
-    
+
     const result = await StockArrivalService.checkOrderStockStatus(req.params.id, req.dbConnection);
-    
+
     res.json({
       success: true,
       message: 'Stock status refreshed successfully',
@@ -3971,21 +4644,21 @@ export const refreshOrderStockStatus = async (req, res) => {
 export const refreshOrderStockStatusByOrderNumber = async (req, res) => {
   try {
     const { orderNumber } = req.params;
-    
+
     // Find order by order number
     const order = await SalesOrder.findOne({ orderNumber });
-    
+
     if (!order) {
       return res.status(404).json({
         success: false,
         message: `Order ${orderNumber} not found`
       });
     }
-    
+
     const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
-    
+
     const result = await StockArrivalService.checkOrderStockStatus(order._id, req.dbConnection);
-    
+
     res.json({
       success: true,
       message: `Stock status refreshed successfully for order ${orderNumber}`,
@@ -4119,38 +4792,140 @@ export const autoRefreshAllStockStatus = async (req, res) => {
 // @route   PATCH /api/sales-orders/:id/partial-dispatch
 // @access  Private
 export const partialDispatch = async (req, res) => {
+  let session = null;
+  class PartialDispatchHttpError extends Error {
+    constructor(status, payload) {
+      super(payload.message);
+      this.name = 'PartialDispatchHttpError';
+      this.status = status;
+      this.payload = payload;
+    }
+  }
+
   try {
-    const { SalesOrder, DealerInvoice, StockMovement } = getModels(req.dbConnection);
+    const { SalesOrder, DealerInvoice, StockMovement, Dealer } = getModels(req.dbConnection);
     const { id } = req.params;
     const { products, action } = req.body;
     // products: [{ productId, newQty, reason }]
     // action: 'new_order' | 'deviation'
 
-    const salesOrder = await SalesOrder.findById(id);
-    if (!salesOrder) return res.status(404).json({ success: false, message: 'Sales order not found' });
-    if (salesOrder.status !== 'Confirmed') return res.status(400).json({ success: false, message: 'Partial dispatch only allowed for Confirmed orders' });
+    session = await req.dbConnection.startSession();
+    const transactionResult = await session.withTransaction(async () => {
+      const fail = (status, payload) => {
+        throw new PartialDispatchHttpError(status, payload);
+      };
+
+      const salesOrder = await SalesOrder.findById(id).session(session);
+    if (!salesOrder) return fail(404, { success: false, message: 'Sales order not found' });
+    if (salesOrder.status !== 'Confirmed') {
+      return fail(400, { success: false, message: 'Partial dispatch only allowed for Confirmed orders' });
+    }
 
     // Check no APPROVED invoice exists (draft invoices don't block partial dispatch)
     const existingInvoice = await DealerInvoice.findOne({
       salesOrder: id,
       status: { $nin: ['Cancelled', 'Rejected', 'Draft'] },
       isDraft: { $ne: true }
-    });
-    if (existingInvoice) return res.status(400).json({ success: false, message: 'Cannot do partial dispatch — invoice already created for this order' });
+    }).session(session);
+    if (existingInvoice) {
+      return fail(400, { success: false, message: 'Cannot do partial dispatch — invoice already created for this order' });
+    }
+
+    if (!['new_order', 'deviation'].includes(action)) {
+      return fail(400, {
+        success: false,
+        message: "action must be either 'new_order' or 'deviation'"
+      });
+    }
+    if (!Array.isArray(products) || products.length === 0) {
+      return fail(400, { success: false, message: 'products must be a non-empty array' });
+    }
+
+    // Resolve and validate every request line before changing stock or the order.
+    // sourceSalesOrderLineId is authoritative; productId is accepted only when unique.
+    const dispatchPlans = [];
+    const usedSourceLineIds = new Set();
+    for (const update of products) {
+      const requestedSourceLineId = objectIdString(
+        update.sourceSalesOrderLineId || update.salesOrderLineId
+      );
+      const requestedProductId = objectIdString(update.productId || update.product);
+      let orderProduct = null;
+
+      if (requestedSourceLineId) {
+        orderProduct = salesOrder.products.find(
+          (productLine) => objectIdString(productLine._id) === requestedSourceLineId
+        );
+        if (!orderProduct) {
+          return fail(400, {
+            success: false,
+            code: 'SALES_ORDER_LINE_NOT_FOUND',
+            message: `sourceSalesOrderLineId ${requestedSourceLineId} does not exist on this Sales Order.`
+          });
+        }
+        if (requestedProductId && objectIdString(orderProduct.product) !== requestedProductId) {
+          return fail(400, {
+            success: false,
+            code: 'SALES_ORDER_LINE_PRODUCT_MISMATCH',
+            message: `sourceSalesOrderLineId ${requestedSourceLineId} does not belong to productId ${requestedProductId}.`
+          });
+        }
+      } else {
+        if (!requestedProductId) {
+          return fail(400, {
+            success: false,
+            code: 'SALES_ORDER_LINE_ID_REQUIRED',
+            message: 'Each partial-dispatch item requires sourceSalesOrderLineId or productId.'
+          });
+        }
+        const productMatches = salesOrder.products.filter(
+          (productLine) => objectIdString(productLine.product) === requestedProductId
+        );
+        if (productMatches.length > 1) {
+          return fail(400, {
+            success: false,
+            code: 'SOURCE_SALES_ORDER_LINE_ID_REQUIRED',
+            message: `sourceSalesOrderLineId is required because productId ${requestedProductId} appears on multiple Sales Order lines.`
+          });
+        }
+        orderProduct = productMatches[0] || null;
+        if (!orderProduct) {
+          return fail(400, {
+            success: false,
+            code: 'SALES_ORDER_LINE_NOT_FOUND',
+            message: `Product ${requestedProductId} does not exist on this Sales Order.`
+          });
+        }
+      }
+
+      const sourceLineId = objectIdString(orderProduct._id);
+      if (usedSourceLineIds.has(sourceLineId)) {
+        return fail(400, {
+          success: false,
+          code: 'DUPLICATE_SALES_ORDER_LINE_ID',
+          message: `Sales Order line ${sourceLineId} was submitted more than once.`
+        });
+      }
+      usedSourceLineIds.add(sourceLineId);
+
+      const newQty = Number(update.newQty);
+      if (!Number.isInteger(newQty) || newQty < 0) {
+        return fail(400, {
+          success: false,
+          message: `newQty must be a non-negative integer for ${orderProduct.productName}`
+        });
+      }
+      if (newQty >= Number(orderProduct.quantity)) continue;
+      dispatchPlans.push({ update, orderProduct, newQty, sourceLineId });
+    }
 
     const deviations = [];
     const remainingProducts = []; // for new order
 
-    for (const update of products) {
-      const orderProduct = salesOrder.products.find(p => p.product.toString() === update.productId.toString());
-      if (!orderProduct) continue;
-
+    for (const { update, orderProduct, newQty, sourceLineId } of dispatchPlans) {
       const originalQty = orderProduct.quantity;
-      const newQty = parseInt(update.newQty);
-      if (newQty >= originalQty) continue; // no reduction, skip
-      // newQty = 0 means "skip this product entirely — move full qty to new order / deviation"
-      if (newQty < 0) return res.status(400).json({ success: false, message: `Quantity cannot be negative for ${orderProduct.productName}` });
-
+      const originalLine = orderProduct.toObject();
+      const effectiveDiscountPercentage = getPersistedEffectiveDiscountPercentage(originalLine);
       const reducedQty = originalQty - newQty;
 
       // Unblock the reduced qty from stock (for qty=0 this unblocks the full original qty)
@@ -4158,7 +4933,7 @@ export const partialDispatch = async (req, res) => {
         const latestMovement = await StockMovement.findOne({
           productId: orderProduct.product,
           warehouseId: orderProduct.warehouse
-        }).sort({ date: -1, createdAt: -1 });
+        }).sort({ date: -1, createdAt: -1 }).session(session);
 
         const currentBalance = latestMovement ? latestMovement.balance : 0;
         const newBalance = currentBalance + reducedQty;
@@ -4176,26 +4951,24 @@ export const partialDispatch = async (req, res) => {
             ? `Stock Fully Unblocked - Order ${salesOrder.orderNumber} (product skipped in dispatch)`
             : `Stock Unblocked - Order ${salesOrder.orderNumber} Partial Dispatch (${originalQty} → ${newQty})`,
           createdBy: req.user._id
-        }).save();
+        }).save({ session });
       }
 
       if (newQty === 0) {
-        // Remove the product from the current order entirely
         salesOrder.products = salesOrder.products.filter(
-          p => p.product.toString() !== update.productId.toString()
+          (productLine) => objectIdString(productLine._id) !== sourceLineId
         );
       } else {
-        // Update quantity on the order
         orderProduct.quantity = newQty;
-        // Recalculate discountAmount for the reduced quantity
-        const discPct = orderProduct.discountPercentage || 0;
-        orderProduct.discountAmount = discPct > 0
-          ? parseFloat(((newQty * orderProduct.unitPrice * discPct) / 100).toFixed(2))
-          : 0;
+        orderProduct.discountAmount = discountAmountForQuantity(
+          originalLine,
+          newQty,
+          effectiveDiscountPercentage
+        );
       }
 
-      // Record deviation
       deviations.push({
+        sourceSalesOrderLineId: originalLine._id,
         productId: orderProduct.product,
         productName: orderProduct.productName,
         originalQty,
@@ -4205,31 +4978,130 @@ export const partialDispatch = async (req, res) => {
         createdAt: new Date(),
         createdBy: req.user._id,
         newOrderCreated: action === 'new_order',
-        newOrderNumber: '' // filled after new order created
+        newOrderNumber: ''
       });
 
       if (action === 'new_order') {
         remainingProducts.push({
-          ...orderProduct.toObject(),
-          quantity: reducedQty
+          ...originalLine,
+          quantity: reducedQty,
+          discountAmount: discountAmountForQuantity(
+            originalLine,
+            reducedQty,
+            effectiveDiscountPercentage
+          )
         });
       }
     }
 
     if (deviations.length === 0) {
-      return res.status(400).json({ success: false, message: 'No quantity reductions found. All new quantities must be less than original.' });
+      return fail(400, { success: false, message: 'No quantity reductions found. All new quantities must be less than original.' });
     }
 
     // Push deviations to order
     salesOrder.deviations.push(...deviations);
 
+    // Quantity reductions must immediately reduce the confirmed order's canonical
+    // direct + dealer-extra credit exposure.
+    const retainedCreditAmount = salesOrder.products
+      .filter(isCreditEligibleProduct)
+      .reduce((sum, product) => sum + calculateCanonicalCreditLineAmount(product), 0);
+    salesOrder.creditAmount = retainedCreditAmount;
+
+    const dealerData = await Dealer.findById(salesOrder.dealer)
+      .select('creditLimit')
+      .session(session)
+      .lean();
+    if (dealerData?.creditLimit && dealerData.creditLimit > 0) {
+      const currentOutstanding = await getDealerCreditOutstanding(
+        req.dbConnection,
+        salesOrder.dealer,
+        salesOrder._id,
+        session
+      );
+      const newOutstanding = currentOutstanding + retainedCreditAmount;
+      const overlimitAmount = Math.max(0, newOutstanding - dealerData.creditLimit);
+      const existingApproval = salesOrder.creditOverlimit?.approvedBy ? {
+        approvedBy: salesOrder.creditOverlimit.approvedBy,
+        approvedAt: salesOrder.creditOverlimit.approvedAt,
+        approvalNotes: salesOrder.creditOverlimit.approvalNotes
+      } : {};
+      const isOverlimit = overlimitAmount > 0;
+      salesOrder.creditOverlimit = {
+        isOverlimit,
+        creditLimit: dealerData.creditLimit,
+        currentOutstanding,
+        orderAmount: retainedCreditAmount,
+        newOutstanding,
+        overlimitAmount,
+        requiresApproval: isOverlimit && !existingApproval.approvedBy,
+        ...(isOverlimit ? existingApproval : {})
+      };
+    } else {
+      salesOrder.creditOverlimit = {
+        isOverlimit: false,
+        creditLimit: Number(dealerData?.creditLimit || 0),
+        currentOutstanding: 0,
+        orderAmount: retainedCreditAmount,
+        newOutstanding: retainedCreditAmount,
+        overlimitAmount: 0,
+        requiresApproval: false,
+        approvedBy: null,
+        approvedAt: null,
+        approvalNotes: null
+      };
+    }
+
     // Recalculate order totals (pre-save hook will do this, but mark modified)
     salesOrder.markModified('products');
-    await salesOrder.save();
+    await salesOrder.save({ session });
 
     let newOrder = null;
     if (action === 'new_order' && remainingProducts.length > 0) {
-      const orderNumber = await generateOrderNumber();
+      const orderNumber = await generateOrderNumber(req.dbConnection, session);
+      const remainderCreditAmount = remainingProducts
+        .filter(isCreditEligibleProduct)
+        .reduce((sum, product) => sum + calculateCanonicalCreditLineAmount(product), 0);
+      let remainderCreditOverlimit;
+      if (dealerData?.creditLimit && dealerData.creditLimit > 0) {
+        // Rebuild the normal-creation basis without double-counting the retained
+        // source: outside outstanding + retained exposure + remainder exposure.
+        const outstandingExcludingRetained = await getDealerCreditOutstanding(
+          req.dbConnection,
+          salesOrder.dealer,
+          salesOrder._id,
+          session
+        );
+        const currentOutstanding = outstandingExcludingRetained + retainedCreditAmount;
+        const newOutstanding = currentOutstanding + remainderCreditAmount;
+        const overlimitAmount = Math.max(0, newOutstanding - dealerData.creditLimit);
+        const isOverlimit = overlimitAmount > 0;
+        remainderCreditOverlimit = {
+          isOverlimit,
+          creditLimit: dealerData.creditLimit,
+          currentOutstanding,
+          orderAmount: remainderCreditAmount,
+          newOutstanding,
+          overlimitAmount,
+          requiresApproval: isOverlimit,
+          approvedBy: null,
+          approvedAt: null,
+          approvalNotes: null
+        };
+      } else {
+        remainderCreditOverlimit = {
+          isOverlimit: false,
+          creditLimit: Number(dealerData?.creditLimit || 0),
+          currentOutstanding: 0,
+          orderAmount: remainderCreditAmount,
+          newOutstanding: remainderCreditAmount,
+          overlimitAmount: 0,
+          requiresApproval: false,
+          approvedBy: null,
+          approvedAt: null,
+          approvalNotes: null
+        };
+      }
       newOrder = new SalesOrder({
         orderNumber,
         dealer: salesOrder.dealer,
@@ -4239,28 +5111,12 @@ export const partialDispatch = async (req, res) => {
         region: salesOrder.region,
         pinCode: salesOrder.pinCode,
         products: remainingProducts.map(p => {
-          // Recalculate discountAmount for the remaining quantity using discount percentage
-          const discPct = p.discountPercentage || 0;
-          const newDiscountAmount = discPct > 0
-            ? parseFloat(((p.quantity * p.unitPrice * discPct) / 100).toFixed(2))
-            : 0;
-          // pre-save hook will recalculate gstAmount and totalPrice from these values
+          const persistedLine = { ...p };
+          delete persistedLine._id;
           return {
-            product: p.product,
-            productCode: p.productCode,
-            productName: p.productName,
-            HSNCode: p.HSNCode,
-            quantity: p.quantity,
-            unitPrice: p.unitPrice,
-            gst: p.gst,
-            gstAmount: 0, // recalculated by pre-save
-            totalPrice: 0, // recalculated by pre-save
-            warehouse: p.warehouse,
-            warehouseName: p.warehouseName,
-            discountPercentage: discPct,
-            discountAmount: newDiscountAmount,
-            discountType: p.discountType || null,
-            appliedDiscount: p.appliedDiscount || null
+            ...persistedLine,
+            gstAmount: 0,
+            totalPrice: 0
           };
         }),
         orderDate: salesOrder.orderDate,
@@ -4271,6 +5127,8 @@ export const partialDispatch = async (req, res) => {
         status: 'Pending',
         remarks: `Remaining qty from partial dispatch of ${salesOrder.orderNumber}`,
         grossAmount: 0, totalGst: 0, totalAmount: 0, // recalculated by pre-save
+        creditAmount: remainderCreditAmount,
+        creditOverlimit: remainderCreditOverlimit,
         createdBy: req.user._id
       });
 
@@ -4288,15 +5146,22 @@ export const partialDispatch = async (req, res) => {
         performedAt: new Date()
       });
 
-      await newOrder.save();
+      await newOrder.save({ session });
 
       // Update deviation records with new order number
       for (const dev of salesOrder.deviations.slice(-deviations.length)) {
         dev.newOrderNumber = newOrder.orderNumber;
       }
       salesOrder.markModified('deviations');
-      await salesOrder.save();
+      await salesOrder.save({ session });
     }
+
+      return {
+        deviationCount: deviations.length,
+        deviations,
+        newOrder: newOrder ? { orderNumber: newOrder.orderNumber, _id: newOrder._id } : null
+      };
+    });
 
     const updatedOrder = await SalesOrder.findById(id)
       .populate('dealer', 'name code')
@@ -4306,14 +5171,28 @@ export const partialDispatch = async (req, res) => {
 
     res.json({
       success: true,
-      message: `Partial dispatch saved. ${deviations.length} product(s) reduced.`,
+      message: `Partial dispatch saved. ${transactionResult.deviationCount} product(s) reduced.`,
       salesOrder: updatedOrder,
-      deviations,
-      newOrder: newOrder ? { orderNumber: newOrder.orderNumber, _id: newOrder._id } : null
+      deviations: transactionResult.deviations,
+      newOrder: transactionResult.newOrder
     });
   } catch (error) {
+    if (session?.inTransaction()) {
+      try {
+        await session.abortTransaction();
+      } catch (abortError) {
+        console.error('partialDispatch abort error:', abortError);
+      }
+    }
+    if (error instanceof PartialDispatchHttpError) {
+      return res.status(error.status).json(error.payload);
+    }
     console.error('partialDispatch error:', error);
-    res.status(500).json({ success: false, message: error.message });
+    if (!res.headersSent) {
+      return res.status(500).json({ success: false, message: error.message });
+    }
+  } finally {
+    if (session) await session.endSession();
   }
 };
 
@@ -4398,7 +5277,7 @@ export const migrateDiscountTotals = async (req, res) => {
   try {
     // Get models from company-specific connection
     const { SalesOrder } = getModels(req.dbConnection);
-    
+
     const orders = await SalesOrder.find({}).lean();
     let fixed = 0;
     let skipped = 0;
@@ -4408,18 +5287,26 @@ export const migrateDiscountTotals = async (req, res) => {
 
       let gross = 0, totalGst = 0, totalDiscount = 0;
       const updatedProducts = order.products.map(p => {
-        const baseAmount = p.quantity * p.unitPrice;
-        const discAmt = p.discountAmount || 0;
-        const discountedBase = baseAmount - discAmt;
-        const gstAmt = (discountedBase * (p.gst || 0)) / 100;
-        const totalPrice = discountedBase + gstAmt;
+        // Sales Order unitPrice is GST-inclusive MRP. Discounts reduce that
+        // amount directly; GST is reverse-calculated for tax reporting only.
+        const baseAmount = Number(p.quantity || 0) * Number(p.unitPrice || 0);
+        const discAmt = Number(p.discountAmount || 0);
+        const finalAmount = baseAmount - discAmt;
+        const gstRate = Number(p.gst || 0);
+        const gstAmt = gstRate > 0
+          ? Number((finalAmount - finalAmount / (1 + gstRate / 100)).toFixed(2))
+          : 0;
+        const totalPrice = Number(finalAmount.toFixed(2));
         gross += baseAmount;
         totalGst += gstAmt;
         totalDiscount += discAmt;
         return { ...p, gstAmount: gstAmt, totalPrice };
       });
 
-      const correctTotal = gross - totalDiscount + totalGst;
+      const correctTotal = updatedProducts.reduce(
+        (sum, product) => sum + Number(product.totalPrice || 0),
+        0
+      );
 
       // Only update if something actually changed
       const needsUpdate =

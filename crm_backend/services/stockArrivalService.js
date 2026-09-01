@@ -13,6 +13,24 @@ const getModels = (dbConnection) => {
   };
 };
 
+const syncStockArrivalState = (order, overallStatus, checkedAt = new Date()) => {
+  const shouldBeInStockArrivedQueue = order.status === 'Pending'
+    && order.isExpired !== true
+    && order.isOutOfStock === true
+    && overallStatus === 'ready';
+  const wasInStockArrivedQueue = order.stockAvailable === true;
+
+  order.stockAvailable = shouldBeInStockArrivedQueue;
+  if (shouldBeInStockArrivedQueue && (!wasInStockArrivedQueue || !order.stockAvailableNotifiedAt)) {
+    order.stockAvailableNotifiedAt = checkedAt;
+  }
+
+  return {
+    changed: wasInStockArrivedQueue !== shouldBeInStockArrivedQueue,
+    enteredReadyQueue: !wasInStockArrivedQueue && shouldBeInStockArrivedQueue
+  };
+};
+
 class StockArrivalService {
   /**
    * Check waiting orders when stock arrives for a product
@@ -106,10 +124,14 @@ class StockArrivalService {
       for (const product of order.products) {
         totalCount++;
         
-        // Skip products without warehouse
+        // Products without an assigned warehouse are still waiting for stock.
         if (!product.warehouse) {
+          if (product.stockStatus !== 'waiting' || Number(product.availableQuantity || 0) !== 0) {
+            orderUpdated = true;
+          }
           product.stockStatus = 'waiting';
           product.availableQuantity = 0;
+          product.stockCheckedAt = new Date();
           waitingCount++;
           continue;
         }
@@ -156,38 +178,44 @@ class StockArrivalService {
         }
       }
       
-      // Update order-level stock status summary
-      if (orderUpdated) {
-        order.orderStockStatus = {
-          totalProducts: totalCount,
-          availableProducts: availableCount,
-          partialProducts: partialCount,
-          waitingProducts: waitingCount,
-          lastChecked: new Date()
-        };
-        
-        // Determine overall order status
-        if (availableCount === totalCount) {
-          order.orderStockStatus.overallStatus = 'ready';
-        } else if (availableCount > 0 || partialCount > 0) {
-          order.orderStockStatus.overallStatus = 'partial';
-        } else {
-          order.orderStockStatus.overallStatus = 'waiting';
-        }
-        
+      const checkedAt = new Date();
+      const overallStatus = totalCount > 0 && availableCount === totalCount
+        ? 'ready'
+        : (availableCount > 0 || partialCount > 0 ? 'partial' : 'waiting');
+      const previousSummary = order.orderStockStatus || {};
+      const summaryChanged = previousSummary.totalProducts !== totalCount
+        || previousSummary.availableProducts !== availableCount
+        || previousSummary.partialProducts !== partialCount
+        || previousSummary.waitingProducts !== waitingCount
+        || previousSummary.overallStatus !== overallStatus;
+
+      order.orderStockStatus = {
+        totalProducts: totalCount,
+        availableProducts: availableCount,
+        partialProducts: partialCount,
+        waitingProducts: waitingCount,
+        overallStatus,
+        lastChecked: checkedAt
+      };
+
+      const stockArrivalTransition = syncStockArrivalState(order, overallStatus, checkedAt);
+      const persistedChange = orderUpdated || summaryChanged || stockArrivalTransition.changed;
+
+      if (persistedChange) {
         await order.save();
-        
-        console.log(`   ✅ Order ${order.orderNumber} updated: ${order.orderStockStatus.overallStatus} (${availableCount}/${totalCount} products available)`);
-        
+        console.log(`   ✅ Order ${order.orderNumber} updated: ${overallStatus} (${availableCount}/${totalCount} products available)`);
+
         // TODO: Send notification to user/dealer
         // await this.sendStockArrivalNotification(order);
       }
-      
+
       return {
-        updated: orderUpdated,
-        orderStatus: order.orderStockStatus?.overallStatus,
+        updated: persistedChange,
+        orderStatus: overallStatus,
         availableProducts: availableCount,
-        totalProducts: totalCount
+        totalProducts: totalCount,
+        stockAvailable: order.stockAvailable === true,
+        enteredReadyQueue: stockArrivalTransition.enteredReadyQueue
       };
     } catch (error) {
       console.error(`❌ [STOCK_ARRIVAL] Error updating order ${order.orderNumber}:`, error);
@@ -202,7 +230,7 @@ class StockArrivalService {
    * @param {Object} dbConnection - Database connection for multi-database support
    * @returns {Object} - Stock status summary
    */
-  static async checkOrderStockStatus(orderId, dbConnection = null) {
+  static async checkOrderStockStatus(orderId, dbConnection = null, { force = false } = {}) {
     try {
       const { SalesOrder } = getModels(dbConnection);
       
@@ -211,13 +239,20 @@ class StockArrivalService {
       if (!order) {
         throw new Error('Order not found');
       }
+
+      if (order.isExpired || ['Delivered', 'Cancelled', 'Rejected', 'Expired'].includes(order.status)) {
+        return {
+          success: false,
+          message: `Stock status is not actionable for ${order.status || 'closed'} orders`
+        };
+      }
       
       // Allow refresh for any order with waiting/partial stock, not just isOutOfStock orders
       const hasWaitingOrPartialProducts = order.products?.some(p => 
         p.stockStatus === 'waiting' || p.stockStatus === 'partial'
       );
       
-      if (!order.isOutOfStock && !hasWaitingOrPartialProducts) {
+      if (!force && !order.isOutOfStock && !hasWaitingOrPartialProducts) {
         return {
           success: false,
           message: 'Order does not have any products waiting for stock'
@@ -259,34 +294,39 @@ class StockArrivalService {
           product.stockCheckedAt = new Date();
           
           console.log(`   ${product.productName || product.productCode}: ${product.stockStatus} (${product.availableQuantity}/${product.quantity})`);
+        } else {
+          product.stockStatus = 'waiting';
+          product.availableQuantity = 0;
+          product.stockCheckedAt = new Date();
+          waitingCount++;
         }
       }
-      
-      // Update order-level summary
+
+      const checkedAt = new Date();
+      const overallStatus = order.products.length > 0 && availableCount === order.products.length
+        ? 'ready'
+        : (availableCount > 0 || partialCount > 0 ? 'partial' : 'waiting');
+
       order.orderStockStatus = {
         totalProducts: order.products.length,
         availableProducts: availableCount,
         partialProducts: partialCount,
         waitingProducts: waitingCount,
-        lastChecked: new Date()
+        overallStatus,
+        lastChecked: checkedAt
       };
-      
-      if (availableCount === order.products.length) {
-        order.orderStockStatus.overallStatus = 'ready';
-      } else if (availableCount > 0 || partialCount > 0) {
-        order.orderStockStatus.overallStatus = 'partial';
-      } else {
-        order.orderStockStatus.overallStatus = 'waiting';
-      }
-      
+      const stockArrivalTransition = syncStockArrivalState(order, overallStatus, checkedAt);
+
       await order.save();
-      
-      console.log(`✅ [STOCK_ARRIVAL] Order ${order.orderNumber}: ${order.orderStockStatus.overallStatus}`);
+
+      console.log(`✅ [STOCK_ARRIVAL] Order ${order.orderNumber}: ${overallStatus}`);
       
       return {
         success: true,
         orderNumber: order.orderNumber,
         orderStockStatus: order.orderStockStatus,
+        stockAvailable: order.stockAvailable === true,
+        enteredReadyQueue: stockArrivalTransition.enteredReadyQueue,
         products: order.products.map(p => ({
           productName: p.productName,
           productCode: p.productCode,

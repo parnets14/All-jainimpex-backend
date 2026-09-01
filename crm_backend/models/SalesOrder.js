@@ -10,6 +10,12 @@ const productSchema = new mongoose.Schema({
   productName: String,
   HSNCode: String,
   internalRate: String, // internal reference rate (never printed on invoice)
+  // Snapshot the Product Master sales classification used for this order line.
+  // Optional so legacy orders without the field continue to load normally.
+  salesType: {
+    type: String,
+    enum: ['Regular Sale', 'CD Sales']
+  },
   quantity: {
     type: Number,
     required: true,
@@ -49,6 +55,56 @@ const productSchema = new mongoose.Schema({
     default: 0,
     min: 0
   },
+  promisedEffectiveDiscountPercentage: {
+    type: Number,
+    default: null,
+    min: 0,
+    max: 100
+  },
+  requiredSequentialStageRatePercentage: {
+    type: Number,
+    default: null,
+    min: 0,
+    max: 100
+  },
+  effectiveDiscountPercentage: {
+    type: Number,
+    default: null,
+    min: 0,
+    max: 100
+  },
+  masterDiscountCapApplied: {
+    type: Boolean,
+    default: false
+  },
+  combinedLevelDiscountCapApplied: {
+    type: Boolean,
+    default: false
+  },
+  levelDiscountTotalPercentage: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  discountFamilyKey: {
+    type: String,
+    default: null,
+    trim: true
+  },
+  dealerExtraDiscount: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 100
+  },
+  discountPolicySnapshot: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null
+  },
+  discountPermissionSnapshot: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null
+  },
   discountType: {
     type: String,
     enum: ['direct', 'level_based', 'both'],
@@ -77,7 +133,25 @@ const productSchema = new mongoose.Schema({
     discountName: String,
     discountType: String,
     targetType: String,
-    selectedLevel: Number
+    selectedLevel: Number,
+    directDiscountPercentage: Number,
+    levels: [{
+      levelName: String,
+      discountPercentage: Number
+    }],
+    maxDiscountPercentage: Number,
+    masterDiscountCap: {
+      type: Number,
+      default: null,
+      min: 0,
+      max: 100
+    },
+    combinedLevelDiscountCap: {
+      type: Number,
+      default: null,
+      min: 0,
+      max: 100
+    }
   },
   // Stock arrival tracking fields
   stockStatus: {
@@ -185,6 +259,12 @@ const salesOrderSchema = new mongoose.Schema({
     ref: "User"
   },
   approvedAt: Date,
+  // Timestamp of the discount event used for finalized-history recency. This is
+  // set only on finalization or deliberate repricing while finalized.
+  discountFinalizedAt: {
+    type: Date,
+    default: null
+  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "User",
@@ -294,6 +374,10 @@ const salesOrderSchema = new mongoose.Schema({
   },
   // Partial dispatch deviations
   deviations: [{
+    sourceSalesOrderLineId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null
+    },
     productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product" },
     productName: String,
     originalQty: Number,
@@ -440,6 +524,7 @@ salesOrderSchema.post("save", async function(doc, next) {
 // Indexes for dashboard listing, filtering and stock-status queries
 salesOrderSchema.index({ createdAt: -1 });
 salesOrderSchema.index({ dealer: 1, createdAt: -1 });
+salesOrderSchema.index({ dealer: 1, status: 1, orderDate: -1 });
 salesOrderSchema.index({ status: 1, createdAt: -1 });
 salesOrderSchema.index({ isOutOfStock: 1, status: 1 });
 salesOrderSchema.index({ "orderStockStatus.overallStatus": 1, status: 1 });

@@ -10,36 +10,28 @@
 
 import mongoose from 'mongoose';
 
+const getScopedModel = (dbConnection, name) => (
+  dbConnection?.models?.[name] || mongoose.model(name)
+);
+
 /**
  * Calculate accessible products based on hierarchical permissions
  * 
  * @param {Object} dealer - Dealer document with populated permissions
  * @returns {Object} MongoDB query filter for products
  */
-export async function calculateProductFilter(dealer) {
-  const Product = mongoose.model('Product');
-  
+export async function calculateProductFilter(dealer, dbConnection = null) {
   // If no brands selected, allow all products (default behavior)
   if (!dealer.allowedBrands || dealer.allowedBrands.length === 0) {
     console.log('📊 No brand restrictions - allowing all products');
     return { status: 'active' };
   }
 
-  const brandIds = dealer.allowedBrands.map(b => 
-    typeof b === 'object' ? b._id : b
-  );
-  
-  const categoryIds = (dealer.allowedCategories || []).map(c => 
-    typeof c === 'object' ? c._id : c
-  );
-  
-  const subcategoryIds = (dealer.allowedSubcategories || []).map(s => 
-    typeof s === 'object' ? s._id : s
-  );
-  
-  const extendedIds = (dealer.allowedExtendedSubcategories || []).map(e => 
-    typeof e === 'object' ? e._id : e
-  );
+  const getPermissionId = (value) => value?._id || value;
+  const brandIds = dealer.allowedBrands.map(getPermissionId);
+  const categoryIds = (dealer.allowedCategories || []).map(getPermissionId);
+  const subcategoryIds = (dealer.allowedSubcategories || []).map(getPermissionId);
+  const extendedIds = (dealer.allowedExtendedSubcategories || []).map(getPermissionId);
 
   console.log('📊 Permission counts:', {
     brands: brandIds.length,
@@ -59,62 +51,36 @@ export async function calculateProductFilter(dealer) {
 
   // SCENARIO 2: Brands + some hierarchy selections
   // Need to build per-brand logic
-  const orConditions = [];
-
-  for (const brandId of brandIds) {
+  const orConditions = await Promise.all(brandIds.map(async (brandId) => {
     const brandIdStr = brandId.toString();
-    
-    // Get categories for this brand
-    const brandCategories = categoryIds.length > 0 
-      ? await getCategoriesForBrand(brandIdStr, categoryIds)
-      : [];
-    
-    // Get subcategories for this brand
-    const brandSubcategories = subcategoryIds.length > 0
-      ? await getSubcategoriesForBrand(brandIdStr, subcategoryIds)
-      : [];
-    
-    // Get extended for this brand
-    const brandExtended = extendedIds.length > 0
-      ? await getExtendedForBrand(brandIdStr, extendedIds)
-      : [];
+    const [brandCategories, brandSubcategories, brandExtended] = await Promise.all([
+      categoryIds.length > 0
+        ? getCategoriesForBrand(brandIdStr, categoryIds, dbConnection)
+        : [],
+      subcategoryIds.length > 0
+        ? getSubcategoriesForBrand(brandIdStr, subcategoryIds, dbConnection)
+        : [],
+      extendedIds.length > 0
+        ? getExtendedForBrand(brandIdStr, extendedIds, dbConnection)
+        : []
+    ]);
 
-    console.log(`📊 Brand ${brandIdStr}:`, {
-      categories: brandCategories.length,
-      subcategories: brandSubcategories.length,
-      extended: brandExtended.length
-    });
-
-    // If no specific selections for this brand, include ALL products from this brand
+    // If no specific selections exist for this brand, all active products from
+    // that brand remain accessible, matching the existing permission rule.
     if (brandCategories.length === 0 && brandSubcategories.length === 0 && brandExtended.length === 0) {
-      console.log(`✅ Brand ${brandIdStr}: No specific selections - including all products`);
-      orConditions.push({
-        brand: brandId,
-        status: 'active'
-      });
-      continue;
+      return { brand: brandId, status: 'active' };
     }
 
-    // Build condition for this brand based on most specific selection
-    const brandCondition = {
-      brand: brandId,
-      status: 'active'
-    };
-
-    // Priority: Extended > Subcategory > Category
+    const brandCondition = { brand: brandId, status: 'active' };
     if (brandExtended.length > 0) {
-      console.log(`✅ Brand ${brandIdStr}: Extended level selection`);
       brandCondition.subcategory1 = { $in: brandExtended };
     } else if (brandSubcategories.length > 0) {
-      console.log(`✅ Brand ${brandIdStr}: Subcategory level selection`);
       brandCondition.subcategory = { $in: brandSubcategories };
     } else if (brandCategories.length > 0) {
-      console.log(`✅ Brand ${brandIdStr}: Category level selection`);
       brandCondition.category = { $in: brandCategories };
     }
-
-    orConditions.push(brandCondition);
-  }
+    return brandCondition;
+  }));
 
   if (orConditions.length === 0) {
     // Fallback: no products accessible
@@ -133,8 +99,8 @@ export async function calculateProductFilter(dealer) {
 /**
  * Get categories that belong to a specific brand
  */
-async function getCategoriesForBrand(brandId, categoryIds) {
-  const Category = mongoose.model('Category');
+async function getCategoriesForBrand(brandId, categoryIds, dbConnection) {
+  const Category = getScopedModel(dbConnection, 'Category');
   const categories = await Category.find({
     _id: { $in: categoryIds },
     brand: brandId
@@ -146,9 +112,9 @@ async function getCategoriesForBrand(brandId, categoryIds) {
 /**
  * Get subcategories that belong to a specific brand (through category)
  */
-async function getSubcategoriesForBrand(brandId, subcategoryIds) {
-  const Subcategory = mongoose.model('Subcategory');
-  const Category = mongoose.model('Category');
+async function getSubcategoriesForBrand(brandId, subcategoryIds, dbConnection) {
+  const Subcategory = getScopedModel(dbConnection, 'Subcategory');
+  const Category = getScopedModel(dbConnection, 'Category');
   
   // First get categories for this brand
   const brandCategories = await Category.find({ brand: brandId }).select('_id');
@@ -166,10 +132,10 @@ async function getSubcategoriesForBrand(brandId, subcategoryIds) {
 /**
  * Get extended subcategories that belong to a specific brand (through subcategory → category)
  */
-async function getExtendedForBrand(brandId, extendedIds) {
-  const ExtendedSubcategory = mongoose.model('ExtendedSubcategory');
-  const Subcategory = mongoose.model('Subcategory');
-  const Category = mongoose.model('Category');
+async function getExtendedForBrand(brandId, extendedIds, dbConnection) {
+  const ExtendedSubcategory = getScopedModel(dbConnection, 'ExtendedSubcategory');
+  const Subcategory = getScopedModel(dbConnection, 'Subcategory');
+  const Category = getScopedModel(dbConnection, 'Category');
   
   // Get categories for this brand
   const brandCategories = await Category.find({ brand: brandId }).select('_id');

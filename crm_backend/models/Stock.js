@@ -59,6 +59,7 @@ const stockMovement = mongoose.model('StockMovement', stockMovementSchema);
 
 // Index for fast current-stock lookups (getCurrentStock + stock-arrival checks)
 stockMovementSchema.index({ productId: 1, warehouseId: 1 });
+stockMovementSchema.index({ productId: 1, warehouseId: 1, date: -1, createdAt: -1 });
 
 // Export schema for multi-database support
 export { stockMovementSchema };

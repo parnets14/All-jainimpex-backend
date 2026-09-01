@@ -1,5 +1,6 @@
 // controllers/userController.js
 import { userSchema } from '../models/User.js';
+import { discountMappingSchema } from '../models/DiscountMapping.js';
 import { AVAILABLE_PERMISSIONS, AVAILABLE_REGIONS, ROLE_PERMISSIONS } from '../config/permissions.js';
 import { generatePDF } from '../utils/pdfGenerator.js';
 
@@ -7,7 +8,51 @@ import { generatePDF } from '../utils/pdfGenerator.js';
 const getModels = (dbConnection) => {
   return {
     User: dbConnection.models.User || dbConnection.model('User', userSchema),
+    DiscountMapping: dbConnection.models.DiscountMapping
+      || dbConnection.model('DiscountMapping', discountMappingSchema),
   };
+};
+
+const isSuperAdminActor = (req) => req.user?.role === 'super_admin';
+
+const rejectUnauthorizedSuperAdminMutation = (req, res, { targetRole, requestedRole } = {}) => {
+  const touchesSuperAdmin = targetRole === 'super_admin' || requestedRole === 'super_admin';
+
+  if (touchesSuperAdmin && !isSuperAdminActor(req)) {
+    res.status(403).json({
+      success: false,
+      message: 'Only a Super Admin can create or manage Super Admin accounts.'
+    });
+    return true;
+  }
+
+  return false;
+};
+
+const getSuperAdminSafeMutationFilter = (req, userId) => (
+  isSuperAdminActor(req)
+    ? { _id: userId }
+    : { _id: userId, role: { $ne: 'super_admin' } }
+);
+
+const handleProtectedMutationConflict = async (req, res, User, userId) => {
+  const currentTarget = await User.findById(userId).select('role');
+
+  if (!currentTarget) {
+    return res.status(404).json({
+      success: false,
+      message: 'User not found'
+    });
+  }
+
+  if (rejectUnauthorizedSuperAdminMutation(req, res, { targetRole: currentTarget.role })) {
+    return;
+  }
+
+  return res.status(409).json({
+    success: false,
+    message: 'The user changed while this request was being processed. Please try again.'
+  });
 };
 
 // Validate a username: required, no "@" (so it can never be an email), and only
@@ -29,17 +74,37 @@ const validateEmailFormat = (email) => {
   return null;
 };
 
+const normalizeAllowedDiscountLevels = (value) => {
+  if (value === undefined) return { value: undefined };
+  if (!Array.isArray(value)) {
+    return { error: 'Allowed Discount Levels must be an array.' };
+  }
+  if (value.some((levelName) => typeof levelName !== 'string')) {
+    return { error: 'Every Allowed Discount Level must be a text value.' };
+  }
+
+  return {
+    value: [...new Set(value.map((levelName) => levelName.trim()).filter(Boolean))]
+  };
+};
+
 // Get all users (Super admin only)
 export const getUsers = async (req, res) => {
   try {
-    // Get models from company-specific connection
     const { User } = getModels(req.dbConnection);
-    
-    const { page = 1, limit = 10, search = '', status, role, excludeRole, startDate, endDate } = req.query;
-    
-    // Build filter object
+    const {
+      page = 1,
+      limit = 10,
+      search = '',
+      status,
+      role,
+      excludeRole,
+      startDate,
+      endDate,
+      includeStats = 'false'
+    } = req.query;
     const filter = {};
-    
+
     if (search) {
       filter.$or = [
         { name: { $regex: search, $options: 'i' } },
@@ -47,48 +112,61 @@ export const getUsers = async (req, res) => {
         { username: { $regex: search, $options: 'i' } }
       ];
     }
-    
-    if (status && status !== 'All') {
-      filter.status = status;
-    }
-    
-    if (role && role !== 'All') {
-      filter.role = role;
-    }
-
-    // Exclude specific role (used to hide dealer-app users by default)
-    if (excludeRole && !role) {
-      filter.role = { $ne: excludeRole };
-    }
-
-    // Date range filter
+    if (status && status !== 'All') filter.status = status;
+    if (role && role !== 'All') filter.role = role;
+    if (excludeRole && !role) filter.role = { $ne: excludeRole };
     if (startDate || endDate) {
       filter.createdAt = {};
       if (startDate) filter.createdAt.$gte = new Date(startDate);
       if (endDate) filter.createdAt.$lte = new Date(endDate);
     }
 
-    const users = await User.find(filter)
-      .select('-password')
-      .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit)
-      .lean(); // Convert to plain objects
+    const pageNum = Math.max(Number.parseInt(page, 10) || 1, 1);
+    const limitNum = Math.min(Math.max(Number.parseInt(limit, 10) || 10, 1), 1000);
+    const [users, total, summaryRows] = await Promise.all([
+      User.find(filter)
+        .select('-password')
+        .sort({ createdAt: -1 })
+        .limit(limitNum)
+        .skip((pageNum - 1) * limitNum)
+        .lean(),
+      User.countDocuments(filter),
+      includeStats === 'true'
+        ? User.aggregate([
+          { $match: filter },
+          {
+            $group: {
+              _id: { role: '$role', status: '$status' },
+              count: { $sum: 1 }
+            }
+          }
+        ])
+        : Promise.resolve([])
+    ]);
 
-    // Ensure all users have consistent ID field
-    const usersWithId = users.map(user => ({
+    const usersWithId = users.map((user) => ({
       ...user,
-      id: user._id.toString() // Add id field for frontend consistency
+      id: user._id.toString()
     }));
-
-    const total = await User.countDocuments(filter);
+    const stats = includeStats === 'true'
+      ? summaryRows.reduce((summary, row) => {
+        const count = Number(row.count || 0);
+        const roleName = row._id?.role || 'unknown';
+        summary.total += count;
+        if (row._id?.status === 'Active') summary.active += count;
+        if (row._id?.status === 'Inactive') summary.inactive += count;
+        summary.roles[roleName] = (summary.roles[roleName] || 0) + count;
+        return summary;
+      }, { total: 0, active: 0, inactive: 0, roles: {} })
+      : undefined;
 
     res.json({
       success: true,
       users: usersWithId,
-      totalPages: Math.ceil(total / limit),
-      currentPage: page,
-      total
+      totalPages: Math.ceil(total / limitNum),
+      currentPage: pageNum,
+      total,
+      ...(stats ? { stats } : {})
     });
   } catch (error) {
     console.error('Get users error:', error);
@@ -153,6 +231,10 @@ export const createUser = async (req, res) => {
       location
     } = req.body;
 
+    if (rejectUnauthorizedSuperAdminMutation(req, res, { requestedRole: role })) {
+      return;
+    }
+
     // Validate username + email format (clear messages returned to the screen)
     const usernameError = validateUsername(username);
     if (usernameError) {
@@ -161,6 +243,10 @@ export const createUser = async (req, res) => {
     const emailError = validateEmailFormat(email);
     if (emailError) {
       return res.status(400).json({ success: false, message: emailError });
+    }
+    const normalizedDiscountLevels = normalizeAllowedDiscountLevels(allowedDiscountLevels);
+    if (normalizedDiscountLevels.error) {
+      return res.status(400).json({ success: false, message: normalizedDiscountLevels.error });
     }
 
     // Check if user already exists (case-insensitive, skip empty values)
@@ -195,7 +281,7 @@ export const createUser = async (req, res) => {
       status: status || 'Active',
       permissions: userPermissions,
       assignedRegions: assignedRegions || [],
-      allowedDiscountLevels: allowedDiscountLevels || [],
+      allowedDiscountLevels: normalizedDiscountLevels.value || [],
       location: location || 'Default Location',
       createdBy: req.user._id
     });
@@ -263,6 +349,13 @@ export const updateUser = async (req, res) => {
       });
     }
 
+    if (rejectUnauthorizedSuperAdminMutation(req, res, {
+      targetRole: user.role,
+      requestedRole: role
+    })) {
+      return;
+    }
+
     // Validate username + email format (clear messages returned to the screen)
     const usernameError = validateUsername(username);
     if (usernameError) {
@@ -271,6 +364,10 @@ export const updateUser = async (req, res) => {
     const emailFmtError = validateEmailFormat(email);
     if (emailFmtError) {
       return res.status(400).json({ success: false, message: emailFmtError });
+    }
+    const normalizedDiscountLevels = normalizeAllowedDiscountLevels(allowedDiscountLevels);
+    if (normalizedDiscountLevels.error) {
+      return res.status(400).json({ success: false, message: normalizedDiscountLevels.error });
     }
 
     // Check for duplicate email or username (case-insensitive, excluding current user)
@@ -302,7 +399,9 @@ export const updateUser = async (req, res) => {
     user.status = status;
     user.permissions = permissions;
     user.assignedRegions = assignedRegions;
-    user.allowedDiscountLevels = allowedDiscountLevels || [];
+    if (normalizedDiscountLevels.value !== undefined) {
+      user.allowedDiscountLevels = normalizedDiscountLevels.value;
+    }
     user.location = location;
     
     // Update password only if provided
@@ -311,7 +410,20 @@ export const updateUser = async (req, res) => {
       console.log(`Password updated for user: ${email}`);
     }
     
-    await user.save();
+    // Make the persisted role part of the save condition so a concurrent
+    // promotion cannot expose a Super Admin to this non-Super Admin update.
+    if (!isSuperAdminActor(req)) {
+      user.$where = { role: { $ne: 'super_admin' } };
+    }
+
+    try {
+      await user.save();
+    } catch (error) {
+      if (!isSuperAdminActor(req) && error.name === 'DocumentNotFoundError') {
+        return handleProtectedMutationConflict(req, res, User, req.params.id);
+      }
+      throw error;
+    }
 
     // Get the updated user without password
     const updatedUser = await User.findById(req.params.id).select('-password').lean();
@@ -343,9 +455,21 @@ export const updateUserPermissions = async (req, res) => {
     const { User } = getModels(req.dbConnection);
     
     const { permissions, assignedRegions } = req.body;
+    const targetUser = await User.findById(req.params.id).select('role');
 
-    const updatedUser = await User.findByIdAndUpdate(
-      req.params.id,
+    if (!targetUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    if (rejectUnauthorizedSuperAdminMutation(req, res, { targetRole: targetUser.role })) {
+      return;
+    }
+
+    const updatedUser = await User.findOneAndUpdate(
+      getSuperAdminSafeMutationFilter(req, req.params.id),
       {
         permissions,
         assignedRegions
@@ -354,10 +478,7 @@ export const updateUserPermissions = async (req, res) => {
     ).select('-password');
 
     if (!updatedUser) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
+      return handleProtectedMutationConflict(req, res, User, req.params.id);
     }
 
     res.json({
@@ -389,7 +510,11 @@ export const deleteUser = async (req, res) => {
       });
     }
 
-    // Prevent super admin from deleting themselves
+    if (rejectUnauthorizedSuperAdminMutation(req, res, { targetRole: user.role })) {
+      return;
+    }
+
+    // Prevent users from deleting themselves
     if (user._id.toString() === req.user._id.toString()) {
       return res.status(400).json({
         success: false,
@@ -397,7 +522,13 @@ export const deleteUser = async (req, res) => {
       });
     }
 
-    await User.findByIdAndDelete(req.params.id);
+    const deletion = await User.deleteOne(
+      getSuperAdminSafeMutationFilter(req, req.params.id)
+    );
+
+    if (deletion.deletedCount !== 1) {
+      return handleProtectedMutationConflict(req, res, User, req.params.id);
+    }
 
     res.json({
       success: true,
@@ -412,14 +543,35 @@ export const deleteUser = async (req, res) => {
   }
 };
 
-// Get available permissions and regions
-export const getPermissionsConfig = (req, res) => {
-  res.json({
-    success: true,
-    permissions: AVAILABLE_PERMISSIONS,
-    regions: AVAILABLE_REGIONS,
-    rolePermissions: ROLE_PERMISSIONS
-  });
+// Get available permissions, regions, and configured discount-level names.
+export const getPermissionsConfig = async (req, res) => {
+  try {
+    const { DiscountMapping } = getModels(req.dbConnection);
+    const configuredLevelNames = await DiscountMapping.distinct(
+      'levels.levelName',
+      { mappingType: 'sales' }
+    );
+    const discountLevelNames = [...new Set(
+      configuredLevelNames
+        .filter((levelName) => typeof levelName === 'string')
+        .map((levelName) => levelName.trim())
+        .filter(Boolean)
+    )].sort((left, right) => left.localeCompare(right));
+
+    res.json({
+      success: true,
+      permissions: AVAILABLE_PERMISSIONS,
+      regions: AVAILABLE_REGIONS,
+      rolePermissions: ROLE_PERMISSIONS,
+      discountLevelNames
+    });
+  } catch (error) {
+    console.error('Get permissions config error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to load permissions configuration'
+    });
+  }
 };
 
 // Change user status
@@ -429,18 +581,27 @@ export const updateUserStatus = async (req, res) => {
     const { User } = getModels(req.dbConnection);
     
     const { status } = req.body;
+    const targetUser = await User.findById(req.params.id).select('role');
 
-    const updatedUser = await User.findByIdAndUpdate(
-      req.params.id,
+    if (!targetUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    if (rejectUnauthorizedSuperAdminMutation(req, res, { targetRole: targetUser.role })) {
+      return;
+    }
+
+    const updatedUser = await User.findOneAndUpdate(
+      getSuperAdminSafeMutationFilter(req, req.params.id),
       { status },
       { new: true, runValidators: true }
     ).select('-password');
 
     if (!updatedUser) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
+      return handleProtectedMutationConflict(req, res, User, req.params.id);
     }
 
     res.json({

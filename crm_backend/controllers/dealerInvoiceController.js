@@ -16,7 +16,14 @@ import { regionSchema } from "../models/Region.js";
 import { warehouseSchema } from "../models/Warehouse.js";
 import { sendPushNotification } from '../services/firebaseNotificationService.js';
 import { assertPeriodOpen, handlePeriodLockError } from '../services/periodLockService.js';
-import { recordUpdate, recordStatusChange, recordCancel } from '../services/auditTrailService.js';
+import { recordUpdate, recordCancel } from '../services/auditTrailService.js';
+import { userHasPermission } from '../middleware/routePermissions.js';
+import {
+  calculateDiscountLine,
+  calculateOneTimeInvoicePriceIncrease,
+  normalizeRateMap,
+  resolveDealerExtraDiscountBySpecificity
+} from '../utils/sequentialDiscountPolicy.js';
 
 // Helper function to get models from company-specific connection
 const getModels = (dbConnection) => {
@@ -37,6 +44,724 @@ const getModels = (dbConnection) => {
     Region: dbConnection.models.Region || dbConnection.model('Region', regionSchema),
     Warehouse: dbConnection.models.Warehouse || dbConnection.model('Warehouse', warehouseSchema),
   };
+};
+
+const createDiscountPolicyError = (message, code) => {
+  const error = new Error(message);
+  error.name = 'DiscountPolicyError';
+  error.code = code;
+  return error;
+};
+
+const objectIdString = (value) => value?._id?.toString?.() || value?.toString?.() || '';
+const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+
+const findExistingInvoiceItem = (existingItems, submittedItem, submittedIndex) => {
+  if (!Array.isArray(existingItems) || existingItems.length === 0) return null;
+
+  const submittedProductId = objectIdString(
+    submittedItem?.product?._id || submittedItem?.product || submittedItem?.productId
+  );
+  const hasSameProduct = (item) => {
+    const existingProductId = objectIdString(item?.product?._id || item?.product);
+    return Boolean(submittedProductId) && existingProductId === submittedProductId;
+  };
+  const submittedLineId = objectIdString(
+    submittedItem?.sourceSalesOrderLineId || submittedItem?._id
+  );
+  if (submittedLineId) {
+    const identityMatch = existingItems.find((item) => {
+      const existingLineId = objectIdString(item?.sourceSalesOrderLineId || item?._id);
+      return existingLineId && existingLineId === submittedLineId;
+    });
+    // A stable line ID is not sufficient on its own: never let a replacement
+    // product inherit another line's increase actor/timestamp.
+    if (identityMatch) return hasSameProduct(identityMatch) ? identityMatch : null;
+  }
+
+  const indexedItem = existingItems[submittedIndex];
+  return indexedItem && hasSameProduct(indexedItem) ? indexedItem : null;
+};
+
+const canonicalizeOneTimePriceIncrease = ({
+  submittedItem,
+  existingItem,
+  discountCalculation,
+  gstPercentage,
+  actorId
+}) => {
+  const hasSubmittedPercentage = hasOwn(submittedItem, 'oneTimePriceIncreasePercentage');
+  const requestedPercentage = hasSubmittedPercentage
+    ? submittedItem.oneTimePriceIncreasePercentage
+    : (existingItem?.oneTimePriceIncreasePercentage || 0);
+  const hasSubmittedReason = hasOwn(submittedItem, 'oneTimePriceIncreaseReason');
+  const reason = String(
+    hasSubmittedReason
+      ? (submittedItem.oneTimePriceIncreaseReason || '')
+      : (existingItem?.oneTimePriceIncreaseReason || '')
+  ).trim();
+  const increase = calculateOneTimeInvoicePriceIncrease({
+    priceBeforeIncrease: discountCalculation.finalAmount,
+    increasePercentage: requestedPercentage,
+    gstPercentage,
+    maximumFinalAmount: discountCalculation.grossAmount
+  });
+
+  if (increase.oneTimePriceIncreasePercentage > 0 && !reason) {
+    throw createDiscountPolicyError(
+      'A reason is required when applying a one-time invoice price increase.',
+      'ONE_TIME_PRICE_INCREASE_REASON_REQUIRED'
+    );
+  }
+
+  if (increase.oneTimePriceIncreasePercentage <= 0) {
+    return {
+      ...increase,
+      oneTimePriceIncreaseReason: null,
+      oneTimePriceIncreaseAppliedBy: null,
+      oneTimePriceIncreaseAppliedAt: null
+    };
+  }
+
+  const existingPercentage = Number(existingItem?.oneTimePriceIncreasePercentage || 0);
+  const percentageIsUnchanged = Boolean(existingItem)
+    && Math.abs(existingPercentage - increase.oneTimePriceIncreasePercentage) <= 0.000001;
+
+  return {
+    ...increase,
+    oneTimePriceIncreaseReason: reason,
+    oneTimePriceIncreaseAppliedBy: percentageIsUnchanged
+      ? (existingItem.oneTimePriceIncreaseAppliedBy || actorId || null)
+      : (actorId || null),
+    oneTimePriceIncreaseAppliedAt: percentageIsUnchanged
+      ? (existingItem.oneTimePriceIncreaseAppliedAt || new Date())
+      : new Date()
+  };
+};
+
+const resolveAndValidateDealerExtraDiscount = ({ submittedItem, dealer, product }) => {
+  const configuredRate = resolveDealerExtraDiscountBySpecificity(dealer, product);
+  if (hasOwn(submittedItem, 'dealerExtraDiscount')) {
+    const submittedRate = Number(submittedItem.dealerExtraDiscount);
+    if (!Number.isFinite(submittedRate) || Math.abs(submittedRate - configuredRate) > 0.01) {
+      throw createDiscountPolicyError(
+        `Dealer extra discount for ${product.itemName} is configured at ${configuredRate}%; remove the submitted value or send the configured rate.`,
+        'DEALER_EXTRA_DISCOUNT_MISMATCH'
+      );
+    }
+  }
+  return configuredRate;
+};
+
+const normalizeComparableLevels = (levels) => JSON.stringify([...(levels || [])].map(String).sort());
+const normalizeComparableRates = (rates) => JSON.stringify(
+  Object.entries(normalizeRateMap(rates)).sort(([left], [right]) => left.localeCompare(right))
+);
+
+const getInvoiceMrpPerUnit = (item, gstPercentage, sourceLine = null) => {
+  // Sales Order unitPrice is already GST-inclusive MRP. It is the trusted base
+  // for linked lines and must never be grossed up again.
+  if (sourceLine) return Number(sourceLine.unitPrice || 0);
+  const mrp = Number(item.mrp);
+  if (Number.isFinite(mrp) && mrp > 0) return mrp;
+  return Number(item.unitPrice || 0) * (1 + Number(gstPercentage || 0) / 100);
+};
+
+const getInvoiceReferenceUnitPrice = (item, mrpPerUnit, gstPercentage, sourceLine = null) => {
+  if (!sourceLine) return Number(item.unitPrice || 0);
+  const divisor = 1 + Number(gstPercentage || 0) / 100;
+  return divisor > 0 ? Number((mrpPerUnit / divisor).toFixed(6)) : mrpPerUnit;
+};
+
+const buildSalesOrderLineMatcher = (sourceLines = []) => {
+  const unusedIndexes = new Set(sourceLines.map((_, index) => index));
+  const productLineCounts = sourceLines.reduce((counts, line) => {
+    const productId = objectIdString(line.product);
+    counts.set(productId, (counts.get(productId) || 0) + 1);
+    return counts;
+  }, new Map());
+
+  return (submittedItem) => {
+    const submittedProductId = objectIdString(
+      submittedItem.product?._id || submittedItem.product || submittedItem.productId
+    );
+    const submittedSourceLineId = objectIdString(
+      submittedItem.sourceSalesOrderLineId || submittedItem.salesOrderLineId
+    );
+
+    if (submittedSourceLineId) {
+      const matchedIndex = sourceLines.findIndex((line) => (
+        objectIdString(line._id) === submittedSourceLineId
+      ));
+      if (matchedIndex < 0) {
+        throw createDiscountPolicyError(
+          `sourceSalesOrderLineId ${submittedSourceLineId} does not exist on the linked sales order.`,
+          'SALES_ORDER_LINE_NOT_FOUND'
+        );
+      }
+      if (!unusedIndexes.has(matchedIndex)) {
+        throw createDiscountPolicyError(
+          `sourceSalesOrderLineId ${submittedSourceLineId} was submitted more than once.`,
+          'DUPLICATE_SALES_ORDER_LINE_ID'
+        );
+      }
+      if (objectIdString(sourceLines[matchedIndex].product) !== submittedProductId) {
+        throw createDiscountPolicyError(
+          `sourceSalesOrderLineId ${submittedSourceLineId} does not belong to the submitted product.`,
+          'SALES_ORDER_LINE_PRODUCT_MISMATCH'
+        );
+      }
+      unusedIndexes.delete(matchedIndex);
+      return sourceLines[matchedIndex];
+    }
+
+    if ((productLineCounts.get(submittedProductId) || 0) > 1) {
+      throw createDiscountPolicyError(
+        'sourceSalesOrderLineId is required for duplicate product lines on a linked sales order.',
+        'SOURCE_SALES_ORDER_LINE_ID_REQUIRED'
+      );
+    }
+
+    const matchedIndex = sourceLines.findIndex((line, index) => (
+      unusedIndexes.has(index) && objectIdString(line.product) === submittedProductId
+    ));
+    if (matchedIndex < 0) return null;
+    unusedIndexes.delete(matchedIndex);
+    return sourceLines[matchedIndex];
+  };
+};
+
+const getSubmittedOrSource = (submittedItem, sourceLine, field, fallback) => (
+  hasOwn(submittedItem, field) ? submittedItem[field] : (sourceLine?.[field] ?? fallback)
+);
+
+const haveDiscountDrivingFieldsChanged = (submittedItem, sourceLine) => {
+  const dealerExtra = getSubmittedOrSource(submittedItem, sourceLine, 'dealerExtraDiscount', 0);
+  const promisedTarget = getSubmittedOrSource(
+    submittedItem,
+    sourceLine,
+    'promisedEffectiveDiscountPercentage',
+    null
+  );
+
+  return Math.abs(Number(dealerExtra || 0) - Number(sourceLine.dealerExtraDiscount || 0)) > 0.01
+    || Number(promisedTarget ?? -1) !== Number(sourceLine.promisedEffectiveDiscountPercentage ?? -1);
+};
+
+const sourceAppliedDiscounts = (sourceLine) => {
+  if (Array.isArray(sourceLine.appliedDiscounts)) return sourceLine.appliedDiscounts;
+  const appliedDiscount = sourceLine.appliedDiscount;
+  if (!appliedDiscount?.discountId) return [];
+  return [{
+    discountId: appliedDiscount.discountId,
+    discountName: appliedDiscount.discountName,
+    discountValue: Number(appliedDiscount.directDiscountPercentage || 0),
+    discountType: appliedDiscount.discountType,
+    directDiscountPercentage: Number(appliedDiscount.directDiscountPercentage || 0),
+    levels: appliedDiscount.levels || [],
+    targetType: appliedDiscount.targetType,
+    maxDiscountPercentage: appliedDiscount.maxDiscountPercentage,
+    masterDiscountCap: appliedDiscount.masterDiscountCap ?? null,
+    combinedLevelDiscountCap: appliedDiscount.combinedLevelDiscountCap
+      ?? appliedDiscount.maxDiscountPercentage
+      ?? null
+  }];
+};
+
+const canonicalizeInvoiceItems = async ({
+  items,
+  dealer,
+  dbConnection,
+  actorId,
+  salesOrderId,
+  existingItems = [],
+  session = null
+}) => {
+  const { Product, DiscountMapping, User, SalesOrder } = getModels(dbConnection);
+  const applySession = (query) => session ? query.session(session) : query;
+  let linkedSalesOrder = null;
+  let matchSourceLine = null;
+
+  if (salesOrderId) {
+    linkedSalesOrder = await applySession(SalesOrder.findById(salesOrderId)).lean();
+    if (!linkedSalesOrder) {
+      throw createDiscountPolicyError('The linked sales order no longer exists.', 'SALES_ORDER_NOT_FOUND');
+    }
+    if (objectIdString(linkedSalesOrder.dealer) !== objectIdString(dealer?._id)) {
+      throw createDiscountPolicyError(
+        'The linked sales order belongs to a different dealer.',
+        'SALES_ORDER_DEALER_MISMATCH'
+      );
+    }
+    matchSourceLine = buildSalesOrderLineMatcher(linkedSalesOrder.products || []);
+  }
+
+  let liveActorContextPromise = null;
+  const getLiveActorContext = () => {
+    if (!liveActorContextPromise) {
+      liveActorContextPromise = (async () => {
+        const actor = actorId
+          ? await applySession(
+            User.findById(actorId)
+              .select('role allowedDiscountLevels')
+          ).lean()
+          : null;
+        const enforceLevelPermissions = true;
+        return {
+          actor,
+          enforceLevelPermissions,
+          bypassLevelPermission: false,
+          allowedDiscountLevels: actor?.allowedDiscountLevels || []
+        };
+      })();
+    }
+    return liveActorContextPromise;
+  };
+
+  const canonicalizeItem = async (submittedItem, submittedIndex) => {
+    const productId = submittedItem.product?._id || submittedItem.product || submittedItem.productId;
+    const existingItem = findExistingInvoiceItem(existingItems, submittedItem, submittedIndex);
+    const product = await applySession(
+      Product.findById(productId)
+        .select('itemName productCode HSNCode brand category subcategory subcategory1 subcategory2 subcategory3 subcategory4 subcategory5 gst')
+    ).lean();
+    if (!product) {
+      throw createDiscountPolicyError(
+        `Product not found for invoice line ${submittedItem.productName || productId}`,
+        'PRODUCT_NOT_FOUND'
+      );
+    }
+
+    const sourceLine = matchSourceLine ? matchSourceLine(submittedItem, submittedIndex) : null;
+    if (linkedSalesOrder && !sourceLine) {
+      throw createDiscountPolicyError(
+        `Invoice line ${submittedItem.productName || product.itemName} could not be matched to an unused line in sales order ${linkedSalesOrder.orderNumber}.`,
+        'SALES_ORDER_LINE_NOT_FOUND'
+      );
+    }
+
+    if (sourceLine) {
+      if (haveDiscountDrivingFieldsChanged(submittedItem, sourceLine)) {
+        throw createDiscountPolicyError(
+          `Linked invoice line ${sourceLine.productName || sourceLine._id} must keep the Sales Order dealer-extra discount and promised discount unchanged.`,
+          'LINKED_SALES_ORDER_DISCOUNT_MUTATION_NOT_ALLOWED'
+        );
+      }
+
+      const sourcePolicySnapshot = sourceLine.discountPolicySnapshot || null;
+      const persistedOrderedStages = sourcePolicySnapshot?.orderedStages;
+      const hasPersistedDiscountSignal = Number(sourceLine.discountAmount || 0) > 0
+        || Number(sourceLine.discountPercentage || 0) > 0
+        || Number(sourceLine.dealerExtraDiscount || 0) > 0
+        || Number(sourceLine.appliedDiscount?.directDiscountPercentage || 0) > 0
+        || (sourceLine.selectedDiscountLevels || []).length > 0;
+      if ((!Array.isArray(persistedOrderedStages) || persistedOrderedStages.length === 0)
+          && hasPersistedDiscountSignal) {
+        throw createDiscountPolicyError(
+          `Sales Order line ${sourceLine.productName || sourceLine._id} has a historical discount but no ordered policy snapshot. Reprice the Sales Order explicitly before creating or syncing its invoice.`,
+          'SALES_ORDER_POLICY_SNAPSHOT_REQUIRED'
+        );
+      }
+
+      const sourceStages = (persistedOrderedStages || []).map((stage) => ({
+        key: stage.key,
+        kind: stage.kind,
+        levelName: stage.levelName || null,
+        ratePercentage: Number(stage.ratePercentage || 0)
+      }));
+      const directStages = sourceStages.filter((stage) => stage.kind === 'direct');
+      const dealerExtraStages = sourceStages.filter((stage) => stage.kind === 'dealer_extra');
+      const mappingLevels = sourcePolicySnapshot?.levels
+        || sourceLine.appliedDiscount?.levels
+        || [];
+      const selectedDiscountLevels = [...new Set(
+        (submittedItem.selectedDiscountLevels || []).map(String)
+      )];
+      const manualDiscountLevels = normalizeRateMap(submittedItem.manualDiscountLevels);
+      const stages = [...directStages];
+
+      for (const levelName of selectedDiscountLevels) {
+        const level = mappingLevels.find((definition) => definition.levelName === levelName);
+        if (!level) {
+          throw createDiscountPolicyError(
+            `Discount level "${levelName}" is not available for ${sourceLine.productName || product.itemName}`,
+            'DISCOUNT_LEVEL_NOT_FOUND'
+          );
+        }
+        const configuredRate = Number(level.discountPercentage ?? level.ratePercentage ?? 0);
+        const requestedRate = manualDiscountLevels[levelName] !== undefined
+          ? Number(manualDiscountLevels[levelName])
+          : configuredRate;
+        if (!Number.isFinite(requestedRate) || requestedRate < 0 || requestedRate > configuredRate) {
+          throw createDiscountPolicyError(
+            `Discount level "${levelName}" for ${sourceLine.productName || product.itemName} must be between 0 and ${configuredRate}%`,
+            'DISCOUNT_LEVEL_RATE_EXCEEDED'
+          );
+        }
+        if (requestedRate > 0) {
+          stages.push({
+            key: `level:${levelName}`,
+            kind: 'level',
+            levelName,
+            ratePercentage: requestedRate
+          });
+        }
+      }
+      stages.push(...dealerExtraStages);
+
+      const masterDiscountCap = sourcePolicySnapshot?.masterDiscountCap ?? null;
+      if (stages.some((stage) => stage.ratePercentage > 0)
+          && (masterDiscountCap === null || masterDiscountCap === undefined || masterDiscountCap === '')) {
+        throw createDiscountPolicyError(
+          `Sales Order line ${sourceLine.productName || sourceLine._id} has a discounted snapshot without a master discount cap. Reprice the Sales Order explicitly after configuring the mapping.`,
+          'MASTER_DISCOUNT_CAP_NOT_CONFIGURED'
+        );
+      }
+      const combinedLevelDiscountCap = sourcePolicySnapshot?.combinedLevelDiscountCap
+        ?? sourceLine.appliedDiscount?.combinedLevelDiscountCap
+        ?? sourceLine.appliedDiscount?.maxDiscountPercentage
+        ?? null;
+      if (stages.some((stage) => stage.kind === 'level' && stage.ratePercentage > 0)
+          && combinedLevelDiscountCap === null) {
+        throw createDiscountPolicyError(
+          `Sales Order line ${sourceLine.productName || sourceLine._id} has invoice level discounts without a combined level cap.`,
+          'COMBINED_LEVEL_DISCOUNT_CAP_NOT_CONFIGURED'
+        );
+      }
+
+      const sourceGstPercentage = Number(sourceLine.gst ?? product.gst ?? 0);
+      const submittedGstPercentage = Number(submittedItem.gst);
+      if (hasOwn(submittedItem, 'gst')
+          && (!Number.isFinite(submittedGstPercentage)
+            || Math.abs(submittedGstPercentage - sourceGstPercentage) > 0.01)) {
+        throw createDiscountPolicyError(
+          `Linked invoice line ${sourceLine.productName || sourceLine._id} must use the Sales Order GST rate of ${sourceGstPercentage}%.`,
+          'LINKED_SALES_ORDER_GST_MISMATCH'
+        );
+      }
+
+      const {
+        actor,
+        enforceLevelPermissions,
+        bypassLevelPermission,
+        allowedDiscountLevels
+      } = await getLiveActorContext();
+      const gstPercentage = sourceGstPercentage;
+      const mrpPerUnit = getInvoiceMrpPerUnit(submittedItem, gstPercentage, sourceLine);
+      const invoiceUnitPrice = getInvoiceReferenceUnitPrice(
+        submittedItem,
+        mrpPerUnit,
+        gstPercentage,
+        sourceLine
+      );
+      const calculation = calculateDiscountLine({
+        baseAmount: Number(submittedItem.quantity || 0) * mrpPerUnit,
+        stages,
+        gstPercentage,
+        promisedEffectiveDiscountPercentage: sourceLine.promisedEffectiveDiscountPercentage,
+        masterDiscountCap,
+        combinedLevelDiscountCap,
+        allowedDiscountLevels,
+        enforceLevelPermissions,
+        bypassLevelPermission
+      });
+      const priceIncrease = canonicalizeOneTimePriceIncrease({
+        submittedItem,
+        existingItem,
+        discountCalculation: calculation,
+        gstPercentage,
+        actorId
+      });
+      const capturedAt = new Date();
+      const invoicePolicySnapshot = sourcePolicySnapshot ? {
+        ...sourcePolicySnapshot,
+        flowVersion: 'linked-invoice-levels-v2',
+        sourceSalesOrderLineId: sourceLine._id,
+        sourcePolicyCapturedAt: sourcePolicySnapshot.capturedAt || null,
+        orderedStages: calculation.stages.map((stage) => ({
+          key: stage.key,
+          kind: stage.kind,
+          levelName: stage.levelName || null,
+          ratePercentage: stage.ratePercentage
+        })),
+        capturedAt
+      } : null;
+      const invoicePermissionSnapshot = {
+        actorUserId: actor?._id || actorId || null,
+        actorRole: actor?.role || null,
+        allowedDiscountLevels,
+        enforceLevelPermissions,
+        bypassLevelPermission,
+        capturedAt
+      };
+
+      return {
+        ...submittedItem,
+        // Preserve an explicit source identity; invoice _id remains aligned for
+        // backward-compatible draft clients.
+        _id: sourceLine._id,
+        sourceSalesOrderLineId: sourceLine._id,
+        product: product._id,
+        unitPrice: invoiceUnitPrice,
+        mrp: mrpPerUnit,
+        productCode: sourceLine.productCode || product.productCode,
+        productName: sourceLine.productName || product.itemName,
+        HSNCode: sourceLine.HSNCode || product.HSNCode,
+        gst: gstPercentage,
+        selectedDiscountLevels,
+        manualDiscountLevels: new Map(Object.entries(manualDiscountLevels)),
+        dealerExtraDiscount: Number(sourceLine.dealerExtraDiscount || 0),
+        discountPercentage: stages
+          .filter((stage) => stage.kind === 'direct' || stage.kind === 'level')
+          .reduce((sum, stage) => sum + stage.ratePercentage, 0),
+        discountAmount: calculation.discountAmount,
+        priceBeforeIncrease: priceIncrease.priceBeforeIncrease,
+        oneTimePriceIncreasePercentage: priceIncrease.oneTimePriceIncreasePercentage,
+        oneTimePriceIncreaseAmount: priceIncrease.oneTimePriceIncreaseAmount,
+        oneTimePriceIncreaseReason: priceIncrease.oneTimePriceIncreaseReason,
+        oneTimePriceIncreaseAppliedBy: priceIncrease.oneTimePriceIncreaseAppliedBy,
+        oneTimePriceIncreaseAppliedAt: priceIncrease.oneTimePriceIncreaseAppliedAt,
+        gstAmount: priceIncrease.gstAmount,
+        totalPrice: priceIncrease.finalAmount,
+        effectiveDiscountPercentage: calculation.effectiveDiscountPercentage,
+        promisedEffectiveDiscountPercentage: sourceLine.promisedEffectiveDiscountPercentage ?? null,
+        requiredSequentialStageRatePercentage: calculation.requiredSequentialStageRatePercentage,
+        masterDiscountCapApplied: calculation.masterDiscountCapApplied,
+        combinedLevelDiscountCapApplied: calculation.combinedLevelDiscountCapApplied,
+        levelDiscountTotalPercentage: calculation.levelDiscountTotalPercentage,
+        discountFamilyKey: sourceLine.discountFamilyKey
+          || sourcePolicySnapshot?.discountFamilyKey
+          || null,
+        discountPolicySnapshot: invoicePolicySnapshot,
+        discountPermissionSnapshot: invoicePermissionSnapshot,
+        appliedDiscounts: sourceAppliedDiscounts(sourceLine)
+      };
+    }
+
+    const {
+      actor,
+      enforceLevelPermissions,
+      bypassLevelPermission,
+      allowedDiscountLevels
+    } = await getLiveActorContext();
+    const liveSubmittedItem = sourceLine ? {
+      ...submittedItem,
+      selectedDiscountLevels: getSubmittedOrSource(submittedItem, sourceLine, 'selectedDiscountLevels', []),
+      manualDiscountLevels: getSubmittedOrSource(submittedItem, sourceLine, 'manualDiscountLevels', {}),
+      promisedEffectiveDiscountPercentage: getSubmittedOrSource(
+        submittedItem,
+        sourceLine,
+        'promisedEffectiveDiscountPercentage',
+        null
+      )
+    } : submittedItem;
+
+    const applicableDiscounts = await DiscountMapping.findApplicableDiscounts(
+      product._id,
+      'sales',
+      dealer?.dealerType || null,
+      dbConnection
+    );
+    const mapping = applicableDiscounts[0] || null;
+    const combinedLevelDiscountCap = mapping?.combinedLevelDiscountCap
+      ?? mapping?.maxDiscountPercentage
+      ?? null;
+    const selectedDiscountLevels = [...new Set((liveSubmittedItem.selectedDiscountLevels || []).map(String))];
+    const manualDiscountLevels = normalizeRateMap(liveSubmittedItem.manualDiscountLevels);
+    const dealerExtraDiscount = resolveAndValidateDealerExtraDiscount({
+      submittedItem: liveSubmittedItem,
+      dealer,
+      product
+    });
+    const mappingLevels = mapping?.levels || [];
+    const stages = [];
+
+    const directDiscountPercentage = mapping && (mapping.discountType === 'direct' || mapping.discountType === 'both')
+      ? Number(mapping.directDiscountPercentage || 0)
+      : 0;
+    if (directDiscountPercentage > 0) {
+      stages.push({ key: 'direct', kind: 'direct', ratePercentage: directDiscountPercentage });
+    }
+
+    for (const levelName of selectedDiscountLevels) {
+      const level = mappingLevels.find(levelDefinition => levelDefinition.levelName === levelName);
+      if (!level) {
+        const error = new Error(`Discount level "${levelName}" is not available for ${product.itemName}`);
+        error.name = 'DiscountPolicyError';
+        error.code = 'DISCOUNT_LEVEL_NOT_FOUND';
+        throw error;
+      }
+      const configuredRate = Number(level.discountPercentage || 0);
+      const requestedRate = manualDiscountLevels[levelName] !== undefined
+        ? Number(manualDiscountLevels[levelName])
+        : configuredRate;
+      if (!Number.isFinite(requestedRate) || requestedRate < 0 || requestedRate > configuredRate) {
+        const error = new Error(`Discount level "${levelName}" for ${product.itemName} must be between 0 and ${configuredRate}%`);
+        error.name = 'DiscountPolicyError';
+        error.code = 'DISCOUNT_LEVEL_RATE_EXCEEDED';
+        throw error;
+      }
+      if (requestedRate > 0) {
+        stages.push({ key: `level:${levelName}`, kind: 'level', levelName, ratePercentage: requestedRate });
+      }
+    }
+
+    if (dealerExtraDiscount > 0) {
+      stages.push({ key: 'dealer-extra', kind: 'dealer_extra', ratePercentage: dealerExtraDiscount });
+    }
+
+    if (!mapping && stages.length > 0) {
+      const error = new Error(`No applicable discount mapping exists for ${product.itemName}`);
+      error.name = 'DiscountPolicyError';
+      error.code = 'DISCOUNT_MAPPING_NOT_FOUND';
+      throw error;
+    }
+    if (stages.some((stage) => stage.ratePercentage > 0)
+        && mapping
+        && (mapping.masterDiscountCap === null
+        || mapping.masterDiscountCap === undefined
+        || mapping.masterDiscountCap === '')) {
+      throw createDiscountPolicyError(
+        `Master discount cap is not configured for the applicable sales mapping on ${product.itemName}.`,
+        'MASTER_DISCOUNT_CAP_NOT_CONFIGURED'
+      );
+    }
+    const hasSelectedLevelStages = stages.some(
+      (stage) => stage.kind === 'level' && stage.ratePercentage > 0
+    );
+    if (hasSelectedLevelStages && combinedLevelDiscountCap === null) {
+      throw createDiscountPolicyError(
+        `Combined selected-level discount cap is not configured for the applicable sales mapping on ${product.itemName}.`,
+        'COMBINED_LEVEL_DISCOUNT_CAP_NOT_CONFIGURED'
+      );
+    }
+
+    const gstPercentage = Number(submittedItem.gst ?? product.gst ?? 0);
+    const mrpPerUnit = getInvoiceMrpPerUnit(submittedItem, gstPercentage, sourceLine);
+    const invoiceUnitPrice = getInvoiceReferenceUnitPrice(
+      submittedItem,
+      mrpPerUnit,
+      gstPercentage,
+      sourceLine
+    );
+    const grossAmount = Number(submittedItem.quantity || 0) * mrpPerUnit;
+    const calculation = calculateDiscountLine({
+      baseAmount: grossAmount,
+      stages,
+      gstPercentage,
+      promisedEffectiveDiscountPercentage: liveSubmittedItem.promisedEffectiveDiscountPercentage,
+      masterDiscountCap: mapping?.masterDiscountCap ?? null,
+      combinedLevelDiscountCap,
+      allowedDiscountLevels,
+      enforceLevelPermissions,
+      bypassLevelPermission
+    });
+    const priceIncrease = canonicalizeOneTimePriceIncrease({
+      submittedItem,
+      existingItem,
+      discountCalculation: calculation,
+      gstPercentage,
+      actorId
+    });
+
+    const discountFamilyKey = product.subcategory
+      ? `subcategory:${product.subcategory}`
+      : null;
+    const capturedAt = new Date();
+    const normalizedLevels = mappingLevels.map(level => ({
+      levelName: level.levelName,
+      discountPercentage: Number(level.discountPercentage || 0),
+      description: level.description || ''
+    }));
+    const discountPolicySnapshot = mapping ? {
+      flowVersion: 'standalone-invoice-levels-v2',
+      discountMappingId: mapping._id,
+      discountMappingName: mapping.discountName,
+      mappingUpdatedAt: mapping.updatedAt || null,
+      discountFamilyKey,
+      discountType: mapping.discountType,
+      directDiscountPercentage,
+      levels: normalizedLevels,
+      dealerExtraDiscountPercentage: dealerExtraDiscount,
+      masterDiscountCap: mapping.masterDiscountCap,
+      combinedLevelDiscountCap,
+      orderedStages: calculation.stages.map(stage => ({
+        key: stage.key,
+        kind: stage.kind,
+        levelName: stage.levelName || null,
+        ratePercentage: stage.ratePercentage
+      })),
+      capturedAt
+    } : null;
+    const discountPermissionSnapshot = {
+      actorUserId: actor?._id || actorId || null,
+      actorRole: actor?.role || null,
+      allowedDiscountLevels,
+      enforceLevelPermissions,
+      bypassLevelPermission,
+      capturedAt
+    };
+
+    return {
+      ...submittedItem,
+      ...(sourceLine ? {
+        _id: sourceLine._id,
+        sourceSalesOrderLineId: sourceLine._id
+      } : {}),
+      product: product._id,
+      unitPrice: invoiceUnitPrice,
+      mrp: mrpPerUnit,
+      productCode: submittedItem.productCode || product.productCode,
+      productName: submittedItem.productName || product.itemName,
+      HSNCode: submittedItem.HSNCode || product.HSNCode,
+      gst: gstPercentage,
+      selectedDiscountLevels,
+      manualDiscountLevels: new Map(Object.entries(manualDiscountLevels)),
+      dealerExtraDiscount,
+      discountPercentage: stages
+        .filter(stage => stage.kind === 'direct' || stage.kind === 'level')
+        .reduce((sum, stage) => sum + stage.ratePercentage, 0),
+      discountAmount: calculation.discountAmount,
+      priceBeforeIncrease: priceIncrease.priceBeforeIncrease,
+      oneTimePriceIncreasePercentage: priceIncrease.oneTimePriceIncreasePercentage,
+      oneTimePriceIncreaseAmount: priceIncrease.oneTimePriceIncreaseAmount,
+      oneTimePriceIncreaseReason: priceIncrease.oneTimePriceIncreaseReason,
+      oneTimePriceIncreaseAppliedBy: priceIncrease.oneTimePriceIncreaseAppliedBy,
+      oneTimePriceIncreaseAppliedAt: priceIncrease.oneTimePriceIncreaseAppliedAt,
+      gstAmount: priceIncrease.gstAmount,
+      totalPrice: priceIncrease.finalAmount,
+      effectiveDiscountPercentage: calculation.effectiveDiscountPercentage,
+      promisedEffectiveDiscountPercentage: calculation.promisedEffectiveDiscountPercentage,
+      requiredSequentialStageRatePercentage: calculation.requiredSequentialStageRatePercentage,
+      masterDiscountCapApplied: calculation.masterDiscountCapApplied,
+      combinedLevelDiscountCapApplied: calculation.combinedLevelDiscountCapApplied,
+      levelDiscountTotalPercentage: calculation.levelDiscountTotalPercentage,
+      discountFamilyKey,
+      discountPolicySnapshot,
+      discountPermissionSnapshot,
+      appliedDiscounts: mapping ? [{
+        discountId: mapping._id,
+        discountName: mapping.discountName,
+        discountValue: directDiscountPercentage,
+        discountType: mapping.discountType,
+        directDiscountPercentage,
+        levels: normalizedLevels,
+        targetType: mapping.targetType,
+        masterDiscountCap: mapping.masterDiscountCap,
+        combinedLevelDiscountCap
+      }] : []
+    };
+  };
+
+  if (session) {
+    const canonicalizedItems = [];
+    for (const [submittedIndex, submittedItem] of (items || []).entries()) {
+      canonicalizedItems.push(await canonicalizeItem(submittedItem, submittedIndex));
+    }
+    return canonicalizedItems;
+  }
+
+  return Promise.all((items || []).map(canonicalizeItem));
 };
 
 // Generate unique invoice number
@@ -94,6 +819,7 @@ export const getDealerInvoices = async (req, res) => {
       startDate,
       endDate,
       salesOrder,
+      isDraft,
       showCancelled = 'false' // New parameter to show/hide cancelled invoices
     } = req.query;
 
@@ -118,6 +844,14 @@ export const getDealerInvoices = async (req, res) => {
     // Filter by status
     if (status && status !== "all") {
       query.status = status;
+    }
+
+    // Explicit draft filtering keeps dashboard recent-invoice pagination correct.
+    if (isDraft === 'true') {
+      query.isDraft = true;
+    } else if (isDraft === 'false') {
+      query.isDraft = { $ne: true };
+      if (!status || status === 'all') query.status = { $ne: 'Draft' };
     }
 
     // Filter by payment status
@@ -156,6 +890,7 @@ export const getDealerInvoices = async (req, res) => {
       .populate("approvedBy", "name email")
       .populate("deletedBy", "name email") // Populate who cancelled the invoice
       .populate("items.product", "itemName productCode HSNCode")
+      .populate("items.oneTimePriceIncreaseAppliedBy", "name email")
       .populate("items.warehouse", "name")
       .sort({ createdAt: -1 })
       .limit(limit * 1)
@@ -163,48 +898,71 @@ export const getDealerInvoices = async (req, res) => {
       .lean() // Convert to plain JavaScript objects for modification
       .exec();
 
-    // Fetch payment allocations for each invoice
-    for (const invoice of invoices) {
-      // Get new system payment allocations
-      const allocations = await PaymentAllocation.find({
-        'allocations.invoiceId': invoice._id
-      })
-      .populate('voucherId', 'voucherNumber voucherDate voucherType transactionMode')
-      .lean();
-      
-      // Extract relevant allocation details
-      invoice.paymentAllocations = allocations.map(pa => {
-        const alloc = pa.allocations.find(a => a.invoiceId.toString() === invoice._id.toString());
-        return {
-          allocationNumber: pa.allocationNumber,
-          allocationDate: pa.allocationDate,
-          voucherNumber: pa.voucherId?.voucherNumber || 'N/A',
-          voucherDate: pa.voucherId?.voucherDate,
-          voucherType: pa.voucherId?.voucherType || 'Receipt',
-          paymentMethod: pa.voucherId?.transactionMode || 'N/A',
-          allocatedAmount: alloc?.allocatedAmount || 0,
-          allocationId: pa._id
-        };
-      });
-      
-      // Get old system payments (DealerPayment) for backward compatibility
-      const oldPayments = await DealerPayment.find({
-        dealerInvoice: invoice._id,
-        status: 'Approved'
-      }).lean();
-      
-      invoice.oldPayments = oldPayments.map(p => ({
-        paymentNumber: p.paymentNumber,
-        paymentDate: p.paymentDate,
-        paymentMethod: p.paymentMethod,
-        paymentAmount: p.paymentAmount,
-        paymentType: p.paymentType,
-        paymentId: p._id
-      }));
-    }
+    const invoiceIds = invoices.map(invoice => invoice._id);
+    const invoiceIdSet = new Set(invoiceIds.map(String));
 
-    // Get total count for pagination
-    const total = await DealerInvoice.countDocuments(query);
+    // Batch payment enrichment for the entire page. The previous implementation
+    // issued two sequential queries per invoice (2N queries); this keeps the
+    // response contract while reducing it to two queries total.
+    const [paymentAllocations, approvedLegacyPayments, total] = await Promise.all([
+      invoiceIds.length > 0
+        ? PaymentAllocation.find({
+          'allocations.invoiceId': { $in: invoiceIds }
+        })
+          .select('allocationNumber allocationDate voucherId allocations.invoiceId allocations.allocatedAmount')
+          .populate('voucherId', 'voucherNumber voucherDate voucherType transactionMode')
+          .lean()
+        : [],
+      invoiceIds.length > 0
+        ? DealerPayment.find({
+          dealerInvoice: { $in: invoiceIds },
+          status: 'Approved'
+        })
+          .select('dealerInvoice paymentNumber paymentDate paymentMethod paymentAmount paymentType')
+          .lean()
+        : [],
+      DealerInvoice.countDocuments(query)
+    ]);
+
+    const allocationsByInvoice = new Map();
+    paymentAllocations.forEach(paymentAllocation => {
+      (paymentAllocation.allocations || []).forEach(allocation => {
+        const invoiceId = allocation.invoiceId?.toString();
+        if (!invoiceId || !invoiceIdSet.has(invoiceId)) return;
+        if (!allocationsByInvoice.has(invoiceId)) allocationsByInvoice.set(invoiceId, []);
+        allocationsByInvoice.get(invoiceId).push({
+          allocationNumber: paymentAllocation.allocationNumber,
+          allocationDate: paymentAllocation.allocationDate,
+          voucherNumber: paymentAllocation.voucherId?.voucherNumber || 'N/A',
+          voucherDate: paymentAllocation.voucherId?.voucherDate,
+          voucherType: paymentAllocation.voucherId?.voucherType || 'Receipt',
+          paymentMethod: paymentAllocation.voucherId?.transactionMode || 'N/A',
+          allocatedAmount: allocation.allocatedAmount || 0,
+          allocationId: paymentAllocation._id
+        });
+      });
+    });
+
+    const legacyPaymentsByInvoice = new Map();
+    approvedLegacyPayments.forEach(payment => {
+      const invoiceId = payment.dealerInvoice?.toString();
+      if (!invoiceId) return;
+      if (!legacyPaymentsByInvoice.has(invoiceId)) legacyPaymentsByInvoice.set(invoiceId, []);
+      legacyPaymentsByInvoice.get(invoiceId).push({
+        paymentNumber: payment.paymentNumber,
+        paymentDate: payment.paymentDate,
+        paymentMethod: payment.paymentMethod,
+        paymentAmount: payment.paymentAmount,
+        paymentType: payment.paymentType,
+        paymentId: payment._id
+      });
+    });
+
+    invoices.forEach(invoice => {
+      const invoiceId = invoice._id.toString();
+      invoice.paymentAllocations = allocationsByInvoice.get(invoiceId) || [];
+      invoice.oldPayments = legacyPaymentsByInvoice.get(invoiceId) || [];
+    });
 
     res.json({
       success: true,
@@ -225,6 +983,288 @@ export const getDealerInvoices = async (req, res) => {
   }
 };
 
+const normalizeDiscountHistoryLine = (line, sourceMetadata) => {
+  const quantity = Number(line.quantity || 0);
+  const unitPrice = Number(line.unitPrice || 0);
+  const gstPercentage = Number(line.gst || 0);
+  const invoiceMrp = Number(line.mrp);
+  const grossUnitPrice = sourceMetadata.source === 'dealer_invoice'
+    ? (Number.isFinite(invoiceMrp) && invoiceMrp > 0
+      ? invoiceMrp
+      : unitPrice * (1 + gstPercentage / 100))
+    : unitPrice;
+  const grossAmount = quantity * grossUnitPrice;
+  const discountAmount = Number(line.discountAmount || 0);
+  const hasPersistedEffectiveDiscount = line.effectiveDiscountPercentage !== null
+    && line.effectiveDiscountPercentage !== undefined
+    && Number.isFinite(Number(line.effectiveDiscountPercentage));
+  const effectiveDiscountPercentage = hasPersistedEffectiveDiscount
+    ? Number(line.effectiveDiscountPercentage)
+    : grossAmount > 0 && Number.isFinite(discountAmount)
+      ? (discountAmount / grossAmount) * 100
+      : Number(line.discountPercentage || 0);
+  const selectedDiscountLevels = Array.isArray(line.selectedDiscountLevels)
+    && line.selectedDiscountLevels.length > 0
+    ? line.selectedDiscountLevels.map(String)
+    : line.selectedDiscountLevel !== null && line.selectedDiscountLevel !== undefined
+      ? [String(line.selectedDiscountLevel)]
+      : [];
+
+  return {
+    product: line.product,
+    productCode: line.productCode || null,
+    productName: line.productName || null,
+    quantity,
+    unitPrice,
+    mrp: line.mrp ?? null,
+    grossAmount,
+    discountAmount,
+    effectiveDiscountPercentage,
+    promisedEffectiveDiscountPercentage: line.promisedEffectiveDiscountPercentage ?? null,
+    requiredSequentialStageRatePercentage: line.requiredSequentialStageRatePercentage ?? null,
+    selectedDiscountLevels,
+    manualDiscountLevels: { ...normalizeRateMap(line.manualDiscountLevels) },
+    dealerExtraDiscount: Number(line.dealerExtraDiscount || 0),
+    discountPolicySnapshot: line.discountPolicySnapshot || null,
+    discountPermissionSnapshot: line.discountPermissionSnapshot || null,
+    discountFamilyKey: line.discountFamilyKey,
+    ...sourceMetadata
+  };
+};
+
+const buildDiscountHistory = ({ document, lines, source, reference, date }) => {
+  const sourceMetadata = {
+    source,
+    reference,
+    referenceId: document._id,
+    date
+  };
+  const normalizedLines = lines.map(line => normalizeDiscountHistoryLine(line, sourceMetadata));
+  const familyGrossAmount = normalizedLines.reduce(
+    (sum, line) => sum + Number(line.grossAmount || 0),
+    0
+  );
+  const familyDiscountAmount = normalizedLines.reduce(
+    (sum, line) => sum + Number(line.discountAmount || 0),
+    0
+  );
+  const familyEffectiveDiscountPercentage = familyGrossAmount > 0
+    ? (familyDiscountAmount / familyGrossAmount) * 100
+    : 0;
+
+  return {
+    ...sourceMetadata,
+    status: document.status,
+    approvedAt: document.approvedAt || null,
+    familyGrossAmount,
+    familyDiscountAmount,
+    familyEffectiveDiscountPercentage,
+    invoiceSubtotal: source === 'dealer_invoice' ? Number(document.subtotal || 0) : null,
+    invoiceTotalDiscount: source === 'dealer_invoice' ? Number(document.totalDiscount || 0) : null,
+    invoiceTotalAmount: source === 'dealer_invoice' ? Number(document.totalAmount || 0) : null,
+    lines: normalizedLines
+  };
+};
+
+// @desc    Get the latest finalized discount used for a dealer and product family
+// @route   GET /api/dealer-invoices/last-finalized-discount/:dealerId/:subcategoryId
+// @access  Private
+export const getLastFinalizedDealerFamilyDiscount = async (req, res) => {
+  try {
+    const { dealerId, subcategoryId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(dealerId) || !mongoose.Types.ObjectId.isValid(subcategoryId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid dealer or subcategory ID"
+      });
+    }
+
+    const { DealerInvoice, SalesOrder } = getModels(req.dbConnection);
+    const dealerObjectId = new mongoose.Types.ObjectId(dealerId);
+    const familyKey = `subcategory:${new mongoose.Types.ObjectId(subcategoryId).toString()}`;
+
+    const [invoiceCandidates, salesOrderCandidates] = await Promise.all([
+      DealerInvoice.aggregate([
+        {
+          $match: {
+            dealer: dealerObjectId,
+            isDraft: { $ne: true },
+            isDeleted: { $ne: true },
+            status: { $in: ["Approved", "Dispatched", "Delivered"] },
+            "items.discountFamilyKey": familyKey
+          }
+        },
+        {
+          $addFields: {
+            _discountEventDate: {
+              $ifNull: ["$approvedAt", { $ifNull: ["$invoiceDate", "$createdAt"] }]
+            }
+          }
+        },
+        { $sort: { _discountEventDate: -1, _id: -1 } },
+        { $limit: 1 }
+      ]),
+      SalesOrder.aggregate([
+        {
+          $match: {
+            dealer: dealerObjectId,
+            status: { $in: ["Confirmed", "Processing", "In Transit", "Delivered"] },
+            "products.discountFamilyKey": familyKey
+          }
+        },
+        {
+          $addFields: {
+            _discountEventDate: {
+              $ifNull: [
+                "$discountFinalizedAt",
+                { $ifNull: ["$approvedAt", { $ifNull: ["$orderDate", "$createdAt"] }] }
+              ]
+            }
+          }
+        },
+        { $sort: { _discountEventDate: -1, _id: -1 } },
+        { $limit: 1 }
+      ])
+    ]);
+
+    const invoice = invoiceCandidates[0] || null;
+    const salesOrder = salesOrderCandidates[0] || null;
+    const invoiceEventTime = invoice?._discountEventDate
+      ? new Date(invoice._discountEventDate).getTime()
+      : Number.NEGATIVE_INFINITY;
+    const salesOrderEventTime = salesOrder?._discountEventDate
+      ? new Date(salesOrder._discountEventDate).getTime()
+      : Number.NEGATIVE_INFINITY;
+
+    if (invoice && invoiceEventTime >= salesOrderEventTime) {
+      const matchingLines = (invoice.items || []).filter(item => item.discountFamilyKey === familyKey);
+      return res.json({
+        success: true,
+        history: buildDiscountHistory({
+          document: invoice,
+          lines: matchingLines,
+          source: "dealer_invoice",
+          reference: invoice.invoiceNumber || String(invoice._id),
+          date: invoice._discountEventDate
+        })
+      });
+    }
+
+    if (salesOrder) {
+      const matchingLines = (salesOrder.products || []).filter(product => product.discountFamilyKey === familyKey);
+      return res.json({
+        success: true,
+        history: buildDiscountHistory({
+          document: salesOrder,
+          lines: matchingLines,
+          source: "sales_order",
+          reference: salesOrder.orderNumber || String(salesOrder._id),
+          date: salesOrder._discountEventDate
+        })
+      });
+    }
+
+    return res.json({ success: true, history: null });
+  } catch (error) {
+    console.error("Get last finalized dealer family discount error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error while fetching dealer family discount history"
+    });
+  }
+};
+
+// @desc    Get the latest finalized invoice discount for a dealer and product family
+// @route   GET /api/sales-orders/dealer-family-last-invoice-discount/:dealerId/:subcategoryId
+// @access  Private (Sales Order dashboard permission)
+export const getLastFinalizedDealerInvoiceFamilyDiscount = async (req, res) => {
+  try {
+    const { dealerId, subcategoryId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(dealerId) || !mongoose.Types.ObjectId.isValid(subcategoryId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid dealer or subcategory ID"
+      });
+    }
+
+    const { DealerInvoice, Product } = getModels(req.dbConnection);
+    const dealerObjectId = new mongoose.Types.ObjectId(dealerId);
+    const subcategoryObjectId = new mongoose.Types.ObjectId(subcategoryId);
+    const familyKey = `subcategory:${subcategoryObjectId.toString()}`;
+
+    // Current invoices persist discountFamilyKey. Product IDs provide a safe
+    // fallback only for legacy lines where that snapshot is absent.
+    const familyProductIds = await Product.distinct('_id', { subcategory: subcategoryObjectId });
+    const invoiceFamilyMatchers = [
+      { "items.discountFamilyKey": familyKey }
+    ];
+    if (familyProductIds.length > 0) {
+      invoiceFamilyMatchers.push({
+        items: {
+          $elemMatch: {
+            product: { $in: familyProductIds },
+            discountFamilyKey: { $in: [null, ''] }
+          }
+        }
+      });
+    }
+
+    const invoiceCandidates = await DealerInvoice.aggregate([
+      {
+        $match: {
+          dealer: dealerObjectId,
+          isDraft: { $ne: true },
+          isDeleted: { $ne: true },
+          status: { $in: ["Approved", "Dispatched", "Delivered"] },
+          $or: invoiceFamilyMatchers
+        }
+      },
+      {
+        $addFields: {
+          _discountEventDate: {
+            $ifNull: ["$approvedAt", { $ifNull: ["$invoiceDate", "$createdAt"] }]
+          }
+        }
+      },
+      { $sort: { _discountEventDate: -1, _id: -1 } },
+      { $limit: 1 }
+    ]);
+
+    const invoice = invoiceCandidates[0] || null;
+    if (!invoice) {
+      return res.json({ success: true, history: null });
+    }
+
+    const familyProductIdSet = new Set(familyProductIds.map(objectIdString));
+    const matchingLines = (invoice.items || []).filter(item => {
+      const persistedFamilyKey = String(item.discountFamilyKey || '').trim();
+      if (persistedFamilyKey) return persistedFamilyKey === familyKey;
+      return familyProductIdSet.has(objectIdString(item.product));
+    });
+
+    if (matchingLines.length === 0) {
+      return res.json({ success: true, history: null });
+    }
+
+    return res.json({
+      success: true,
+      history: buildDiscountHistory({
+        document: invoice,
+        lines: matchingLines,
+        source: "dealer_invoice",
+        reference: invoice.invoiceNumber || String(invoice._id),
+        date: invoice._discountEventDate
+      })
+    });
+  } catch (error) {
+    console.error("Get last finalized dealer invoice family discount error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error while fetching the last invoice family discount"
+    });
+  }
+};
+
 // @desc    Get single dealer invoice
 // @route   GET /api/dealer-invoices/:id
 // @access  Private
@@ -240,6 +1280,7 @@ export const getDealerInvoice = async (req, res) => {
       .populate("createdBy", "name email")
       .populate("approvedBy", "name email")
       .populate("items.product", "itemName productCode HSNCode description")
+      .populate("items.oneTimePriceIncreaseAppliedBy", "name email")
       .populate("items.warehouse", "name address")
       .populate("items.appliedDiscounts.discountId", "mappingType levels validFrom validTo");
 
@@ -274,16 +1315,17 @@ export const getDealerSalesOrders = async (req, res) => {
     const { dealerId } = req.params;
     const { status = "Delivered" } = req.query;
 
-    // Get sales orders that are confirmed or above (Confirmed, Processing, Delivered, Completed)
+    // Get sales orders that are confirmed or above, including In Transit.
     const salesOrders = await SalesOrder.find({
       dealer: dealerId,
-      status: { $in: ["Confirmed", "Processing", "Delivered", "Completed"] }
+      status: { $in: ["Confirmed", "Processing", "In Transit", "Delivered", "Completed"] }
     })
       .populate("products.product", "itemName productCode HSNCode description brand category subcategory")
       .populate("products.warehouse", "name")
       .populate("dealer", "name code dealerType")
       .populate("region", "name")
-      .sort({ orderDate: -1 });
+      .sort({ orderDate: -1 })
+      .lean();
 
     res.json({
       success: true,
@@ -304,7 +1346,7 @@ export const getDealerSalesOrders = async (req, res) => {
 export const calculateDiscountsAndPoints = async (req, res) => {
   try {
     // Get models from company-specific connection
-    const { Dealer, Product, DiscountMapping } = getModels(req.dbConnection);
+    const { Dealer, Product, DiscountMapping, User } = getModels(req.dbConnection);
     
     const { items, dealerId } = req.body;
 
@@ -315,12 +1357,14 @@ export const calculateDiscountsAndPoints = async (req, res) => {
       });
     }
 
-    // Get dealer type for discount filtering
-    let dealerType = null;
-    if (dealerId) {
-      const dealer = await Dealer.findById(dealerId).select('dealerType');
-      dealerType = dealer?.dealerType || null;
-    }
+    const dealer = dealerId
+      ? await Dealer.findById(dealerId).select('dealerType extraDiscounts').lean()
+      : null;
+    const actor = req.user?._id
+      ? await User.findById(req.user._id).select('role allowedDiscountLevels').lean()
+      : null;
+    const enforceLevelPermissions = true;
+    const allowedDiscountLevels = actor?.allowedDiscountLevels || [];
 
     const processedItems = [];
 
@@ -338,62 +1382,111 @@ export const calculateDiscountsAndPoints = async (req, res) => {
 
       // Use the proper findApplicableDiscounts method from DiscountMapping
       const applicableDiscounts = await DiscountMapping.findApplicableDiscounts(
-        item.productId, 'sales', dealerType, req.dbConnection
+        item.productId, 'sales', dealer?.dealerType || null, req.dbConnection
       );
 
       // MRP = product.mrp or unitPrice × (1 + gst/100)
       const mrpPerUnit = product.mrp || (product.unitPrice * (1 + (product.gst || 0) / 100));
       const grossAmount = item.quantity * mrpPerUnit;
 
-      // Build discount breakdown and calculate sequentially
-      let currentAmount = grossAmount;
-      let totalDiscountAmount = 0;
+      // Build the same canonical stage order used by invoice persistence:
+      // direct, submitted selected levels, then authoritative dealer extra.
+      const selectedDiscountLevels = [...new Set((
+        item.selectedDiscountLevels || item.selectedLevels || []
+      ).map(String))];
+      const manualDiscountLevels = normalizeRateMap(item.manualDiscountLevels);
+      const mapping = applicableDiscounts[0] || null;
+      const mappingLevels = mapping?.levels || [];
+      const stages = [];
       let directDiscountPercentage = 0;
+      let masterDiscountCap = mapping?.masterDiscountCap ?? null;
+      const combinedLevelDiscountCap = mapping?.combinedLevelDiscountCap
+        ?? mapping?.maxDiscountPercentage
+        ?? null;
       let appliedDiscounts = [];
 
-      if (applicableDiscounts.length > 0) {
-        const discount = applicableDiscounts[0]; // Use highest priority discount
-
-        // 1. Apply direct discount first (sequentially)
-        if (discount.directDiscountPercentage && discount.directDiscountPercentage > 0) {
-          directDiscountPercentage = discount.directDiscountPercentage;
-          const directAmt = currentAmount * (directDiscountPercentage / 100);
-          currentAmount -= directAmt;
-          totalDiscountAmount += directAmt;
-        }
-
-        // 2. Apply each level discount sequentially
-        const levelBreakdown = [];
-        if (discount.levels && discount.levels.length > 0) {
-          for (const level of discount.levels) {
-            if (level.discountPercentage > 0) {
-              const levelAmt = currentAmount * (level.discountPercentage / 100);
-              currentAmount -= levelAmt;
-              totalDiscountAmount += levelAmt;
-              levelBreakdown.push({
-                levelName: level.levelName,
-                discountPercentage: level.discountPercentage
-              });
-            }
-          }
-        }
-
-        appliedDiscounts = [{
-          discountId: discount._id,
-          discountName: discount.discountName,
-          discountValue: directDiscountPercentage,
-          discountType: discount.discountType,
-          directDiscountPercentage: directDiscountPercentage,
-          levels: levelBreakdown,
-          targetType: discount.targetType,
-          maxDiscountPercentage: discount.maxDiscountPercentage
-        }];
+      if (selectedDiscountLevels.length > 0 && combinedLevelDiscountCap === null) {
+        throw createDiscountPolicyError(
+          `Combined selected-level discount cap is not configured for the applicable sales mapping on ${product.itemName}.`,
+          'COMBINED_LEVEL_DISCOUNT_CAP_NOT_CONFIGURED'
+        );
       }
 
-      // Calculate effective discount percentage (for display)
-      const effectiveDiscountPct = grossAmount > 0 
-        ? parseFloat(((totalDiscountAmount / grossAmount) * 100).toFixed(2))
+      if (mapping && (mapping.discountType === 'direct' || mapping.discountType === 'both')) {
+        directDiscountPercentage = Number(mapping.directDiscountPercentage || 0);
+        if (directDiscountPercentage > 0) {
+          stages.push({ key: 'direct', kind: 'direct', ratePercentage: directDiscountPercentage });
+        }
+      }
+
+      const levelBreakdown = [];
+      for (const levelName of selectedDiscountLevels) {
+        const level = mappingLevels.find(levelDefinition => levelDefinition.levelName === levelName);
+        if (!level) {
+          throw createDiscountPolicyError(
+            `Discount level "${levelName}" is not available for ${product.itemName}`,
+            'DISCOUNT_LEVEL_NOT_FOUND'
+          );
+        }
+        const configuredRate = Number(level.discountPercentage || 0);
+        const requestedRate = manualDiscountLevels[levelName] !== undefined
+          ? Number(manualDiscountLevels[levelName])
+          : configuredRate;
+        if (!Number.isFinite(requestedRate) || requestedRate < 0 || requestedRate > configuredRate) {
+          throw createDiscountPolicyError(
+            `Discount level "${levelName}" for ${product.itemName} must be between 0 and ${configuredRate}%`,
+            'DISCOUNT_LEVEL_RATE_EXCEEDED'
+          );
+        }
+        if (requestedRate > 0) {
+          stages.push({ key: `level:${levelName}`, kind: 'level', levelName, ratePercentage: requestedRate });
+          levelBreakdown.push({ levelName, discountPercentage: requestedRate });
+        }
+      }
+
+      const dealerExtraDiscount = dealer
+        ? resolveDealerExtraDiscountBySpecificity(dealer, product)
         : 0;
+      if (dealerExtraDiscount > 0) {
+        stages.push({ key: 'dealer-extra', kind: 'dealer_extra', ratePercentage: dealerExtraDiscount });
+      }
+      if (!mapping && stages.length > 0) {
+        throw createDiscountPolicyError(
+          `No applicable discount mapping exists for ${product.itemName}`,
+          'DISCOUNT_MAPPING_NOT_FOUND'
+        );
+      }
+
+      const calculation = calculateDiscountLine({
+        baseAmount: grossAmount,
+        stages,
+        gstPercentage: Number(product.gst || 0),
+        masterDiscountCap,
+        combinedLevelDiscountCap,
+        allowedDiscountLevels,
+        enforceLevelPermissions,
+        bypassLevelPermission: false
+      });
+      const currentAmount = calculation.finalAmount;
+      const totalDiscountAmount = calculation.discountAmount;
+      const effectiveDiscountPct = calculation.effectiveDiscountPercentage;
+
+      if (mapping) {
+        appliedDiscounts = [{
+          discountId: mapping._id,
+          discountName: mapping.discountName,
+          discountValue: directDiscountPercentage,
+          discountType: mapping.discountType,
+          directDiscountPercentage,
+          levels: mappingLevels.map(level => ({
+            levelName: level.levelName,
+            discountPercentage: Number(level.discountPercentage || 0)
+          })),
+          targetType: mapping.targetType,
+          masterDiscountCap,
+          combinedLevelDiscountCap
+        }];
+      }
 
       // Final amount already includes GST (MRP based)
       const finalAmount = parseFloat(currentAmount.toFixed(2));
@@ -424,9 +1517,17 @@ export const calculateDiscountsAndPoints = async (req, res) => {
         mrp: mrpPerUnit,
         gst: gstRate,
         gstAmount: gstAmount,
-        discountPercentage: directDiscountPercentage,
+        selectedDiscountLevels,
+        manualDiscountLevels,
+        dealerExtraDiscount,
+        discountPercentage: stages
+          .filter(stage => stage.kind === 'direct' || stage.kind === 'level')
+          .reduce((sum, stage) => sum + stage.ratePercentage, 0),
         discountAmount: parseFloat(totalDiscountAmount.toFixed(2)),
         effectiveDiscountPercentage: effectiveDiscountPct,
+        masterDiscountCapApplied: calculation.masterDiscountCapApplied,
+        combinedLevelDiscountCapApplied: calculation.combinedLevelDiscountCapApplied,
+        levelDiscountTotalPercentage: calculation.levelDiscountTotalPercentage,
         appliedDiscounts,
         pointsEarned,
         totalPrice: finalAmount,
@@ -441,6 +1542,13 @@ export const calculateDiscountsAndPoints = async (req, res) => {
     });
   } catch (error) {
     console.error("Calculate discounts and points error:", error);
+    if (error?.name === 'DiscountPolicyError' || error instanceof RangeError) {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+        code: error.code || 'DISCOUNT_POLICY_INVALID'
+      });
+    }
     res.status(500).json({
       success: false,
       message: "Server error while calculating discounts and points"
@@ -454,7 +1562,7 @@ export const calculateDiscountsAndPoints = async (req, res) => {
 export const createDealerInvoice = async (req, res) => {
   try {
     // Get models from company-specific connection
-    const { DealerInvoice, Dealer, Product, SalesOrder, Stock, StockMovement, DealerLedger, Points, Notification, DiscountMapping } = getModels(req.dbConnection);
+    const { DealerInvoice, Dealer, Product, SalesOrder, Stock, StockMovement, DealerLedger, Points, Notification } = getModels(req.dbConnection);
     
     console.log("Creating dealer invoice with data:", {
       dealerId: req.body.dealerId,
@@ -467,7 +1575,7 @@ export const createDealerInvoice = async (req, res) => {
       dealerId,
       salesOrderId,
       customerInfo,
-      items,
+      items: requestedItems,
       creditDays = 30, // This will be overridden based on sales type
       remarks,
       internalNotes,
@@ -477,6 +1585,7 @@ export const createDealerInvoice = async (req, res) => {
       totalAmount: frontendTotalAmount,
       totalPoints
     } = req.body;
+    let items = requestedItems;
     
     // ── RECALCULATE AND VALIDATE TOTALS ──────────────────────────────────
     // All calculations are MRP-based (GST inclusive). unitPrice is just reference (base price before GST).
@@ -484,6 +1593,7 @@ export const createDealerInvoice = async (req, res) => {
     // GST is reverse-calculated from the final amount for display only.
     let calculatedSubtotal = 0;
     let calculatedTotalDiscount = 0;
+    let calculatedTotalIncrease = 0;
     let calculatedTotalGst = 0;
     let calculatedTotalAmount = 0;
     
@@ -496,6 +1606,7 @@ export const createDealerInvoice = async (req, res) => {
         
         calculatedSubtotal += grossAmount;
         calculatedTotalDiscount += (item.discountAmount || 0);
+        calculatedTotalIncrease += (item.oneTimePriceIncreaseAmount || 0);
         calculatedTotalGst += (item.gstAmount || 0);
         // totalAmount = sum of each item's final amount (MRP after sequential discounts)
         calculatedTotalAmount += (item.totalPrice || (grossAmount - (item.discountAmount || 0)));
@@ -512,10 +1623,11 @@ export const createDealerInvoice = async (req, res) => {
     // totalDiscount = sum of sequential discount amounts
     // totalGst = reverse-calculated GST from final amounts (for display only)
     // totalAmount = subtotal - totalDiscount (since MRP already includes GST, no need to add GST back)
-    const subtotal = calculatedSubtotal;
-    const totalDiscount = calculatedTotalDiscount;
-    const totalGst = calculatedTotalGst;
-    const totalAmount = calculatedTotalAmount;
+    let subtotal = calculatedSubtotal;
+    let totalDiscount = calculatedTotalDiscount;
+    let totalIncrease = calculatedTotalIncrease;
+    let totalGst = calculatedTotalGst;
+    let totalAmount = calculatedTotalAmount;
     // ── END RECALCULATION ─────────────────────────────────────────────────
 
     // Validate required fields
@@ -534,6 +1646,29 @@ export const createDealerInvoice = async (req, res) => {
         message: "Dealer not found"
       });
     }
+
+    // Replace client-computed discounts and amounts with the server canonical result.
+    items = await canonicalizeInvoiceItems({
+      items,
+      dealer,
+      dbConnection: req.dbConnection,
+      actorId: req.user._id,
+      salesOrderId
+    });
+
+    calculatedSubtotal = items.reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.mrp || item.unitPrice || 0), 0);
+    calculatedTotalDiscount = items.reduce((sum, item) => sum + Number(item.discountAmount || 0), 0);
+    calculatedTotalIncrease = items.reduce(
+      (sum, item) => sum + Number(item.oneTimePriceIncreaseAmount || 0),
+      0
+    );
+    calculatedTotalGst = items.reduce((sum, item) => sum + Number(item.gstAmount || 0), 0);
+    calculatedTotalAmount = items.reduce((sum, item) => sum + Number(item.totalPrice || 0), 0);
+    subtotal = calculatedSubtotal;
+    totalDiscount = calculatedTotalDiscount;
+    totalIncrease = calculatedTotalIncrease;
+    totalGst = calculatedTotalGst;
+    totalAmount = calculatedTotalAmount;
 
     // Determine sales type from items and calculate appropriate credit days
     let determinedSalesType = 'Regular Sale'; // Default
@@ -580,175 +1715,7 @@ export const createDealerInvoice = async (req, res) => {
       dealerCreditDays: dealer.creditDays
     });
 
-    // Backend validation for discount limits
-    console.log("🔍 Starting backend discount validation...");
-    
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      console.log(`📋 Validating item ${i + 1}: ${item.productName}`);
-      
-      // Skip validation if no discount applied
-      if (!item.discountPercentage || item.discountPercentage === 0) {
-        console.log(`  ✅ No discount applied, skipping validation`);
-        continue;
-      }
-      
-      // Get applicable discount mappings for this product
-      try {
-        const applicableDiscounts = await DiscountMapping.findApplicableDiscounts(
-          item.product,
-          'sales',
-          dealer.dealerType,
-          req.dbConnection // Pass the company-specific connection
-        );
-        
-        console.log(`  📊 Found ${applicableDiscounts.length} applicable discounts`);
-        
-        if (applicableDiscounts.length === 0) {
-          console.log(`  ⚠️ No applicable discounts found, but discount applied: ${item.discountPercentage}%`);
-          return res.status(400).json({
-            success: false,
-            message: `Invalid discount applied to ${item.productName}. No applicable discount mapping found.`
-          });
-        }
-        
-        // Use the first (highest priority) discount mapping
-        const discountMapping = applicableDiscounts[0];
-        const maxDiscountLimit = discountMapping.maxDiscountPercentage || 100; // Fallback to 100% if undefined
-        
-        console.log(`  🎯 Max discount limit: ${maxDiscountLimit}%`);
-        console.log(`  💰 Applied discount: ${item.discountPercentage}%`);
-        
-        // NEW LOGIC: Validate discount limit excluding direct discount
-        // Calculate level-based discount and dealer extra discount for validation
-        let levelBasedDiscount = 0;
-        let directDiscount = 0;
-        let dealerExtraDiscount = item.dealerExtraDiscount || 0;
-        
-        // If discount type is 'both', separate direct discount from level-based
-        if (discountMapping.discountType === 'both') {
-          directDiscount = discountMapping.directDiscountPercentage || 0;
-          levelBasedDiscount = (item.discountPercentage || 0) - directDiscount;
-        } else if (discountMapping.discountType === 'direct') {
-          directDiscount = item.discountPercentage || 0;
-          levelBasedDiscount = 0;
-        } else {
-          // level_based only
-          levelBasedDiscount = item.discountPercentage || 0;
-          directDiscount = 0;
-        }
-        
-        // Only validate level-based + dealer extra against max limit (exclude direct discount)
-        const discountToValidate = levelBasedDiscount + dealerExtraDiscount;
-        
-        console.log(`  💡 NEW DISCOUNT VALIDATION LOGIC for ${item.productName}:`);
-        console.log(`    - Direct Discount: ${directDiscount}% (not limited)`);
-        console.log(`    - Level-based Discount: ${levelBasedDiscount}%`);
-        console.log(`    - Dealer Extra Discount: ${dealerExtraDiscount}%`);
-        console.log(`    - Discount to Validate: ${discountToValidate}% (≤ ${maxDiscountLimit}%)`);
-        console.log(`    - Total Applied: ${item.discountPercentage + dealerExtraDiscount}%`);
-        
-        if (discountToValidate > maxDiscountLimit) {
-          console.log(`  ❌ Discount validation failed: ${discountToValidate}% > ${maxDiscountLimit}%`);
-          return res.status(400).json({
-            success: false,
-            message: `Level-based and dealer extra discount for ${item.productName} (${discountToValidate}%) exceeds maximum allowed limit of ${maxDiscountLimit}%. Direct discount (${directDiscount}%) is not limited. Please reduce the level-based or dealer extra discount and try again.`,
-            validationError: {
-              type: 'DISCOUNT_LIMIT_EXCEEDED',
-              productName: item.productName,
-              levelBasedDiscount: levelBasedDiscount,
-              dealerExtraDiscount: dealerExtraDiscount,
-              directDiscount: directDiscount,
-              validatedDiscount: discountToValidate,
-              totalAppliedDiscount: item.discountPercentage + dealerExtraDiscount,
-              maxLimit: maxDiscountLimit,
-              discountMappingName: discountMapping.discountName
-            }
-          });
-        }
-        
-        // Additional validation for level-based discounts
-        if (item.selectedDiscountLevels && item.selectedDiscountLevels.length > 0) {
-          console.log(`  🎚️ Validating selected levels: ${item.selectedDiscountLevels.join(', ')}`);
-          
-          // Calculate expected discount from selected levels
-          let expectedLevelDiscount = 0;
-          let directDiscount = 0;
-          
-          // Add direct discount if discount type is 'both'
-          if (discountMapping.discountType === 'both') {
-            directDiscount = discountMapping.directDiscountPercentage || 0;
-          }
-          
-          // Add level discounts (using manual percentages if available)
-          for (const levelName of item.selectedDiscountLevels) {
-            const level = discountMapping.levels?.find(l => l.levelName === levelName);
-            if (level) {
-              // Use manual percentage if available, otherwise use default level percentage
-              const manualPercentage = item.manualDiscountLevels?.[levelName];
-              const percentage = manualPercentage !== undefined ? manualPercentage : level.discountPercentage;
-              expectedLevelDiscount += percentage;
-            } else {
-              console.log(`  ❌ Invalid level selected: ${levelName}`);
-              return res.status(400).json({
-                success: false,
-                message: `Invalid discount level "${levelName}" selected for ${item.productName}.`
-              });
-            }
-          }
-          
-          // NEW LOGIC: Calculate expected discount and validate excluding direct discount
-          const expectedTotalDiscount = directDiscount + expectedLevelDiscount;
-          const expectedValidatedDiscount = expectedLevelDiscount + (item.dealerExtraDiscount || 0);
-          
-          console.log(`  📊 Expected discount breakdown:`);
-          console.log(`    - Direct: ${directDiscount}% (not limited)`);
-          console.log(`    - Levels: ${expectedLevelDiscount}%`);
-          console.log(`    - Dealer Extra: ${item.dealerExtraDiscount || 0}%`);
-          console.log(`    - Total Expected: ${expectedTotalDiscount}%`);
-          console.log(`    - Validated Amount: ${expectedValidatedDiscount}% (≤ ${maxDiscountLimit}%)`);
-          console.log(`    - Applied: ${item.discountPercentage}%`);
-          
-          // Validate that level + dealer extra doesn't exceed max limit
-          if (expectedValidatedDiscount > maxDiscountLimit) {
-            console.log(`  ❌ Level + dealer extra discount validation failed: ${expectedValidatedDiscount}% > ${maxDiscountLimit}%`);
-            return res.status(400).json({
-              success: false,
-              message: `Level-based and dealer extra discount for ${item.productName} (${expectedValidatedDiscount}%) exceeds maximum allowed limit of ${maxDiscountLimit}%. Direct discount (${directDiscount}%) is not limited.`,
-              validationError: {
-                type: 'LEVEL_DISCOUNT_LIMIT_EXCEEDED',
-                productName: item.productName,
-                levelBasedDiscount: expectedLevelDiscount,
-                dealerExtraDiscount: item.dealerExtraDiscount || 0,
-                directDiscount: directDiscount,
-                validatedDiscount: expectedValidatedDiscount,
-                maxLimit: maxDiscountLimit
-              }
-            });
-          }
-          
-          // Allow small rounding differences (0.01%)
-          if (Math.abs(item.discountPercentage - expectedTotalDiscount) > 0.01) {
-            console.log(`  ❌ Discount calculation mismatch`);
-            return res.status(400).json({
-              success: false,
-              message: `Discount calculation error for ${item.productName}. Expected ${expectedTotalDiscount}% but got ${item.discountPercentage}%.`
-            });
-          }
-        }
-        
-        console.log(`  ✅ Discount validation passed for ${item.productName}`);
-        
-      } catch (discountError) {
-        console.error(`  ❌ Error validating discount for ${item.productName}:`, discountError);
-        return res.status(500).json({
-          success: false,
-          message: `Error validating discount for ${item.productName}. Please try again.`
-        });
-      }
-    }
-    
-    console.log("✅ All discount validations passed, proceeding with invoice creation...");
+    // Canonicalization above is the sole discount-policy authority.
 
     // Get sales order if provided
     let salesOrder = null;
@@ -809,6 +1776,7 @@ export const createDealerInvoice = async (req, res) => {
       internalNotes,
       subtotal: subtotal || 0,
       totalDiscount: totalDiscount || 0,
+      totalIncrease: totalIncrease || 0,
       totalGst: totalGst || 0,
       totalAmount: totalAmount || 0,
       totalPoints: totalPoints || 0,
@@ -961,6 +1929,7 @@ export const createDealerInvoice = async (req, res) => {
       .populate("region", "name")
       .populate("salesOrder", "orderNumber")
       .populate("items.product", "itemName productCode HSNCode")
+      .populate("items.oneTimePriceIncreaseAppliedBy", "name email")
       .populate("items.warehouse", "name");
 
     res.status(201).json({
@@ -971,6 +1940,15 @@ export const createDealerInvoice = async (req, res) => {
   } catch (error) {
     console.error("Create dealer invoice error:", error);
     
+    if (error?.name === 'DiscountPolicyError' || error instanceof RangeError) {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+        code: error.code || 'DISCOUNT_POLICY_INVALID',
+        violations: error.violations || []
+      });
+    }
+
     // Handle duplicate key error on invoiceNumber (null) — fix stale non-sparse index
     if (error.code === 11000 && error.keyPattern?.invoiceNumber) {
       try {
@@ -1017,11 +1995,11 @@ export const approveDealerInvoice = async (req, res) => {
       });
     }
     
-    if (invoice.status !== "Draft") {
+    if (invoice.status !== "Draft" || invoice.isDraft !== true || invoice.isDeleted === true) {
       await session.abortTransaction();
-      return res.status(400).json({
+      return res.status(409).json({
         success: false,
-        message: "Only draft invoices can be approved"
+        message: "Only active draft invoices can be approved"
       });
     }
     
@@ -1032,55 +2010,168 @@ export const approveDealerInvoice = async (req, res) => {
     // If the SO was edited (partial dispatch / quantity reduction) after the
     // draft was created and the user didn't click Sync, block approval.
     if (invoice.salesOrder) {
-      try {
-        const linkedSO = await SalesOrder.findById(invoice.salesOrder).session(session);
-        if (linkedSO) {
-          const soQtyMap = {};
-          (linkedSO.products || []).forEach(p => {
-            const pid = (p.product?._id || p.product)?.toString();
-            if (pid) soQtyMap[pid] = p.quantity;
-          });
+      const linkedSO = await SalesOrder.findById(invoice.salesOrder).session(session);
+      if (!linkedSO) {
+        await session.abortTransaction();
+        return res.status(409).json({
+          success: false,
+          message: "Cannot approve because the linked sales order no longer exists."
+        });
+      }
 
-          const mismatches = [];
-          for (const item of invoice.items) {
-            const pid = (item.product?._id || item.product)?.toString();
-            if (!pid) continue;
-            if (soQtyMap[pid] === undefined) {
-              // Product was removed from SO entirely (partial dispatch with qty=0)
-              mismatches.push({
-                productName: item.productName || pid,
-                invoiceQty: item.quantity,
-                salesOrderQty: 0,
-                removed: true,
-              });
-            } else if (soQtyMap[pid] !== item.quantity) {
-              mismatches.push({
-                productName: item.productName || pid,
-                invoiceQty: item.quantity,
-                salesOrderQty: soQtyMap[pid],
-              });
-            }
-          }
+      const sourceLinesById = new Map();
+      const sourceLinesByProduct = new Map();
+      for (const productLine of linkedSO.products || []) {
+        const sourceLineId = objectIdString(productLine._id);
+        const productId = objectIdString(productLine.product?._id || productLine.product);
+        sourceLinesById.set(sourceLineId, productLine);
+        const lines = sourceLinesByProduct.get(productId) || [];
+        lines.push(productLine);
+        sourceLinesByProduct.set(productId, lines);
+      }
 
-          if (mismatches.length > 0) {
-            await session.abortTransaction();
-            const detail = mismatches
-              .map(m => `• ${m.productName}: invoice has ${m.invoiceQty}, sales order has ${m.salesOrderQty}`)
-              .join('\n');
-            return res.status(400).json({
-              success: false,
-              message: `Cannot approve — invoice quantities don't match the linked sales order (${linkedSO.orderNumber}). Please use the Sync button to update the invoice before approving.`,
-              mismatches,
-              detail,
+      const invoiceQtyBySourceId = new Map();
+      const productNames = new Map();
+      const identityErrors = [];
+      for (const item of invoice.items || []) {
+        const productId = objectIdString(item.product?._id || item.product);
+        const explicitSourceLineId = objectIdString(item.sourceSalesOrderLineId);
+        const productCandidates = sourceLinesByProduct.get(productId) || [];
+        let sourceLineId = explicitSourceLineId;
+
+        if (!sourceLineId) {
+          if (productCandidates.length > 1) {
+            identityErrors.push({
+              productName: item.productName || productId,
+              code: 'SOURCE_SALES_ORDER_LINE_ID_REQUIRED',
+              message: 'sourceSalesOrderLineId is required for duplicate product lines.'
             });
+            continue;
           }
+          sourceLineId = objectIdString(productCandidates[0]?._id);
         }
-      } catch (syncCheckError) {
-        console.error('⚠️ Error during quantity sync check (non-fatal):', syncCheckError);
-        // Don't block approval if the check itself fails — log and continue
+
+        const sourceLine = sourceLinesById.get(sourceLineId);
+        if (!sourceLine || objectIdString(sourceLine.product) !== productId) {
+          identityErrors.push({
+            productName: item.productName || productId,
+            sourceSalesOrderLineId: sourceLineId || null,
+            code: 'SALES_ORDER_LINE_NOT_FOUND',
+            message: 'Invoice source line does not match the linked sales order.'
+          });
+          continue;
+        }
+        if (invoiceQtyBySourceId.has(sourceLineId)) {
+          identityErrors.push({
+            productName: item.productName || productId,
+            sourceSalesOrderLineId: sourceLineId,
+            code: 'DUPLICATE_SALES_ORDER_LINE_ID',
+            message: 'The same Sales Order line is used by more than one invoice item.'
+          });
+          continue;
+        }
+
+        invoiceQtyBySourceId.set(sourceLineId, Number(item.quantity || 0));
+        productNames.set(sourceLineId, item.productName || sourceLine.productName || productId);
+      }
+
+      if (identityErrors.length > 0) {
+        await session.abortTransaction();
+        return res.status(409).json({
+          success: false,
+          message: 'Cannot approve — linked invoice line identity is ambiguous or invalid. Sync the invoice with sourceSalesOrderLineId values.',
+          code: identityErrors[0].code,
+          identityErrors
+        });
+      }
+
+      const mismatches = [];
+      for (const [sourceLineId, productLine] of sourceLinesById.entries()) {
+        const salesOrderQty = Number(productLine.quantity || 0);
+        const invoiceQty = invoiceQtyBySourceId.get(sourceLineId) || 0;
+        if (salesOrderQty !== invoiceQty) {
+          mismatches.push({
+            sourceSalesOrderLineId: sourceLineId,
+            productName: productNames.get(sourceLineId) || productLine.productName || sourceLineId,
+            invoiceQty,
+            salesOrderQty,
+            removed: invoiceQty === 0
+          });
+        }
+      }
+
+      if (mismatches.length > 0) {
+        await session.abortTransaction();
+        const detail = mismatches
+          .map(mismatch => `• ${mismatch.productName}: invoice has ${mismatch.invoiceQty}, sales order has ${mismatch.salesOrderQty}`)
+          .join('\n');
+        return res.status(409).json({
+          success: false,
+          message: `Cannot approve — invoice quantities don't match the linked sales order (${linkedSO.orderNumber}). Please use the Sync button to update the invoice before approving.`,
+          mismatches,
+          detail
+        });
+      }
+
+      // Rebuild every linked line from the Sales Order's persisted ordered stages.
+      // This both rejects driver mutations and overwrites any stale/tampered draft
+      // monetary or snapshot fields before approval side effects are created.
+      const dealerForReplay = await Dealer.findById(invoice.dealer)
+        .select('dealerType extraDiscounts')
+        .session(session)
+        .lean();
+      if (!dealerForReplay) {
+        await session.abortTransaction();
+        return res.status(409).json({
+          success: false,
+          message: 'Cannot approve because the invoice dealer no longer exists.'
+        });
+      }
+      // Approval validates persisted level choices against the user who last
+      // selected/canonicalized them, not against the approver. Approval rights
+      // and discount-level ownership are separate responsibilities.
+      const persistedLevelActorIds = [...new Set(
+        invoice.items
+          .filter((item) => (item.selectedDiscountLevels || []).length > 0)
+          .map((item) => objectIdString(item.discountPermissionSnapshot?.actorUserId))
+          .filter(Boolean)
+      )];
+      const levelAuthorizationActorId = persistedLevelActorIds.length === 1
+        ? persistedLevelActorIds[0]
+        : (objectIdString(invoice.createdBy) || req.user._id);
+      const replayedItems = await canonicalizeInvoiceItems({
+        items: invoice.items.map(item => item.toObject()),
+        existingItems: invoice.items.map(item => item.toObject()),
+        dealer: dealerForReplay,
+        dbConnection: req.dbConnection,
+        actorId: levelAuthorizationActorId,
+        salesOrderId: invoice.salesOrder,
+        session
+      });
+      invoice.set('items', replayedItems);
+
+      // Serialize approval against partial dispatch without changing order business data.
+      // A concurrent SalesOrder write either prevents this version match or causes a
+      // transaction write conflict, so only one transaction can commit its snapshot.
+      const serializationFilter = linkedSO.__v == null
+        ? { _id: linkedSO._id, __v: { $exists: false } }
+        : { _id: linkedSO._id, __v: linkedSO.__v };
+      const serializationResult = await SalesOrder.collection.updateOne(
+        serializationFilter,
+        { $inc: { __v: 1 }, $currentDate: { updatedAt: true } },
+        { session }
+      );
+      const serializedCount = serializationResult.matchedCount
+        ?? serializationResult.result?.n
+        ?? 0;
+      if (serializedCount !== 1) {
+        throw createDiscountPolicyError(
+          'The linked Sales Order changed during approval. Sync the invoice and try again.',
+          'SALES_ORDER_CHANGED_DURING_APPROVAL'
+        );
       }
     }
-    // ── END QUANTITY SYNC CHECK ──────────────────────────────────────────────
+    // ── END QUANTITY AND POLICY SYNC CHECK ─────────────────────────────────
 
     // Generate invoice number NOW
     invoice.invoiceNumber = await generateInvoiceNumber(req.dbConnection);
@@ -1150,8 +2241,7 @@ export const approveDealerInvoice = async (req, res) => {
         }
       } catch (reverseError) {
         console.error("❌ Error reversing order ledger entry:", reverseError);
-        // Don't fail the transaction - log and continue
-        // The invoice ledger will still be created correctly
+        throw reverseError;
       }
     }
     
@@ -1159,65 +2249,75 @@ export const approveDealerInvoice = async (req, res) => {
     try {
       const dealer = await Dealer.findById(invoice.dealer).session(session);
       
-      // Check if this invoice's sales order had credit overlimit approval
-      let hasOrderApproval = false;
+      // A Sales Order over-limit approval covers only the exposure recorded when
+      // it was approved. An invoice-only increase must not silently extend it.
+      let approvedOrderExposure = null;
+      let approvedOrderNumber = null;
       if (invoice.salesOrder) {
         const salesOrder = await SalesOrder.findById(invoice.salesOrder).session(session);
-        if (salesOrder && salesOrder.creditOverlimit && salesOrder.creditOverlimit.isOverlimit && salesOrder.creditOverlimit.approvedBy) {
-          hasOrderApproval = true;
-          console.log(`✅ Sales order ${salesOrder.orderNumber} had credit overlimit approval - Skipping credit check for invoice`);
-          console.log(`   Approved by: ${salesOrder.creditOverlimit.approvedBy}`);
-          console.log(`   Approved at: ${salesOrder.creditOverlimit.approvedAt}`);
+        const approvedExposure = Number(salesOrder?.creditOverlimit?.newOutstanding);
+        if (salesOrder?.creditOverlimit?.isOverlimit
+            && salesOrder.creditOverlimit.approvedBy
+            && Number.isFinite(approvedExposure)) {
+          approvedOrderExposure = approvedExposure;
+          approvedOrderNumber = salesOrder.orderNumber;
         }
       }
-      
-      // CREDIT LIMIT CHECK - Block invoice approval if credit limit exceeded
-      // SKIP if sales order was already approved for overlimit
-      if (!hasOrderApproval && dealer.creditLimit && dealer.creditLimit > 0) {
-        console.log(`💳 Checking credit limit for dealer ${dealer.name}...`);
-        
-        // Get the last entry for this dealer to get current outstanding
-        const lastEntry = await DealerLedger.findOne(
-          { dealer: invoice.dealer },
-          {},
-          { sort: { 'createdAt': -1 } }
-        ).session(session);
-        
-        const currentOutstanding = lastEntry ? lastEntry.runningBalance : 0;
-        const newOutstanding = currentOutstanding + invoice.totalAmount;
-        
+
+      const creditLastEntry = await DealerLedger.findOne(
+        { dealer: invoice.dealer },
+        {},
+        { sort: { 'createdAt': -1 } }
+      ).session(session);
+      const currentOutstanding = creditLastEntry ? Number(creditLastEntry.runningBalance || 0) : 0;
+      const newOutstanding = currentOutstanding + Number(invoice.totalAmount || 0);
+      const orderApprovalCoversCurrentExposure = approvedOrderExposure !== null
+        && newOutstanding <= approvedOrderExposure + 0.01;
+
+      // CREDIT LIMIT CHECK - Block invoice approval if the adjusted invoice
+      // exceeds both the dealer limit and any exposure approved on its SO.
+      if (dealer.creditLimit && dealer.creditLimit > 0) {
         console.log(`💳 Credit Limit Check:`, {
           creditLimit: dealer.creditLimit,
           currentOutstanding,
           invoiceAmount: invoice.totalAmount,
           newOutstanding,
+          approvedOrderExposure,
+          orderApprovalCoversCurrentExposure,
           overlimit: newOutstanding - dealer.creditLimit
         });
-        
-        // If credit limit exceeded, block invoice approval
-        if (newOutstanding > dealer.creditLimit) {
+
+        if (newOutstanding > dealer.creditLimit && !orderApprovalCoversCurrentExposure) {
           const overlimitAmount = newOutstanding - dealer.creditLimit;
-          
+
           console.log(`⚠️ Credit limit exceeded by ₹${overlimitAmount.toFixed(2)}`);
-          
+
           await session.abortTransaction();
           return res.status(400).json({
             success: false,
-            message: `Cannot approve invoice - Credit limit exceeded by ₹${overlimitAmount.toLocaleString()}`,
+            message: approvedOrderExposure !== null
+              ? `Cannot approve invoice - adjusted exposure exceeds the amount approved on Sales Order ${approvedOrderNumber}. New credit approval is required.`
+              : `Cannot approve invoice - Credit limit exceeded by ₹${overlimitAmount.toLocaleString()}`,
+            code: approvedOrderExposure !== null
+              ? 'SALES_ORDER_APPROVED_EXPOSURE_EXCEEDED'
+              : 'DEALER_CREDIT_LIMIT_EXCEEDED',
             creditLimitInfo: {
               creditLimit: dealer.creditLimit,
               currentOutstanding,
               invoiceAmount: invoice.totalAmount,
               newOutstanding,
+              approvedOrderExposure,
               overlimitAmount,
               availableCredit: dealer.creditLimit - currentOutstanding
             }
           });
         }
-        
-        console.log(`✅ Credit limit check passed - Available credit: ₹${(dealer.creditLimit - currentOutstanding).toLocaleString()}`);
-      } else if (hasOrderApproval) {
-        console.log(`⏭️ Skipping credit limit check - Sales order was pre-approved for overlimit`);
+
+        if (newOutstanding > dealer.creditLimit && orderApprovalCoversCurrentExposure) {
+          console.log(`✅ Sales Order ${approvedOrderNumber} approval covers adjusted exposure up to ₹${approvedOrderExposure.toLocaleString()}`);
+        } else {
+          console.log(`✅ Credit limit check passed - Available credit: ₹${(dealer.creditLimit - currentOutstanding).toLocaleString()}`);
+        }
       }
       
       // Get the last entry for this dealer to calculate running balance
@@ -1354,8 +2454,6 @@ export const approveDealerInvoice = async (req, res) => {
     
     await session.commitTransaction();
     
-    await session.commitTransaction();
-    
     // Create automatic journal entry for accounting
     try {
       const { createDealerInvoiceEntry } = await import('../services/accountingService.js');
@@ -1371,6 +2469,7 @@ export const approveDealerInvoice = async (req, res) => {
       .populate("region", "name")
       .populate("salesOrder", "orderNumber")
       .populate("items.product", "itemName productCode HSNCode")
+      .populate("items.oneTimePriceIncreaseAppliedBy", "name email")
       .populate("items.warehouse", "name")
       .populate("approvedBy", "name email");
     
@@ -1382,9 +2481,19 @@ export const approveDealerInvoice = async (req, res) => {
       invoice: populatedInvoice
     });
   } catch (error) {
-    await session.abortTransaction();
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+    }
     console.error("Approve invoice error:", error);
-    res.status(500).json({
+    if (error?.name === 'DiscountPolicyError' || error instanceof RangeError) {
+      return res.status(409).json({
+        success: false,
+        message: error.message,
+        code: error.code || 'DISCOUNT_POLICY_INVALID',
+        violations: error.violations || []
+      });
+    }
+    return res.status(500).json({
       success: false,
       message: "Server error while approving invoice",
       error: error.message
@@ -1399,40 +2508,10 @@ export const approveDealerInvoice = async (req, res) => {
 // @access  Private
 export const updateDealerInvoice = async (req, res) => {
   try {
-    // Get models from company-specific connection
-    const { DealerInvoice, Dealer, Product } = getModels(req.dbConnection);
-    
+    const { DealerInvoice, Dealer } = getModels(req.dbConnection);
     const { id } = req.params;
-    const updateData = req.body;
 
-    // Remove fields that shouldn't be updated directly
-    delete updateData.invoiceNumber;
-    delete updateData.createdBy;
-    delete updateData.createdAt;
-
-    // Load the current invoice for the period-lock check and audit diff
-    const beforeDoc = await DealerInvoice.findById(id).lean();
-    if (!beforeDoc) {
-      return res.status(404).json({
-        success: false,
-        message: "Dealer invoice not found"
-      });
-    }
-
-    // Block edits to an invoice dated in a closed financial year
-    await assertPeriodOpen(req.dbConnection, beforeDoc.invoiceDate, 'dealer invoice');
-
-    const invoice = await DealerInvoice.findByIdAndUpdate(
-      id,
-      updateData,
-      { new: true, runValidators: true }
-    )
-      .populate("dealer", "name code dealerType")
-      .populate("region", "name")
-      .populate("salesOrder", "orderNumber")
-      .populate("items.product", "itemName productCode HSNCode")
-      .populate("items.warehouse", "name");
-
+    const invoice = await DealerInvoice.findById(id);
     if (!invoice) {
       return res.status(404).json({
         success: false,
@@ -1440,157 +2519,102 @@ export const updateDealerInvoice = async (req, res) => {
       });
     }
 
-    // Audit the field-level changes
+    if (invoice.status !== "Draft" || invoice.isDraft !== true || invoice.isDeleted === true) {
+      return res.status(409).json({
+        success: false,
+        message: "Only active draft invoices can be edited"
+      });
+    }
+
+    await assertPeriodOpen(req.dbConnection, invoice.invoiceDate, 'dealer invoice');
+    
+    const beforeDoc = invoice.toObject();
+    let canonicalItems = null;
+    if (Object.prototype.hasOwnProperty.call(req.body, "items")) {
+      const dealer = await Dealer.findById(invoice.dealer).select('dealerType extraDiscounts').lean();
+      if (!dealer) {
+        return res.status(409).json({ success: false, message: "Invoice dealer no longer exists" });
+      }
+      canonicalItems = await canonicalizeInvoiceItems({
+        items: req.body.items,
+        existingItems: invoice.items.map((item) => item.toObject()),
+        dealer,
+        dbConnection: req.dbConnection,
+        actorId: req.user._id,
+        salesOrderId: invoice.salesOrder
+      });
+    }
+
+    const allowedFields = ["items", "creditDays", "remarks", "internalNotes", "printSettings"];
+    for (const field of allowedFields) {
+      if (Object.prototype.hasOwnProperty.call(req.body, field)) {
+        invoice.set(field, field === "items" ? canonicalItems : req.body[field]);
+      }
+    }
+
+    if (req.body.customerInfo && typeof req.body.customerInfo === "object") {
+      const customerFieldMap = {
+        name: "customerName",
+        address: "customerAddress",
+        phone: "customerPhone",
+        email: "customerEmail",
+        gst: "customerGST"
+      };
+      for (const [requestField, modelField] of Object.entries(customerFieldMap)) {
+        if (Object.prototype.hasOwnProperty.call(req.body.customerInfo, requestField)) {
+          invoice.set(modelField, req.body.customerInfo[requestField]);
+        }
+      }
+    }
+
+    const changedFields = invoice.modifiedPaths();
+    await invoice.save();
+    const afterDoc = invoice.toObject();
+
     await recordUpdate(req.dbConnection, {
       entity: 'DealerInvoice',
       entityId: invoice._id,
       documentNumber: invoice.invoiceNumber,
       before: beforeDoc,
-      after: { ...beforeDoc, ...updateData },
-      fields: Object.keys(updateData),
-      req,
+      after: afterDoc,
+      fields: changedFields,
+      req
     });
 
-    res.json({
+    await invoice.populate([
+      { path: "dealer", select: "name code dealerType" },
+      { path: "region", select: "name" },
+      { path: "salesOrder", select: "orderNumber" },
+      { path: "items.product", select: "itemName productCode HSNCode" },
+      { path: "items.oneTimePriceIncreaseAppliedBy", select: "name email" },
+      { path: "items.warehouse", select: "name" }
+    ]);
+
+    return res.json({
       success: true,
-      message: "Dealer invoice updated successfully",
+      message: "Draft invoice updated successfully",
       invoice
     });
   } catch (error) {
     if (handlePeriodLockError(error, res)) return;
+    if (error?.name === "DiscountPolicyError" || error instanceof RangeError) {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+        code: error.code || "DISCOUNT_POLICY_INVALID",
+        violations: error.violations || []
+      });
+    }
+    if (error?.name === "ValidationError") {
+      return res.status(400).json({
+        success: false,
+        message: error.message
+      });
+    }
     console.error("Update dealer invoice error:", error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Server error while updating dealer invoice"
-    });
-  }
-};
-
-// @desc    Update invoice status
-// @route   PATCH /api/dealer-invoices/:id/status
-// @access  Private
-export const updateInvoiceStatus = async (req, res) => {
-  try {
-    // Get models from company-specific connection
-    const { DealerInvoice } = getModels(req.dbConnection);
-    
-    const { id } = req.params;
-    const { status, remarks } = req.body;
-
-    if (!status) {
-      return res.status(400).json({
-        success: false,
-        message: "Status is required"
-      });
-    }
-
-    const updateData = { status };
-    
-    if (status === "Approved") {
-      updateData.approvedBy = req.user._id;
-      updateData.approvedAt = new Date();
-    }
-
-    if (remarks) {
-      updateData.remarks = remarks;
-    }
-
-    const beforeStatusDoc = await DealerInvoice.findById(id).select('status invoiceNumber').lean();
-
-    const invoice = await DealerInvoice.findByIdAndUpdate(
-      id,
-      updateData,
-      { new: true, runValidators: true }
-    )
-      .populate("dealer", "name code dealerType")
-      .populate("region", "name")
-      .populate("salesOrder", "orderNumber")
-      .populate("items.product", "itemName productCode HSNCode")
-      .populate("items.warehouse", "name");
-
-    if (!invoice) {
-      return res.status(404).json({
-        success: false,
-        message: "Dealer invoice not found"
-      });
-    }
-
-    await recordStatusChange(req.dbConnection, {
-      entity: 'DealerInvoice',
-      entityId: invoice._id,
-      documentNumber: invoice.invoiceNumber,
-      oldStatus: beforeStatusDoc?.status,
-      newStatus: status,
-      reason: remarks || '',
-      req,
-    });
-
-    res.json({
-      success: true,
-      message: `Invoice status updated to ${status}`,
-      invoice
-    });
-  } catch (error) {
-    console.error("Update invoice status error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Server error while updating invoice status"
-    });
-  }
-};
-
-// @desc    Approve dealer invoice
-// @route   PATCH /api/dealer-invoices/:id/approve
-// @access  Private
-export const approveInvoice = async (req, res) => {
-  try {
-    // Get models from company-specific connection
-    const { DealerInvoice } = getModels(req.dbConnection);
-    
-    const { id } = req.params;
-
-    const invoice = await DealerInvoice.findById(id);
-
-    if (!invoice) {
-      return res.status(404).json({
-        success: false,
-        message: "Dealer invoice not found"
-      });
-    }
-
-    // Check if already approved
-    if (invoice.status === "Approved") {
-      return res.status(400).json({
-        success: false,
-        message: "Invoice is already approved"
-      });
-    }
-
-    // Update invoice to approved status
-    invoice.status = "Approved";
-    invoice.approvedBy = req.user._id;
-    invoice.approvedAt = new Date();
-    await invoice.save();
-
-    // Populate the invoice for response
-    const populatedInvoice = await DealerInvoice.findById(id)
-      .populate("dealer", "name code dealerType")
-      .populate("region", "name")
-      .populate("salesOrder", "orderNumber")
-      .populate("items.product", "itemName productCode HSNCode")
-      .populate("items.warehouse", "name")
-      .populate("approvedBy", "name email");
-
-    res.json({
-      success: true,
-      message: "Invoice approved successfully",
-      invoice: populatedInvoice
-    });
-  } catch (error) {
-    console.error("Approve invoice error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Server error while approving invoice"
     });
   }
 };
@@ -1616,6 +2640,29 @@ export const deleteDealerInvoice = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "Invoice not found"
+      });
+    }
+
+    const isDraftDeletion = invoice.status === "Draft" && invoice.isDraft === true;
+    const isApprovedCancellation = invoice.status === "Approved" && invoice.isDraft === false;
+
+    if (!isDraftDeletion && !isApprovedCancellation) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: "Only draft invoices can be deleted and only approved invoices can be cancelled"
+      });
+    }
+
+    const requiredPermission = isDraftDeletion ? "invoices.delete" : "invoices.cancel";
+    const hasStatusPermission = req.user?.role === "super_admin"
+      || userHasPermission(req.user?.permissions, [requiredPermission, "invoice"]);
+
+    if (!hasStatusPermission) {
+      await session.abortTransaction();
+      return res.status(403).json({
+        success: false,
+        message: `Access denied. Required permission: ${requiredPermission}`
       });
     }
 
@@ -1840,13 +2887,14 @@ export const deleteDealerInvoice = async (req, res) => {
 // @access  Private
 export const getInvoiceStats = async (req, res) => {
   try {
-    // Get models from company-specific connection
     const { DealerInvoice } = getModels(req.dbConnection);
-    
     const { startDate, endDate, dealerId } = req.query;
+    const filter = {
+      isDraft: { $ne: true },
+      isDeleted: { $ne: true },
+      status: { $ne: 'Draft' }
+    };
 
-    // Build filter object - exclude drafts and deleted invoices
-    const filter = { isDraft: { $ne: true }, isDeleted: { $ne: true } };
     if (dealerId) filter.dealer = dealerId;
     if (startDate || endDate) {
       filter.invoiceDate = {};
@@ -1854,23 +2902,6 @@ export const getInvoiceStats = async (req, res) => {
       if (endDate) filter.invoiceDate.$lte = new Date(endDate);
     }
 
-    // Auto-update overdue status for past-due unpaid invoices
-    await DealerInvoice.updateMany(
-      {
-        isDraft: { $ne: true },
-        isDeleted: { $ne: true },
-        paymentStatus: { $in: ["Pending", "Partial"] },
-        dueDate: { $lt: new Date(), $exists: true, $ne: null }
-      },
-      { $set: { paymentStatus: "Overdue" } }
-    );
-    if (startDate || endDate) {
-      filter.invoiceDate = {};
-      if (startDate) filter.invoiceDate.$gte = new Date(startDate);
-      if (endDate) filter.invoiceDate.$lte = new Date(endDate);
-    }
-
-    // Get statistics
     const [
       totalInvoices,
       totalAmount,
@@ -1879,20 +2910,32 @@ export const getInvoiceStats = async (req, res) => {
       pendingInvoices,
       approvedInvoices,
       dispatchedInvoices,
+      deliveredInvoices,
       paidInvoices,
-      overdueInvoices
+      overdueInvoices,
+      statusBreakdown
     ] = await Promise.all([
       DealerInvoice.countDocuments(filter),
       DealerInvoice.aggregate([
         { $match: filter },
         { $group: { _id: null, total: { $sum: "$totalAmount" } } }
       ]),
-      // Outstanding = sum of (totalAmount - paidAmount) for unpaid invoices
       DealerInvoice.aggregate([
         { $match: { ...filter, paymentStatus: { $in: ["Pending", "Partial", "Overdue"] } } },
-        { $group: { _id: null, total: { $sum: { $subtract: ["$totalAmount", { $ifNull: ["$paidAmount", 0] }] } } } }
+        {
+          $group: {
+            _id: null,
+            total: {
+              $sum: {
+                $max: [
+                  { $subtract: ["$totalAmount", { $ifNull: ["$paidAmount", 0] }] },
+                  0
+                ]
+              }
+            }
+          }
+        }
       ]),
-      // Collected = sum of paidAmount across all invoices
       DealerInvoice.aggregate([
         { $match: filter },
         { $group: { _id: null, total: { $sum: { $ifNull: ["$paidAmount", 0] } } } }
@@ -1900,16 +2943,25 @@ export const getInvoiceStats = async (req, res) => {
       DealerInvoice.countDocuments({ ...filter, status: "Pending" }),
       DealerInvoice.countDocuments({ ...filter, status: "Approved" }),
       DealerInvoice.countDocuments({ ...filter, status: "Dispatched" }),
+      DealerInvoice.countDocuments({ ...filter, status: "Delivered" }),
       DealerInvoice.countDocuments({ ...filter, paymentStatus: "Paid" }),
-      // Overdue = unpaid/partially paid invoices where dueDate has passed
-      // Exclude drafts and fully paid invoices
-      DealerInvoice.countDocuments({ 
+      DealerInvoice.countDocuments({
         ...filter,
-        isDraft: { $ne: true },
-        isDeleted: { $ne: true },
         paymentStatus: { $in: ["Pending", "Partial", "Overdue"] },
         dueDate: { $lt: new Date(), $exists: true, $ne: null }
-      })
+      }),
+      DealerInvoice.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: '$paymentStatus',
+            count: { $sum: 1 },
+            totalAmount: { $sum: '$totalAmount' },
+            paidAmount: { $sum: { $ifNull: ['$paidAmount', 0] } }
+          }
+        },
+        { $sort: { count: -1, _id: 1 } }
+      ])
     ]);
 
     res.json({
@@ -1922,8 +2974,10 @@ export const getInvoiceStats = async (req, res) => {
         pendingInvoices,
         approvedInvoices,
         dispatchedInvoices,
+        deliveredInvoices,
         paidInvoices,
-        overdueInvoices
+        overdueInvoices,
+        statusBreakdown
       }
     });
   } catch (error) {

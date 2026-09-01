@@ -1,9 +1,10 @@
 import mongoose from 'mongoose';
 import { getModels } from '../utils/getModels.js';
 import { discountMappingSchema } from '../../models/DiscountMapping.js';
+import { calculateDiscountLine } from '../../utils/sequentialDiscountPolicy.js';
 
 // ── Find applicable discount for a product on the company connection ──────────
-async function findProductDiscount(productId, product, dealerType, conn, seAllowedLevels = []) {
+export async function findProductDiscount(productId, product, dealerType, conn, seAllowedLevels = []) {
   try {
     const DiscountMapping = conn.models.DiscountMapping || conn.model('DiscountMapping', discountMappingSchema);
     const now = new Date();
@@ -44,16 +45,19 @@ async function findProductDiscount(productId, product, dealerType, conn, seAllow
 
         // Filter levels to only those the SE is allowed to apply
         const allLevels = d.levels || [];
-        const allowedLevels = seAllowedLevels.length > 0
-          ? allLevels.filter(l => seAllowedLevels.includes(l.levelName))
-          : allLevels;
+        const allowedLevels = allLevels.filter(l => seAllowedLevels.includes(l.levelName));
 
         return {
           discountMappingId:       d._id,
           discountMappingName:     d.discountName,
           discountType:            d.discountType,
           directDiscountPct:       d.directDiscountPercentage || 0,
-          maxDiscountPercentage:   d.maxDiscountPercentage || 0,
+          masterDiscountCap:       d.masterDiscountCap ?? null,
+          combinedLevelDiscountCap: d.combinedLevelDiscountCap ?? d.maxDiscountPercentage ?? null,
+          configuredLevels:        allLevels.map(l => ({
+            levelName:          l.levelName,
+            discountPercentage: l.discountPercentage,
+          })),
           availableLevels:         allowedLevels.map(l => ({
             levelName:          l.levelName,
             discountPercentage: l.discountPercentage,
@@ -72,7 +76,7 @@ async function findProductDiscount(productId, product, dealerType, conn, seAllow
 }
 
 // ── Find dealer extra discount for a product ──────────────────────────────────
-function findDealerExtraDiscount(product, dealer) {
+export function findDealerExtraDiscount(product, dealer) {
   if (!dealer?.extraDiscounts?.length) return 0;
   const active = dealer.extraDiscounts.filter(d => d.isActive);
 
@@ -347,15 +351,18 @@ export const getProducts = async (req, res) => {
       if (!d && product.category?._id)     d = pick(m => m.targetType === 'category'    && String(m.category)    === String(product.category._id));
       if (!d) return null;
       const allLevels = d.levels || [];
-      const allowedLevels = seAllowedLevels.length > 0
-        ? allLevels.filter(l => seAllowedLevels.includes(l.levelName))
-        : allLevels;
+      const allowedLevels = allLevels.filter(l => seAllowedLevels.includes(l.levelName));
       return {
         discountMappingId:     d._id,
         discountMappingName:   d.discountName,
         discountType:          d.discountType,
         directDiscountPct:     d.directDiscountPercentage || 0,
-        maxDiscountPercentage: d.maxDiscountPercentage || 0,
+        masterDiscountCap:     d.masterDiscountCap ?? null,
+        combinedLevelDiscountCap: d.combinedLevelDiscountCap ?? d.maxDiscountPercentage ?? null,
+        configuredLevels: allLevels.map(l => ({
+          levelName:          l.levelName,
+          discountPercentage: l.discountPercentage,
+        })),
         availableLevels: allowedLevels.map(l => ({
           levelName:          l.levelName,
           discountPercentage: l.discountPercentage,
@@ -497,7 +504,8 @@ export const getProducts = async (req, res) => {
           discountMappingName:    discountInfo?.discountMappingName || '',
           discountType:           discountInfo?.discountType || null,
           directDiscountPct:      discountInfo?.directDiscountPct || 0,
-          maxDiscountPercentage:  discountInfo?.maxDiscountPercentage || 0,
+          masterDiscountCap:      discountInfo?.masterDiscountCap ?? null,
+          combinedLevelDiscountCap: discountInfo?.combinedLevelDiscountCap ?? null,
           availableLevels:        discountInfo?.availableLevels || [],
           hasOffer:               discountInfo?.hasOffer || false,
           dealerExtraDiscountPct,
@@ -891,52 +899,95 @@ export const calculateOrderDiscounts = async (req, res) => {
         product._id, product, dealer?.dealerType, req.dbConnection, seAllowedLevels
       );
 
-      const directDiscountPct     = discountInfo?.directDiscountPct || 0;
-      const maxDiscountPercentage = discountInfo?.maxDiscountPercentage || 0;
-      const availableLevels       = discountInfo?.availableLevels || [];
+      const directDiscountPct = discountInfo?.directDiscountPct || 0;
+      const masterDiscountCap = discountInfo?.masterDiscountCap ?? null;
+      const combinedLevelDiscountCap = discountInfo?.combinedLevelDiscountCap ?? null;
+      const configuredLevels = discountInfo?.configuredLevels || [];
+      const availableLevels = discountInfo?.availableLevels || [];
 
-      // ── 2. Manual level discounts (SE-entered values, each capped at level's max) ──
+      // ── 2. Selected manual level discounts ───────────────────────────────
       const manualDiscountLevels = item.manualDiscountLevels || {};
       let levelDiscountPct = 0;
       const appliedLevelDetails = [];
+      const stages = [];
+      if (directDiscountPct > 0) {
+        stages.push({ key: 'direct', kind: 'direct', ratePercentage: directDiscountPct });
+      }
 
-      availableLevels.forEach((level) => {
-        const enteredPct = parseFloat(manualDiscountLevels[level.levelName] || 0);
-        if (enteredPct > 0) {
-          // Cap at the level's defined max
-          const cappedPct = Math.min(enteredPct, level.discountPercentage);
-          levelDiscountPct += cappedPct;
-          appliedLevelDetails.push({ levelName: level.levelName, pct: cappedPct });
+      for (const [levelName, rawRate] of Object.entries(manualDiscountLevels)) {
+        const enteredPct = Number(rawRate || 0);
+        if (enteredPct <= 0) continue;
+        const configuredLevel = configuredLevels.find(level => level.levelName === levelName);
+        if (!configuredLevel) {
+          const error = new Error(`Discount level "${levelName}" is not configured for ${product.itemName}`);
+          error.name = 'DiscountPolicyError';
+          error.code = 'DISCOUNT_LEVEL_NOT_FOUND';
+          throw error;
         }
-      });
+        if (!seAllowedLevels.includes(levelName)) {
+          const error = new Error(`Not allowed to use discount level: ${levelName}`);
+          error.name = 'DiscountPolicyError';
+          error.code = 'DISCOUNT_LEVEL_NOT_ALLOWED';
+          throw error;
+        }
+        if (!Number.isFinite(enteredPct) || enteredPct > Number(configuredLevel.discountPercentage || 0)) {
+          const error = new Error(`Discount level "${levelName}" must be between 0 and ${configuredLevel.discountPercentage}%`);
+          error.name = 'DiscountPolicyError';
+          error.code = 'DISCOUNT_LEVEL_RATE_EXCEEDED';
+          throw error;
+        }
+        levelDiscountPct += enteredPct;
+        appliedLevelDetails.push({ levelName, pct: enteredPct });
+        stages.push({ key: `level:${levelName}`, kind: 'level', levelName, ratePercentage: enteredPct });
+      }
 
       // ── 3. Dealer extra discount ─────────────────────────────────────────
       const dealerExtraDiscountPct = dealer ? findDealerExtraDiscount(product, dealer) : 0;
-
-      // ── 4. Validate: level + extra must not exceed maxDiscountPercentage ──
-      // Direct discount is NOT counted against the max (new logic)
-      const combinedLevelExtra = levelDiscountPct + dealerExtraDiscountPct;
-      const cappedLevelExtra   = maxDiscountPercentage > 0
-        ? Math.min(combinedLevelExtra, maxDiscountPercentage)
-        : combinedLevelExtra;
-
-      // Recalculate level pct if capped
-      let finalLevelPct = levelDiscountPct;
-      let finalExtraPct = dealerExtraDiscountPct;
-      if (combinedLevelExtra > 0 && cappedLevelExtra < combinedLevelExtra) {
-        const ratio = cappedLevelExtra / combinedLevelExtra;
-        finalLevelPct = Math.round(levelDiscountPct * ratio * 100) / 100;
-        finalExtraPct = Math.round(dealerExtraDiscountPct * ratio * 100) / 100;
+      if (dealerExtraDiscountPct > 0) {
+        stages.push({ key: 'dealer-extra', kind: 'dealer_extra', ratePercentage: dealerExtraDiscountPct });
+      }
+      if (!discountInfo && stages.length > 0) {
+        const error = new Error(`No applicable discount mapping exists for ${product.itemName}`);
+        error.name = 'DiscountPolicyError';
+        error.code = 'DISCOUNT_MAPPING_NOT_FOUND';
+        throw error;
+      }
+      const hasDiscountStages = stages.some(
+        (stage) => Number(stage.ratePercentage || 0) > 0
+      );
+      const hasPositiveLevelStages = stages.some(
+        (stage) => stage.kind === 'level' && Number(stage.ratePercentage || 0) > 0
+      );
+      if (discountInfo && hasDiscountStages && masterDiscountCap === null) {
+        const error = new Error(`Master discount cap is not configured for the applicable sales mapping on ${product.itemName}.`);
+        error.name = 'DiscountPolicyError';
+        error.code = 'MASTER_DISCOUNT_CAP_NOT_CONFIGURED';
+        throw error;
+      }
+      if (hasPositiveLevelStages && combinedLevelDiscountCap === null) {
+        const error = new Error(`Combined selected-level discount cap is not configured for the applicable sales mapping on ${product.itemName}.`);
+        error.name = 'DiscountPolicyError';
+        error.code = 'COMBINED_LEVEL_DISCOUNT_CAP_NOT_CONFIGURED';
+        throw error;
       }
 
-      const totalDiscountPct = directDiscountPct + finalLevelPct + finalExtraPct;
-
-      // ── 5. Calculate amounts ─────────────────────────────────────────────
-      const lineSubtotal   = item.quantity * item.unitPrice;
-      const discountAmount = Math.round((lineSubtotal * totalDiscountPct / 100) * 100) / 100;
-      const finalPrice     = lineSubtotal - discountAmount;
-      const gstAmount      = Math.round((finalPrice * (product.gst || 0) / 100) * 100) / 100;
-      const lineTotal      = finalPrice + gstAmount;
+      // ── 4. Canonical sequential calculation: direct, levels, dealer extra ──
+      const lineSubtotal = Number(item.quantity || 0) * Number(item.unitPrice || 0);
+      const calculation = calculateDiscountLine({
+        baseAmount: lineSubtotal,
+        stages,
+        gstPercentage: Number(product.gst || 0),
+        masterDiscountCap,
+        combinedLevelDiscountCap,
+        allowedDiscountLevels: seAllowedLevels,
+        enforceLevelPermissions: true,
+        bypassLevelPermission: false
+      });
+      const totalDiscountPct = calculation.effectiveDiscountPercentage;
+      const discountAmount = calculation.discountAmount;
+      const finalPrice = calculation.finalAmount;
+      const gstAmount = calculation.gstAmount;
+      const lineTotal = calculation.finalAmount;
 
       // ── 6. Points ────────────────────────────────────────────────────────
       let pointsEarned = 0;
@@ -988,20 +1039,22 @@ export const calculateOrderDiscounts = async (req, res) => {
         directDiscountPct,
         manualDiscountLevels,
         appliedLevelDetails,
-        levelDiscountPct:       finalLevelPct,
-        dealerExtraDiscountPct: finalExtraPct,
+        levelDiscountPct,
+        dealerExtraDiscountPct,
         totalDiscountPct,
         discountAmount,
         finalPrice,
         gstAmount,
         lineTotal,
-        maxDiscountPercentage,
+        masterDiscountCap,
+        combinedLevelDiscountCap,
         availableLevels,
         // Points
         pointsEarned,
         pointScheme,
-        // Validation info
-        wasLevelCapped: combinedLevelExtra > cappedLevelExtra,
+        masterDiscountCapApplied: calculation.masterDiscountCapApplied,
+        combinedLevelDiscountCapApplied: calculation.combinedLevelDiscountCapApplied,
+        levelDiscountTotalPercentage: calculation.levelDiscountTotalPercentage,
       });
     }
 
@@ -1022,7 +1075,13 @@ export const calculateOrderDiscounts = async (req, res) => {
     });
   } catch (error) {
     console.error('Calculate discounts error:', error);
-    res.status(500).json({ success: false, message: 'Failed to calculate discounts', error: error.message });
+    const isPolicyError = error?.name === 'DiscountPolicyError' || error instanceof RangeError;
+    res.status(isPolicyError ? 400 : 500).json({
+      success: false,
+      message: isPolicyError ? error.message : 'Failed to calculate discounts',
+      ...(error.code ? { code: error.code } : {}),
+      ...(!isPolicyError ? { error: error.message } : {})
+    });
   }
 };
 

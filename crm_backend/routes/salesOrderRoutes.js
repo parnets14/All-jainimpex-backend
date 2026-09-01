@@ -30,6 +30,7 @@ import {
   getDispatchDeviations,
   partialDispatch
 } from "../controllers/salesOrderController.js";
+import { getLastFinalizedDealerInvoiceFamilyDiscount } from "../controllers/dealerInvoiceController.js";
 import { protect } from "../middleware/authMiddleware.js";
 import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 import { logActivity } from "../middleware/activityLogMiddleware.js";
@@ -63,6 +64,14 @@ router.route("/stats/summary")
 
 router.route("/dealer/:dealerId")
   .get(logActivity("Sales Order Dashboard", "Viewed sales orders by dealer", "READ"), getSalesOrdersByDealer);
+
+// Read-only invoice discount history for the Sales Order form. This route is
+// intentionally under /sales-orders so Sales Order users do not need invoice permissions.
+router.route("/dealer-family-last-invoice-discount/:dealerId/:subcategoryId")
+  .get(
+    logActivity("Sales Order Dashboard", "Viewed last invoice family discount", "READ"),
+    getLastFinalizedDealerInvoiceFamilyDiscount
+  );
 
 router.route("/product/:productId/stock")
   .get(logActivity("Sales Order Dashboard", "Viewed product stock for sales", "READ"), getProductStock);

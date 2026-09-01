@@ -99,14 +99,32 @@ const discountMappingSchema = new mongoose.Schema({
     required: function() { return this.discountType === 'direct' || this.discountType === 'both'; }
   },
   
-  // Maximum Discount Limit (1-100%)
-  // Note: This is independent from direct + level discounts
-  // Only rule: Total (direct + all levels) should not exceed 100%
-  maxDiscountPercentage: {
+  // Historical compatibility only. This field is no longer validated or enforced.
+  maxDiscountPercentage: Number,
+
+  // Aggregate cap for the arithmetic sum of selected level discounts only.
+  // Direct and dealer-extra discounts are intentionally excluded.
+  combinedLevelDiscountCap: {
     type: Number,
-    min: 1,
+    min: 0,
     max: 100,
-    required: function() { return this.mappingType === 'sales'; }
+    validate: {
+      validator: (value) => value === null || value === undefined || Number.isFinite(value),
+      message: 'Combined selected-level discount cap must be a finite number between 0 and 100'
+    }
+  },
+
+  // Sole aggregate cap for the effective sequential discount
+  // (direct + selected levels + dealer extra) on sales mappings.
+  masterDiscountCap: {
+    type: Number,
+    required: function() { return this.mappingType === 'sales'; },
+    min: 0,
+    max: 100,
+    validate: {
+      validator: (value) => value === null || value === undefined || Number.isFinite(value),
+      message: 'Master discount cap must be a finite number between 0 and 100'
+    }
   },
   
   levels: {
@@ -260,29 +278,32 @@ discountMappingSchema.pre('save', function(next) {
     return next(new Error('Valid To date must be after Valid From date'));
   }
   
-  // For sales discounts: Validate that total (direct + all levels) doesn't exceed 100%
+  // Sales mappings use independent limits for selected levels and the full
+  // effective sequence. Historical maxDiscountPercentage is accepted only as
+  // a migration fallback for level-capable mappings.
   if (this.mappingType === 'sales') {
-    let totalDiscount = 0;
-    
-    // Add direct discount if present
-    if (this.directDiscountPercentage) {
-      totalDiscount += this.directDiscountPercentage;
+    const directDiscount = this.discountType === 'direct' || this.discountType === 'both'
+      ? Number(this.directDiscountPercentage || 0)
+      : 0;
+    if (directDiscount > this.masterDiscountCap) {
+      return next(new Error(
+        `Master discount cap (${this.masterDiscountCap}%) cannot be lower than the direct discount (${directDiscount}%)`
+      ));
     }
-    
-    // Add all level discounts if present
-    if (this.levels && this.levels.length > 0) {
-      for (const level of this.levels) {
-        totalDiscount += level.discountPercentage;
-      }
+
+    const hasLevelDiscounts = this.discountType === 'level_based' || this.discountType === 'both';
+    const combinedLevelCap = this.combinedLevelDiscountCap
+      ?? this.maxDiscountPercentage;
+    if (hasLevelDiscounts
+        && (combinedLevelCap === null
+          || combinedLevelCap === undefined
+          || !Number.isFinite(Number(combinedLevelCap))
+          || Number(combinedLevelCap) < 0
+          || Number(combinedLevelCap) > 100)) {
+      return next(new Error(
+        'Combined selected-level discount cap is required for level-based sales mappings and must be between 0 and 100'
+      ));
     }
-    
-    // Check if total exceeds 100%
-    if (totalDiscount > 100) {
-      return next(new Error(`Total discount (direct + all levels) cannot exceed 100%. Current total: ${totalDiscount.toFixed(2)}%`));
-    }
-    
-    // Note: maxDiscountPercentage is independent and doesn't limit direct + level discounts
-    // It's used for other purposes in the system
   }
   
   // Auto-expire if past validTo date
@@ -463,17 +484,17 @@ discountMappingSchema.statics.fixDiscountsWithMissingLevels = async function() {
       const defaultLevels = [
         {
           levelName: "Silver",
-          discountPercentage: Math.min(2, discount.maxDiscountPercentage - (discount.directDiscountPercentage || 0)),
+          discountPercentage: 2,
           description: "Silver level discount"
         },
         {
           levelName: "Gold", 
-          discountPercentage: Math.min(4, discount.maxDiscountPercentage - (discount.directDiscountPercentage || 0)),
+          discountPercentage: 4,
           description: "Gold level discount"
         },
         {
           levelName: "Platinum",
-          discountPercentage: Math.min(6, discount.maxDiscountPercentage - (discount.directDiscountPercentage || 0)),
+          discountPercentage: 6,
           description: "Platinum level discount"
         }
       ];
