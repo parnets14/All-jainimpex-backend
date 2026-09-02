@@ -88,6 +88,8 @@ const canonicalizeOneTimePriceIncrease = ({
   existingItem,
   discountCalculation,
   gstPercentage,
+  pricingInputs,
+  actor,
   actorId
 }) => {
   const hasSubmittedPercentage = hasOwn(submittedItem, 'oneTimePriceIncreasePercentage');
@@ -95,17 +97,114 @@ const canonicalizeOneTimePriceIncrease = ({
     ? submittedItem.oneTimePriceIncreasePercentage
     : (existingItem?.oneTimePriceIncreasePercentage || 0);
   const hasSubmittedReason = hasOwn(submittedItem, 'oneTimePriceIncreaseReason');
+  const existingReason = String(existingItem?.oneTimePriceIncreaseReason || '').trim();
   const reason = String(
     hasSubmittedReason
       ? (submittedItem.oneTimePriceIncreaseReason || '')
-      : (existingItem?.oneTimePriceIncreaseReason || '')
+      : existingReason
   ).trim();
+  const existingOverride = Boolean(existingItem?.oneTimePriceIncreaseAboveMrpOverride);
+  const hasSubmittedOverride = hasOwn(submittedItem, 'oneTimePriceIncreaseAboveMrpOverride');
+  if (hasSubmittedOverride
+      && typeof submittedItem.oneTimePriceIncreaseAboveMrpOverride !== 'boolean') {
+    throw createDiscountPolicyError(
+      'oneTimePriceIncreaseAboveMrpOverride must be a Boolean value.',
+      'INVALID_MRP_OVERRIDE_FLAG'
+    );
+  }
+  const requestedOverride = hasSubmittedOverride
+    ? submittedItem.oneTimePriceIncreaseAboveMrpOverride
+    : existingOverride;
+  const actorRole = String(actor?.role || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const actorIsSuperAdmin = actorRole === 'super_admin';
+  const requestedPercentageNumber = requestedPercentage === ''
+    || requestedPercentage === null
+    || requestedPercentage === undefined
+    ? 0
+    : Number(requestedPercentage);
+  const existingPercentage = Number(existingItem?.oneTimePriceIncreasePercentage || 0);
+  const percentageIsUnchanged = Boolean(existingItem)
+    && Number.isFinite(requestedPercentageNumber)
+    && Math.abs(existingPercentage - requestedPercentageNumber) <= 0.000001;
+  const reasonIsUnchanged = Boolean(existingItem) && reason === existingReason;
+  const currentPriceBeforeIncrease = Number(discountCalculation.finalAmount);
+  const existingPriceBeforeIncrease = Number(existingItem?.priceBeforeIncrease);
+  const priceBeforeIncreaseIsUnchanged = Boolean(existingItem)
+    && Number.isFinite(existingPriceBeforeIncrease)
+    && Math.abs(existingPriceBeforeIncrease - currentPriceBeforeIncrease) <= 0.000001;
+  const existingMrpPerUnit = Number(existingItem?.mrp) > 0
+    ? Number(existingItem.mrp)
+    : Number(existingItem?.unitPrice || 0) * (1 + Number(existingItem?.gst || 0) / 100);
+  const currentQuantity = Number(pricingInputs?.quantity);
+  const currentMrpPerUnit = Number(pricingInputs?.mrpPerUnit);
+  const currentUnitPrice = Number(pricingInputs?.unitPrice);
+  const currentGstPercentage = Number(pricingInputs?.gstPercentage);
+  const quantityIsUnchanged = Boolean(existingItem)
+    && Number.isFinite(currentQuantity)
+    && Math.abs(Number(existingItem.quantity || 0) - currentQuantity) <= 0.000001;
+  const mrpIsUnchanged = Boolean(existingItem)
+    && Number.isFinite(currentMrpPerUnit)
+    && Math.abs(existingMrpPerUnit - currentMrpPerUnit) <= 0.000001;
+  const unitPriceIsUnchanged = Boolean(existingItem)
+    && Number.isFinite(currentUnitPrice)
+    && Math.abs(Number(existingItem.unitPrice || 0) - currentUnitPrice) <= 0.000001;
+  const gstIsUnchanged = Boolean(existingItem)
+    && Number.isFinite(currentGstPercentage)
+    && Math.abs(Number(existingItem.gst || 0) - currentGstPercentage) <= 0.000001;
+  const existingGrossAmount = Number(existingItem?.quantity || 0) * existingMrpPerUnit;
+  const grossAmountIsUnchanged = Boolean(existingItem)
+    && Number(existingGrossAmount.toFixed(2))
+      === Number(Number(discountCalculation.grossAmount || 0).toFixed(2));
+  const stageSignature = (stages = []) => JSON.stringify(stages.map((stage) => ({
+    key: stage?.key || null,
+    kind: stage?.kind || null,
+    levelName: stage?.levelName || null,
+    ratePercentage: Number(Number(stage?.ratePercentage || 0).toFixed(6))
+  })));
+  const existingOrderedStages = existingItem?.discountPolicySnapshot?.orderedStages;
+  const stagesAreUnchanged = !Array.isArray(existingOrderedStages)
+    || stageSignature(existingOrderedStages) === stageSignature(pricingInputs?.stages || []);
+  const protectedPricingInputsAreUnchanged = Boolean(existingItem)
+    && quantityIsUnchanged
+    && mrpIsUnchanged
+    && unitPriceIsUnchanged
+    && gstIsUnchanged
+    && priceBeforeIncreaseIsUnchanged
+    && grossAmountIsUnchanged
+    && stagesAreUnchanged;
+  const requestedOverrideStateChanged = requestedOverride !== existingOverride;
+  const protectedOverrideInputsChanged = (requestedOverride || existingOverride)
+    && (!percentageIsUnchanged
+      || !reasonIsUnchanged
+      || !protectedPricingInputsAreUnchanged);
+
+  if (!actorIsSuperAdmin && (requestedOverrideStateChanged || protectedOverrideInputsChanged)) {
+    throw createDiscountPolicyError(
+      'Only a Super Admin may enable, disable, or change pricing inputs for an above-MRP invoice override.',
+      'MRP_OVERRIDE_FORBIDDEN'
+    );
+  }
+
+  const maximumFinalAmount = requestedOverride
+    ? null
+    : Number(discountCalculation.grossAmount || 0);
   const increase = calculateOneTimeInvoicePriceIncrease({
     priceBeforeIncrease: discountCalculation.finalAmount,
     increasePercentage: requestedPercentage,
     gstPercentage,
-    maximumFinalAmount: discountCalculation.grossAmount
+    maximumFinalAmount
   });
+  const roundedGrossAmount = Number(Number(discountCalculation.grossAmount || 0).toFixed(2));
+  const effectiveOverride = requestedOverride
+    && increase.oneTimePriceIncreasePercentage > 0
+    && increase.finalAmount > roundedGrossAmount;
+
+  if (!actorIsSuperAdmin && effectiveOverride !== existingOverride) {
+    throw createDiscountPolicyError(
+      'Only a Super Admin may change the effective above-MRP invoice override state.',
+      'MRP_OVERRIDE_FORBIDDEN'
+    );
+  }
 
   if (increase.oneTimePriceIncreasePercentage > 0 && !reason) {
     throw createDiscountPolicyError(
@@ -117,23 +216,29 @@ const canonicalizeOneTimePriceIncrease = ({
   if (increase.oneTimePriceIncreasePercentage <= 0) {
     return {
       ...increase,
+      oneTimePriceIncreaseAboveMrpOverride: false,
       oneTimePriceIncreaseReason: null,
       oneTimePriceIncreaseAppliedBy: null,
       oneTimePriceIncreaseAppliedAt: null
     };
   }
 
-  const existingPercentage = Number(existingItem?.oneTimePriceIncreasePercentage || 0);
-  const percentageIsUnchanged = Boolean(existingItem)
-    && Math.abs(existingPercentage - increase.oneTimePriceIncreasePercentage) <= 0.000001;
+  const effectiveOverrideIsUnchanged = Boolean(existingItem)
+    && effectiveOverride === existingOverride;
+  const auditIsUnchanged = percentageIsUnchanged
+    && reasonIsUnchanged
+    && protectedPricingInputsAreUnchanged
+    && effectiveOverrideIsUnchanged;
+  const authenticatedActorId = actor?._id || actorId || null;
 
   return {
     ...increase,
+    oneTimePriceIncreaseAboveMrpOverride: effectiveOverride,
     oneTimePriceIncreaseReason: reason,
-    oneTimePriceIncreaseAppliedBy: percentageIsUnchanged
-      ? (existingItem.oneTimePriceIncreaseAppliedBy || actorId || null)
-      : (actorId || null),
-    oneTimePriceIncreaseAppliedAt: percentageIsUnchanged
+    oneTimePriceIncreaseAppliedBy: auditIsUnchanged
+      ? (existingItem.oneTimePriceIncreaseAppliedBy || authenticatedActorId)
+      : authenticatedActorId,
+    oneTimePriceIncreaseAppliedAt: auditIsUnchanged
       ? (existingItem.oneTimePriceIncreaseAppliedAt || new Date())
       : new Date()
   };
@@ -279,8 +384,23 @@ const canonicalizeInvoiceItems = async ({
 }) => {
   const { Product, DiscountMapping, User, SalesOrder } = getModels(dbConnection);
   const applySession = (query) => session ? query.session(session) : query;
+  const submittedLineIdentities = new Set();
+  for (const submittedItem of items || []) {
+    const submittedLineIdentity = objectIdString(
+      submittedItem?.sourceSalesOrderLineId || submittedItem?._id
+    );
+    if (!submittedLineIdentity) continue;
+    if (submittedLineIdentities.has(submittedLineIdentity)) {
+      throw createDiscountPolicyError(
+        `Invoice line identity ${submittedLineIdentity} was submitted more than once.`,
+        'DUPLICATE_INVOICE_LINE_ID'
+      );
+    }
+    submittedLineIdentities.add(submittedLineIdentity);
+  }
   let linkedSalesOrder = null;
   let matchSourceLine = null;
+  const matchedExistingItemIdentities = new Set();
 
   if (salesOrderId) {
     linkedSalesOrder = await applySession(SalesOrder.findById(salesOrderId)).lean();
@@ -321,6 +441,18 @@ const canonicalizeInvoiceItems = async ({
   const canonicalizeItem = async (submittedItem, submittedIndex) => {
     const productId = submittedItem.product?._id || submittedItem.product || submittedItem.productId;
     const existingItem = findExistingInvoiceItem(existingItems, submittedItem, submittedIndex);
+    if (existingItem) {
+      const existingItemIdentity = objectIdString(
+        existingItem.sourceSalesOrderLineId || existingItem._id
+      );
+      if (existingItemIdentity && matchedExistingItemIdentities.has(existingItemIdentity)) {
+        throw createDiscountPolicyError(
+          `Existing invoice line ${existingItemIdentity} was matched more than once.`,
+          'DUPLICATE_INVOICE_LINE_ID'
+        );
+      }
+      if (existingItemIdentity) matchedExistingItemIdentities.add(existingItemIdentity);
+    }
     const product = await applySession(
       Product.findById(productId)
         .select('itemName productCode HSNCode brand category subcategory subcategory1 subcategory2 subcategory3 subcategory4 subcategory5 gst')
@@ -470,6 +602,14 @@ const canonicalizeInvoiceItems = async ({
         existingItem,
         discountCalculation: calculation,
         gstPercentage,
+        pricingInputs: {
+          quantity: submittedItem.quantity,
+          mrpPerUnit,
+          unitPrice: invoiceUnitPrice,
+          gstPercentage,
+          stages: calculation.stages
+        },
+        actor,
         actorId
       });
       const capturedAt = new Date();
@@ -518,6 +658,7 @@ const canonicalizeInvoiceItems = async ({
         priceBeforeIncrease: priceIncrease.priceBeforeIncrease,
         oneTimePriceIncreasePercentage: priceIncrease.oneTimePriceIncreasePercentage,
         oneTimePriceIncreaseAmount: priceIncrease.oneTimePriceIncreaseAmount,
+        oneTimePriceIncreaseAboveMrpOverride: priceIncrease.oneTimePriceIncreaseAboveMrpOverride,
         oneTimePriceIncreaseReason: priceIncrease.oneTimePriceIncreaseReason,
         oneTimePriceIncreaseAppliedBy: priceIncrease.oneTimePriceIncreaseAppliedBy,
         oneTimePriceIncreaseAppliedAt: priceIncrease.oneTimePriceIncreaseAppliedAt,
@@ -661,6 +802,14 @@ const canonicalizeInvoiceItems = async ({
       existingItem,
       discountCalculation: calculation,
       gstPercentage,
+      pricingInputs: {
+        quantity: submittedItem.quantity,
+        mrpPerUnit,
+        unitPrice: invoiceUnitPrice,
+        gstPercentage,
+        stages: calculation.stages
+      },
+      actor,
       actorId
     });
 
@@ -725,6 +874,7 @@ const canonicalizeInvoiceItems = async ({
       priceBeforeIncrease: priceIncrease.priceBeforeIncrease,
       oneTimePriceIncreasePercentage: priceIncrease.oneTimePriceIncreasePercentage,
       oneTimePriceIncreaseAmount: priceIncrease.oneTimePriceIncreaseAmount,
+      oneTimePriceIncreaseAboveMrpOverride: priceIncrease.oneTimePriceIncreaseAboveMrpOverride,
       oneTimePriceIncreaseReason: priceIncrease.oneTimePriceIncreaseReason,
       oneTimePriceIncreaseAppliedBy: priceIncrease.oneTimePriceIncreaseAppliedBy,
       oneTimePriceIncreaseAppliedAt: priceIncrease.oneTimePriceIncreaseAppliedAt,
@@ -753,15 +903,33 @@ const canonicalizeInvoiceItems = async ({
     };
   };
 
+  let canonicalizedItems;
   if (session) {
-    const canonicalizedItems = [];
+    canonicalizedItems = [];
     for (const [submittedIndex, submittedItem] of (items || []).entries()) {
       canonicalizedItems.push(await canonicalizeItem(submittedItem, submittedIndex));
     }
-    return canonicalizedItems;
+  } else {
+    canonicalizedItems = await Promise.all((items || []).map(canonicalizeItem));
   }
 
-  return Promise.all((items || []).map(canonicalizeItem));
+  const unmatchedExistingOverrides = (existingItems || []).filter((existingItem) => {
+    if (existingItem?.oneTimePriceIncreaseAboveMrpOverride !== true) return false;
+    const identity = objectIdString(existingItem.sourceSalesOrderLineId || existingItem._id);
+    return !identity || !matchedExistingItemIdentities.has(identity);
+  });
+  if (unmatchedExistingOverrides.length > 0) {
+    const { actor } = await getLiveActorContext();
+    const actorRole = String(actor?.role || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (actorRole !== 'super_admin') {
+      throw createDiscountPolicyError(
+        'Only a Super Admin may remove or replace an invoice line with an active above-MRP override.',
+        'MRP_OVERRIDE_FORBIDDEN'
+      );
+    }
+  }
+
+  return canonicalizedItems;
 };
 
 // Generate unique invoice number
@@ -2892,14 +3060,32 @@ export const getInvoiceStats = async (req, res) => {
     const filter = {
       isDraft: { $ne: true },
       isDeleted: { $ne: true },
-      status: { $ne: 'Draft' }
+      status: { $nin: ['Draft', 'Cancelled'] }
     };
 
     if (dealerId) filter.dealer = dealerId;
     if (startDate || endDate) {
       filter.invoiceDate = {};
-      if (startDate) filter.invoiceDate.$gte = new Date(startDate);
-      if (endDate) filter.invoiceDate.$lte = new Date(endDate);
+      if (startDate) {
+        const start = new Date(startDate);
+        if (Number.isNaN(start.getTime())) {
+          return res.status(400).json({ success: false, message: 'Invalid startDate' });
+        }
+        start.setHours(0, 0, 0, 0);
+        filter.invoiceDate.$gte = start;
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        if (Number.isNaN(end.getTime())) {
+          return res.status(400).json({ success: false, message: 'Invalid endDate' });
+        }
+        end.setHours(23, 59, 59, 999);
+        filter.invoiceDate.$lte = end;
+      }
+      if (filter.invoiceDate.$gte && filter.invoiceDate.$lte
+        && filter.invoiceDate.$gte > filter.invoiceDate.$lte) {
+        return res.status(400).json({ success: false, message: 'startDate cannot be after endDate' });
+      }
     }
 
     const [

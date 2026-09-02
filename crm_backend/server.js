@@ -148,9 +148,9 @@ import deAdminDeliveryRoutes from './DeliveryExecutiveAppBackend/routes/adminDel
 // Seed controller
 import { seedTypesForAllCompanies } from './controllers/seedController.js';
 
-import dns from 'dns';
+// import dns from 'dns';
 
-dns.setServers(['8.8.8.8', '8.8.4.4']);
+// dns.setServers(['8.8.8.8', '8.8.4.4']);
 
 dotenv.config();
 

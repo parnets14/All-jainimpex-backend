@@ -6,7 +6,7 @@ import { supplierSchema } from '../models/Supplier.js';
 import { warehouseSchema } from '../models/Warehouse.js';
 import { salesOrderSchema } from '../models/SalesOrder.js';
 import StockMovementService from '../services/stockMovementService.js';
-import { getLowStockSnapshot } from '../services/dashboardStockService.js';
+import { getInventoryRiskSnapshot, getLowStockSnapshot } from '../services/dashboardStockService.js';
 
 // Helper function to get models from company-specific connection
 const getModels = (dbConnection) => {
@@ -1478,5 +1478,45 @@ export const getStockAlerts = async (req, res) => {
       success: false,
       message: error.message
     });
+  }
+};
+
+
+// @desc    Get canonical inventory aging and risk snapshot
+// @route   GET /api/stock/risk/summary
+// @access  Private
+export const getInventoryRiskSummary = async (req, res) => {
+  try {
+    const { Product, StockMovement, GRN } = getModels(req.dbConnection);
+    const asOfDate = req.query.asOfDate ? new Date(req.query.asOfDate) : new Date();
+    if (Number.isNaN(asOfDate.getTime())) {
+      return res.status(400).json({ success: false, message: 'Invalid asOfDate' });
+    }
+    asOfDate.setHours(23, 59, 59, 999);
+
+    const nonMovingDays = Math.min(
+      Math.max(Number.parseInt(req.query.nonMovingDays, 10) || 90, 1),
+      3650
+    );
+    const deadStockDays = Math.min(
+      Math.max(Number.parseInt(req.query.deadStockDays, 10) || 180, nonMovingDays + 1),
+      7300
+    );
+    const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 8, 1), 25);
+
+    const data = await getInventoryRiskSnapshot({
+      Product,
+      StockMovement,
+      GRN,
+      asOfDate,
+      nonMovingDays,
+      deadStockDays,
+      limit
+    });
+
+    return res.json({ success: true, data });
+  } catch (error) {
+    console.error('Get inventory risk summary error:', error);
+    return res.status(500).json({ success: false, message: error.message });
   }
 };

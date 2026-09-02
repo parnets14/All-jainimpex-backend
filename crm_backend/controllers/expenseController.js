@@ -253,62 +253,83 @@ export const getExpenseStats = asyncHandler(async (req, res) => {
   const { Expense } = getModels(req.dbConnection);
   const { startDate, endDate } = req.query;
 
-  const matchStage = {};
-  if (startDate || endDate) {
-    matchStage.date = {};
-    if (startDate) matchStage.date.$gte = new Date(startDate);
-    if (endDate) matchStage.date.$lte = new Date(endDate);
+  const parseBoundary = (value, endOfDay = false) => {
+    if (!value) return null;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      res.status(400);
+      throw new Error(`Invalid ${endOfDay ? 'endDate' : 'startDate'}`);
+    }
+    if (endOfDay) parsed.setHours(23, 59, 59, 999);
+    else parsed.setHours(0, 0, 0, 0);
+    return parsed;
+  };
+
+  const start = parseBoundary(startDate);
+  const end = parseBoundary(endDate, true);
+  if (start && end && start > end) {
+    res.status(400);
+    throw new Error('startDate cannot be after endDate');
   }
+
+  const matchStage = {};
+  if (start || end) {
+    matchStage.date = {};
+    if (start) matchStage.date.$gte = start;
+    if (end) matchStage.date.$lte = end;
+  }
+  const approvedStatuses = ['approved', 'Approved'];
+  const normalizedStatus = { $toLower: { $ifNull: ['$status', ''] } };
 
   const [stats, totalStats] = await Promise.all([
     Expense.aggregate([
-      { $match: { ...matchStage, status: 'Approved' } },
+      { $match: { ...matchStage, status: { $in: approvedStatuses } } },
       {
         $lookup: {
-          from: "expensetypes",
-          localField: "type",
-          foreignField: "_id",
-          as: "typeInfo",
-        },
+          from: 'expensetypes',
+          localField: 'type',
+          foreignField: '_id',
+          as: 'typeInfo'
+        }
       },
-      { $unwind: { path: "$typeInfo", preserveNullAndEmptyArrays: true } },
+      { $unwind: { path: '$typeInfo', preserveNullAndEmptyArrays: true } },
       {
         $group: {
-          _id: { $ifNull: ["$typeInfo.name", "Uncategorized"] },
-          totalAmount: { $sum: "$amount" },
-          count: { $sum: 1 },
-        },
+          _id: { $ifNull: ['$typeInfo.name', 'Uncategorized'] },
+          totalAmount: { $sum: '$amount' },
+          count: { $sum: 1 }
+        }
       },
-      { $sort: { totalAmount: -1 } },
+      { $sort: { totalAmount: -1 } }
     ]),
     Expense.aggregate([
       { $match: matchStage },
       {
         $group: {
           _id: null,
-          totalAmount: { $sum: "$amount" },
+          totalAmount: { $sum: '$amount' },
           totalCount: { $sum: 1 },
-          averageAmount: { $avg: "$amount" },
+          averageAmount: { $avg: '$amount' },
           approvedAmount: {
-            $sum: { $cond: [{ $eq: ["$status", "Approved"] }, "$amount", 0] }
+            $sum: { $cond: [{ $eq: [normalizedStatus, 'approved'] }, '$amount', 0] }
           },
           approvedCount: {
-            $sum: { $cond: [{ $eq: ["$status", "Approved"] }, 1, 0] }
+            $sum: { $cond: [{ $eq: [normalizedStatus, 'approved'] }, 1, 0] }
           },
           pendingAmount: {
-            $sum: { $cond: [{ $eq: ["$status", "Pending"] }, "$amount", 0] }
+            $sum: { $cond: [{ $eq: [normalizedStatus, 'pending'] }, '$amount', 0] }
           },
           pendingCount: {
-            $sum: { $cond: [{ $eq: ["$status", "Pending"] }, 1, 0] }
+            $sum: { $cond: [{ $eq: [normalizedStatus, 'pending'] }, 1, 0] }
           },
           rejectedAmount: {
-            $sum: { $cond: [{ $eq: ["$status", "Rejected"] }, "$amount", 0] }
+            $sum: { $cond: [{ $eq: [normalizedStatus, 'rejected'] }, '$amount', 0] }
           },
           rejectedCount: {
-            $sum: { $cond: [{ $eq: ["$status", "Rejected"] }, 1, 0] }
+            $sum: { $cond: [{ $eq: [normalizedStatus, 'rejected'] }, 1, 0] }
           }
-        },
-      },
+        }
+      }
     ])
   ]);
 
@@ -326,7 +347,7 @@ export const getExpenseStats = asyncHandler(async (req, res) => {
         pendingCount: 0,
         rejectedAmount: 0,
         rejectedCount: 0
-      },
-    },
+      }
+    }
   });
 });

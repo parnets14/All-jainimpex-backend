@@ -154,13 +154,16 @@ const invoiceItemSchema = new mongoose.Schema({
   oneTimePriceIncreasePercentage: {
     type: Number,
     default: 0,
-    min: 0,
-    max: 100
+    min: 0
   },
   oneTimePriceIncreaseAmount: {
     type: Number,
     default: 0,
     min: 0
+  },
+  oneTimePriceIncreaseAboveMrpOverride: {
+    type: Boolean,
+    default: false
   },
   oneTimePriceIncreaseReason: {
     type: String,
@@ -441,11 +444,13 @@ dealerInvoiceSchema.pre("save", function(next) {
         bypassLevelPermission: permissionSnapshot.bypassLevelPermission === true
       });
 
+      const requestedAboveMrpOverride = item.oneTimePriceIncreaseAboveMrpOverride === true;
+      const maximumFinalAmount = requestedAboveMrpOverride ? null : grossAmount;
       const priceIncrease = calculateOneTimeInvoicePriceIncrease({
         priceBeforeIncrease: calculation.finalAmount,
         increasePercentage: item.oneTimePriceIncreasePercentage || 0,
         gstPercentage: item.gst || 0,
-        maximumFinalAmount: grossAmount
+        maximumFinalAmount
       });
       if (priceIncrease.oneTimePriceIncreasePercentage > 0
           && !String(item.oneTimePriceIncreaseReason || '').trim()) {
@@ -457,9 +462,23 @@ dealerInvoiceSchema.pre("save", function(next) {
         throw error;
       }
 
+      const exceedsMrp = priceIncrease.oneTimePriceIncreasePercentage > 0
+        && priceIncrease.finalAmount > Number(grossAmount.toFixed(2));
+      const effectiveAboveMrpOverride = requestedAboveMrpOverride && exceedsMrp;
+      if (effectiveAboveMrpOverride
+          && (!item.oneTimePriceIncreaseAppliedBy || !item.oneTimePriceIncreaseAppliedAt)) {
+        const error = new Error(
+          `Invoice line ${item.productName || item.product} requires an authenticated actor and timestamp for its above-MRP override.`
+        );
+        error.name = "DiscountPolicyError";
+        error.code = "MRP_OVERRIDE_AUDIT_REQUIRED";
+        throw error;
+      }
+
       item.priceBeforeIncrease = priceIncrease.priceBeforeIncrease;
       item.oneTimePriceIncreasePercentage = priceIncrease.oneTimePriceIncreasePercentage;
       item.oneTimePriceIncreaseAmount = priceIncrease.oneTimePriceIncreaseAmount;
+      item.oneTimePriceIncreaseAboveMrpOverride = effectiveAboveMrpOverride;
       item.totalPrice = priceIncrease.finalAmount;
       item.discountAmount = calculation.discountAmount;
       item.gstAmount = priceIncrease.gstAmount;

@@ -3,6 +3,7 @@ import {
   getStock,
   getStockHistory,
   getStockAlerts,
+  getInventoryRiskSummary,
   migrateStockMovements,
   debugProductGRNs,
   createStockTransfer,
@@ -37,6 +38,7 @@ router.use(protect);
 
 router.get('/', logActivity("Stock Management", "Viewed stock list", "READ"), getStock);
 router.get('/alerts', logActivity("Stock Management", "Viewed stock alerts", "READ"), getStockAlerts);
+router.get('/risk/summary', logActivity("Stock Management", "Viewed inventory risk summary", "READ"), getInventoryRiskSummary);
 router.get('/warehouses', logActivity("Stock Management", "Viewed warehouses", "READ"), getWarehouses);
 router.get('/transfers', logActivity("Stock Management", "Viewed stock transfers", "READ"), getStockTransfers);
 router.get('/:productId/history', logActivity("Stock Management", "Viewed stock history", "READ"), getStockHistory);

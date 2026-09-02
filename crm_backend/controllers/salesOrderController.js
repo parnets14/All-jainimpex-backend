@@ -3186,8 +3186,26 @@ export const getSalesOrderStats = async (req, res) => {
 
     if (startDate || endDate) {
       matchQuery.orderDate = {};
-      if (startDate) matchQuery.orderDate.$gte = new Date(startDate);
-      if (endDate) matchQuery.orderDate.$lte = new Date(endDate);
+      if (startDate) {
+        const start = new Date(startDate);
+        if (Number.isNaN(start.getTime())) {
+          return res.status(400).json({ success: false, message: 'Invalid startDate' });
+        }
+        start.setHours(0, 0, 0, 0);
+        matchQuery.orderDate.$gte = start;
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        if (Number.isNaN(end.getTime())) {
+          return res.status(400).json({ success: false, message: 'Invalid endDate' });
+        }
+        end.setHours(23, 59, 59, 999);
+        matchQuery.orderDate.$lte = end;
+      }
+      if (matchQuery.orderDate.$gte && matchQuery.orderDate.$lte
+        && matchQuery.orderDate.$gte > matchQuery.orderDate.$lte) {
+        return res.status(400).json({ success: false, message: 'startDate cannot be after endDate' });
+      }
     }
     if (dealer) matchQuery.dealer = dealer;
     if (region) matchQuery.region = region;

@@ -300,24 +300,31 @@ export const calculateOneTimeInvoicePriceIncrease = ({
     throw new RangeError('priceBeforeIncrease must be a non-negative number');
   }
 
-  const normalizedPercentage = parseNullableRate(
-    increasePercentage,
-    'oneTimePriceIncreasePercentage'
-  ) ?? 0;
+  const normalizedPercentage = increasePercentage === null
+    || increasePercentage === undefined
+    || increasePercentage === ''
+    ? 0
+    : Number(increasePercentage);
+  if (!Number.isFinite(normalizedPercentage) || normalizedPercentage < 0) {
+    throw new RangeError('oneTimePriceIncreasePercentage must be a non-negative number');
+  }
   const roundedPriceBeforeIncrease = round(normalizedPrice, 2);
   const oneTimePriceIncreaseAmount = round(
     roundedPriceBeforeIncrease * normalizedPercentage / 100,
     2
   );
   const finalAmount = round(roundedPriceBeforeIncrease + oneTimePriceIncreaseAmount, 2);
+  if (!Number.isFinite(oneTimePriceIncreaseAmount) || !Number.isFinite(finalAmount)) {
+    throw new RangeError('oneTimePriceIncreasePercentage produces an amount outside the supported numeric range');
+  }
 
   if (maximumFinalAmount !== null && maximumFinalAmount !== undefined && maximumFinalAmount !== '') {
     const normalizedMaximum = Number(maximumFinalAmount);
     if (!Number.isFinite(normalizedMaximum) || normalizedMaximum < 0) {
       throw new RangeError('maximumFinalAmount must be a non-negative number');
     }
-    if (finalAmount > round(normalizedMaximum, 2) + 0.01) {
-      throw new RangeError('One-time invoice price increase cannot make the line total exceed its MRP total');
+    if (finalAmount > round(normalizedMaximum, 2)) {
+      throw new RangeError('One-time invoice price increase cannot make the line total exceed its allowed maximum');
     }
   }
 
