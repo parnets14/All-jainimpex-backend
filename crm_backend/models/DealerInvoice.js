@@ -64,6 +64,14 @@ const invoiceItemSchema = new mongoose.Schema({
     min: 0,
     max: 100
   },
+  // Immutable reference copied from the linked Sales Order line. Unlike the
+  // live required stage above, invoice-level discounts do not recalculate it.
+  sourceSalesOrderRequiredSequentialStageRatePercentage: {
+    type: Number,
+    default: null,
+    min: 0,
+    max: 100
+  },
   effectiveDiscountPercentage: {
     type: Number,
     default: null,

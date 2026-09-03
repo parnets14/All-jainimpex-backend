@@ -3,7 +3,7 @@ import {
   getDealers,
   getProducts,
   getProductFilters,
-  createSalesOrder,
+  createCanonicalSalesOrder,
   getMySalesOrders,
   getSalesOrderById,
   getWarehouses,
@@ -35,7 +35,7 @@ router.post('/calculate-discounts', calculateOrderDiscounts);
 router.get('/', getMySalesOrders);
 
 // Create new sales order
-router.post('/', createSalesOrder);
+router.post('/', createCanonicalSalesOrder);
 
 // Get specific order details (must be last)
 router.get('/:id', getSalesOrderById);

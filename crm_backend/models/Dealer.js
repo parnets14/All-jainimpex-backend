@@ -169,8 +169,12 @@ const dealerSchema = new mongoose.Schema(
     // Financial Information
     creditLimit: {
       type: Number,
-      default: 0,
-      min: [0, "Credit limit cannot be negative"],
+      required: [true, "Credit limit is required"],
+      min: [0.01, "Credit limit must be greater than zero"],
+      validate: {
+        validator: Number.isFinite,
+        message: "Credit limit must be a finite number",
+      },
     },
     creditDays: {
       type: Number,
@@ -205,6 +209,16 @@ const dealerSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: 0,
+    },
+    creditLockToken: {
+      type: String,
+      default: null,
+      select: false,
+    },
+    creditLockExpiresAt: {
+      type: Date,
+      default: null,
+      select: false,
     },
 
     // Opening balance at go-live (migration from previous books).

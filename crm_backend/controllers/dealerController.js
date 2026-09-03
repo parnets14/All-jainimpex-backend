@@ -11,6 +11,7 @@ import { salesOrderSchema } from "../models/SalesOrder.js";
 import { regionSchema } from "../models/Region.js";
 import { dealerCategorySchema } from "../models/DealerCategory.js";
 import { productSchema } from "../models/Product.js";
+import { getDealerCreditExposure } from '../services/dealerCreditService.js';
 
 // Helper function to get models from company-specific connection
 const getModels = (dbConnection) => {
@@ -203,9 +204,10 @@ export const getDealer = async (req, res) => {
 
 // Create new dealer
 export const createDealer = async (req, res) => {
+  let session;
   try {
     // Get models from company-specific connection
-    const { Dealer } = getModels(req.dbConnection);
+    const { Dealer, DealerLedger } = getModels(req.dbConnection);
     
     const {
       name,
@@ -240,6 +242,67 @@ export const createDealer = async (req, res) => {
       openingBalanceType,
       openingBalanceDate,
     } = req.body;
+
+    const normalizedCreditLimit = Number(creditLimit);
+    if (
+      creditLimit === null ||
+      creditLimit === undefined ||
+      (typeof creditLimit === "string" && creditLimit.trim() === "") ||
+      !Number.isFinite(normalizedCreditLimit) ||
+      normalizedCreditLimit <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        code: "DEALER_CREDIT_LIMIT_REQUIRED",
+        message: "Credit limit is required and must be a finite number greater than zero",
+      });
+    }
+
+    const hasOpeningBalance = Object.prototype.hasOwnProperty.call(req.body, "openingBalance");
+    const hasOpeningBalanceType = Object.prototype.hasOwnProperty.call(req.body, "openingBalanceType");
+    const hasOpeningBalanceDate = Object.prototype.hasOwnProperty.call(req.body, "openingBalanceDate");
+    let normalizedOpeningBalance = 0;
+    if (hasOpeningBalance) {
+      normalizedOpeningBalance = Number(openingBalance);
+      if (
+        openingBalance === null ||
+        (typeof openingBalance === "string" && openingBalance.trim() === "") ||
+        !Number.isFinite(normalizedOpeningBalance) ||
+        normalizedOpeningBalance < 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Opening balance must be a finite number greater than or equal to zero",
+        });
+      }
+    }
+
+    const normalizedOpeningBalanceType = hasOpeningBalanceType ? openingBalanceType : "Dr";
+    if (hasOpeningBalanceType && !["Dr", "Cr"].includes(openingBalanceType)) {
+      return res.status(400).json({
+        success: false,
+        message: "Opening balance type must be Dr or Cr",
+      });
+    }
+
+    let normalizedOpeningBalanceDate = null;
+    if (hasOpeningBalanceDate) {
+      if (openingBalanceDate === null || openingBalanceDate === "") {
+        return res.status(400).json({
+          success: false,
+          message: "Opening balance date must be a valid date",
+        });
+      }
+      normalizedOpeningBalanceDate = new Date(openingBalanceDate);
+      if (Number.isNaN(normalizedOpeningBalanceDate.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: "Opening balance date must be a valid date",
+        });
+      }
+    } else if (normalizedOpeningBalance > 0) {
+      normalizedOpeningBalanceDate = new Date();
+    }
 
     // Validate required fields
     if (
@@ -290,7 +353,7 @@ export const createDealer = async (req, res) => {
       regionId,
       routeId: routeId || null,
       salesExecutiveId,
-      creditLimit: parseFloat(creditLimit) || 0,
+      creditLimit: normalizedCreditLimit,
       creditDays: parseInt(creditDays) || 0,
       creditDaysRegular: parseInt(creditDaysRegular) || 0,
       creditDaysCD: parseInt(creditDaysCD) || 0,
@@ -306,9 +369,9 @@ export const createDealer = async (req, res) => {
       // Dealer-Specific Extra Discounts
       extraDiscounts: extraDiscounts || [],
       // Opening balance at go-live (migration)
-      openingBalance: parseFloat(openingBalance) || 0,
-      openingBalanceType: openingBalanceType === 'Cr' ? 'Cr' : 'Dr',
-      openingBalanceDate: openingBalanceDate ? new Date(openingBalanceDate) : null,
+      openingBalance: normalizedOpeningBalance,
+      openingBalanceType: normalizedOpeningBalanceType,
+      openingBalanceDate: normalizedOpeningBalanceDate,
       // Documents will be handled separately via upload endpoint
       panDocument: [],
       aadharDocument: [],
@@ -317,42 +380,47 @@ export const createDealer = async (req, res) => {
       createdBy: req.user._id,
     };
 
-    const dealer = await Dealer.create(dealerData);
+    session = await req.dbConnection.startSession();
+    let dealer;
+    await session.withTransaction(async () => {
+      dealer = new Dealer(dealerData);
+      await dealer.save({ session });
 
-    // Seed the opening balance (go-live migration): a dealer-ledger opening
-    // entry (so it flows into AR / aging / balance sheet) + a balancing JV.
-    const obAmount = parseFloat(openingBalance) || 0;
-    if (obAmount > 0) {
-      try {
-        const { DealerLedger } = getModels(req.dbConnection);
-        const obType = openingBalanceType === 'Cr' ? 'Cr' : 'Dr';
-        const obDate = openingBalanceDate ? new Date(openingBalanceDate) : new Date();
-
-        await DealerLedger.create({
+      // Seed both accounting representations in the same transaction as the dealer.
+      if (normalizedOpeningBalance > 0) {
+        const ledgerEntry = new DealerLedger({
           dealer: dealer._id,
           dealerName: dealer.name,
           dealerCode: dealer.code,
-          entryDate: obDate,
+          entryDate: normalizedOpeningBalanceDate,
           transactionType: 'Opening Balance',
           // Dr = dealer owes us (debit); Cr = we owe dealer / advance (credit)
-          debitAmount: obType === 'Dr' ? obAmount : 0,
-          creditAmount: obType === 'Cr' ? obAmount : 0,
+          debitAmount: normalizedOpeningBalanceType === 'Dr' ? normalizedOpeningBalance : 0,
+          creditAmount: normalizedOpeningBalanceType === 'Cr' ? normalizedOpeningBalance : 0,
           runningBalance: 0, // computed by pre-save hook
-          description: `Opening Balance (${obType}) brought forward`,
+          description: `Opening Balance (${normalizedOpeningBalanceType}) brought forward`,
           status: 'Active',
           createdBy: req.user._id,
         });
+        await ledgerEntry.save({ session });
 
         const { createDealerOpeningEntry } = await import('../services/accountingService.js');
-        await createDealerOpeningEntry(
-          { dealer, amount: obAmount, type: obType, date: obDate },
+        const journalVoucher = await createDealerOpeningEntry(
+          {
+            dealer,
+            amount: normalizedOpeningBalance,
+            type: normalizedOpeningBalanceType,
+            date: normalizedOpeningBalanceDate,
+          },
           req.dbConnection,
-          req.user._id
+          req.user._id,
+          { session, throwOnError: true }
         );
-      } catch (obErr) {
-        console.error('⚠️ Failed to seed dealer opening balance (non-critical):', obErr.message);
+        if (!journalVoucher) {
+          throw new Error('Dealer opening journal entry could not be created');
+        }
       }
-    }
+    });
 
     // Update route dealer count if route is assigned
     if (routeId) {
@@ -388,6 +456,14 @@ export const createDealer = async (req, res) => {
       success: false,
       message: error.message,
     });
+  } finally {
+    if (session) {
+      try {
+        await session.endSession();
+      } catch (sessionError) {
+        console.error("Failed to end dealer creation session:", sessionError);
+      }
+    }
   }
 };
 
@@ -427,10 +503,17 @@ export const updateDealer = async (req, res) => {
       allowedExtendedSubcategories,
       // Dealer-Specific Extra Discounts
       extraDiscounts,
-      // Opening Balance
-      openingBalance,
-      openingBalanceType,
     } = req.body;
+
+    if (["openingBalance", "openingBalanceType", "openingBalanceDate"].some(
+      (field) => Object.prototype.hasOwnProperty.call(req.body, field)
+    )) {
+      return res.status(409).json({
+        success: false,
+        code: "OPENING_BALANCE_IMMUTABLE",
+        message: "Opening balance cannot be changed after dealer creation",
+      });
+    }
 
     // Check if dealer exists
     const existingDealer = await Dealer.findById(id);
@@ -438,6 +521,30 @@ export const updateDealer = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "Dealer not found",
+      });
+    }
+
+    const hasCreditLimit = Object.prototype.hasOwnProperty.call(req.body, "creditLimit");
+    let normalizedCreditLimit;
+    if (hasCreditLimit) {
+      normalizedCreditLimit = Number(creditLimit);
+      if (
+        creditLimit === null ||
+        (typeof creditLimit === "string" && creditLimit.trim() === "") ||
+        !Number.isFinite(normalizedCreditLimit) ||
+        normalizedCreditLimit <= 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          code: "DEALER_CREDIT_LIMIT_REQUIRED",
+          message: "Credit limit is required and must be a finite number greater than zero",
+        });
+      }
+    } else if (!Number.isFinite(existingDealer.creditLimit) || existingDealer.creditLimit <= 0) {
+      return res.status(400).json({
+        success: false,
+        code: "DEALER_CREDIT_LIMIT_REQUIRED",
+        message: "This legacy dealer must be assigned a finite credit limit greater than zero before it can be updated",
       });
     }
 
@@ -488,8 +595,8 @@ export const updateDealer = async (req, res) => {
     if (routeId !== undefined) updateData.routeId = routeId || null;
     if (salesExecutiveId !== undefined)
       updateData.salesExecutiveId = salesExecutiveId;
-    if (creditLimit !== undefined)
-      updateData.creditLimit = parseFloat(creditLimit) || 0;
+    if (hasCreditLimit)
+      updateData.creditLimit = normalizedCreditLimit;
     if (creditDays !== undefined)
       updateData.creditDays = parseInt(creditDays) || 0;
     if (creditDaysRegular !== undefined)
@@ -511,11 +618,7 @@ export const updateDealer = async (req, res) => {
     // Dealer-Specific Extra Discounts
     if (extraDiscounts !== undefined) updateData.extraDiscounts = extraDiscounts;
 
-    // Opening Balance (only set if provided; don't overwrite once set unless explicitly changed)
-    if (openingBalance !== undefined) {
-      updateData.openingBalance = parseFloat(openingBalance) || 0;
-      updateData.openingBalanceType = openingBalanceType || 'Dr';
-    }
+    // Opening balance fields are immutable after creation (enforced above).
     
     // Documents are handled separately via upload endpoint
     // Remove document fields from update data to avoid casting errors
@@ -1029,6 +1132,13 @@ export const getDealerCompleteInfo = async (req, res) => {
     const lastOrderDaysAgo = lastOrder 
       ? Math.floor((today - new Date(lastOrder.orderDate)) / (1000 * 60 * 60 * 24))
       : null;
+
+    // Financial values below come from the same atomic canonical service used
+    // by Sales Order create/edit/confirm and Dealer Invoice approval.
+    const canonicalExposure = await getDealerCreditExposure(req.dbConnection, id);
+    const canonicalPaymentStatus = canonicalExposure.overdueAmount > 0
+      ? 'overdue'
+      : (canonicalExposure.isOverlimit ? 'exceeded' : 'good');
     
     // 7. Prepare response
     const response = {
@@ -1044,13 +1154,16 @@ export const getDealerCompleteInfo = async (req, res) => {
         dealerType: dealer.dealerType
       },
       creditStatus: {
-        creditLimit: dealer.creditLimit,
-        currentOutstanding: Math.round(currentOutstanding),
-        confirmedOrdersAmount: Math.round(confirmedOrdersAmount),
-        totalCreditUsed: Math.round(totalCreditUsed),
-        availableCredit: Math.round(availableCredit),
-        utilizationPercent,
-        status: creditStatusType
+        creditLimit: canonicalExposure.creditLimit,
+        limitConfigured: canonicalExposure.limitConfigured,
+        currentOutstanding: canonicalExposure.ledgerBalance,
+        invoiceOutstanding: canonicalExposure.invoiceOutstanding,
+        confirmedOrdersAmount: canonicalExposure.uninvoicedSalesOrderAmount,
+        totalCreditUsed: canonicalExposure.totalExposure,
+        availableCredit: canonicalExposure.availableCredit,
+        utilizationPercent: canonicalExposure.utilizationPercent,
+        status: canonicalExposure.status,
+        asOf: canonicalExposure.asOf
       },
       lastPurchase: lastOrder ? {
         orderDate: lastOrder.orderDate,
@@ -1064,19 +1177,20 @@ export const getDealerCompleteInfo = async (req, res) => {
         }))
       } : null,
       paymentStatus: {
-        totalOutstanding: Math.round(currentOutstanding),
-        confirmedOrdersAmount: Math.round(confirmedOrdersAmount),
-        totalCreditUsed: Math.round(totalCreditUsed),
-        overdueAmount: Math.round(overdueAmount),
-        lastPaymentDate: lastPaymentDate,
-        lastPaymentAmount: lastPaymentAmount,
-        status: paymentStatusType,
-        canCreateOrder,
-        blockReason
+        totalOutstanding: canonicalExposure.ledgerBalance,
+        confirmedOrdersAmount: canonicalExposure.uninvoicedSalesOrderAmount,
+        totalCreditUsed: canonicalExposure.totalExposure,
+        overdueAmount: canonicalExposure.overdueAmount,
+        lastPaymentDate: canonicalExposure.lastPaymentDate,
+        lastPaymentAmount: canonicalExposure.lastPaymentAmount,
+        status: canonicalPaymentStatus,
+        canCreateOrder: canonicalExposure.canCreateOrder,
+        blockReason: canonicalExposure.blockReason
       },
       extraDiscounts: extraDiscounts.map(d => ({
         _id: d._id,
         targetType: d.targetType,
+        targetId: d.targetId,
         targetName: d.targetName,
         discountPercentage: d.discountPercentage,
         description: d.description,
@@ -1418,120 +1532,54 @@ export const getDealerHierarchyOptions = async (req, res) => {
 // Get dealer outstanding balance
 export const getDealerOutstanding = async (req, res) => {
   try {
-    // Get models from company-specific connection
-    const { Dealer, DealerLedger, PaymentAllocation } = getModels(req.dbConnection);
-    
-    const { id } = req.params;
+    const exposure = await getDealerCreditExposure(req.dbConnection, req.params.id);
+    const paymentStatus = exposure.overdueAmount > 0
+      ? 'overdue'
+      : (exposure.isOverlimit ? 'exceeded' : 'current');
 
-    // Get dealer
-    const dealer = await Dealer.findById(id);
-    if (!dealer) {
-      return res.status(404).json({
-        success: false,
-        message: "Dealer not found",
-      });
-    }
-
-    // Get all ledger entries for this dealer
-    const ledgerEntries = await DealerLedger.find({ dealer: id }).sort({ entryDate: 1 });
-    
-    // Calculate current outstanding balance
-    const currentOutstanding = ledgerEntries.reduce((sum, entry) => {
-      return sum + (entry.debitAmount || 0) - (entry.creditAmount || 0);
-    }, 0);
-    
-    // Calculate available credit
-    const availableCredit = Math.max(0, dealer.creditLimit - currentOutstanding);
-    
-    // Calculate utilization percentage
-    const utilizationPercent = dealer.creditLimit > 0 
-      ? Math.round((currentOutstanding / dealer.creditLimit) * 100) 
-      : 0;
-    
-    // Determine credit status
-    let creditStatusType = 'good';
-    if (utilizationPercent > 90 || currentOutstanding > dealer.creditLimit) {
-      creditStatusType = 'exceeded';
-    } else if (utilizationPercent > 70) {
-      creditStatusType = 'warning';
-    }
-
-    // Calculate overdue amount (entries older than credit days)
-    const creditDays = dealer.creditDays || 30;
-    const overdueDate = new Date();
-    overdueDate.setDate(overdueDate.getDate() - creditDays);
-    
-    const overdueAmount = ledgerEntries
-      .filter(entry => entry.entryDate < overdueDate && entry.debitAmount > 0)
-      .reduce((sum, entry) => sum + (entry.debitAmount || 0), 0);
-
-    // Get last payment
-    const lastPayment = ledgerEntries
-      .filter(entry => entry.creditAmount > 0)
-      .sort((a, b) => new Date(b.entryDate) - new Date(a.entryDate))[0];
-
-    const lastPaymentDate = lastPayment?.entryDate || null;
-    const lastPaymentAmount = lastPayment?.creditAmount || 0;
-
-    // Determine payment status
-    let paymentStatusType = 'current';
-    let canCreateOrder = true;
-    let blockReason = null;
-
-    // IMPORTANT: Different handling for overdue vs credit limit exceeded
-    // - Overdue payment (past credit days): BLOCK completely - must collect payment
-    // - Credit limit exceeded: Allow Pending order - requires admin approval
-    
-    if (overdueAmount > 0) {
-      // STRICT BLOCK: Payment is overdue (past credit days)
-      paymentStatusType = 'overdue';
-      canCreateOrder = false;
-      blockReason = `₹${overdueAmount.toLocaleString()} payment is overdue (${creditDays} days). Please collect payment first.`;
-    } else if (currentOutstanding > dealer.creditLimit) {
-      // WARNING: Credit limit exceeded but no overdue payment
-      // Allow creating Pending orders that require admin approval
-      paymentStatusType = 'exceeded';
-      canCreateOrder = true; // Allow Pending orders
-      blockReason = null; // No block, just warning
-    }
-
-    res.json({
+    return res.json({
       success: true,
       dealerInfo: {
-        dealerId: dealer._id,
-        dealerName: dealer.name,
-        dealerCode: dealer.code,
-        creditLimit: dealer.creditLimit,
-        creditDays: dealer.creditDays,
+        dealerId: exposure.dealer._id,
+        dealerName: exposure.dealer.name,
+        dealerCode: exposure.dealer.code,
+        creditLimit: exposure.creditLimit,
+        creditDays: exposure.dealer.creditDays
       },
       creditStatus: {
-        creditLimit: dealer.creditLimit,
-        currentOutstanding: Math.round(currentOutstanding),
-        availableCredit: Math.round(availableCredit),
-        utilizationPercent,
-        status: creditStatusType,
+        creditLimit: exposure.creditLimit,
+        limitConfigured: exposure.limitConfigured,
+        currentOutstanding: exposure.ledgerBalance,
+        invoiceOutstanding: exposure.invoiceOutstanding,
+        confirmedOrdersAmount: exposure.uninvoicedSalesOrderAmount,
+        totalCreditUsed: exposure.totalExposure,
+        availableCredit: exposure.availableCredit,
+        utilizationPercent: exposure.utilizationPercent,
+        status: exposure.status,
+        asOf: exposure.asOf
       },
       paymentStatus: {
-        totalOutstanding: Math.round(currentOutstanding),
-        overdueAmount: Math.round(overdueAmount),
-        lastPaymentDate: lastPaymentDate,
-        lastPaymentAmount: lastPaymentAmount,
-        status: paymentStatusType,
-        canCreateOrder,
-        blockReason,
+        totalOutstanding: exposure.ledgerBalance,
+        confirmedOrdersAmount: exposure.uninvoicedSalesOrderAmount,
+        totalCreditUsed: exposure.totalExposure,
+        overdueAmount: exposure.overdueAmount,
+        lastPaymentDate: exposure.lastPaymentDate,
+        lastPaymentAmount: exposure.lastPaymentAmount,
+        status: paymentStatus,
+        canCreateOrder: exposure.canCreateOrder,
+        blockReason: exposure.blockReason
       },
       summary: {
-        totalLedgerEntries: ledgerEntries.length,
-        creditUtilization: `${utilizationPercent}%`,
-        paymentDue: overdueAmount > 0,
-        creditExceeded: currentOutstanding > dealer.creditLimit,
-      },
+        creditUtilization: `${exposure.utilizationPercent}%`,
+        paymentDue: exposure.overdueAmount > 0,
+        creditExceeded: exposure.isOverlimit
+      }
     });
   } catch (error) {
-    console.error("Get dealer outstanding error:", error);
-    res.status(500).json({
+    console.error('Get dealer outstanding error:', error);
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: error.message,
+      message: error.message
     });
   }
 };
@@ -1540,100 +1588,85 @@ export const getDealerOutstanding = async (req, res) => {
 // Get dealer credit limit approval history (last 30 days)
 export const getDealerCreditApprovalHistory = async (req, res) => {
   try {
-    // Get models from company-specific connection
-    const { Dealer, DealerInvoice, DealerLedger, SalesOrder } = getModels(req.dbConnection);
-    
-    const { id } = req.params;
-
-    // Get dealer
-    const dealer = await Dealer.findById(id);
+    const { Dealer, SalesOrder } = getModels(req.dbConnection);
+    const dealer = await Dealer.findById(req.params.id).lean();
     if (!dealer) {
-      return res.status(404).json({
-        success: false,
-        message: "Dealer not found",
-      });
+      return res.status(404).json({ success: false, message: 'Dealer not found' });
     }
 
-    // Calculate date 30 days ago
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
+    const orders = await SalesOrder.find({
+      dealer: req.params.id,
+      $or: [
+        { 'creditOverlimit.history.performedAt': { $gte: thirtyDaysAgo } },
+        { 'creditOverlimit.approvedAt': { $gte: thirtyDaysAgo } },
+        { 'creditOverlimit.rejectedAt': { $gte: thirtyDaysAgo } }
+      ]
+    })
+      .populate('creditOverlimit.history.performedBy', 'name email role')
+      .populate('creditOverlimit.approvedBy', 'name email role')
+      .populate('creditOverlimit.rejectedBy', 'name email role')
+      .lean();
+
     const approvalHistory = [];
+    for (const order of orders) {
+      const events = (order.creditOverlimit?.history || [])
+        .filter((event) => event.performedAt && new Date(event.performedAt) >= thirtyDaysAgo);
 
-    // 1. Check INVOICES that exceeded credit limit (new system)
-    const invoices = await DealerInvoice.find({
-      dealer: id,
-      approvedAt: { $gte: thirtyDaysAgo },
-      status: { $in: ['Approved', 'Confirmed', 'Processing', 'Delivered'] }
-    })
-    .populate('approvedBy', 'name email role')
-    .sort({ approvedAt: -1 });
-
-    for (const invoice of invoices) {
-      // Get ledger state at the time of invoice approval
-      const ledgerEntriesBeforeInvoice = await DealerLedger.find({
-        dealer: id,
-        createdAt: { $lt: invoice.approvedAt }
-      }).sort({ createdAt: 1 });
-      
-      // Calculate outstanding before this invoice
-      const outstandingBeforeInvoice = ledgerEntriesBeforeInvoice.reduce((sum, entry) => {
-        return sum + (entry.debitAmount || 0) - (entry.creditAmount || 0);
-      }, 0);
-      
-      const newOutstanding = outstandingBeforeInvoice + invoice.totalAmount;
-      const wasOverlimit = newOutstanding > dealer.creditLimit;
-      
-      if (wasOverlimit) {
-        approvalHistory.push({
-          type: 'invoice',
-          invoiceId: invoice._id,
-          invoiceNumber: invoice.invoiceNumber,
-          invoiceDate: invoice.invoiceDate,
-          amount: invoice.totalAmount,
-          approvedAt: invoice.approvedAt,
-          approvedBy: invoice.approvedBy,
-          creditLimit: dealer.creditLimit,
-          outstandingBefore: Math.round(outstandingBeforeInvoice),
-          newOutstanding: Math.round(newOutstanding),
-          overlimitAmount: Math.round(newOutstanding - dealer.creditLimit)
-        });
+      if (events.length > 0) {
+        for (const event of events) {
+          approvalHistory.push({
+            type: 'sales_order',
+            action: event.action,
+            orderId: order._id,
+            orderNumber: order.orderNumber,
+            orderDate: order.orderDate,
+            status: order.status,
+            amount: Number(event.orderAmount ?? order.creditAmount ?? 0),
+            creditAmount: Number(event.orderAmount ?? order.creditAmount ?? 0),
+            approvedAt: event.performedAt,
+            performedAt: event.performedAt,
+            approvedBy: event.performedBy || null,
+            performedBy: event.performedBy || null,
+            notes: event.notes || '',
+            creditLimit: Number(event.creditLimit ?? 0),
+            outstandingBefore: Number(event.currentOutstanding ?? 0),
+            newOutstanding: Number(event.newOutstanding ?? 0),
+            overlimitAmount: Number(event.overlimitAmount ?? 0)
+          });
+        }
+        continue;
       }
-    }
 
-    // 2. Check SALES ORDERS that exceeded credit limit and were approved (old system)
-    const salesOrders = await SalesOrder.find({
-      dealer: id,
-      'creditOverlimit.isOverlimit': true,
-      'creditOverlimit.approvedBy': { $exists: true, $ne: null },
-      'creditOverlimit.approvedAt': { $gte: thirtyDaysAgo },
-      status: { $in: ['Confirmed', 'Processing', 'Delivered'] }
-    })
-    .populate('creditOverlimit.approvedBy', 'name email role')
-    .sort({ 'creditOverlimit.approvedAt': -1 });
-
-    for (const order of salesOrders) {
-      if (order.creditOverlimit && order.creditOverlimit.approvedBy) {
+      // Legacy fallback for approvals created before append-only history existed.
+      if (order.creditOverlimit?.approvedBy && order.creditOverlimit?.approvedAt) {
         approvalHistory.push({
           type: 'sales_order',
+          action: 'approved',
           orderId: order._id,
           orderNumber: order.orderNumber,
           orderDate: order.orderDate,
-          amount: order.totalAmount,
+          status: order.status,
+          amount: Number(order.creditAmount ?? order.creditOverlimit.orderAmount ?? 0),
+          creditAmount: Number(order.creditAmount ?? order.creditOverlimit.orderAmount ?? 0),
           approvedAt: order.creditOverlimit.approvedAt,
+          performedAt: order.creditOverlimit.approvedAt,
           approvedBy: order.creditOverlimit.approvedBy,
-          creditLimit: order.creditOverlimit.creditLimit || dealer.creditLimit,
-          outstandingBefore: Math.round(order.creditOverlimit.currentOutstanding || 0),
-          newOutstanding: Math.round(order.creditOverlimit.newOutstanding || 0),
-          overlimitAmount: Math.round(order.creditOverlimit.overlimitAmount || 0)
+          performedBy: order.creditOverlimit.approvedBy,
+          notes: order.creditOverlimit.approvalNotes || '',
+          creditLimit: Number(order.creditOverlimit.creditLimit ?? 0),
+          outstandingBefore: Number(order.creditOverlimit.currentOutstanding ?? 0),
+          newOutstanding: Number(order.creditOverlimit.newOutstanding ?? 0),
+          overlimitAmount: Number(order.creditOverlimit.overlimitAmount ?? 0),
+          legacy: true
         });
       }
     }
 
-    // Sort all approvals by date (newest first)
-    approvalHistory.sort((a, b) => new Date(b.approvedAt) - new Date(a.approvedAt));
-
-    res.json({
+    approvalHistory.sort((a, b) => new Date(b.performedAt) - new Date(a.performedAt));
+    return res.json({
       success: true,
       dealerInfo: {
         dealerId: dealer._id,
@@ -1641,16 +1674,17 @@ export const getDealerCreditApprovalHistory = async (req, res) => {
         dealerCode: dealer.code,
         creditLimit: dealer.creditLimit
       },
-      approvalHistory: approvalHistory,
-      totalApprovalsLast30Days: approvalHistory.length,
+      approvalHistory,
+      totalApprovalsLast30Days: approvalHistory.filter((event) => event.action === 'approved').length,
+      totalEventsLast30Days: approvalHistory.length,
       periodStart: thirtyDaysAgo,
       periodEnd: new Date()
     });
   } catch (error) {
-    console.error("Get dealer credit approval history error:", error);
-    res.status(500).json({
+    console.error('Get dealer credit approval history error:', error);
+    return res.status(500).json({
       success: false,
-      message: "Server error while fetching credit approval history",
+      message: 'Server error while fetching credit approval history',
       error: error.message
     });
   }

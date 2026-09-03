@@ -19,6 +19,11 @@ import { assertPeriodOpen, handlePeriodLockError } from '../services/periodLockS
 import { recordUpdate, recordCancel } from '../services/auditTrailService.js';
 import { userHasPermission } from '../middleware/routePermissions.js';
 import {
+  acquireDealerCreditLock,
+  evaluateDealerCredit,
+  getDealerCreditExposure
+} from '../services/dealerCreditService.js';
+import {
   calculateDiscountLine,
   calculateOneTimeInvoicePriceIncrease,
   normalizeRateMap,
@@ -667,6 +672,8 @@ const canonicalizeInvoiceItems = async ({
         effectiveDiscountPercentage: calculation.effectiveDiscountPercentage,
         promisedEffectiveDiscountPercentage: sourceLine.promisedEffectiveDiscountPercentage ?? null,
         requiredSequentialStageRatePercentage: calculation.requiredSequentialStageRatePercentage,
+        sourceSalesOrderRequiredSequentialStageRatePercentage:
+          sourceLine.requiredSequentialStageRatePercentage ?? null,
         masterDiscountCapApplied: calculation.masterDiscountCapApplied,
         combinedLevelDiscountCapApplied: calculation.combinedLevelDiscountCapApplied,
         levelDiscountTotalPercentage: calculation.levelDiscountTotalPercentage,
@@ -883,6 +890,9 @@ const canonicalizeInvoiceItems = async ({
       effectiveDiscountPercentage: calculation.effectiveDiscountPercentage,
       promisedEffectiveDiscountPercentage: calculation.promisedEffectiveDiscountPercentage,
       requiredSequentialStageRatePercentage: calculation.requiredSequentialStageRatePercentage,
+      // Standalone invoices have no Sales Order source stage. Explicitly clear
+      // any client-supplied value so this provenance field cannot be spoofed.
+      sourceSalesOrderRequiredSequentialStageRatePercentage: null,
       masterDiscountCapApplied: calculation.masterDiscountCapApplied,
       combinedLevelDiscountCapApplied: calculation.combinedLevelDiscountCapApplied,
       levelDiscountTotalPercentage: calculation.levelDiscountTotalPercentage,
@@ -2432,60 +2442,63 @@ export const approveDealerInvoice = async (req, res) => {
         }
       }
 
-      const creditLastEntry = await DealerLedger.findOne(
-        { dealer: invoice.dealer },
-        {},
-        { sort: { 'createdAt': -1 } }
-      ).session(session);
-      const currentOutstanding = creditLastEntry ? Number(creditLastEntry.runningBalance || 0) : 0;
-      const newOutstanding = currentOutstanding + Number(invoice.totalAmount || 0);
+      await acquireDealerCreditLock(req.dbConnection, invoice.dealer, session);
+      const creditExposure = await getDealerCreditExposure(
+        req.dbConnection,
+        invoice.dealer,
+        { excludeSalesOrderId: invoice.salesOrder, session }
+      );
+      const creditEvaluation = evaluateDealerCredit({
+        creditLimit: creditExposure.creditLimit,
+        existingExposure: creditExposure.totalExposure,
+        candidateAmount: invoice.totalAmount
+      });
       const orderApprovalCoversCurrentExposure = approvedOrderExposure !== null
-        && newOutstanding <= approvedOrderExposure + 0.01;
+        && creditEvaluation.projectedExposure <= approvedOrderExposure + 0.01;
 
-      // CREDIT LIMIT CHECK - Block invoice approval if the adjusted invoice
-      // exceeds both the dealer limit and any exposure approved on its SO.
-      if (dealer.creditLimit && dealer.creditLimit > 0) {
-        console.log(`💳 Credit Limit Check:`, {
-          creditLimit: dealer.creditLimit,
-          currentOutstanding,
-          invoiceAmount: invoice.totalAmount,
-          newOutstanding,
-          approvedOrderExposure,
-          orderApprovalCoversCurrentExposure,
-          overlimit: newOutstanding - dealer.creditLimit
+      if (!creditExposure.limitConfigured) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          code: 'DEALER_CREDIT_LIMIT_REQUIRED',
+          message: 'Cannot approve invoice because the dealer credit limit is not configured.'
         });
+      }
 
-        if (newOutstanding > dealer.creditLimit && !orderApprovalCoversCurrentExposure) {
-          const overlimitAmount = newOutstanding - dealer.creditLimit;
+      console.log('💳 Canonical Dealer Invoice Credit Check:', {
+        ledgerBalance: creditExposure.ledgerBalance,
+        uninvoicedSalesOrders: creditExposure.uninvoicedSalesOrderAmount,
+        ...creditEvaluation,
+        approvedOrderExposure,
+        orderApprovalCoversCurrentExposure
+      });
 
-          console.log(`⚠️ Credit limit exceeded by ₹${overlimitAmount.toFixed(2)}`);
+      if (creditEvaluation.isOverlimit && !orderApprovalCoversCurrentExposure) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: approvedOrderExposure !== null
+            ? `Cannot approve invoice - adjusted exposure exceeds the amount approved on Sales Order ${approvedOrderNumber}. New credit approval is required.`
+            : `Cannot approve invoice - Credit limit exceeded by ₹${creditEvaluation.overlimitAmount.toLocaleString('en-IN')}`,
+          code: approvedOrderExposure !== null
+            ? 'SALES_ORDER_APPROVED_EXPOSURE_EXCEEDED'
+            : 'DEALER_CREDIT_LIMIT_EXCEEDED',
+          creditLimitInfo: {
+            creditLimit: creditEvaluation.creditLimit,
+            currentOutstanding: creditEvaluation.currentOutstanding,
+            ledgerBalance: creditExposure.ledgerBalance,
+            confirmedOrdersAmount: creditExposure.uninvoicedSalesOrderAmount,
+            invoiceAmount: creditEvaluation.candidateAmount,
+            newOutstanding: creditEvaluation.projectedExposure,
+            approvedOrderExposure,
+            overlimitAmount: creditEvaluation.overlimitAmount,
+            availableCredit: creditEvaluation.availableCredit
+          }
+        });
+      }
 
-          await session.abortTransaction();
-          return res.status(400).json({
-            success: false,
-            message: approvedOrderExposure !== null
-              ? `Cannot approve invoice - adjusted exposure exceeds the amount approved on Sales Order ${approvedOrderNumber}. New credit approval is required.`
-              : `Cannot approve invoice - Credit limit exceeded by ₹${overlimitAmount.toLocaleString()}`,
-            code: approvedOrderExposure !== null
-              ? 'SALES_ORDER_APPROVED_EXPOSURE_EXCEEDED'
-              : 'DEALER_CREDIT_LIMIT_EXCEEDED',
-            creditLimitInfo: {
-              creditLimit: dealer.creditLimit,
-              currentOutstanding,
-              invoiceAmount: invoice.totalAmount,
-              newOutstanding,
-              approvedOrderExposure,
-              overlimitAmount,
-              availableCredit: dealer.creditLimit - currentOutstanding
-            }
-          });
-        }
-
-        if (newOutstanding > dealer.creditLimit && orderApprovalCoversCurrentExposure) {
-          console.log(`✅ Sales Order ${approvedOrderNumber} approval covers adjusted exposure up to ₹${approvedOrderExposure.toLocaleString()}`);
-        } else {
-          console.log(`✅ Credit limit check passed - Available credit: ₹${(dealer.creditLimit - currentOutstanding).toLocaleString()}`);
-        }
+      if (creditEvaluation.isOverlimit && orderApprovalCoversCurrentExposure) {
+        console.log(`✅ Sales Order ${approvedOrderNumber} approval covers adjusted exposure up to ₹${approvedOrderExposure.toLocaleString('en-IN')}`);
       }
       
       // Get the last entry for this dealer to calculate running balance
@@ -2839,6 +2852,8 @@ export const deleteDealerInvoice = async (req, res) => {
     // Block deletion/cancellation of an invoice dated in a closed financial year
     await assertPeriodOpen(req.dbConnection, invoice.invoiceDate, 'dealer invoice cancellation');
 
+    await acquireDealerCreditLock(req.dbConnection, invoice.dealer, session);
+
     // CASE 1: Delete Draft Invoice (permanently delete)
     if (invoice.status === "Draft" || invoice.isDraft) {
       console.log(`🗑️ Permanently deleting draft invoice ${invoice._id}`);
@@ -2858,13 +2873,17 @@ export const deleteDealerInvoice = async (req, res) => {
       
       await session.commitTransaction();
 
-      await recordCancel(req.dbConnection, {
-        entity: 'DealerInvoice',
-        entityId: invoice._id,
-        documentNumber: invoice.invoiceNumber || 'DRAFT',
-        req,
-        reason: 'Draft invoice deleted',
-      });
+      try {
+        await recordCancel(req.dbConnection, {
+          entity: 'DealerInvoice',
+          entityId: invoice._id,
+          documentNumber: invoice.invoiceNumber || 'DRAFT',
+          req,
+          reason: 'Draft invoice deleted',
+        });
+      } catch (auditError) {
+        console.error('Draft invoice deletion audit failed after commit:', auditError.message);
+      }
       
       return res.json({
         success: true,
@@ -2913,8 +2932,8 @@ export const deleteDealerInvoice = async (req, res) => {
           console.log(`✅ Sales order ${salesOrder.orderNumber} released - can create new invoice`);
         }
       } catch (soError) {
-        console.error(`⚠️ Error releasing sales order:`, soError.message);
-        // Continue even if sales order release fails
+        console.error('Error releasing Sales Order during invoice cancellation:', soError);
+        throw soError;
       }
     }
     
@@ -2969,8 +2988,8 @@ export const deleteDealerInvoice = async (req, res) => {
         console.log(`ℹ️ No stock movements found for invoice ${invoice.invoiceNumber}`);
       }
     } catch (stockError) {
-      console.error(`⚠️ Error reversing stock movements:`, stockError.message);
-      // Continue even if stock reversal fails
+      console.error('Error reversing stock during invoice cancellation:', stockError);
+      throw stockError;
     }
     
     // REVERSE LEDGER ENTRIES: Remove dealer ledger entries
@@ -3007,21 +3026,25 @@ export const deleteDealerInvoice = async (req, res) => {
         console.log(`ℹ️ No ledger entries found for invoice ${invoice.invoiceNumber}`);
       }
     } catch (ledgerError) {
-      console.error(`⚠️ Error reversing ledger entries:`, ledgerError.message);
-      // Continue even if ledger reversal fails
+      console.error('Error reversing dealer ledger during invoice cancellation:', ledgerError);
+      throw ledgerError;
     }
     
     await session.commitTransaction();
     
     console.log(`✅ Invoice ${invoice.invoiceNumber} cancelled successfully`);
 
-    await recordCancel(req.dbConnection, {
-      entity: 'DealerInvoice',
-      entityId: invoice._id,
-      documentNumber: invoice.invoiceNumber,
-      req,
-      reason: reason || 'No reason provided',
-    });
+    try {
+      await recordCancel(req.dbConnection, {
+        entity: 'DealerInvoice',
+        entityId: invoice._id,
+        documentNumber: invoice.invoiceNumber,
+        req,
+        reason: reason || 'No reason provided',
+      });
+    } catch (auditError) {
+      console.error('Invoice cancellation audit failed after commit:', auditError.message);
+    }
 
     return res.json({
       success: true,
@@ -3036,7 +3059,9 @@ export const deleteDealerInvoice = async (req, res) => {
     } // Close CASE 2: Cancel Approved Invoice
     
   } catch (error) {
-    await session.abortTransaction();
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+    }
     if (handlePeriodLockError(error, res)) return;
     console.error("Cancel dealer invoice error:", error);
     console.error("Error stack:", error.stack);

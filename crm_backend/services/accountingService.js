@@ -15,18 +15,22 @@ const getModels = (dbConnection) => {
 /**
  * Get or create system account by name
  */
-const getSystemAccount = async (accountName, dbConnection) => {
+const getSystemAccount = async (accountName, dbConnection, { session, throwOnError = false } = {}) => {
   const { AccountMaster } = getModels(dbConnection);
+  const applySession = (query) => session ? query.session(session) : query;
+
   // Try to find by name and system flag first
-  let account = await AccountMaster.findOne({ accountName, isSystem: true });
+  let account = await applySession(AccountMaster.findOne({ accountName, isSystem: true }));
   
   // If not found with system flag, try without it (for older accounts)
   if (!account) {
-    account = await AccountMaster.findOne({ accountName });
+    account = await applySession(AccountMaster.findOne({ accountName }));
   }
   
   if (!account) {
-    console.warn(`⚠️ System account "${accountName}" not found. Please ensure default accounts are seeded.`);
+    const error = new Error(`Required system account "${accountName}" was not found`);
+    if (throwOnError) throw error;
+    console.warn(`⚠️ ${error.message}. Please ensure default accounts are seeded.`);
   }
   
   return account;
@@ -35,16 +39,18 @@ const getSystemAccount = async (accountName, dbConnection) => {
 /**
  * Generate journal voucher number
  */
-const generateJournalNumber = async (dbConnection) => {
+const generateJournalNumber = async (dbConnection, { session } = {}) => {
   const { JournalVoucher } = getModels(dbConnection);
   const date = new Date();
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
   
   const prefix = `JV-${year}${month}`;
-  const lastJournal = await JournalVoucher.findOne({
+  let lastJournalQuery = JournalVoucher.findOne({
     voucherNumber: { $regex: `^${prefix}` }
   }).sort({ voucherNumber: -1 });
+  if (session) lastJournalQuery = lastJournalQuery.session(session);
+  const lastJournal = await lastJournalQuery;
   
   let sequence = 1;
   if (lastJournal && lastJournal.voucherNumber) {
@@ -468,17 +474,29 @@ export const createExpenseEntry = async (expense, dbConnection, userId, options 
  * Dr type (dealer owes us / receivable): Dr Sundry Debtors / Cr Opening Balance Equity.
  * Cr type (we owe dealer / advance):     Dr Opening Balance Equity / Cr Sundry Debtors.
  */
-export const createDealerOpeningEntry = async ({ dealer, amount, type, date }, dbConnection, userId) => {
+export const createDealerOpeningEntry = async (
+  { dealer, amount, type, date },
+  dbConnection,
+  userId,
+  { session, throwOnError = false } = {}
+) => {
   try {
     const { JournalVoucher, AccountMaster } = getModels(dbConnection);
-    const amt = Number(amount) || 0;
-    if (amt <= 0) return null;
+    const amt = Number(amount);
+    if (!Number.isFinite(amt) || amt <= 0) return null;
 
-    const debtors = await getSystemAccount('Sundry Debtors', dbConnection);
-    // Auto-create the Opening Balance Equity account if missing
-    let openingEquity = await AccountMaster.findOne({ accountName: 'Opening Balance Equity' });
+    const debtors = await getSystemAccount('Sundry Debtors', dbConnection, {
+      session,
+      throwOnError,
+    });
+    if (!debtors) return null;
+
+    // Auto-create the Opening Balance Equity account if missing.
+    let openingEquityQuery = AccountMaster.findOne({ accountName: 'Opening Balance Equity' });
+    if (session) openingEquityQuery = openingEquityQuery.session(session);
+    let openingEquity = await openingEquityQuery;
     if (!openingEquity) {
-      openingEquity = await AccountMaster.create({
+      openingEquity = new AccountMaster({
         accountName: 'Opening Balance Equity',
         accountGroup: 'Reserves & Surplus',
         accountType: 'Equity',
@@ -487,8 +505,13 @@ export const createDealerOpeningEntry = async ({ dealer, amount, type, date }, d
         isSystem: true,
         description: 'Contra account for migration opening balances',
       });
+      await openingEquity.save({ session });
     }
-    if (!debtors || !openingEquity) return null;
+    if (!openingEquity) {
+      const error = new Error('Required system account "Opening Balance Equity" could not be created');
+      if (throwOnError) throw error;
+      return null;
+    }
 
     const dealerName = dealer?.name || 'Dealer';
     const isDr = type === 'Dr';
@@ -502,8 +525,8 @@ export const createDealerOpeningEntry = async ({ dealer, amount, type, date }, d
           { accountId: debtors._id, accountName: debtors.accountName, accountGroup: debtors.accountGroup, debit: 0, credit: amt, narration: `Opening advance/credit for ${dealerName}` },
         ];
 
-    const voucherNumber = await generateJournalNumber(dbConnection);
-    return JournalVoucher.create({
+    const voucherNumber = await generateJournalNumber(dbConnection, { session });
+    const journalVoucher = new JournalVoucher({
       voucherNumber,
       voucherDate: date || new Date(),
       voucherType: 'Opening Entry',
@@ -518,8 +541,11 @@ export const createDealerOpeningEntry = async ({ dealer, amount, type, date }, d
       isAutoGenerated: true,
       createdBy: userId,
     });
+    await journalVoucher.save({ session });
+    return journalVoucher;
   } catch (error) {
     console.error('❌ Error creating dealer opening journal entry:', error);
+    if (throwOnError) throw error;
     return null;
   }
 };

@@ -11,7 +11,6 @@ import { discountMappingSchema } from "../models/DiscountMapping.js";
 import { notifyCreditLimitExceeded, sendAdminNotification } from "../services/adminNotificationService.js";
 import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
 import { dealerLedgerSchema } from "../models/DealerLedger.js";
-import { paymentAllocationSchema } from "../models/PaymentAllocation.js";
 import { sendPushNotification } from '../services/firebaseNotificationService.js';
 import {
   calculateDiscountLine,
@@ -19,6 +18,16 @@ import {
   normalizeRateMap,
   resolveDealerExtraDiscountBySpecificity
 } from '../utils/sequentialDiscountPolicy.js';
+import {
+  acquireDealerCreditLease,
+  acquireDealerCreditLock,
+  buildCreditOverlimitSnapshot,
+  calculateSalesOrderCreditAmount,
+  calculateSalesOrderLineCreditAmount,
+  getDealerCreditExposure,
+  isSalesOrderCreditEligibleProduct,
+  releaseDealerCreditLease
+} from '../services/dealerCreditService.js';
 
 // Helper function to get models from company-specific connection
 const getModels = (dbConnection) => {
@@ -34,7 +43,6 @@ const getModels = (dbConnection) => {
     DiscountMapping: dbConnection.models.DiscountMapping || dbConnection.model('DiscountMapping', discountMappingSchema),
     DealerInvoice: dbConnection.models.DealerInvoice || dbConnection.model('DealerInvoice', dealerInvoiceSchema),
     DealerLedger: dbConnection.models.DealerLedger || dbConnection.model('DealerLedger', dealerLedgerSchema),
-    PaymentAllocation: dbConnection.models.PaymentAllocation || dbConnection.model('PaymentAllocation', paymentAllocationSchema),
   };
 };
 
@@ -249,47 +257,8 @@ const canonicalizeSalesOrderProducts = async ({ products, dealer, dbConnection, 
   }));
 };
 
-const calculateCanonicalCreditLineAmount = (product) => {
-  const grossAmount = Number(product.quantity || 0) * Number(product.unitPrice || 0);
-  const orderedStages = product.discountPolicySnapshot?.orderedStages || [];
-  let creditStages = orderedStages.filter(
-    (stage) => stage.kind === 'direct' || stage.kind === 'dealer_extra'
-  );
-
-  // Legacy persisted lines may predate ordered snapshots. Reconstruct only the
-  // conservative direct + dealer-extra stages from server-persisted fields.
-  if (orderedStages.length === 0) {
-    creditStages = [];
-    const directRate = Number(product.appliedDiscount?.directDiscountPercentage || 0);
-    const dealerExtraRate = Number(product.dealerExtraDiscount || 0);
-    if (directRate > 0) {
-      creditStages.push({ key: 'direct', kind: 'direct', ratePercentage: directRate });
-    }
-    if (dealerExtraRate > 0) {
-      creditStages.push({
-        key: 'dealer-extra',
-        kind: 'dealer_extra',
-        ratePercentage: dealerExtraRate
-      });
-    }
-  }
-
-  return calculateDiscountLine({
-    baseAmount: grossAmount,
-    stages: creditStages,
-    // Legacy lines predate policy caps. A neutral 100% ceiling preserves their
-    // persisted direct/dealer-extra terms without weakening current snapshots.
-    masterDiscountCap: orderedStages.length === 0
-      ? 100
-      : (product.discountPolicySnapshot?.masterDiscountCap ?? null)
-  }).finalAmount;
-};
-
-const isCreditEligibleProduct = (product) => Boolean(
-  product?.warehouse
-  && product.warehouse !== 'No Stock'
-  && product.warehouseName !== 'No Stock'
-);
+const calculateCanonicalCreditLineAmount = calculateSalesOrderLineCreditAmount;
+const isCreditEligibleProduct = isSalesOrderCreditEligibleProduct;
 
 const hasCreditEligibilityChanged = (storedProducts = [], updatedProducts = []) => {
   if (storedProducts.length !== updatedProducts.length) return true;
@@ -527,15 +496,8 @@ const discountAmountForQuantity = (product, quantity, effectiveDiscountPercentag
 };
 
 /**
- * Calculate the true current credit outstanding for a dealer.
- * Matches the logic in dealerController.getDealerPaymentStatus:
- *   outstanding = (ledger debit - ledger credit) - paymentAllocations + confirmedOrdersNotYetInvoiced
- *
- * @param {object} dbConnection - Company-specific database connection
- * @param {string} dealerId
- * @param {string|null} excludeOrderId  - pass a sales order _id to exclude it from confirmed-orders sum (for edit re-check)
- * @param {object|null} session - optional MongoDB session for transactional callers
- * @returns {Promise<number>}
+ * Compatibility wrapper for existing callers. The implementation lives in the
+ * shared dealer credit service used by every Sales Order/Dealer/Invoice path.
  */
 const getDealerCreditOutstanding = async (
   dbConnection,
@@ -543,77 +505,11 @@ const getDealerCreditOutstanding = async (
   excludeOrderId = null,
   session = null
 ) => {
-  const { DealerLedger, DealerInvoice, PaymentAllocation, SalesOrder, Dealer } = getModels(dbConnection);
-  const applySession = (query) => session ? query.session(session) : query;
-
-  // 1. Ledger balance (invoices - payments)
-  const ledgerEntries = await applySession(DealerLedger.find({ dealer: dealerId }));
-  const ledgerBalance = ledgerEntries.reduce(
-    (sum, e) => sum + (e.debitAmount || 0) - (e.creditAmount || 0),
-    0
-  );
-
-  // 2. Payment allocations (reduce outstanding)
-  const paymentAllocations = await applySession(
-    PaymentAllocation.find({ partyId: dealerId }).lean()
-  );
-  const totalAllocated = paymentAllocations.reduce(
-    (sum, a) => sum + (a.totalAllocated || 0),
-    0
-  );
-
-  const invoiceOutstanding = ledgerBalance - totalAllocated;
-
-  // 3. Confirmed/Processing orders not yet invoiced
-  const confirmedOrders = await applySession(SalesOrder.find({
-    dealer: dealerId,
-    status: { $in: ['Confirmed', 'Processing', 'In Transit'] }
-  }).populate(
-    'products.product',
-    'brand category subcategory subcategory1 subcategory2 subcategory3 subcategory4 subcategory5'
-  ).lean());
-
-  const invoicedOrderIds = await applySession(DealerInvoice.distinct('salesOrder', {
-    dealer: dealerId,
-    salesOrder: { $ne: null },
-    status: { $nin: ['Cancelled', 'Rejected', 'Draft'] },
-    isDraft: { $ne: true }
-  }));
-  const invoicedSet = new Set(invoicedOrderIds.map(id => id.toString()));
-
-  // Fetch dealer extra discounts once for matching
-  const dealerData = await applySession(
-    Dealer.findById(dealerId).select('extraDiscounts').lean()
-  );
-  const extraDiscounts = (dealerData?.extraDiscounts || []).filter(d => d.isActive !== false);
-
-  // Legacy lines without creditAmount are resolved with the same authoritative
-  // Product hierarchy and specificity order as current Sales Order pricing.
-  const getDealerExtraDiscountPct = (productDoc) => (
-    resolveDealerExtraDiscountBySpecificity({ extraDiscounts }, productDoc)
-  );
-
-  const confirmedAmount = confirmedOrders.reduce((sum, order) => {
-    if (invoicedSet.has(order._id.toString())) return sum;
-    if (excludeOrderId && order._id.toString() === excludeOrderId.toString()) return sum;
-
-    const storedCreditAmount = Number(order.creditAmount);
-    if (order.creditAmount !== null && order.creditAmount !== undefined && Number.isFinite(storedCreditAmount)) {
-      return sum + storedCreditAmount;
-    }
-
-    // Legacy fallback: MRP is GST inclusive. Preserve the stored line discount,
-    // then apply the current dealer-extra percentage sequentially without adding GST again.
-    const orderTotal = (order.products || []).reduce((lineSum, productLine) => {
-      const grossAmount = Number(productLine.quantity || 0) * Number(productLine.unitPrice || 0);
-      const amountAfterStoredDiscount = grossAmount - Number(productLine.discountAmount || 0);
-      const extraPercentage = getDealerExtraDiscountPct(productLine.product);
-      return lineSum + amountAfterStoredDiscount * (1 - extraPercentage / 100);
-    }, 0);
-    return sum + orderTotal;
-  }, 0);
-
-  return invoiceOutstanding + confirmedAmount;
+  const exposure = await getDealerCreditExposure(dbConnection, dealerId, {
+    excludeSalesOrderId: excludeOrderId,
+    session
+  });
+  return exposure.totalExposure;
 };
 
 // Generate unique order number
@@ -834,8 +730,11 @@ export const getSalesOrders = async (req, res) => {
       .populate("products.product", "productCode itemName HSNCode gst rateSlabs salesType")
       .populate("products.warehouse", "name")
       .populate("products.appliedDiscount.discountId", "discountName discountType targetType")
-      .populate("approvedBy", "name email")
-      .populate("createdBy", "name email")
+      .populate("approvedBy", "name email role")
+      .populate("createdBy", "name email role")
+      .populate("creditOverlimit.approvedBy", "name email role")
+      .populate("creditOverlimit.rejectedBy", "name email role")
+      .populate("creditOverlimit.history.performedBy", "name email role")
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit)
@@ -912,8 +811,11 @@ export const getSalesOrder = async (req, res) => {
       .populate("products.product")
       .populate("products.warehouse", "name")
       .populate("products.appliedDiscount.discountId", "discountName discountType targetType")
-      .populate("approvedBy", "name email")
-      .populate("createdBy", "name email")
+      .populate("approvedBy", "name email role")
+      .populate("createdBy", "name email role")
+      .populate("creditOverlimit.approvedBy", "name email role")
+      .populate("creditOverlimit.rejectedBy", "name email role")
+      .populate("creditOverlimit.history.performedBy", "name email role")
       .lean();
 
     if (!salesOrder) {
@@ -932,10 +834,27 @@ export const getSalesOrder = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
+    const dealerId = salesOrder.dealer?._id || salesOrder.dealer;
+    const liveExposure = await getDealerCreditExposure(req.dbConnection, dealerId, {
+      excludeSalesOrderId: salesOrder._id
+    });
+    const liveCreditStatus = buildCreditOverlimitSnapshot(
+      liveExposure,
+      Number(salesOrder.creditAmount ?? calculateSalesOrderCreditAmount(salesOrder.products || []))
+    );
+
     res.json({
       success: true,
       salesOrder: {
         ...salesOrder,
+        liveCreditStatus: {
+          ...liveCreditStatus,
+          ledgerBalance: liveExposure.ledgerBalance,
+          confirmedOrdersAmount: liveExposure.uninvoicedSalesOrderAmount,
+          totalCreditUsedBeforeOrder: liveExposure.totalExposure,
+          overdueAmount: liveExposure.overdueAmount,
+          asOf: liveExposure.asOf
+        },
         hasInvoice: Boolean(invoice),
         invoice: invoice || null
       }
@@ -946,6 +865,87 @@ export const getSalesOrder = async (req, res) => {
       success: false,
       message: "Error fetching sales order",
       error: error.message
+    });
+  }
+};
+
+// @desc    Preview the exact server-authoritative credit result before save
+// @route   POST /api/sales-orders/credit-preview
+// @access  Private
+export const previewSalesOrderCredit = async (req, res) => {
+  try {
+    const { Dealer } = getModels(req.dbConnection);
+    const { dealer: dealerId, products = [], excludeSalesOrderId = null } = req.body;
+
+    if (!dealerId || !Array.isArray(products) || products.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Dealer and at least one product are required for credit preview.'
+      });
+    }
+
+    const dealer = await Dealer.findById(dealerId);
+    if (!dealer) {
+      return res.status(404).json({ success: false, message: 'Dealer not found' });
+    }
+
+    const canonicalProducts = await canonicalizeSalesOrderProducts({
+      products,
+      dealer,
+      dbConnection: req.dbConnection,
+      actorId: req.user._id
+    });
+    const exposure = await getDealerCreditExposure(req.dbConnection, dealerId, {
+      excludeSalesOrderId
+    });
+    const candidateCreditAmount = calculateSalesOrderCreditAmount(canonicalProducts);
+    const evaluation = buildCreditOverlimitSnapshot(exposure, candidateCreditAmount);
+
+    const lines = canonicalProducts.map((product) => {
+      const orderedStages = product.discountPolicySnapshot?.orderedStages || [];
+      const directDiscountPercentage = orderedStages
+        .filter((stage) => stage.kind === 'direct')
+        .reduce((sum, stage) => sum + Number(stage.ratePercentage || 0), 0);
+      const dealerExtraDiscountPercentage = orderedStages
+        .filter((stage) => stage.kind === 'dealer_extra')
+        .reduce((sum, stage) => sum + Number(stage.ratePercentage || 0), 0);
+      const eligible = isCreditEligibleProduct(product);
+      return {
+        product: product.product,
+        productName: product.productName,
+        quantity: Number(product.quantity || 0),
+        unitPrice: Number(product.unitPrice || 0),
+        grossAmount: Number(product.quantity || 0) * Number(product.unitPrice || 0),
+        directDiscountPercentage,
+        dealerExtraDiscountPercentage,
+        eligible,
+        exclusionReason: eligible ? null : 'No Stock or warehouse not assigned',
+        creditAmount: eligible ? calculateCanonicalCreditLineAmount(product) : 0
+      };
+    });
+
+    return res.json({
+      success: true,
+      creditStatus: {
+        ...evaluation,
+        limitConfigured: exposure.limitConfigured,
+        ledgerBalance: exposure.ledgerBalance,
+        invoiceOutstanding: exposure.invoiceOutstanding,
+        confirmedOrdersAmount: exposure.uninvoicedSalesOrderAmount,
+        totalCreditUsedBeforeOrder: exposure.totalExposure,
+        overdueAmount: exposure.overdueAmount,
+        canCreateOrder: exposure.canCreateOrder,
+        blockReason: exposure.blockReason,
+        asOf: exposure.asOf
+      },
+      lines
+    });
+  } catch (error) {
+    console.error('Sales Order credit preview error:', error);
+    if (sendDiscountPolicyError(res, error)) return;
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || 'Unable to calculate credit preview'
     });
   }
 };
@@ -1024,62 +1024,58 @@ export const createSalesOrder = async (req, res) => {
       }
     }
 
-    // Calculate order totals first (needed for credit limit check)
-    // IMPORTANT: Only include IN-STOCK products in credit limit calculation
-    const tempValidatedProducts = [];
-    for (const item of canonicalProducts) {
-      // Skip out-of-stock products (no warehouse or warehouse is "No Stock")
-      const hasStock = item.warehouse && item.warehouse !== "No Stock";
-      if (!hasStock) {
-        console.log(`⏭️ Skipping product ${item.productName} from credit limit calculation (out of stock)`);
-        continue;
-      }
+    // Canonical credit value: GST-inclusive MRP reduced sequentially by Direct
+    // and Dealer Extra only. No Stock/unassigned lines reserve no credit.
+    const orderTotalAmount = calculateSalesOrderCreditAmount(canonicalProducts);
+    const creditExposure = await getDealerCreditExposure(req.dbConnection, dealerData._id);
 
-      tempValidatedProducts.push({
-        effectiveBaseAmount: calculateCanonicalCreditLineAmount(item)
+    if (!creditExposure.limitConfigured) {
+      return res.status(400).json({
+        success: false,
+        code: 'DEALER_CREDIT_LIMIT_REQUIRED',
+        message: 'Dealer credit limit is not configured. Update Dealer Master before creating an order.'
+      });
+    }
+    if (creditExposure.overdueAmount > 0) {
+      return res.status(400).json({
+        success: false,
+        code: 'DEALER_PAYMENT_OVERDUE',
+        message: creditExposure.blockReason,
+        paymentStatus: {
+          overdueAmount: creditExposure.overdueAmount,
+          totalOutstanding: creditExposure.ledgerBalance,
+          canCreateOrder: false
+        }
       });
     }
 
-    const orderTotalAmount = tempValidatedProducts.reduce((sum, p) => sum + p.effectiveBaseAmount, 0);
+    const creditOverlimitSnapshot = buildCreditOverlimitSnapshot(
+      creditExposure,
+      orderTotalAmount
+    );
+    req.body.creditOverlimit = {
+      ...creditOverlimitSnapshot,
+      history: creditOverlimitSnapshot.isOverlimit ? [{
+        action: 'requested',
+        creditLimit: creditOverlimitSnapshot.creditLimit,
+        currentOutstanding: creditOverlimitSnapshot.currentOutstanding,
+        orderAmount: creditOverlimitSnapshot.orderAmount,
+        newOutstanding: creditOverlimitSnapshot.newOutstanding,
+        overlimitAmount: creditOverlimitSnapshot.overlimitAmount,
+        performedBy: req.user._id,
+        performedAt: new Date(),
+        notes: 'Credit approval requested when Sales Order was created.'
+      }] : []
+    };
 
-    console.log(`💰 Credit Limit Calculation - In-Stock Products Only:`, {
-      totalProducts: canonicalProducts.length,
-      inStockProducts: tempValidatedProducts.length,
-      orderAmount: orderTotalAmount
+    console.log('💳 Canonical Credit Check (createSalesOrder):', {
+      ledgerBalance: creditExposure.ledgerBalance,
+      uninvoicedSalesOrders: creditExposure.uninvoicedSalesOrderAmount,
+      ...creditOverlimitSnapshot
     });
 
-    // CREDIT LIMIT CHECK: If dealer has a credit limit and order exceeds it, force Pending status
-    if (dealerData.creditLimit && dealerData.creditLimit > 0) {
-      const currentOutstanding = await getDealerCreditOutstanding(req.dbConnection, dealerData._id);
-      // Use creditAmount (conservative: direct + dealer extra only) for the check
-      const creditCheckAmount = orderTotalAmount;
-      const newOutstanding = currentOutstanding + creditCheckAmount;
-
-      console.log(`💳 Credit Limit Check (createSalesOrder):`, {
-        creditLimit: dealerData.creditLimit,
-        currentOutstanding,
-        orderAmount: orderTotalAmount,
-        newOutstanding,
-        overlimit: newOutstanding - dealerData.creditLimit
-      });
-
-      if (newOutstanding > dealerData.creditLimit) {
-        const overlimitAmount = newOutstanding - dealerData.creditLimit;
-        console.log(`⚠️ Credit limit exceeded by ₹${overlimitAmount.toFixed(2)} - forcing status to Pending`);
-        req.body.status = "Pending";
-
-        // Notify admin about credit limit breach
-        try { notifyCreditLimitExceeded(dealerData.name, '', overlimitAmount, req.company); } catch(e) {}
-        req.body.creditOverlimit = {
-          isOverlimit: true,
-          creditLimit: dealerData.creditLimit,
-          currentOutstanding,
-          orderAmount: orderTotalAmount,
-          newOutstanding,
-          overlimitAmount,
-          requiresApproval: true
-        };
-      }
+    if (creditOverlimitSnapshot.isOverlimit) {
+      req.body.status = 'Pending';
     }
 
     // Validate and process each product
@@ -1163,9 +1159,9 @@ export const createSalesOrder = async (req, res) => {
       dueDate.setDate(dueDate.getDate() + finalCreditDays);
     }
 
-    // Determine initial status based on stock availability
-    // Use req.body.status in case credit limit check overrode it to "Pending"
-    let initialStatus = req.body.status || status || "Pending";
+    // New orders always enter the Pending lifecycle. Confirmation must use the
+    // dedicated status endpoint so stock, overdue, credit and approval checks run.
+    let initialStatus = 'Pending';
 
     // For out-of-stock orders, force status to Pending and prevent status changes
     if (isOutOfStock) {
@@ -1275,6 +1271,19 @@ export const createSalesOrder = async (req, res) => {
     // Save sales order
     await salesOrder.save();
 
+    if (creditOverlimitSnapshot.isOverlimit) {
+      try {
+        await notifyCreditLimitExceeded(
+          dealerData.name,
+          orderNumber,
+          creditOverlimitSnapshot.overlimitAmount,
+          req.company
+        );
+      } catch (notificationError) {
+        console.error('Credit-limit notification failed:', notificationError.message);
+      }
+    }
+
     // Handle stock updates based on initial status (only for in-stock orders)
     if (!isOutOfStock) {
       if (salesOrder.status === "Confirmed") {
@@ -1357,23 +1366,23 @@ export const createSalesOrder = async (req, res) => {
       salesOrder: populatedOrder
     });
 
-    // Send push notification to dealer (non-blocking, after response)
+    // Persist the in-app notification even when the dealer has no push token.
     try {
       const dealerDoc = await Dealer.findById(salesOrder.dealer).select('fcmToken').lean();
+      const soTitle = 'Sales Order Created';
+      const soMsg = `Sales order ${salesOrder.orderNumber} has been created for you. Total: Rs. ${(salesOrder.totalAmount || 0).toLocaleString('en-IN')}.`;
+      await Notification.create({
+        dealer: salesOrder.dealer,
+        type: 'order_status',
+        title: soTitle,
+        message: soMsg,
+        orderId: salesOrder._id,
+        orderNumber: salesOrder.orderNumber,
+        status: salesOrder.status,
+        priority: 'high',
+        metadata: { originalType: 'sales_order_created' },
+      });
       if (dealerDoc?.fcmToken) {
-        const soTitle = 'Sales Order Created';
-        const soMsg   = `Sales order ${salesOrder.orderNumber} has been created for you. Total: Rs. ${(salesOrder.totalAmount || 0).toLocaleString('en-IN')}.`;
-        await Notification.create({
-          dealer: salesOrder.dealer,
-          type: 'order_status',
-          title: soTitle,
-          message: soMsg,
-          orderId: salesOrder._id,
-          orderNumber: salesOrder.orderNumber,
-          status: salesOrder.status,
-          priority: 'high',
-          metadata: { originalType: 'sales_order_created' },
-        });
         await sendPushNotification({
           token: dealerDoc.fcmToken,
           title: soTitle,
@@ -1429,7 +1438,7 @@ export const createSalesOrder = async (req, res) => {
 // @desc    Update sales order status (approval/rejection)
 // @route   PATCH /api/sales-orders/:id/status
 // @access  Private
-export const updateSalesOrderStatus = async (req, res) => {
+const updateSalesOrderStatusUnlocked = async (req, res) => {
   try {
     // Get models from company-specific connection
     const { SalesOrder, Product, StockMovement, Dealer, User, Notification, DealerInvoice, DealerLedger } = getModels(req.dbConnection);
@@ -1549,75 +1558,87 @@ export const updateSalesOrderStatus = async (req, res) => {
       });
     }
 
-    // Recalculate confirmation exposure from the same conservative canonical
-    // basis used by create/edit/partial-dispatch (direct + dealer-extra only).
-    // Ready out-of-stock lines become credit-eligible when they are confirmed.
+    // Recalculate confirmation exposure from the shared canonical service.
     if (status === 'Confirmed') {
-      const creditEligibleProducts = readyOutOfStockConfirmation
-        ? salesOrder.products
-        : salesOrder.products.filter(isCreditEligibleProduct);
-      const confirmationCreditAmount = creditEligibleProducts.reduce(
-        (sum, product) => sum + calculateCanonicalCreditLineAmount(product),
-        0
+      const confirmationCreditAmount = calculateSalesOrderCreditAmount(
+        salesOrder.products,
+        { includeAll: readyOutOfStockConfirmation }
       );
       salesOrder.creditAmount = confirmationCreditAmount;
 
-      const dealerData = await Dealer.findById(salesOrder.dealer);
       const previousCreditOverlimit = salesOrder.creditOverlimit?.toObject?.()
         || salesOrder.creditOverlimit
         || {};
+      const exposure = await getDealerCreditExposure(req.dbConnection, salesOrder.dealer, {
+        excludeSalesOrderId: salesOrder._id
+      });
 
-      if (dealerData?.creditLimit && dealerData.creditLimit > 0) {
-        const currentOutstanding = await getDealerCreditOutstanding(
-          req.dbConnection,
-          salesOrder.dealer,
-          salesOrder._id
-        );
-        const newOutstanding = currentOutstanding + confirmationCreditAmount;
-        const overlimitAmount = Math.max(0, newOutstanding - dealerData.creditLimit);
-        const isOverlimit = overlimitAmount > 0;
-        const approvedExposure = Number(previousCreditOverlimit.newOutstanding);
-        const approvalCoversCurrentExposure = isOverlimit
-          && Boolean(previousCreditOverlimit.approvedBy)
-          && Number.isFinite(approvedExposure)
-          && newOutstanding <= approvedExposure + 0.01;
+      if (!exposure.limitConfigured) {
+        return res.status(400).json({
+          success: false,
+          code: 'DEALER_CREDIT_LIMIT_REQUIRED',
+          message: 'Cannot confirm order because the dealer credit limit is not configured.'
+        });
+      }
+      if (exposure.overdueAmount > 0) {
+        return res.status(400).json({
+          success: false,
+          code: 'DEALER_PAYMENT_OVERDUE',
+          message: exposure.blockReason,
+          paymentStatus: {
+            overdueAmount: exposure.overdueAmount,
+            totalOutstanding: exposure.ledgerBalance,
+            canCreateOrder: false
+          }
+        });
+      }
 
-        salesOrder.creditOverlimit = {
-          isOverlimit,
-          creditLimit: dealerData.creditLimit,
-          currentOutstanding,
-          orderAmount: confirmationCreditAmount,
-          newOutstanding,
-          overlimitAmount,
-          requiresApproval: isOverlimit && !approvalCoversCurrentExposure,
-          approvedBy: approvalCoversCurrentExposure ? previousCreditOverlimit.approvedBy : null,
-          approvedAt: approvalCoversCurrentExposure ? previousCreditOverlimit.approvedAt : null,
-          approvalNotes: approvalCoversCurrentExposure ? previousCreditOverlimit.approvalNotes : null
-        };
+      const refreshedSnapshot = buildCreditOverlimitSnapshot(
+        exposure,
+        confirmationCreditAmount
+      );
+      const approvedExposure = Number(previousCreditOverlimit.newOutstanding);
+      const approvalCoversCurrentExposure = refreshedSnapshot.isOverlimit
+        && Boolean(previousCreditOverlimit.approvedBy)
+        && Number.isFinite(approvedExposure)
+        && refreshedSnapshot.newOutstanding <= approvedExposure + 0.01;
 
-        if (isOverlimit && !approvalCoversCurrentExposure) {
-          // Persist the refreshed exposure for the Super Admin approval flow,
-          // but leave status and stock unchanged.
-          await salesOrder.save();
-          return res.status(400).json({
-            success: false,
-            message: `Cannot confirm order - Credit limit exceeded by ₹${overlimitAmount.toLocaleString()}. Super Admin approval required.`,
-            creditOverlimit: salesOrder.creditOverlimit
-          });
-        }
-      } else {
-        salesOrder.creditOverlimit = {
-          isOverlimit: false,
-          creditLimit: Number(dealerData?.creditLimit || 0),
-          currentOutstanding: 0,
-          orderAmount: confirmationCreditAmount,
-          newOutstanding: confirmationCreditAmount,
-          overlimitAmount: 0,
-          requiresApproval: false,
-          approvedBy: null,
-          approvedAt: null,
-          approvalNotes: null
-        };
+      const previousHistory = previousCreditOverlimit.history?.map((entry) => (
+        entry.toObject ? entry.toObject() : entry
+      )) || [];
+      const approvalInvalidated = refreshedSnapshot.isOverlimit
+        && Boolean(previousCreditOverlimit.approvedBy)
+        && !approvalCoversCurrentExposure;
+      salesOrder.creditOverlimit = {
+        ...refreshedSnapshot,
+        requiresApproval: refreshedSnapshot.isOverlimit && !approvalCoversCurrentExposure,
+        approvedBy: approvalCoversCurrentExposure ? previousCreditOverlimit.approvedBy : null,
+        approvedAt: approvalCoversCurrentExposure ? previousCreditOverlimit.approvedAt : null,
+        approvalNotes: approvalCoversCurrentExposure ? previousCreditOverlimit.approvalNotes : null,
+        history: approvalInvalidated ? [
+          ...previousHistory,
+          {
+            action: 'invalidated',
+            creditLimit: refreshedSnapshot.creditLimit,
+            currentOutstanding: refreshedSnapshot.currentOutstanding,
+            orderAmount: refreshedSnapshot.orderAmount,
+            newOutstanding: refreshedSnapshot.newOutstanding,
+            overlimitAmount: refreshedSnapshot.overlimitAmount,
+            performedBy: req.user._id,
+            performedAt: new Date(),
+            notes: 'Approval invalidated because live exposure increased before confirmation.'
+          }
+        ] : previousHistory
+      };
+
+      if (refreshedSnapshot.isOverlimit && !approvalCoversCurrentExposure) {
+        await salesOrder.save();
+        return res.status(400).json({
+          success: false,
+          code: 'CREDIT_APPROVAL_REQUIRED',
+          message: `Cannot confirm order - Credit limit exceeded by ₹${refreshedSnapshot.overlimitAmount.toLocaleString('en-IN')}. Super Admin approval required.`,
+          creditOverlimit: salesOrder.creditOverlimit
+        });
       }
     }
 
@@ -2116,6 +2137,41 @@ OR wait for stock to arrive and this order will be auto-processed.`,
   }
 };
 
+export const updateSalesOrderStatus = async (req, res) => {
+  const { SalesOrder } = getModels(req.dbConnection);
+  const order = await SalesOrder.findById(req.params.id).select('dealer').lean();
+  if (!order) {
+    return res.status(404).json({ success: false, message: 'Sales order not found' });
+  }
+
+  let creditLeaseToken = null;
+  try {
+    if (req.body.status === 'Confirmed') {
+      creditLeaseToken = await acquireDealerCreditLease(
+        req.dbConnection,
+        order.dealer
+      );
+    }
+    return await updateSalesOrderStatusUnlocked(req, res);
+  } catch (error) {
+    console.error('Sales Order status serialization error:', error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code,
+      message: error.statusCode ? error.message : 'Error updating Sales Order status',
+      error: error.statusCode ? undefined : error.message
+    });
+  } finally {
+    if (creditLeaseToken) {
+      try {
+        await releaseDealerCreditLease(req.dbConnection, order.dealer, creditLeaseToken);
+      } catch (releaseError) {
+        console.error('Failed to release dealer credit lease:', releaseError.message);
+      }
+    }
+  }
+};
+
 // @desc    Assign warehouse to out-of-stock order and clear out-of-stock flag
 // @route   PATCH /api/sales-orders/:id/assign-warehouse
 // @access  Private
@@ -2263,6 +2319,29 @@ export const updateSalesOrder = async (req, res) => {
     }
 
     console.log("✅ Edit Allowed for status:", currentStatus);
+
+    const requestedStatus = req.body.status == null ? currentStatus : String(req.body.status).trim();
+    if (requestedStatus !== currentStatus) {
+      return res.status(409).json({
+        success: false,
+        code: 'USE_STATUS_TRANSITION_ENDPOINT',
+        message: 'Status changes are not allowed through Sales Order edit. Use the dedicated status action.'
+      });
+    }
+
+    // Never accept lifecycle, approval, calculated amount or audit ownership
+    // fields from a generic edit payload.
+    delete req.body.status;
+    delete req.body.creditOverlimit;
+    delete req.body.creditAmount;
+    delete req.body.approvedBy;
+    delete req.body.approvedAt;
+    delete req.body.createdBy;
+    delete req.body.expiryHistory;
+    delete req.body.grossAmount;
+    delete req.body.totalGst;
+    delete req.body.discountAmount;
+    delete req.body.totalAmount;
 
     const unsafeUpdateKey = Object.keys(req.body).find(
       (key) => key.startsWith('$') || key.includes('.')
@@ -2534,98 +2613,74 @@ export const updateSalesOrder = async (req, res) => {
           increased: newTotalAmount > originalOrderAmount
         });
 
-        // Check credit limit if dealer has one set
-        if (dealerData.creditLimit && dealerData.creditLimit > 0) {
-          // Get correct outstanding: exclude this order itself (it's being edited), then add new amount
-          const baseOutstanding = await getDealerCreditOutstanding(req.dbConnection, salesOrder.dealer, salesOrder._id);
-          // baseOutstanding already excludes this order, so just add the new total
-          const newOutstanding = baseOutstanding + newTotalAmount;
-          const adjustedOutstanding = baseOutstanding; // for logging clarity
-
-          console.log(`💳 Credit Limit Re-Check:`, {
-            creditLimit: dealerData.creditLimit,
-            baseOutstanding,
-            originalOrderAmount,
-            newOrderAmount: newTotalAmount,
-            newOutstanding,
-            overlimit: newOutstanding - dealerData.creditLimit,
-            wasApproved: !!salesOrder.creditOverlimit?.approvedBy
+        const exposure = await getDealerCreditExposure(req.dbConnection, salesOrder.dealer, {
+          excludeSalesOrderId: salesOrder._id
+        });
+        if (!exposure.limitConfigured) {
+          return res.status(400).json({
+            success: false,
+            code: 'DEALER_CREDIT_LIMIT_REQUIRED',
+            message: 'Dealer credit limit is not configured. Update Dealer Master before editing this order.'
           });
-
-          // If credit limit exceeded, check if we need new approval
-          if (newOutstanding > dealerData.creditLimit) {
-            const overlimitAmount = newOutstanding - dealerData.creditLimit;
-
-            // Check if amount increased from previously approved amount
-            const amountIncreased = newTotalAmount > originalOrderAmount;
-            const wasApproved = salesOrder.creditOverlimit && salesOrder.creditOverlimit.approvedBy;
-
-            if (amountIncreased && wasApproved) {
-              console.log(`⚠️ CRITICAL: Order amount increased from ₹${originalOrderAmount.toFixed(2)} to ₹${newTotalAmount.toFixed(2)}`);
-              console.log(`⚠️ Previous approval is NO LONGER VALID - Requires NEW Super Admin approval`);
-
-              // Store previous approval info for audit trail
-              const previousApproval = {
-                approvedBy: salesOrder.creditOverlimit.approvedBy,
-                approvedAt: salesOrder.creditOverlimit.approvedAt,
-                approvedAmount: originalOrderAmount,
-                approvalNotes: salesOrder.creditOverlimit.approvalNotes
-              };
-
-              // Reset credit approval and force status back to Pending
-              req.body.status = "Pending";
-              req.body.creditOverlimit = {
-                isOverlimit: true,
-                creditLimit: dealerData.creditLimit,
-                currentOutstanding: baseOutstanding,
-                orderAmount: newTotalAmount,
-                newOutstanding,
-                overlimitAmount,
-                requiresApproval: true,
-                approvedBy: null, // Reset approval
-                approvedAt: null,
-                approvalNotes: null,
-                previousApproval: previousApproval // Store history
-              };
-
-              console.log(`🔄 Order status RESET to Pending - Requires NEW Super Admin approval`);
-              console.log(`📋 Previous approval stored in history for audit trail`);
-            } else if (!wasApproved) {
-              console.log(`⚠️ Credit limit exceeded by ₹${overlimitAmount.toFixed(2)} - Requires approval`);
-
-              // First time exceeding limit or not previously approved
-              req.body.status = "Pending";
-              req.body.creditOverlimit = {
-                isOverlimit: true,
-                creditLimit: dealerData.creditLimit,
-                currentOutstanding: baseOutstanding,
-                orderAmount: newTotalAmount,
-                newOutstanding,
-                overlimitAmount,
-                requiresApproval: true,
-                approvedBy: null,
-                approvedAt: null
-              };
-
-              console.log(`🔄 Order status set to Pending - Requires Super Admin approval`);
-            } else {
-              // Amount decreased or stayed same, keep existing approval
-              console.log(`✅ Order amount did not increase - keeping existing approval`);
-            }
-          } else {
-            // Credit limit is fine - clear any previous overlimit flags
-            console.log(`✅ Credit limit check passed - Order within limit`);
-            req.body.creditOverlimit = {
-              isOverlimit: false,
-              creditLimit: dealerData.creditLimit,
-              currentOutstanding: baseOutstanding,
-              orderAmount: newTotalAmount,
-              newOutstanding,
-              overlimitAmount: 0,
-              requiresApproval: false
-            };
-          }
         }
+        if (exposure.overdueAmount > 0) {
+          return res.status(400).json({
+            success: false,
+            code: 'DEALER_PAYMENT_OVERDUE',
+            message: exposure.blockReason
+          });
+        }
+
+        const refreshedSnapshot = buildCreditOverlimitSnapshot(exposure, newTotalAmount);
+        const approvedExposure = Number(salesOrder.creditOverlimit?.newOutstanding);
+        const approvalStillCovers = refreshedSnapshot.isOverlimit
+          && Boolean(salesOrder.creditOverlimit?.approvedBy)
+          && Number.isFinite(approvedExposure)
+          && refreshedSnapshot.newOutstanding <= approvedExposure + 0.01;
+
+        const previousHistory = salesOrder.creditOverlimit?.history?.map((entry) => (
+          entry.toObject ? entry.toObject() : entry
+        )) || [];
+        const approvalInvalidated = refreshedSnapshot.isOverlimit
+          && Boolean(salesOrder.creditOverlimit?.approvedBy)
+          && !approvalStillCovers;
+        req.body.creditAmount = newTotalAmount;
+        req.body.creditOverlimit = {
+          ...refreshedSnapshot,
+          requiresApproval: refreshedSnapshot.isOverlimit && !approvalStillCovers,
+          approvedBy: approvalStillCovers ? salesOrder.creditOverlimit.approvedBy : null,
+          approvedAt: approvalStillCovers ? salesOrder.creditOverlimit.approvedAt : null,
+          approvalNotes: approvalStillCovers ? salesOrder.creditOverlimit.approvalNotes : null,
+          history: approvalInvalidated ? [
+            ...previousHistory,
+            {
+              action: 'invalidated',
+              creditLimit: refreshedSnapshot.creditLimit,
+              currentOutstanding: refreshedSnapshot.currentOutstanding,
+              orderAmount: refreshedSnapshot.orderAmount,
+              newOutstanding: refreshedSnapshot.newOutstanding,
+              overlimitAmount: refreshedSnapshot.overlimitAmount,
+              performedBy: req.user._id,
+              performedAt: new Date(),
+              notes: 'Previous approval no longer covers the edited exposure.'
+            }
+          ] : previousHistory
+        };
+
+        if (refreshedSnapshot.isOverlimit && !approvalStillCovers && currentStatus !== 'Pending') {
+          return res.status(409).json({
+            success: false,
+            code: 'CREDIT_REAPPROVAL_REQUIRED_BEFORE_EDIT',
+            message: 'This edit would exceed the approved credit exposure. Move the order through the controlled approval workflow before changing finalized quantities or prices.',
+            creditOverlimit: refreshedSnapshot
+          });
+        }
+
+        console.log('💳 Canonical Credit Re-Check (updateSalesOrder):', {
+          ledgerBalance: exposure.ledgerBalance,
+          uninvoicedSalesOrders: exposure.uninvoicedSalesOrderAmount,
+          ...req.body.creditOverlimit
+        });
       }
     }
 
@@ -3601,7 +3656,7 @@ export const getPendingQuantities = async (req, res) => {
  * Helper function to create a single sales order
  * Extracted from createSalesOrder for reusability in auto-split logic
  */
-async function createSingleSalesOrder(dbConnection, orderData, userId) {
+export async function createSingleSalesOrder(dbConnection, orderData, userId, company = null) {
   const { SalesOrder, Product, Dealer, StockMovement, User, Notification, Warehouse } = getModels(dbConnection);
 
   const {
@@ -3733,8 +3788,9 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
   // Calculate order totals from canonical lines.
   const { grossAmount, totalGst, discountAmount, totalAmount } = calculateCanonicalOrderTotals(validatedProducts);
 
-  // Determine initial status (declare before credit limit check)
-  let initialStatus = status || "Pending";
+  // Every new split order enters Pending. Confirmation is the only operation
+  // allowed to reserve stock and consume credit.
+  let initialStatus = 'Pending';
 
   // For out-of-stock orders, force status to Pending
   if (isOutOfStock) {
@@ -3742,57 +3798,45 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
     console.log("🚨 Creating out-of-stock sales order - status locked to Pending");
   }
 
-  // Check credit limit if dealer has one set
-  // IMPORTANT: Only count IN-STOCK products towards credit limit
-  let creditOverlimitData = undefined;
-  const inStockProductsForCredit = validatedProducts.filter(p => p.stockStatus === 'available');
-  const canonicalCreditAmount = inStockProductsForCredit.reduce(
-    (sum, product) => sum + calculateCanonicalCreditLineAmount(product),
-    0
-  );
-  if (dealerData.creditLimit && dealerData.creditLimit > 0) {
-    // Calculate amount for IN-STOCK products only
-    const inStockProducts = inStockProductsForCredit;
-    const inStockTotalAmount = canonicalCreditAmount;
-
-    console.log(`� Credit Limit Calculation - In-eStock Products Only:`, {
-      totalProducts: validatedProducts.length,
-      inStockProducts: inStockProducts.length,
-      outOfStockProducts: validatedProducts.length - inStockProducts.length,
-      inStockAmount: inStockTotalAmount,
-      totalOrderAmount: totalAmount
-    });
-
-    // Get dealer's current outstanding balance (correct calculation)
-    const currentOutstanding = await getDealerCreditOutstanding(dbConnection, dealer);
-    const newOutstanding = currentOutstanding + inStockTotalAmount;
-
-    console.log(`💳 Credit Limit Check (Single Order):`, {
-      creditLimit: dealerData.creditLimit,
-      currentOutstanding,
-      orderAmount: inStockTotalAmount,
-      newOutstanding,
-      overlimit: newOutstanding - dealerData.creditLimit
-    });
-
-    // If credit limit exceeded, force status to Pending and add credit overlimit info
-    if (newOutstanding > dealerData.creditLimit) {
-      const overlimitAmount = newOutstanding - dealerData.creditLimit;
-      console.log(`⚠️ Credit limit exceeded by ₹${overlimitAmount.toFixed(2)}`);
-
-      // Force status to Pending for approval
-      initialStatus = "Pending";
-      creditOverlimitData = {
-        isOverlimit: true,
-        creditLimit: dealerData.creditLimit,
-        currentOutstanding,
-        orderAmount: inStockTotalAmount, // Show in-stock amount
-        newOutstanding,
-        overlimitAmount,
-        requiresApproval: true
-      };
-    }
+  const canonicalCreditAmount = calculateSalesOrderCreditAmount(validatedProducts);
+  const creditExposure = await getDealerCreditExposure(dbConnection, dealer);
+  if (!creditExposure.limitConfigured) {
+    const error = new Error('Dealer credit limit is not configured. Update Dealer Master before creating an order.');
+    error.statusCode = 400;
+    error.code = 'DEALER_CREDIT_LIMIT_REQUIRED';
+    throw error;
   }
+  if (creditExposure.overdueAmount > 0) {
+    const error = new Error(creditExposure.blockReason);
+    error.statusCode = 400;
+    error.code = 'DEALER_PAYMENT_OVERDUE';
+    throw error;
+  }
+
+  const creditOverlimitData = buildCreditOverlimitSnapshot(
+    creditExposure,
+    canonicalCreditAmount
+  );
+  creditOverlimitData.history = creditOverlimitData.isOverlimit ? [{
+    action: 'requested',
+    creditLimit: creditOverlimitData.creditLimit,
+    currentOutstanding: creditOverlimitData.currentOutstanding,
+    orderAmount: creditOverlimitData.orderAmount,
+    newOutstanding: creditOverlimitData.newOutstanding,
+    overlimitAmount: creditOverlimitData.overlimitAmount,
+    performedBy: userId,
+    performedAt: new Date(),
+    notes: 'Credit approval requested when split Sales Order was created.'
+  }] : [];
+  if (creditOverlimitData.isOverlimit) {
+    initialStatus = 'Pending';
+  }
+
+  console.log('💳 Canonical Credit Check (createSingleSalesOrder):', {
+    ledgerBalance: creditExposure.ledgerBalance,
+    uninvoicedSalesOrders: creditExposure.uninvoicedSalesOrderAmount,
+    ...creditOverlimitData
+  });
 
   // Calculate due date
   let dueDate = null;
@@ -3868,6 +3912,44 @@ async function createSingleSalesOrder(dbConnection, orderData, userId) {
 
   // Save sales order
   await salesOrder.save();
+
+  const notificationTitle = 'Sales Order Created';
+  const notificationMessage = `Sales order ${salesOrder.orderNumber} has been created for you. Total: Rs. ${(salesOrder.totalAmount || 0).toLocaleString('en-IN')}.`;
+  try {
+    await Notification.create({
+      dealer: salesOrder.dealer,
+      type: 'order_status',
+      title: notificationTitle,
+      message: notificationMessage,
+      orderId: salesOrder._id,
+      orderNumber: salesOrder.orderNumber,
+      status: salesOrder.status,
+      priority: 'high',
+      metadata: { originalType: 'sales_order_created' }
+    });
+    if (dealerData.fcmToken) {
+      await sendPushNotification({
+        token: dealerData.fcmToken,
+        title: notificationTitle,
+        body: notificationMessage,
+        data: {
+          type: 'order_status',
+          orderId: salesOrder._id.toString(),
+          orderNumber: salesOrder.orderNumber
+        }
+      });
+    }
+    if (creditOverlimitData.isOverlimit) {
+      await notifyCreditLimitExceeded(
+        dealerData.name,
+        salesOrder.orderNumber,
+        creditOverlimitData.overlimitAmount,
+        company
+      );
+    }
+  } catch (notificationError) {
+    console.error('Split Sales Order notification failed:', notificationError.message);
+  }
 
   // Handle stock updates based on initial status (only for in-stock orders)
   if (!isOutOfStock) {
@@ -4023,7 +4105,12 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
         creditDaysApplied: dealerData.creditDaysRegular || dealerData.creditDays || 30
       };
 
-      const regularOrder = await createSingleSalesOrder(req.dbConnection, regularOrderData, req.user._id);
+      const regularOrder = await createSingleSalesOrder(
+        req.dbConnection,
+        regularOrderData,
+        req.user._id,
+        req.company
+      );
       createdOrders.push(regularOrder);
       console.log("✅ Regular Sales Order created:", regularOrder.orderNumber);
     }
@@ -4040,7 +4127,12 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
         creditDaysApplied: dealerData.creditDaysCD || dealerData.creditDays || 30
       };
 
-      const cdOrder = await createSingleSalesOrder(req.dbConnection, cdOrderData, req.user._id);
+      const cdOrder = await createSingleSalesOrder(
+        req.dbConnection,
+        cdOrderData,
+        req.user._id,
+        req.company
+      );
       createdOrders.push(cdOrder);
       console.log("✅ CD Sales Order created:", cdOrder.orderNumber);
     }
@@ -4075,6 +4167,13 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
     console.error("❌ Create Sales Order with Auto-Split Error:", error);
 
     if (sendDiscountPolicyError(res, error)) return;
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        success: false,
+        code: error.code,
+        message: error.message
+      });
+    }
 
     // Handle duplicate order number error
     if (error.code === 11000) {
@@ -4435,65 +4534,211 @@ export const cancelOrderExpiry = async (req, res) => {
 // @route   PATCH /api/sales-orders/:id/approve-credit-overlimit
 // @access  Private (Super Admin only)
 export const approveCreditOverlimit = async (req, res) => {
+  if (req.user.role !== 'super_admin') {
+    return res.status(403).json({
+      success: false,
+      message: 'Only Super Admin can approve credit overlimit orders'
+    });
+  }
+
+  const session = await req.dbConnection.startSession();
   try {
     const { SalesOrder } = getModels(req.dbConnection);
     const { approvalNotes } = req.body;
-    const { id } = req.params;
+    let approvedOrder;
+    let noLongerOverlimit = false;
 
-    // Check if user is super admin
-    if (req.user.role !== 'super_admin') {
-      return res.status(403).json({
-        success: false,
-        message: "Only Super Admin can approve credit overlimit orders"
+    await session.withTransaction(async () => {
+      const salesOrder = await SalesOrder.findById(req.params.id).session(session);
+      if (!salesOrder) {
+        const error = new Error('Sales order not found');
+        error.statusCode = 404;
+        throw error;
+      }
+      const hasValidApprovalLifecycle = salesOrder.status === 'Pending'
+        && salesOrder.creditOverlimit?.isOverlimit === true
+        && salesOrder.creditOverlimit?.requiresApproval === true
+        && !salesOrder.creditOverlimit?.approvedBy
+        && !salesOrder.creditOverlimit?.rejectedBy;
+      if (!hasValidApprovalLifecycle) {
+        const error = new Error('Credit-overlimit approval is no longer pending for this Sales Order');
+        error.statusCode = 409;
+        error.code = 'CREDIT_OVERLIMIT_LIFECYCLE_CONFLICT';
+        throw error;
+      }
+
+      await acquireDealerCreditLock(req.dbConnection, salesOrder.dealer, session);
+      const exposure = await getDealerCreditExposure(req.dbConnection, salesOrder.dealer, {
+        excludeSalesOrderId: salesOrder._id,
+        session
       });
-    }
+      if (!exposure.limitConfigured) {
+        const error = new Error('Dealer credit limit is not configured. Update Dealer Master before approval.');
+        error.statusCode = 400;
+        error.code = 'DEALER_CREDIT_LIMIT_REQUIRED';
+        throw error;
+      }
+      if (exposure.overdueAmount > 0) {
+        const error = new Error(exposure.blockReason);
+        error.statusCode = 400;
+        error.code = 'DEALER_PAYMENT_OVERDUE';
+        throw error;
+      }
 
-    const salesOrder = await SalesOrder.findById(id);
-    if (!salesOrder) {
-      return res.status(404).json({
-        success: false,
-        message: "Sales order not found"
-      });
-    }
+      const orderAmount = calculateSalesOrderCreditAmount(salesOrder.products || []);
+      salesOrder.creditAmount = orderAmount;
+      const refreshedSnapshot = buildCreditOverlimitSnapshot(exposure, orderAmount);
+      noLongerOverlimit = !refreshedSnapshot.isOverlimit;
+      const existingHistory = salesOrder.creditOverlimit?.history?.map((entry) => (
+        entry.toObject ? entry.toObject() : entry
+      )) || [];
+      const decisionAt = new Date();
+      salesOrder.creditOverlimit = {
+        ...refreshedSnapshot,
+        requiresApproval: false,
+        approvedBy: refreshedSnapshot.isOverlimit ? req.user._id : null,
+        approvedAt: refreshedSnapshot.isOverlimit ? decisionAt : null,
+        approvalNotes: refreshedSnapshot.isOverlimit
+          ? (approvalNotes || 'Credit overlimit approved')
+          : 'Credit exposure recalculated within limit; approval no longer required.',
+        history: [
+          ...existingHistory,
+          {
+            action: refreshedSnapshot.isOverlimit ? 'approved' : 'recalculated',
+            creditLimit: refreshedSnapshot.creditLimit,
+            currentOutstanding: refreshedSnapshot.currentOutstanding,
+            orderAmount: refreshedSnapshot.orderAmount,
+            newOutstanding: refreshedSnapshot.newOutstanding,
+            overlimitAmount: refreshedSnapshot.overlimitAmount,
+            performedBy: req.user._id,
+            performedAt: decisionAt,
+            notes: refreshedSnapshot.isOverlimit
+              ? (approvalNotes || 'Credit overlimit approved')
+              : 'Live exposure moved within limit.'
+          }
+        ]
+      };
+      await salesOrder.save({ session });
+      approvedOrder = salesOrder;
+    });
 
-    if (!salesOrder.creditOverlimit || !salesOrder.creditOverlimit.isOverlimit) {
-      return res.status(400).json({
-        success: false,
-        message: "Order does not have credit overlimit"
-      });
-    }
-
-    if (salesOrder.creditOverlimit.approvedBy) {
-      return res.status(400).json({
-        success: false,
-        message: "Order already approved"
-      });
-    }
-
-    // Update credit overlimit approval
-    salesOrder.creditOverlimit.approvedBy = req.user._id;
-    salesOrder.creditOverlimit.approvedAt = new Date();
-    salesOrder.creditOverlimit.approvalNotes = approvalNotes || 'Credit overlimit approved';
-    salesOrder.creditOverlimit.requiresApproval = false;
-
-    // DON'T auto-confirm the order - keep it Pending for manual review
-    // The order should be manually confirmed after credit approval
-    // This allows for additional verification before stock is blocked
-
-    await salesOrder.save();
-
-    res.json({
+    return res.json({
       success: true,
-      message: "Credit overlimit approved successfully. Order remains Pending - please confirm manually to proceed.",
-      salesOrder
+      message: noLongerOverlimit
+        ? 'Live exposure is now within the dealer credit limit. Approval is no longer required.'
+        : 'Credit overlimit approved successfully. Order remains Pending - please confirm manually to proceed.',
+      salesOrder: approvedOrder
     });
   } catch (error) {
-    console.error("Approve Credit Overlimit Error:", error);
-    res.status(500).json({
+    console.error('Approve Credit Overlimit Error:', error);
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: "Error approving credit overlimit",
-      error: error.message
+      code: error.code,
+      message: error.statusCode ? error.message : 'Error approving credit overlimit',
+      error: error.statusCode ? undefined : error.message
     });
+  } finally {
+    await session.endSession();
+  }
+};
+
+// @desc    Reject a pending credit-overlimit request with an immutable reason
+// @route   PATCH /api/sales-orders/:id/reject-credit-overlimit
+// @access  Private (Super Admin only)
+export const rejectCreditOverlimit = async (req, res) => {
+  if (req.user.role !== 'super_admin') {
+    return res.status(403).json({
+      success: false,
+      message: 'Only Super Admin can reject credit overlimit orders'
+    });
+  }
+
+  const rejectionReason = String(req.body.rejectionReason || req.body.reason || '').trim();
+  if (!rejectionReason) {
+    return res.status(400).json({
+      success: false,
+      message: 'Rejection reason is required'
+    });
+  }
+
+  const session = await req.dbConnection.startSession();
+  try {
+    const { SalesOrder } = getModels(req.dbConnection);
+    let rejectedOrder;
+
+    await session.withTransaction(async () => {
+      const salesOrder = await SalesOrder.findById(req.params.id).session(session);
+      if (!salesOrder) {
+        const error = new Error('Sales order not found');
+        error.statusCode = 404;
+        throw error;
+      }
+
+      await acquireDealerCreditLock(req.dbConnection, salesOrder.dealer, session);
+
+      const lifecycleFilter = {
+        _id: salesOrder._id,
+        status: 'Pending',
+        'creditOverlimit.isOverlimit': true,
+        'creditOverlimit.requiresApproval': true,
+        'creditOverlimit.approvedBy': null,
+        'creditOverlimit.rejectedBy': null
+      };
+      const rejectedAt = new Date();
+      const existingHistory = salesOrder.creditOverlimit?.history?.map((entry) => (
+        entry.toObject ? entry.toObject() : entry
+      )) || [];
+      const rejectionEvent = {
+        action: 'rejected',
+        creditLimit: salesOrder.creditOverlimit?.creditLimit,
+        currentOutstanding: salesOrder.creditOverlimit?.currentOutstanding,
+        orderAmount: salesOrder.creditOverlimit?.orderAmount,
+        newOutstanding: salesOrder.creditOverlimit?.newOutstanding,
+        overlimitAmount: salesOrder.creditOverlimit?.overlimitAmount,
+        performedBy: req.user._id,
+        performedAt: rejectedAt,
+        notes: rejectionReason
+      };
+
+      rejectedOrder = await SalesOrder.findOneAndUpdate(
+        lifecycleFilter,
+        {
+          $set: {
+            status: 'Rejected',
+            remarks: rejectionReason,
+            'creditOverlimit.requiresApproval': false,
+            'creditOverlimit.rejectedBy': req.user._id,
+            'creditOverlimit.rejectedAt': rejectedAt,
+            'creditOverlimit.rejectionReason': rejectionReason,
+            'creditOverlimit.history': [...existingHistory, rejectionEvent]
+          }
+        },
+        { new: true, session, runValidators: true }
+      );
+
+      if (!rejectedOrder) {
+        const error = new Error('Credit-overlimit rejection is no longer pending for this Sales Order');
+        error.statusCode = 409;
+        error.code = 'CREDIT_OVERLIMIT_LIFECYCLE_CONFLICT';
+        throw error;
+      }
+    });
+
+    return res.json({
+      success: true,
+      message: 'Credit-overlimit request rejected and Sales Order marked Rejected.',
+      salesOrder: rejectedOrder
+    });
+  } catch (error) {
+    console.error('Reject Credit Overlimit Error:', error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code,
+      message: error.statusCode ? error.message : 'Error rejecting credit overlimit',
+      error: error.statusCode ? undefined : error.message
+    });
+  } finally {
+    await session.endSession();
   }
 };
 
@@ -4821,7 +5066,7 @@ export const partialDispatch = async (req, res) => {
   }
 
   try {
-    const { SalesOrder, DealerInvoice, StockMovement, Dealer } = getModels(req.dbConnection);
+    const { SalesOrder, DealerInvoice, StockMovement } = getModels(req.dbConnection);
     const { id } = req.params;
     const { products, action } = req.body;
     // products: [{ productId, newQty, reason }]
@@ -4858,6 +5103,27 @@ export const partialDispatch = async (req, res) => {
     if (!Array.isArray(products) || products.length === 0) {
       return fail(400, { success: false, message: 'products must be a non-empty array' });
     }
+
+    await acquireDealerCreditLock(req.dbConnection, salesOrder.dealer, session);
+    const outsideCreditExposure = await getDealerCreditExposure(
+      req.dbConnection,
+      salesOrder.dealer,
+      { excludeSalesOrderId: salesOrder._id, session }
+    );
+    if (!outsideCreditExposure.limitConfigured) {
+      return fail(400, {
+        success: false,
+        code: 'DEALER_CREDIT_LIMIT_REQUIRED',
+        message: 'Dealer credit limit is not configured. Update Dealer Master before partial dispatch.'
+      });
+    }
+    const previousCreditAmount = calculateSalesOrderCreditAmount(salesOrder.products || []);
+    const previousCreditOverlimit = salesOrder.creditOverlimit?.toObject
+      ? salesOrder.creditOverlimit.toObject()
+      : { ...(salesOrder.creditOverlimit || {}) };
+    const previousCreditHistory = previousCreditOverlimit.history?.map((entry) => (
+      entry.toObject ? entry.toObject() : entry
+    )) || [];
 
     // Resolve and validate every request line before changing stock or the order.
     // sourceSalesOrderLineId is authoritative; productId is accepted only when unique.
@@ -5021,54 +5287,35 @@ export const partialDispatch = async (req, res) => {
 
     // Quantity reductions must immediately reduce the confirmed order's canonical
     // direct + dealer-extra credit exposure.
-    const retainedCreditAmount = salesOrder.products
-      .filter(isCreditEligibleProduct)
-      .reduce((sum, product) => sum + calculateCanonicalCreditLineAmount(product), 0);
+    const retainedCreditAmount = calculateSalesOrderCreditAmount(salesOrder.products || []);
     salesOrder.creditAmount = retainedCreditAmount;
 
-    const dealerData = await Dealer.findById(salesOrder.dealer)
-      .select('creditLimit')
-      .session(session)
-      .lean();
-    if (dealerData?.creditLimit && dealerData.creditLimit > 0) {
-      const currentOutstanding = await getDealerCreditOutstanding(
-        req.dbConnection,
-        salesOrder.dealer,
-        salesOrder._id,
-        session
-      );
-      const newOutstanding = currentOutstanding + retainedCreditAmount;
-      const overlimitAmount = Math.max(0, newOutstanding - dealerData.creditLimit);
-      const existingApproval = salesOrder.creditOverlimit?.approvedBy ? {
-        approvedBy: salesOrder.creditOverlimit.approvedBy,
-        approvedAt: salesOrder.creditOverlimit.approvedAt,
-        approvalNotes: salesOrder.creditOverlimit.approvalNotes
-      } : {};
-      const isOverlimit = overlimitAmount > 0;
-      salesOrder.creditOverlimit = {
-        isOverlimit,
-        creditLimit: dealerData.creditLimit,
-        currentOutstanding,
-        orderAmount: retainedCreditAmount,
-        newOutstanding,
-        overlimitAmount,
-        requiresApproval: isOverlimit && !existingApproval.approvedBy,
-        ...(isOverlimit ? existingApproval : {})
-      };
-    } else {
-      salesOrder.creditOverlimit = {
-        isOverlimit: false,
-        creditLimit: Number(dealerData?.creditLimit || 0),
-        currentOutstanding: 0,
-        orderAmount: retainedCreditAmount,
-        newOutstanding: retainedCreditAmount,
-        overlimitAmount: 0,
-        requiresApproval: false,
-        approvedBy: null,
-        approvedAt: null,
-        approvalNotes: null
-      };
-    }
+    const retainedCreditSnapshot = buildCreditOverlimitSnapshot(
+      outsideCreditExposure,
+      retainedCreditAmount
+    );
+    const recalculatedAt = new Date();
+    salesOrder.creditOverlimit = {
+      ...previousCreditOverlimit,
+      ...retainedCreditSnapshot,
+      // This order is already Confirmed and partial dispatch only reduces it.
+      // Keep any historical approval and never create a retroactive approval request.
+      requiresApproval: false,
+      history: [
+        ...previousCreditHistory,
+        {
+          action: 'recalculated',
+          creditLimit: retainedCreditSnapshot.creditLimit,
+          currentOutstanding: retainedCreditSnapshot.currentOutstanding,
+          orderAmount: retainedCreditSnapshot.orderAmount,
+          newOutstanding: retainedCreditSnapshot.newOutstanding,
+          overlimitAmount: retainedCreditSnapshot.overlimitAmount,
+          performedBy: req.user._id,
+          performedAt: recalculatedAt,
+          notes: `Partial dispatch reduced confirmed order credit exposure from ₹${previousCreditAmount.toLocaleString('en-IN')} to ₹${retainedCreditAmount.toLocaleString('en-IN')}.`
+        }
+      ]
+    };
 
     // Recalculate order totals (pre-save hook will do this, but mark modified)
     salesOrder.markModified('products');
@@ -5077,49 +5324,35 @@ export const partialDispatch = async (req, res) => {
     let newOrder = null;
     if (action === 'new_order' && remainingProducts.length > 0) {
       const orderNumber = await generateOrderNumber(req.dbConnection, session);
-      const remainderCreditAmount = remainingProducts
-        .filter(isCreditEligibleProduct)
-        .reduce((sum, product) => sum + calculateCanonicalCreditLineAmount(product), 0);
-      let remainderCreditOverlimit;
-      if (dealerData?.creditLimit && dealerData.creditLimit > 0) {
-        // Rebuild the normal-creation basis without double-counting the retained
-        // source: outside outstanding + retained exposure + remainder exposure.
-        const outstandingExcludingRetained = await getDealerCreditOutstanding(
-          req.dbConnection,
-          salesOrder.dealer,
-          salesOrder._id,
-          session
-        );
-        const currentOutstanding = outstandingExcludingRetained + retainedCreditAmount;
-        const newOutstanding = currentOutstanding + remainderCreditAmount;
-        const overlimitAmount = Math.max(0, newOutstanding - dealerData.creditLimit);
-        const isOverlimit = overlimitAmount > 0;
-        remainderCreditOverlimit = {
-          isOverlimit,
-          creditLimit: dealerData.creditLimit,
-          currentOutstanding,
-          orderAmount: remainderCreditAmount,
-          newOutstanding,
-          overlimitAmount,
-          requiresApproval: isOverlimit,
-          approvedBy: null,
-          approvedAt: null,
-          approvalNotes: null
-        };
-      } else {
-        remainderCreditOverlimit = {
-          isOverlimit: false,
-          creditLimit: Number(dealerData?.creditLimit || 0),
-          currentOutstanding: 0,
-          orderAmount: remainderCreditAmount,
-          newOutstanding: remainderCreditAmount,
-          overlimitAmount: 0,
-          requiresApproval: false,
-          approvedBy: null,
-          approvedAt: null,
-          approvalNotes: null
-        };
-      }
+      const remainderCreditAmount = calculateSalesOrderCreditAmount(remainingProducts);
+      // Pending remainder exposure starts after outside exposure plus the retained
+      // Confirmed source order, matching the normal creation basis.
+      const remainderExposureBasis = {
+        ...outsideCreditExposure,
+        totalExposure: Number(outsideCreditExposure.totalExposure || 0) + retainedCreditAmount
+      };
+      const remainderSnapshot = buildCreditOverlimitSnapshot(
+        remainderExposureBasis,
+        remainderCreditAmount
+      );
+      const remainderRequestedAt = new Date();
+      const remainderCreditOverlimit = {
+        ...remainderSnapshot,
+        approvedBy: null,
+        approvedAt: null,
+        approvalNotes: null,
+        history: remainderSnapshot.isOverlimit ? [{
+          action: 'requested',
+          creditLimit: remainderSnapshot.creditLimit,
+          currentOutstanding: remainderSnapshot.currentOutstanding,
+          orderAmount: remainderSnapshot.orderAmount,
+          newOutstanding: remainderSnapshot.newOutstanding,
+          overlimitAmount: remainderSnapshot.overlimitAmount,
+          performedBy: req.user._id,
+          performedAt: remainderRequestedAt,
+          notes: `Credit approval requested for partial-dispatch remainder of ${salesOrder.orderNumber}.`
+        }] : []
+      };
       newOrder = new SalesOrder({
         orderNumber,
         dealer: salesOrder.dealer,

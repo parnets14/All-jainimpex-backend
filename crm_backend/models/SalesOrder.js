@@ -370,7 +370,34 @@ const salesOrderSchema = new mongoose.Schema({
       ref: "User"
     },
     approvedAt: Date,
-    approvalNotes: String
+    approvalNotes: String,
+    rejectedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    rejectedAt: Date,
+    rejectionReason: String,
+    history: [{
+      action: {
+        type: String,
+        enum: ['requested', 'approved', 'rejected', 'invalidated', 'recalculated'],
+        required: true
+      },
+      creditLimit: Number,
+      currentOutstanding: Number,
+      orderAmount: Number,
+      newOutstanding: Number,
+      overlimitAmount: Number,
+      performedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+      },
+      performedAt: {
+        type: Date,
+        default: Date.now
+      },
+      notes: String
+    }]
   },
   // Partial dispatch deviations
   deviations: [{

@@ -60,7 +60,14 @@ const ROUTE_PERMISSION_MAP = {
   'employees': 'employee.registration',
 
   // Sales & Purchase
-  'sales-orders': 'sales.order.dashboard',
+  'sales-orders': [
+    'sales.order.dashboard',
+    'sales.orders.view',
+    'sales.orders.create',
+    'sales.orders.update',
+    'sales.orders.delete',
+    'sales.orders.approve'
+  ],
   'dealer-invoices': [
     'invoice',
     'invoices.view',

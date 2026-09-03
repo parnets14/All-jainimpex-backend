@@ -2,6 +2,8 @@ import mongoose from 'mongoose';
 import { getModels } from '../utils/getModels.js';
 import { discountMappingSchema } from '../../models/DiscountMapping.js';
 import { calculateDiscountLine } from '../../utils/sequentialDiscountPolicy.js';
+import { createSingleSalesOrder as createCanonicalSalesOrderRecord } from '../../controllers/salesOrderController.js';
+import { notifyNewSEOrder } from '../../services/adminNotificationService.js';
 
 // ── Find applicable discount for a product on the company connection ──────────
 export async function findProductDiscount(productId, product, dealerType, conn, seAllowedLevels = []) {
@@ -1168,6 +1170,144 @@ export const getWarehouses = async (req, res) => {  try {
       success: false,
       message: 'Failed to fetch warehouses',
       error: error.message,
+    });
+  }
+};
+
+
+// Canonical SE creation path. It deliberately delegates pricing, discount,
+// overdue and credit-limit enforcement to the same service used by CRM orders.
+export const createCanonicalSalesOrder = async (req, res) => {
+  try {
+    const { Dealer, Product } = getModels(req);
+    const { dealerId, products = [], customerNotes, orderDate, deliveryDate } = req.body;
+
+    if (!dealerId || !Array.isArray(products) || products.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Dealer and products are required'
+      });
+    }
+
+    const normalizedRole = String(req.user?.role || '').toLowerCase().replace(/\s+/g, '_');
+    let dealerQuery = { _id: dealerId, isActive: true };
+    if (normalizedRole === 'sales_executive') {
+      const hasDirectAssignments = await Dealer.exists({
+        isActive: true,
+        salesExecutiveId: req.user._id
+      });
+      dealerQuery = hasDirectAssignments
+        ? { ...dealerQuery, salesExecutiveId: req.user._id }
+        : { ...dealerQuery, regionId: { $in: req.user.assignedRegions || [] } };
+    }
+
+    const dealer = await Dealer.findOne(dealerQuery);
+    if (!dealer) {
+      const exists = await Dealer.exists({ _id: dealerId });
+      return res.status(exists ? 403 : 404).json({
+        success: false,
+        message: exists
+          ? 'This dealer is not assigned to the logged-in Sales Executive.'
+          : 'Dealer not found'
+      });
+    }
+
+    const classifiedProducts = await Promise.all(products.map(async (item) => {
+      const productId = item.productId || item.product;
+      const product = await Product.findById(productId)
+        .select('salesType itemName rateSlabs gst')
+        .lean();
+      if (!product) {
+        const error = new Error(`Product not found: ${productId}`);
+        error.statusCode = 404;
+        throw error;
+      }
+      const warehouse = item.isOutOfStock ? null : (item.warehouseId || item.warehouse || null);
+      return {
+        product: productId,
+        quantity: Number(item.quantity || 0),
+        warehouse,
+        warehouseName: warehouse ? (item.warehouseName || 'Main Warehouse') : 'No Stock',
+        salesType: product.salesType || 'Regular Sale',
+        promisedEffectiveDiscountPercentage: null
+      };
+    }));
+
+    const groups = [
+      {
+        salesType: 'Regular Sale',
+        products: classifiedProducts.filter((item) => item.salesType !== 'CD Sales'),
+        creditDays: dealer.creditDaysRegular || dealer.creditDays || 0
+      },
+      {
+        salesType: 'CD Sales',
+        products: classifiedProducts.filter((item) => item.salesType === 'CD Sales'),
+        creditDays: dealer.creditDaysCD || dealer.creditDays || 0
+      }
+    ].filter((group) => group.products.length > 0);
+
+    const orderType = dealer.dealerType === 'Wholesale'
+      ? 'Wholesale Sales Order'
+      : (dealer.dealerType === 'Retail' ? 'Retail Sales Order' : 'Independent Sales Order');
+    const createdOrders = [];
+
+    for (const group of groups) {
+      const isOutOfStock = group.products.some((item) => !item.warehouse);
+      const order = await createCanonicalSalesOrderRecord(req.dbConnection, {
+        dealer: dealer._id,
+        region: dealer.regionId,
+        products: group.products,
+        orderDate: orderDate || new Date(),
+        deliveryDate,
+        creditDays: group.creditDays,
+        creditDaysApplied: group.creditDays,
+        salesType: group.salesType,
+        type: orderType,
+        remarks: customerNotes,
+        status: 'Pending',
+        isOutOfStock,
+        stockValidation: []
+      }, req.user._id, req.company);
+      createdOrders.push(order);
+      try {
+        await notifyNewSEOrder(
+          req.user?.name || 'Sales Executive',
+          dealer.name,
+          order.orderNumber,
+          req.company
+        );
+      } catch (notificationError) {
+        console.error(
+          `New SE order notification failed for ${order.orderNumber} (non-fatal):`,
+          notificationError.message
+        );
+      }
+    }
+
+    const firstOrder = createdOrders[0];
+    return res.status(201).json({
+      success: true,
+      message: createdOrders.length > 1
+        ? 'Sales orders created and split by sales type successfully'
+        : 'Sales order created successfully',
+      order: {
+        _id: firstOrder._id,
+        orderNumber: firstOrder.orderNumber,
+        status: firstOrder.status,
+        totalAmount: firstOrder.totalAmount,
+        creditAmount: firstOrder.creditAmount,
+        creditOverlimit: firstOrder.creditOverlimit
+      },
+      orders: createdOrders,
+      isSplit: createdOrders.length > 1
+    });
+  } catch (error) {
+    console.error('Canonical SE Sales Order creation error:', error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code,
+      message: error.statusCode ? error.message : 'Failed to create sales order',
+      error: error.statusCode ? undefined : error.message
     });
   }
 };
