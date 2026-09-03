@@ -97,6 +97,12 @@ const grnSchema = new mongoose.Schema({
       type: Number,
       required: true
     },
+    remarks: {
+      type: String,
+      default: '',
+      trim: true,
+      maxlength: 500
+    },
     // Store purchase discount info for reference
     purchaseDiscount: {
       hasDiscount: { type: Boolean, default: false },

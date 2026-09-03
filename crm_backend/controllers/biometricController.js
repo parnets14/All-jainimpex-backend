@@ -127,12 +127,23 @@ export const getSyncState = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid or missing company' });
     }
     const BiometricPunch = getModel(company);
-    const latest = await BiometricPunch.findOne().sort({ punchAt: -1 }).select('punchAt sourceId').lean();
-    const total = await BiometricPunch.estimatedDocumentCount();
+    const [latestBySource, latestByTime, total] = await Promise.all([
+      BiometricPunch.findOne({ sourceId: { $ne: null } })
+        .sort({ sourceId: -1 })
+        .select('sourceId')
+        .lean(),
+      BiometricPunch.findOne()
+        .sort({ punchAt: -1 })
+        .select('punchAt')
+        .lean(),
+      BiometricPunch.estimatedDocumentCount(),
+    ]);
     res.json({
       success: true,
-      lastSourceId: latest && latest.sourceId ? latest.sourceId : 0,
-      lastPunchAt: latest ? latest.punchAt : null,
+      // The Access agent resumes by source row ID, so this must be the highest
+      // stored sourceId—not the sourceId attached to the latest punch time.
+      lastSourceId: latestBySource?.sourceId || 0,
+      lastPunchAt: latestByTime?.punchAt || null,
       total,
     });
   } catch (e) {

@@ -20,8 +20,12 @@ const biometricPunchSchema = new mongoose.Schema({
   // Filled in Phase 2 when we map cardNo -> employee
   employee: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', default: null },
 
-  // Set true once Phase 2 has turned this into an attendance session
+  // Set true once Phase 2 has resolved this row. Unmapped rows are also marked
+  // processed so they cannot block the main queue; a small rotating retry queue
+  // periodically checks them again after employee/card mappings change.
   processed: { type: Boolean, default: false, index: true },
+  unmapped: { type: Boolean, default: false, index: true },
+  lastMappingAttemptAt: { type: Date, default: null, index: true },
 }, { timestamps: true });
 
 // A punch is uniquely identified by who + when + which device. Works for BOTH

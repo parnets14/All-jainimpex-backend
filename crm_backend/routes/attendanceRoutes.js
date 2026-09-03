@@ -120,8 +120,9 @@ router.post(
       }
 
       const sessions = attendance.sessions || [];
-      const last = sessions[sessions.length - 1];
-      const hasOpen = last && last.in && last.in.time && (!last.out || !last.out.time);
+      const hasOpen = sessions.some(
+        (session) => session?.in?.time && !session?.out?.time
+      );
       if (hasOpen) {
         return res.status(400).json({
           success: false,
@@ -133,8 +134,8 @@ router.post(
         in: {
           time: new Date(),
           location: location || "Office",
-          faceVerified: faceVerified || false,
-          source: "web",
+          faceVerified: faceVerified === true,
+          source: faceVerified === true ? "face" : "manual",
         },
       });
       attendance.sessions = sessions;
@@ -184,25 +185,26 @@ router.post(
         });
       }
 
-      const last = attendance.sessions[attendance.sessions.length - 1];
-      if (!last.in || !last.in.time) {
-        return res.status(400).json({
-          success: false,
-          message: "No open punch-in to close.",
-        });
+      let openSession = null;
+      for (let index = attendance.sessions.length - 1; index >= 0; index -= 1) {
+        const session = attendance.sessions[index];
+        if (session?.in?.time && !session?.out?.time) {
+          openSession = session;
+          break;
+        }
       }
-      if (last.out && last.out.time) {
+      if (!openSession) {
         return res.status(400).json({
           success: false,
-          message: "Already punched out. Please punch in first.",
+          message: "No open punch-in to close. Please punch in first.",
         });
       }
 
-      last.out = {
+      openSession.out = {
         time: new Date(),
         location: location || "Office",
-        faceVerified: faceVerified || false,
-        source: "web",
+        faceVerified: faceVerified === true,
+        source: faceVerified === true ? "face" : "manual",
       };
       attendance.markModified("sessions");
 

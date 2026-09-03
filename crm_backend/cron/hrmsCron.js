@@ -151,7 +151,11 @@ const runBiometricProcessing = async () => {
       if (!db) continue;
       const r = await processBiometricPunches(db);
       if (r.processedPunches > 0) {
-        console.log(`🟢 [biometric/${company}] processed ${r.processedPunches} punch(es) -> ${r.updatedAttendance} day(s); unmapped ${r.unmapped}`);
+        console.log(
+          `🟢 [biometric/${company}] processed ${r.processedPunches} punch(es) -> ${r.updatedAttendance} day(s); ` +
+          `restored auto-paid ${r.restoredAutoPaidDays}; protected leave ${r.protectedLeaveDays}; ` +
+          `protected reviewed ${r.protectedReviewedDays}; unmapped ${r.unmapped}`
+        );
       }
     } catch (e) {
       console.error(`   ${company} biometric processing error:`, e.message);
@@ -209,14 +213,15 @@ const runAbsentReview = async () => {
         : 1;
       const { reviewableFromUtc } = getAbsentReviewPolicyBounds(now);
 
-      // Settle every pending record whose own month-specific review deadline
-      // has passed. On days 1–15, the previous month remains reviewable; from
-      // the 16th, only the current month remains reviewable.
+      // Settle every unresolved record older than the rolling 15-day cutoff.
+      // The cutoff date itself remains reviewable; only earlier dates expire.
+      // Include legacy none/null rows so cron and list-time catch-up cannot give
+      // the same expired absence different paid/unpaid outcomes.
       const autoResult = await Attendance.updateMany(
         {
           date: { $lt: reviewableFromUtc },
           status: 'Absent',
-          reviewStatus: 'pending',
+          reviewStatus: { $in: ['pending', 'none', null] },
         },
         {
           $set: {
@@ -294,7 +299,7 @@ const runAbsentReview = async () => {
       }
 
       // A late restart may classify an already-expired none/null record during
-      // this same pass. Settle those newly pending prior-month rows immediately.
+      // this same pass. Settle those newly pending expired rows immediately.
       if (pendingEntries.some((entry) => entry.date < reviewableFromUtc)) {
         const catchUpResult = await Attendance.updateMany(
           {

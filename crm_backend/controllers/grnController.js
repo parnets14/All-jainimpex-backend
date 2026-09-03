@@ -44,6 +44,10 @@ const generateGRNNumber = async (dbConnection) => {
   }
 };
 
+const normalizeGRNItemRemarks = (value) => (
+  typeof value === 'string' ? value.trim().slice(0, 500) : ''
+);
+
 // Validate GRN quantities
 const validateGRNQuantities = (items) => {
   for (const item of items) {
@@ -271,6 +275,7 @@ export const createGRN = async (req, res) => {
         unitPrice: poLine.price,
         gst: poLine.gst,
         totalPrice: itemTotal,
+        remarks: normalizeGRNItemRemarks(item.remarks),
         purchaseDiscount: {
           hasDiscount: poLine.purchaseDiscount?.hasDiscount || false,
           directDiscountPercentage: poLine.purchaseDiscount?.directDiscountPercentage || 0,
@@ -860,6 +865,7 @@ export const updateGRN = async (req, res) => {
         item.acceptedQuantity = Math.max(0, accepted);
         item.totalPrice = item.acceptedQuantity * (item.unitPrice || 0);
         item.shortageQuantity = Math.max(0, (item.companyBillQuantity || 0) - (item.receivedQuantity || 0));
+        item.remarks = normalizeGRNItemRemarks(item.remarks);
         return sum + item.totalPrice;
       }, 0);
     }

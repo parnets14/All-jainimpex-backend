@@ -78,6 +78,7 @@ export const getEmployees = async (req, res) => {
       search = "",
       department,
       designation,
+      status,
       sortBy = "createdAt",
       sortOrder = "desc",
     } = req.query;
@@ -100,6 +101,10 @@ export const getEmployees = async (req, res) => {
 
     if (designation && designation !== "All") {
       filter.designation = designation;
+    }
+
+    if (status && status !== "All") {
+      filter.status = status;
     }
 
     // Sort configuration

@@ -7,10 +7,13 @@
 //   2. For every affected (employee, day), gather ALL that day's punches,
 //      de-dupe rapid double-taps, and pair them into in/out sessions
 //      (1st=in, 2nd=out, 3rd=in ...). Odd trailing punch = open session.
-//   3. Upsert the day's Attendance: recompute the biometric-sourced sessions
-//      while preserving any sessions from other sources (web/app/manual) and
-//      never overwriting a 'Leave' day.
-//   4. Mark the consumed punches processed (+ link employee) — idempotent.
+//   3. Upsert the day's Attendance: recompute biometric sessions while
+//      preserving sessions from other sources. Completed delayed punches may
+//      reverse only a system-generated auto-paid leave; approved or manually
+//      reviewed leave remains protected.
+//   4. Mark consumed punches processed (+ link employee). Unmapped punches move
+//      to a rotating retry queue so assigning their card later can replay them
+//      without blocking newer mapped punches.
 //
 //  The Attendance model's pre-save derives punchIn/punchOut/workingHours and a
 //  basic status; the salary engine recomputes late/OT from the employee shift.
@@ -20,6 +23,7 @@ import { biometricPunchSchema } from '../models/BiometricPunch.js';
 import { employeeSchema } from '../models/Employee.js';
 import { attendanceSchema } from '../models/Attendance.js';
 import { holidaySchema } from '../models/Holiday.js';
+import { leaveSchema } from '../models/Leave.js';
 
 const DEDUP_SECONDS = 60; // ignore a second scan within 60s of the previous kept one
 
@@ -28,6 +32,7 @@ const getModels = (db) => ({
   Employee: db.models.Employee || db.model('Employee', employeeSchema),
   Attendance: db.models.Attendance || db.model('Attendance', attendanceSchema),
   Holiday: db.models.Holiday || db.model('Holiday', holidaySchema),
+  Leave: db.models.Leave || db.model('Leave', leaveSchema),
 });
 
 // Strip leading zeros for tolerant matching ("00000034" -> "34"). Empty stays "".
@@ -102,20 +107,60 @@ const pairSessions = (times) => {
   return sessions;
 };
 
+const clearAutomaticAbsenceDecision = (attendance) => {
+  // Set Absent before save so Attendance's pre-save hook can derive Present or
+  // Late from the newly reconstructed sessions. It intentionally does not
+  // convert a single open punch into attendance.
+  attendance.status = 'Absent';
+  attendance.leaveType = null;
+  attendance.reviewStatus = 'none';
+  attendance.reviewReason = '';
+  attendance.reviewedBy = null;
+  attendance.reviewedAt = null;
+  attendance.absentDeductionMultiplier = 1;
+};
+
 /**
  * Process all unprocessed punches into attendance.
- * Returns { processedPunches, affectedDays, updatedAttendance }.
+ * Returns reconciliation and conflict counters for operational logging.
  */
-export const processBiometricPunches = async (db, { batchLimit = 5000 } = {}) => {
-  const { BiometricPunch, Employee, Attendance } = getModels(db);
+export const processBiometricPunches = async (
+  db,
+  { batchLimit = 5000, punchAtRange = null, mappingRetryLimit = 250 } = {}
+) => {
+  const { BiometricPunch, Employee, Attendance, Leave } = getModels(db);
+  const rangeFilter = punchAtRange
+    ? { punchAt: { $gte: new Date(punchAtRange.start), $lt: new Date(punchAtRange.end) } }
+    : {};
 
-  const pending = await BiometricPunch.find({ processed: false })
-    .sort({ punchAt: 1 })
-    .limit(batchLimit)
-    .lean();
+  // Unmapped rows are removed from the main queue, then retried separately in
+  // oldest-attempt order. This keeps them replayable without allowing a large
+  // unmapped backlog to starve new valid punches.
+  const mappingRetryQuery = mappingRetryLimit > 0
+    ? BiometricPunch.find({ processed: true, unmapped: true, ...rangeFilter })
+        .sort({ lastMappingAttemptAt: 1, punchAt: 1 })
+        .limit(mappingRetryLimit)
+        .lean()
+    : Promise.resolve([]);
+  const [newPending, mappingRetries] = await Promise.all([
+    BiometricPunch.find({ processed: false, ...rangeFilter })
+      .sort({ punchAt: 1 })
+      .limit(batchLimit)
+      .lean(),
+    mappingRetryQuery,
+  ]);
+  const candidates = [...newPending, ...mappingRetries];
 
-  if (pending.length === 0) {
-    return { processedPunches: 0, affectedDays: 0, updatedAttendance: 0, unmapped: 0 };
+  if (candidates.length === 0) {
+    return {
+      processedPunches: 0,
+      affectedDays: 0,
+      updatedAttendance: 0,
+      unmapped: 0,
+      restoredAutoPaidDays: 0,
+      protectedLeaveDays: 0,
+      protectedReviewedDays: 0,
+    };
   }
 
   const employees = await Employee.find({})
@@ -123,24 +168,32 @@ export const processBiometricPunches = async (db, { batchLimit = 5000 } = {}) =>
     .lean();
   const resolve = buildResolver(employees);
 
-  // Collect affected (employeeId|dayKey) pairs from the pending punches.
   const affected = new Map(); // key: `${empId}|${dayTime}` -> { employeeId, dayStart }
   let unmapped = 0;
-  for (const p of pending) {
-    const emp = resolve(p.cardNo);
-    if (!emp) { unmapped += 1; continue; }
-    const dayStart = dayStartOf(p.punchAt);
-    affected.set(`${emp._id}|${dayStart.getTime()}`, { employeeId: emp._id, dayStart });
+  for (const punch of candidates) {
+    const employee = resolve(punch.cardNo);
+    if (!employee) { unmapped += 1; continue; }
+    const dayStart = dayStartOf(punch.punchAt);
+    affected.set(`${employee._id}|${dayStart.getTime()}`, {
+      employeeId: employee._id,
+      dayStart,
+    });
   }
 
   let updatedAttendance = 0;
+  let restoredAutoPaidDays = 0;
+  let protectedLeaveDays = 0;
+  let protectedReviewedDays = 0;
+  const todayStart = dayStartOf(new Date());
 
   for (const { employeeId, dayStart } of affected.values()) {
     const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
 
     // ALL punches for this employee's card(s) that day — rebuild from scratch.
-    const emp = employees.find((e) => String(e._id) === String(employeeId));
-    const cardCandidates = [emp.biometricCardNo, emp.empId].filter(Boolean).map((x) => String(x).trim());
+    const emp = employees.find((employee) => String(employee._id) === String(employeeId));
+    const cardCandidates = [emp.biometricCardNo, emp.empId]
+      .filter(Boolean)
+      .map((value) => String(value).trim());
     const strippedSet = new Set(cardCandidates.map(stripZeros));
 
     const dayPunches = await BiometricPunch.find({
@@ -148,32 +201,93 @@ export const processBiometricPunches = async (db, { batchLimit = 5000 } = {}) =>
     }).select('cardNo punchAt').lean();
 
     const times = dayPunches
-      .filter((p) => {
-        const c = String(p.cardNo).trim();
-        return cardCandidates.includes(c) || strippedSet.has(stripZeros(c));
+      .filter((punch) => {
+        const card = String(punch.cardNo).trim();
+        return cardCandidates.includes(card) || strippedSet.has(stripZeros(card));
       })
-      .map((p) => p.punchAt)
+      .map((punch) => punch.punchAt)
       .sort((a, b) => new Date(a) - new Date(b));
 
     if (times.length === 0) continue;
 
     const bioSessions = pairSessions(times);
+    const hasCompletedBiometricSession = bioSessions.some(
+      (session) => session.in?.time && session.out?.time
+    );
 
-    // Upsert attendance, preserving non-biometric sessions and Leave days.
     let att = await Attendance.findOne({ employee: employeeId, date: dayStart });
     if (!att) {
       att = new Attendance({ employee: employeeId, date: dayStart, sessions: [] });
     }
+
     if (att.status === 'Leave') {
-      // Don't disturb an approved leave day; punches that day are informational.
+      // A completed delayed pair may reverse only the cron's inferred monthly
+      // free leave. Planned approved leave and human-reviewed excused leave are
+      // deliberate decisions and must never be silently overwritten.
+      if (att.reviewStatus !== 'auto_paid' || !hasCompletedBiometricSession) {
+        protectedLeaveDays += 1;
+        continue;
+      }
+
+      const approvedLeave = await Leave.exists({
+        employee: employeeId,
+        status: 'Approved',
+        startDate: { $lt: dayEnd },
+        endDate: { $gte: dayStart },
+      });
+      if (approvedLeave) {
+        protectedLeaveDays += 1;
+        continue;
+      }
+
+      clearAutomaticAbsenceDecision(att);
+      restoredAutoPaidDays += 1;
+    } else if (
+      att.status === 'Absent' &&
+      hasCompletedBiometricSession &&
+      att.reviewStatus === 'unexcused' &&
+      att.reviewedBy
+    ) {
+      // Preserve an explicit human unpaid decision. Automatic expired records
+      // have reviewedBy=null and can safely follow the machine evidence.
+      protectedReviewedDays += 1;
       continue;
+    } else if (att.status === 'Absent' && hasCompletedBiometricSession) {
+      clearAutomaticAbsenceDecision(att);
     }
+
+    // Preserve every non-biometric session, including legacy sessions that did
+    // not store an explicit source value.
     const nonBio = (att.sessions || []).filter(
-      (s) => (s.in?.source && s.in.source !== 'biometric')
+      (session) => session.in?.time && session.in?.source !== 'biometric'
     );
-    att.sessions = [...nonBio, ...bioSessions].sort(
+    const mergedSessions = [...nonBio, ...bioSessions].sort(
       (a, b) => new Date(a.in.time) - new Date(b.in.time)
     );
+
+    // For a closed historical day, an open punch is informational only. Bypass
+    // the Attendance pre-save hook so it cannot promote Absent to Present/Late
+    // without a punch-out. The current day still shows a live open punch and is
+    // finalized by the normal end-of-day rule if no punch-out arrives.
+    if (dayStart < todayStart && !hasCompletedBiometricSession) {
+      if (att.isNew) {
+        await Attendance.updateOne(
+          { employee: employeeId, date: dayStart },
+          { $setOnInsert: { status: 'Absent' }, $set: { sessions: mergedSessions } },
+          { upsert: true, runValidators: true }
+        );
+      } else {
+        await Attendance.updateOne(
+          { _id: att._id },
+          { $set: { sessions: mergedSessions } },
+          { runValidators: true }
+        );
+      }
+      updatedAttendance += 1;
+      continue;
+    }
+
+    att.sessions = mergedSessions;
     await att.save(); // pre-save derives punchIn/out, workingHours, status and raw IST lateness
 
     // Do not recalculate status here. Attendance's pre-save hook already uses
@@ -183,24 +297,30 @@ export const processBiometricPunches = async (db, { batchLimit = 5000 } = {}) =>
     updatedAttendance += 1;
   }
 
-  // Mark the pending punches processed (+ link the resolved employee).
-  const bulk = [];
-  for (const p of pending) {
-    const emp = resolve(p.cardNo);
-    bulk.push({
+  const now = new Date();
+  const bulk = candidates.map((punch) => {
+    const employee = resolve(punch.cardNo);
+    return {
       updateOne: {
-        filter: { _id: p._id },
-        update: { $set: { processed: true, employee: emp ? emp._id : null } },
+        filter: { _id: punch._id },
+        update: {
+          $set: employee
+            ? { processed: true, employee: employee._id, unmapped: false, lastMappingAttemptAt: null }
+            : { processed: true, employee: null, unmapped: true, lastMappingAttemptAt: now },
+        },
       },
-    });
-  }
+    };
+  });
   if (bulk.length) await BiometricPunch.bulkWrite(bulk, { ordered: false });
 
   return {
-    processedPunches: pending.length,
+    processedPunches: candidates.length - unmapped,
     affectedDays: affected.size,
     updatedAttendance,
     unmapped,
+    restoredAutoPaidDays,
+    protectedLeaveDays,
+    protectedReviewedDays,
   };
 };
 

@@ -6,7 +6,11 @@ import { protect } from "../middleware/authMiddleware.js";
 import { attachCompanyDB } from "../middleware/companyMiddleware.js";
 import { enforceRoutePermissions } from "../middleware/routePermissions.js";
 import { logActivity } from "../middleware/activityLogMiddleware.js";
-import { getAbsentReviewPolicyBounds } from "../utils/absentReviewPolicy.js";
+import {
+  ABSENT_REVIEW_GRACE_DAYS,
+  getAbsentReviewDeadline,
+  getAbsentReviewPolicyBounds,
+} from "../utils/absentReviewPolicy.js";
 
 const router = express.Router();
 
@@ -74,9 +78,7 @@ const serializeRecord = (record, allowedLunchMinutes = 0, employeeMonthAbsentDay
   );
   const attendanceIst = new Date(new Date(record.date).getTime() + 5.5 * 3600000);
   const absenceMonth = attendanceIst.toISOString().slice(0, 7);
-  const reviewDeadline = new Date(
-    Date.UTC(attendanceIst.getUTCFullYear(), attendanceIst.getUTCMonth() + 1, 15) - 5.5 * 3600000
-  );
+  const reviewDeadline = getAbsentReviewDeadline(record.date);
   return {
     _id: record._id,
     employee: {
@@ -118,12 +120,37 @@ router.get("/", async (req, res) => {
       .lean();
     const { status = "pending", from, to } = req.query;
     const filter = {};
-    const { yesterdayEndUtc: yesterdayEnd } = getAbsentReviewPolicyBounds();
+    const now = new Date();
+    const {
+      yesterdayEndUtc: yesterdayEnd,
+      reviewableFromUtc,
+    } = getAbsentReviewPolicyBounds(now);
+    const defaultMultiplier = normalizeUnpaidMultiplier(settings?.absentDeductionMultiplier);
+
+    // Keep the screen and action endpoints consistent even if a scheduled cron
+    // was delayed or the service restarted. Every expired unresolved absence
+    // is settled before this request returns and moves to the Actioned tab.
+    await Attendance.updateMany(
+      {
+        date: { $lt: reviewableFromUtc },
+        status: "Absent",
+        reviewStatus: { $in: ["pending", "none", null] },
+      },
+      {
+        $set: {
+          leaveType: "Unpaid Leave",
+          reviewStatus: "unexcused",
+          reviewReason: `Auto-marked unexcused after ${ABSENT_REVIEW_GRACE_DAYS}-day review window`,
+          reviewedBy: null,
+          reviewedAt: now,
+          absentDeductionMultiplier: defaultMultiplier,
+        },
+      }
+    );
 
     if (status === "pending") {
       filter.status = "Absent";
       filter.reviewStatus = { $in: ["pending", "none", null] };
-      // With no lower date bound, return the complete unresolved backlog.
     } else if (status === "actioned") {
       filter.reviewStatus = { $in: ["auto_paid", "excused", "unexcused"] };
     } else if (status === "all") {
@@ -132,15 +159,21 @@ router.get("/", async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid status filter" });
     }
 
-    // Today is never eligible for absence review. Explicit future/today ranges
-    // are also capped at yesterday 23:59:59.999 IST.
+    // Today is never eligible for absence review. Pending results are also
+    // bounded by the same rolling cutoff enforced by the action endpoints.
     filter.date = { $lte: yesterdayEnd };
-    if (from) filter.date.$gte = istMidnight(new Date(`${from}T00:00:00Z`));
+    if (status === "pending") filter.date.$gte = reviewableFromUtc;
+    if (from) {
+      const requestedStart = istMidnight(new Date(`${from}T00:00:00Z`));
+      if (!filter.date.$gte || requestedStart > filter.date.$gte) {
+        filter.date.$gte = requestedStart;
+      }
+    }
     if (to) {
       const requestedEnd = endOfIstDay(new Date(`${to}T00:00:00Z`));
       filter.date.$lte = requestedEnd < yesterdayEnd ? requestedEnd : yesterdayEnd;
     } else if (status !== "pending") {
-      const nowIst = new Date(Date.now() + 5.5 * 3600000);
+      const nowIst = new Date(now.getTime() + 5.5 * 3600000);
       filter.date.$gte = new Date(
         Date.UTC(nowIst.getUTCFullYear(), nowIst.getUTCMonth(), 1) - 5.5 * 3600000
       );
