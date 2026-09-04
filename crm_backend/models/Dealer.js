@@ -227,15 +227,24 @@ const dealerSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: [0, "Opening balance cannot be negative"],
+      immutable: true,
     },
     openingBalanceType: {
       type: String,
       enum: ["Dr", "Cr"],
       default: "Dr",
+      immutable: true,
     },
     openingBalanceDate: {
       type: Date,
       default: null,
+      immutable: true,
+    },
+    // Settlement tracker only. The historical opening balance fields above remain unchanged.
+    openingBalanceAllocated: {
+      type: Number,
+      default: 0,
+      min: [0, "Allocated opening balance cannot be negative"],
     },
     advancePayments: [{
       payment: {

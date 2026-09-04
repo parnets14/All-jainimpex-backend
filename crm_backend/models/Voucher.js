@@ -117,15 +117,45 @@ const voucherSchema = new mongoose.Schema({
   },
   conflictResolution: String,
   
-  // Invoice allocations
+  // Invoice and opening-balance allocation snapshots
   allocations: [{
+    targetType: {
+      type: String,
+      enum: ['Invoice', 'OpeningBalance'],
+      default: 'Invoice'
+    },
+    targetLabel: String,
     invoiceId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'DealerInvoice'
+      ref() {
+        return this.ownerDocument()?.partyType === 'Supplier'
+          ? 'SupplierInvoice'
+          : 'DealerInvoice';
+      },
+      required() {
+        return this.targetType === 'Invoice';
+      },
+      validate: {
+        validator(value) {
+          return this.targetType === 'Invoice' ? value != null : value == null;
+        },
+        message: 'Invoice targets require invoiceId and OpeningBalance targets must omit it'
+      }
     },
     invoiceNumber: String,
-    invoiceAmount: Number,
+    originalAmount: Number,
+    originalDate: Date,
+    previouslyAllocated: Number,
     allocatedAmount: Number,
+    remainingAmount: Number,
+    paymentStatus: {
+      type: String,
+      enum: ['Partial', 'Full']
+    },
+    // Legacy invoice snapshot names retained for existing consumers.
+    invoiceAmount: Number,
+    invoiceDate: Date,
+    previouslyPaid: Number,
     allocationDate: {
       type: Date,
       default: Date.now

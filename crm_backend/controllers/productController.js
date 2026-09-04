@@ -258,13 +258,13 @@ export const getProducts = async (req, res) => {
             const key = `${productId}-${warehouseId}`;
             const movements = productWarehouseMap[key] || [];
             
-            // Get current stock from latest movement balance
-            const sortedMovements = movements.sort((a, b) => {
-              const dateA = new Date(a.date || a.createdAt);
-              const dateB = new Date(b.date || b.createdAt);
-              return dateB - dateA;
-            });
-            const currentStock = sortedMovements[0]?.balance || 0;
+            // Aggregate movement direction/quantity is authoritative. Stored
+            // balance is an audit snapshot and may be backdated.
+            const currentStock = movements.reduce((balance, movement) => (
+              movement.type === 'IN'
+                ? balance + Number(movement.quantity || 0)
+                : balance - Number(movement.quantity || 0)
+            ), 0);
             totalStock += currentStock;
             
             // Calculate blocked stock from movements
@@ -295,7 +295,9 @@ export const getProducts = async (req, res) => {
             damagedMovements.forEach(m => totalDamaged += Math.abs(m.quantity || 0));
           }
           
-          const netStock = totalStock - totalDamaged - totalBlocked;
+          // Usable StockMovement quantity already excludes damaged GRN units and
+          // includes SALE reservation OUT/IN rows.
+          const netStock = totalStock;
           
           return {
             ...product.toObject(),
@@ -1526,6 +1528,7 @@ export const getPriceListHistory = async (req, res) => {
 // @route   PATCH /api/products/price-list/:id/opening-stock
 // @access  Private
 export const setOpeningStock = async (req, res) => {
+  let stockLease = null;
   try {
     console.log('=== SET OPENING STOCK ===');
     console.log('Product ID:', req.params.id);
@@ -1576,6 +1579,11 @@ export const setOpeningStock = async (req, res) => {
       });
     }
 
+    stockLease = await StockMovementService.acquireStockLeases(
+      req.dbConnection,
+      [StockMovementService.stockKey(product._id, defaultWarehouse._id)]
+    );
+
     // If an opening balance already exists for this product+warehouse, EDIT it
     // (adjust quantity by the delta so all running balances stay correct, and
     // update the cost rate). Otherwise create a fresh opening movement.
@@ -1605,6 +1613,8 @@ export const setOpeningStock = async (req, res) => {
           $set: {
             quantity: qty,
             rate: costRate,
+            operationKey: `OPENING:${product._id}:${defaultWarehouse._id}`,
+            movementRole: 'OPENING',
             remarks: `Opening stock${costRate != null ? ` @ ₹${costRate}/unit` : ""}`,
           },
           $inc: { balance: delta },
@@ -1624,6 +1634,11 @@ export const setOpeningStock = async (req, res) => {
         changedByName: req.user?.name || "",
         changedAt: new Date(),
       });
+
+      const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
+      await StockArrivalService.refreshStockKeys([
+        { productId: product._id, warehouseId: defaultWarehouse._id }
+      ], req.dbConnection);
 
       return res.json({
         success: true,
@@ -1657,6 +1672,8 @@ export const setOpeningStock = async (req, res) => {
       rate: costRate,
       referenceNo: `OPENING-${product.productCode || product._id}`,
       referenceType: "OPENING",
+      operationKey: `OPENING:${product._id}:${defaultWarehouse._id}`,
+      movementRole: 'OPENING',
       date: new Date(),
       remarks: `Opening stock${costRate != null ? ` @ ₹${costRate}/unit` : ""}`,
       createdBy: req.user?._id,
@@ -1675,6 +1692,11 @@ export const setOpeningStock = async (req, res) => {
       changedAt: new Date(),
     });
 
+    const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
+    await StockArrivalService.refreshStockKeys([
+      { productId: product._id, warehouseId: defaultWarehouse._id }
+    ], req.dbConnection);
+
     res.json({
       success: true,
       message: "Opening stock set successfully",
@@ -1690,5 +1712,13 @@ export const setOpeningStock = async (req, res) => {
   } catch (error) {
     console.error("Set opening stock error:", error);
     res.status(500).json({ success: false, message: error.message });
+  } finally {
+    if (stockLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, stockLease);
+      } catch (releaseError) {
+        console.error('Failed to release opening-stock lease:', releaseError.message);
+      }
+    }
   }
 };

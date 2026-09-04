@@ -93,6 +93,19 @@ const stockAdjustmentSchema = new mongoose.Schema({
     enum: ['Draft', 'Completed', 'Cancelled'],
     default: 'Completed'
   },
+  // Stable client request identity used to return the original adjustment when
+  // an HTTP retry follows an ambiguous timeout.
+  idempotencyKey: {
+    type: String,
+    trim: true,
+    default: null
+  },
+  idempotencyFingerprint: {
+    type: String,
+    minlength: 64,
+    maxlength: 64,
+    default: null
+  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -108,6 +121,14 @@ const stockAdjustmentSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+stockAdjustmentSchema.index(
+  { idempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { idempotencyKey: { $type: 'string' } }
+  }
+);
 
 // Generate adjustment number before saving
 stockAdjustmentSchema.pre('save', async function(next) {

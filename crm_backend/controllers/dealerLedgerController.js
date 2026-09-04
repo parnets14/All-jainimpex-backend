@@ -1063,7 +1063,7 @@ export const getCombinedDealerLedger = async (req, res) => {
       allTransactions.push({
         date: entry.entryDate,
         type: entry.transactionType,
-        reference: entry.invoiceNumber || entry.creditNoteNumber || '-',
+        reference: entry.referenceNumber || entry.invoiceNumber || entry.creditNoteNumber || '-',
         description: entry.description || entry.transactionType,
         debit: entry.debitAmount || 0,
         credit: entry.creditAmount || 0,
@@ -1072,9 +1072,38 @@ export const getCombinedDealerLedger = async (req, res) => {
       });
     });
 
-    // Add voucher entries
-    vouchers.forEach(voucher => {
-      // Add voucher as transaction
+    // Voucher creation also writes DealerLedger. Keep only vouchers whose
+    // financial ledger write is absent, otherwise the report counts them twice.
+    const representedVoucherIds = new Set(
+      oldLedgerEntries
+        .filter((entry) => entry.referenceId)
+        .map((entry) => String(entry.referenceId))
+    );
+    const representedVoucherNumbers = new Set(
+      oldLedgerEntries
+        .filter((entry) => entry.referenceNumber)
+        .map((entry) => String(entry.referenceNumber))
+    );
+    const isRepresentedByLegacyDescription = (voucher) => {
+      const prefix = voucher.voucherType === 'Receipt'
+        ? `Payment Received - ${voucher.voucherNumber}`
+        : voucher.voucherType === 'Payment'
+          ? `Payment Made - ${voucher.voucherNumber}`
+          : null;
+      if (!prefix) return false;
+      return oldLedgerEntries.some((entry) => {
+        const description = String(entry.description || '');
+        return description === prefix || description.startsWith(`${prefix} (`);
+      });
+    };
+    const unmatchedVouchers = vouchers.filter((voucher) => (
+      !representedVoucherIds.has(String(voucher._id))
+      && !representedVoucherNumbers.has(String(voucher.voucherNumber))
+      && !isRepresentedByLegacyDescription(voucher)
+    ));
+
+    // Add only fallback voucher rows not already represented in DealerLedger.
+    unmatchedVouchers.forEach(voucher => {
       allTransactions.push({
         date: voucher.voucherDate,
         type: voucher.voucherType === 'Receipt' ? 'Voucher Receipt' : 
@@ -1089,16 +1118,18 @@ export const getCombinedDealerLedger = async (req, res) => {
       });
     });
 
-    // Add payment allocations as separate entries
+    // Add payment allocations as informational matching entries. The source
+    // voucher already carries the debit/credit, so allocations must not post it again.
     allocations.forEach(allocation => {
       allocation.allocations.forEach(alloc => {
+        const targetLabel = alloc.targetLabel || alloc.invoiceNumber || 'Allocation target';
         allTransactions.push({
           date: allocation.allocationDate,
           type: 'Payment Allocation',
-          reference: `${allocation.voucherNumber} → ${alloc.invoiceNumber}`,
-          description: `Allocated ₹${alloc.allocatedAmount.toLocaleString('en-IN')} to ${alloc.invoiceNumber}`,
+          reference: `${allocation.voucherNumber} → ${targetLabel}`,
+          description: `Allocated ₹${alloc.allocatedAmount.toLocaleString('en-IN')} to ${targetLabel}`,
           debit: 0,
-          credit: alloc.allocatedAmount,
+          credit: 0,
           source: 'allocation',
           allocationId: allocation._id
         });
@@ -1128,7 +1159,7 @@ export const getCombinedDealerLedger = async (req, res) => {
       currentBalance: runningBalance,
       totalTransactions: total,
       oldSystemTransactions: oldLedgerEntries.length,
-      voucherSystemTransactions: vouchers.length,
+      voucherSystemTransactions: unmatchedVouchers.length,
       allocationTransactions: allocations.reduce((sum, a) => sum + a.allocations.length, 0)
     };
 

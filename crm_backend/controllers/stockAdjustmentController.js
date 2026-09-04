@@ -5,6 +5,7 @@ import StockMovementService from '../services/stockMovementService.js';
 import { stockMovementSchema } from '../models/Stock.js';
 import { assertPeriodOpen, handlePeriodLockError } from '../services/periodLockService.js';
 import mongoose from 'mongoose';
+import { createHash } from 'node:crypto';
 
 const getModels = (dbConnection) => {
   return {
@@ -15,16 +16,101 @@ const getModels = (dbConnection) => {
   };
 };
 
+const getIdempotencyKey = (req) => {
+  const value = req.get?.('Idempotency-Key')
+    || req.headers?.['idempotency-key']
+    || req.body?.idempotencyKey;
+  if (value == null || value === '') return null;
+  if (typeof value !== 'string'
+      || value.length < 8
+      || value.length > 100
+      || !/^[A-Za-z0-9._:-]+$/.test(value)) {
+    const error = new Error('Idempotency key must be 8-100 letters, numbers, dots, colons, underscores, or hyphens');
+    error.statusCode = 400;
+    error.code = 'INVALID_IDEMPOTENCY_KEY';
+    throw error;
+  }
+  return value;
+};
+
+const createAdjustmentFingerprint = (req, idempotencyKey) => createHash('sha256')
+  .update(JSON.stringify({
+    warehouseId: req.body.warehouseId,
+    adjustmentType: req.body.adjustmentType,
+    reason: req.body.reason,
+    remarks: req.body.remarks || '',
+    createdBy: req.body.createdBy || req.user?._id,
+    items: (req.body.items || []).map((item) => ({
+      productId: item.productId,
+      quantity: Number(item.quantity),
+      unitPrice: Number(item.unitPrice || 0),
+      remarks: item.remarks || ''
+    })),
+    idempotencyKey
+  }))
+  .digest('hex');
+
 // Create Stock Adjustment
 export const createStockAdjustment = async (req, res) => {
   // Start MongoDB session for transaction
   const session = await req.dbConnection.startSession();
-  
+  let stockLease = null;
+  let idempotencyKey = null;
+  let idempotencyFingerprint = null;
+
   try {
+    idempotencyKey = getIdempotencyKey(req);
+    idempotencyFingerprint = idempotencyKey
+      ? createAdjustmentFingerprint(req, idempotencyKey)
+      : null;
+    const requestedItems = Array.isArray(req.body.items) ? req.body.items : [];
+    const leaseKeys = req.body.warehouseId
+      ? requestedItems
+        .filter((item) => item?.productId)
+        .map((item) => StockMovementService.stockKey(
+          item.productId,
+          req.body.warehouseId
+        ))
+      : [];
+    if (idempotencyKey) leaseKeys.push(`ADJUSTMENT_REQUEST:${idempotencyKey}`);
+    if (leaseKeys.length > 0) {
+      stockLease = await StockMovementService.acquireStockLeases(
+        req.dbConnection,
+        leaseKeys
+      );
+    }
+
     // Start transaction
     await session.startTransaction();
     
     const { StockAdjustment, Product, Warehouse, StockMovement } = getModels(req.dbConnection);
+
+    if (idempotencyKey) {
+      const existingAdjustment = await StockAdjustment.findOne({ idempotencyKey })
+        .select('_id idempotencyFingerprint')
+        .session(session)
+        .lean();
+      if (existingAdjustment) {
+        await session.abortTransaction();
+        if (existingAdjustment.idempotencyFingerprint !== idempotencyFingerprint) {
+          return res.status(409).json({
+            success: false,
+            code: 'IDEMPOTENCY_KEY_REUSED',
+            message: 'Idempotency key was already used for a different stock adjustment'
+          });
+        }
+        const replayedAdjustment = await StockAdjustment.findById(existingAdjustment._id)
+          .populate('warehouseId', 'name address')
+          .populate('createdBy', 'name email')
+          .populate('items.productId', 'productCode itemName HSNCode');
+        return res.status(200).json({
+          success: true,
+          replayed: true,
+          message: 'Stock adjustment already created',
+          data: replayedAdjustment
+        });
+      }
+    }
     
     const {
       warehouseId,
@@ -44,6 +130,26 @@ export const createStockAdjustment = async (req, res) => {
         success: false,
         message: 'Warehouse, adjustment type, reason, and items are required'
       });
+    }
+
+    // A request may contain the same product more than once. Validate REMOVE
+    // against the combined quantity so duplicate rows cannot each pass against
+    // the same pre-adjustment balance and drive stock negative.
+    const requestedQuantityByProduct = new Map();
+    for (const item of items) {
+      const quantity = Number(item.quantity);
+      if (!item.productId || !Number.isFinite(quantity) || quantity <= 0) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: 'Every adjustment item requires a product and a positive quantity'
+        });
+      }
+      const key = String(item.productId);
+      requestedQuantityByProduct.set(
+        key,
+        Number(requestedQuantityByProduct.get(key) || 0) + quantity
+      );
     }
 
     // Validate warehouse exists
@@ -72,14 +178,21 @@ export const createStockAdjustment = async (req, res) => {
       }
 
       // Get current stock level for this product in this warehouse
-      const currentStock = await StockMovementService.getCurrentStock(item.productId, warehouseId, req.dbConnection);
+      const currentStock = await StockMovementService.getCurrentStock(
+        item.productId,
+        warehouseId,
+        req.dbConnection,
+        session
+      );
       
-      // For REMOVE adjustments, check if sufficient stock is available
-      if (adjustmentType === 'REMOVE' && currentStock < item.quantity) {
+      // For REMOVE adjustments, check the combined request quantity for this
+      // product rather than validating duplicate rows independently.
+      const totalRequestedQuantity = Number(requestedQuantityByProduct.get(String(item.productId)) || 0);
+      if (adjustmentType === 'REMOVE' && currentStock < totalRequestedQuantity) {
         await session.abortTransaction();
         return res.status(400).json({
           success: false,
-          message: `Insufficient stock for ${product.itemName}. Available: ${currentStock}, Required: ${item.quantity}`
+          message: `Insufficient stock for ${product.itemName}. Available: ${currentStock}, Required: ${totalRequestedQuantity}`
         });
       }
 
@@ -102,72 +215,57 @@ export const createStockAdjustment = async (req, res) => {
       remarks: remarks || '',
       items: adjustmentItems,
       createdBy: createdBy || req.user._id,
-      status: 'Completed' // Auto-complete manual adjustments
+      status: 'Completed', // Auto-complete manual adjustments
+      idempotencyKey: idempotencyKey || undefined,
+      idempotencyFingerprint: idempotencyFingerprint || undefined
     });
 
     await stockAdjustment.save({ session });
 
-    // Create stock movements for each item
-    const stockMovements = [];
-    for (const item of adjustmentItems) {
-      const movementType = adjustmentType === 'ADD' ? 'IN' : 'OUT';
-      const quantity = adjustmentType === 'ADD' ? item.quantity : item.quantity;
-      const balanceChange = adjustmentType === 'ADD' ? item.quantity : -item.quantity;
-      
-      // Calculate new balance
-      const newBalance = await StockMovementService.calculateRunningBalance(
-        item.productId, 
-        warehouseId, 
-        balanceChange, 
-        session,
-        req.dbConnection
-      );
+    // Serialize and append all movement rows using aggregate ledger balances.
+    await StockMovementService.acquireStockLocks(
+      req.dbConnection,
+      adjustmentItems.map((item) => StockMovementService.stockKey(item.productId, warehouseId)),
+      session
+    );
+    const stockMovements = adjustmentItems.map((item, index) => ({
+      productId: item.productId,
+      warehouseId,
+      type: adjustmentType === 'ADD' ? 'IN' : 'OUT',
+      quantity: item.quantity,
+      referenceNo: stockAdjustment.adjustmentNo,
+      referenceType: 'ADJUSTMENT',
+      operationKey: idempotencyKey
+        ? `ADJUSTMENT_REQUEST:${idempotencyKey}:${index}`
+        : `ADJUSTMENT:${stockAdjustment._id}:${index}`,
+      movementRole: 'ADJUSTMENT',
+      date: stockAdjustment.adjustmentDate,
+      remarks: `Manual ${adjustmentType.toLowerCase()} adjustment: ${reason}${item.remarks ? ` - ${item.remarks}` : ''}`,
+      createdBy: stockAdjustment.createdBy
+    }));
 
-      const stockMovement = new StockMovement({
-        productId: item.productId,
-        warehouseId: warehouseId,
-        type: movementType,
-        quantity: quantity,
-        balance: newBalance,
-        referenceNo: stockAdjustment.adjustmentNo,
-        referenceType: 'ADJUSTMENT',
-        date: stockAdjustment.adjustmentDate,
-        remarks: `Manual ${adjustmentType.toLowerCase()} adjustment: ${reason}${item.remarks ? ` - ${item.remarks}` : ''}`,
-        createdBy: stockAdjustment.createdBy
-      });
-
-      stockMovements.push(stockMovement);
-    }
-
-    // Save all stock movements
     if (stockMovements.length > 0) {
-      await StockMovement.insertMany(stockMovements, { session });
+      await StockMovementService.appendMovements(stockMovements, {
+        dbConnection: req.dbConnection,
+        session,
+        locksAcquired: true
+      });
       console.log(`Created ${stockMovements.length} stock movements for adjustment: ${stockAdjustment.adjustmentNo}`);
     }
 
     // Commit transaction
     await session.commitTransaction();
     
-    // IMPORTANT: Check waiting orders for stock arrival (after transaction commits)
-    // This runs outside the transaction to avoid blocking stock adjustment creation
+    // Recalculate the FIFO Pending-order queue after either increases or decreases.
     try {
       const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
-      
-      for (const item of adjustmentItems) {
-        // Only check for ADD adjustments (stock arriving)
-        if (adjustmentType === 'ADD') {
-          await StockArrivalService.checkWaitingOrdersForStock(
-            item.productId,
-            warehouseId,
-            item.quantity,
-            req.dbConnection
-          );
-        }
-      }
-      console.log(`✅ Checked waiting orders for stock arrival after adjustment: ${stockAdjustment.adjustmentNo}`);
+      await StockArrivalService.refreshStockKeys(
+        adjustmentItems.map((item) => ({ productId: item.productId, warehouseId })),
+        req.dbConnection
+      );
+      console.log(`✅ Refreshed Pending-order stock queue after adjustment: ${stockAdjustment.adjustmentNo}`);
     } catch (arrivalError) {
-      console.error('⚠️  Error checking waiting orders (non-critical):', arrivalError);
-      // Don't fail adjustment creation if stock arrival check fails
+      console.error('⚠️ Error refreshing Pending-order stock queue (non-critical):', arrivalError);
     }
 
     // Populate the response
@@ -183,15 +281,23 @@ export const createStockAdjustment = async (req, res) => {
     });
 
   } catch (error) {
-    await session.abortTransaction();
+    if (session.inTransaction()) await session.abortTransaction();
     if (handlePeriodLockError(error, res)) return;
     console.error('Error creating stock adjustment:', error);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       success: false,
-      message: 'Error creating stock adjustment',
-      error: error.message
+      code: error.code,
+      message: error.statusCode ? error.message : 'Error creating stock adjustment',
+      error: error.statusCode ? undefined : error.message
     });
   } finally {
+    if (stockLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, stockLease);
+      } catch (releaseError) {
+        console.error('Failed to release stock-adjustment lease:', releaseError.message);
+      }
+    }
     session.endSession();
   }
 };
@@ -492,8 +598,23 @@ export const getStockAdjustmentStats = async (req, res) => {
 // Delete Stock Adjustment (Admin only)
 export const deleteStockAdjustment = async (req, res) => {
   const session = await req.dbConnection.startSession();
+  let stockLease = null;
   
   try {
+    const { StockAdjustment: PreviewAdjustment } = getModels(req.dbConnection);
+    const preview = await PreviewAdjustment.findById(req.params.id)
+      .select('items.productId warehouseId')
+      .lean();
+    if (preview) {
+      stockLease = await StockMovementService.acquireStockLeases(
+        req.dbConnection,
+        (preview.items || []).map((item) => StockMovementService.stockKey(
+          item.productId,
+          preview.warehouseId
+        ))
+      );
+    }
+
     await session.startTransaction();
     
     const { StockAdjustment, StockMovement } = getModels(req.dbConnection);
@@ -516,6 +637,15 @@ export const deleteStockAdjustment = async (req, res) => {
         message: 'Stock adjustment not found'
       });
     }
+
+    await StockMovementService.acquireStockLocks(
+      req.dbConnection,
+      adjustment.items.map((item) => StockMovementService.stockKey(
+        item.productId,
+        adjustment.warehouseId
+      )),
+      session
+    );
 
     // Delete related stock movements
     await StockMovement.deleteMany({
@@ -559,6 +689,13 @@ export const deleteStockAdjustment = async (req, res) => {
       }
     }
 
+    try {
+      const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
+      await StockArrivalService.refreshStockKeys(affectedProducts, req.dbConnection);
+    } catch (refreshError) {
+      console.error('Deleted-adjustment stock queue refresh failed:', refreshError.message);
+    }
+
     res.json({
       success: true,
       message: 'Stock adjustment deleted successfully'
@@ -573,6 +710,13 @@ export const deleteStockAdjustment = async (req, res) => {
       error: error.message
     });
   } finally {
+    if (stockLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, stockLease);
+      } catch (releaseError) {
+        console.error('Failed to release deleted-adjustment stock lease:', releaseError.message);
+      }
+    }
     session.endSession();
   }
 };

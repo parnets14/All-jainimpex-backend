@@ -508,46 +508,6 @@ salesOrderSchema.pre("save", async function(next) {
   next();
 });
 
-// Update stock when order is confirmed
-salesOrderSchema.post("save", async function(doc, next) {
-  if (doc.status === "Confirmed" && doc.isModified("status")) {
-    try {
-      const Stock = mongoose.model("Stock");
-      
-      for (const product of doc.products) {
-        // Update stock for the specific warehouse
-        await Stock.findOneAndUpdate(
-          { 
-            productId: product.product,
-            warehouseId: product.warehouse
-          },
-          { 
-            $inc: { 
-              blockedQty: product.quantity,
-              netStock: -product.quantity
-            }
-          }
-        );
-        
-        // Also update total product stock
-        const Product = mongoose.model("Product");
-        await Product.findByIdAndUpdate(
-          product.product,
-          { $inc: { stock: -product.quantity } }
-        );
-      }
-    } catch (error) {
-      console.error("Error updating stock:", error);
-    }
-  }
-  
-  // NOTE: Stock restoration for cancelled/rejected orders is handled in the controller
-  // (updateSalesOrderStatus and updateSalesOrder functions) because isModified() 
-  // doesn't work reliably in post('save') hooks
-  
-  next();
-});
-
 // Indexes for dashboard listing, filtering and stock-status queries
 salesOrderSchema.index({ createdAt: -1 });
 salesOrderSchema.index({ dealer: 1, createdAt: -1 });

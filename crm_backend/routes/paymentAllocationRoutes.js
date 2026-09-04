@@ -18,6 +18,7 @@ router.get('/unadjusted-payments', logActivity("Payment Allocation", "Viewed una
 router.post('/auto-allocate', logActivity("Payment Allocation", "Auto-allocated payments", "CREATE"), paymentAllocationController.autoAllocatePayments);
 
 // Payment Allocation routes
+router.post('/batch', logActivity("Payment Allocation", "Created payment allocation batch", "CREATE"), paymentAllocationController.createPaymentAllocationBatch);
 router.post('/', logActivity("Payment Allocation", "Created payment allocation", "CREATE"), paymentAllocationController.createPaymentAllocation);
 router.get('/', logActivity("Payment Allocation", "Viewed payment allocations list", "READ"), paymentAllocationController.getPaymentAllocations);
 router.get('/:id', logActivity("Payment Allocation", "Viewed payment allocation details", "READ"), paymentAllocationController.getPaymentAllocationById);

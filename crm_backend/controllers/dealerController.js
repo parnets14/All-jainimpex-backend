@@ -505,7 +505,7 @@ export const updateDealer = async (req, res) => {
       extraDiscounts,
     } = req.body;
 
-    if (["openingBalance", "openingBalanceType", "openingBalanceDate"].some(
+    if (["openingBalance", "openingBalanceType", "openingBalanceDate", "openingBalanceAllocated"].some(
       (field) => Object.prototype.hasOwnProperty.call(req.body, field)
     )) {
       return res.status(409).json({

@@ -688,7 +688,9 @@ export const getVouchers = async (req, res) => {
         
         voucher.allocationDetails = allocations.flatMap(pa => 
           pa.allocations.map(alloc => ({
-            invoiceNumber: alloc.invoiceNumber,
+            targetType: alloc.targetType || 'Invoice',
+            targetLabel: alloc.targetLabel || alloc.invoiceNumber,
+            invoiceNumber: alloc.invoiceNumber || alloc.targetLabel,
             allocatedAmount: alloc.allocatedAmount,
             allocationDate: pa.allocationDate,
             allocationNumber: pa.allocationNumber
@@ -784,26 +786,25 @@ export const getVoucherById = async (req, res) => {
  * DELETE /api/vouchers/:id
  */
 export const cancelVoucher = async (req, res) => {
+  let session;
   try {
-    const { Voucher, BankAccount, CashAccount, DealerLedger, PaymentAllocation } = getModels(req.dbConnection);
+    const { Voucher, DealerLedger, PaymentAllocation } = getModels(req.dbConnection);
     const { cancelReason } = req.body;
-    
+
     if (!cancelReason) {
       return res.status(400).json({
         success: false,
         message: 'Cancel reason is required'
       });
     }
-    
+
     const voucher = await Voucher.findById(req.params.id);
-    
     if (!voucher) {
       return res.status(404).json({
         success: false,
         message: 'Voucher not found'
       });
     }
-    
     if (voucher.status === 'Cancelled') {
       return res.status(400).json({
         success: false,
@@ -811,41 +812,113 @@ export const cancelVoucher = async (req, res) => {
       });
     }
 
-    // Block cancelling a voucher dated in a closed financial year
-    await assertPeriodOpen(req.dbConnection, voucher.voucherDate, 'voucher cancellation');
-    
-    // Update voucher status
-    voucher.status = 'Cancelled';
-    voucher.cancelledAt = new Date();
-    voucher.cancelledBy = req.user._id;
-    voucher.cancelReason = cancelReason;
-    await voucher.save();
-    
-    // Reverse account balance
-    const multiplier = voucher.voucherType === 'Receipt' ? -1 : 1;
-    await updateAccountBalance(
-      voucher.voucherType,
-      voucher.transactionMode,
-      voucher.bankAccount,
-      voucher.totalAmount * multiplier,
-      req.dbConnection
-    );
+    const hasAllocations = Number(voucher.allocatedAmount ?? 0) > 0
+      || await PaymentAllocation.exists({ voucherId: voucher._id });
+    if (hasAllocations) {
+      return res.status(409).json({
+        success: false,
+        message: 'Allocated vouchers cannot be cancelled because allocation reversal is not supported.'
+      });
+    }
 
-    // Reverse supplier ledger entry (if this was a supplier voucher)
-    if (voucher.partyType === 'Supplier' && voucher.partyId &&
-        ['Receipt', 'Payment'].includes(voucher.voucherType)) {
-      try {
+    await assertPeriodOpen(req.dbConnection, voucher.voucherDate, 'voucher cancellation');
+
+    session = await req.dbConnection.startSession();
+    const cancelledAt = new Date();
+    await session.withTransaction(async () => {
+      // Claim cancellation atomically. Allocation updates require status=Posted
+      // and increase allocatedAmount, so exactly one concurrent operation wins.
+      const allocationExists = await PaymentAllocation.exists({ voucherId: voucher._id })
+        .session(session);
+      if (allocationExists) {
+        const error = new Error('Allocated vouchers cannot be cancelled because allocation reversal is not supported.');
+        error.statusCode = 409;
+        throw error;
+      }
+
+      const cancellationResult = await Voucher.updateOne({
+        _id: voucher._id,
+        status: voucher.status,
+        $or: [
+          { allocatedAmount: 0 },
+          { allocatedAmount: null },
+          { allocatedAmount: { $exists: false } }
+        ]
+      }, {
+        $set: {
+          status: 'Cancelled',
+          cancelledAt,
+          cancelledBy: req.user._id,
+          cancelReason
+        }
+      }, { session });
+      if (cancellationResult.matchedCount !== 1) {
+        const error = new Error('Voucher changed or was allocated while cancelling; refresh and try again.');
+        error.statusCode = 409;
+        throw error;
+      }
+
+      // Reverse cash/bank in the same transaction as the status claim.
+      const multiplier = voucher.voucherType === 'Receipt' ? -1 : 1;
+      await updateAccountBalance(
+        voucher.voucherType,
+        voucher.transactionMode,
+        voucher.bankAccount,
+        voucher.totalAmount * multiplier,
+        req.dbConnection,
+        { session }
+      );
+
+      // Reverse the dealer subledger only when the source posting exists. Older
+      // rows are identified by their deterministic description.
+      if (voucher.partyType === 'Dealer' && voucher.partyId
+          && ['Receipt', 'Payment'].includes(voucher.voucherType)) {
+        const sourcePrefix = voucher.voucherType === 'Receipt'
+          ? `Payment Received - ${voucher.voucherNumber}`
+          : `Payment Made - ${voucher.voucherNumber}`;
+        const sourceLedger = await DealerLedger.findOne({
+          dealer: voucher.partyId,
+          $or: [
+            { referenceId: voucher._id },
+            { referenceNumber: voucher.voucherNumber },
+            { description: sourcePrefix },
+            { description: `${sourcePrefix} (${voucher.transactionMode})` }
+          ]
+        }).session(session);
+        if (sourceLedger) {
+          const reversal = new DealerLedger({
+            dealer: voucher.partyId,
+            dealerName: voucher.partyName,
+            entryDate: cancelledAt,
+            transactionType: 'Adjustment',
+            referenceType: 'VoucherCancellation',
+            referenceId: voucher._id,
+            referenceNumber: voucher.voucherNumber,
+            debitAmount: voucher.voucherType === 'Receipt' ? voucher.totalAmount : 0,
+            creditAmount: voucher.voucherType === 'Payment' ? voucher.totalAmount : 0,
+            runningBalance: 0,
+            description: `Reversal of cancelled voucher ${voucher.voucherNumber}`,
+            remarks: cancelReason,
+            paymentMethod: 'Adjustment',
+            createdBy: req.user._id
+          });
+          await reversal.save({ session });
+        }
+      }
+
+      if (voucher.partyType === 'Supplier' && voucher.partyId
+          && ['Receipt', 'Payment'].includes(voucher.voucherType)) {
         const { SupplierLedger } = getModels(req.dbConnection);
         const lastEntry = await SupplierLedger.findOne({ supplier: voucher.partyId })
-          .sort({ entryDate: -1, createdAt: -1 });
+          .sort({ entryDate: -1, createdAt: -1 })
+          .session(session);
         const previousBalance = lastEntry ? lastEntry.runningBalance : 0;
-        // Reverse the original sign: original Payment was credit, so reversal is debit
         const debitAmount = voucher.voucherType === 'Payment' ? voucher.totalAmount : 0;
         const creditAmount = voucher.voucherType === 'Receipt' ? voucher.totalAmount : 0;
-        await new SupplierLedger({
+        const reversal = new SupplierLedger({
           supplier: voucher.partyId,
           supplierName: voucher.partyName,
-          entryDate: new Date(),
+          entryDate: cancelledAt,
           transactionType: 'Adjustment',
           debitAmount,
           creditAmount,
@@ -853,12 +926,27 @@ export const cancelVoucher = async (req, res) => {
           description: `Reversal of cancelled voucher ${voucher.voucherNumber}`,
           remarks: cancelReason,
           createdBy: req.user._id
-        }).save();
-      } catch (revErr) {
-        console.error('⚠️ Failed to reverse supplier ledger entry (non-critical):', revErr.message);
+        });
+        await reversal.save({ session });
       }
-    }
 
+      const { cancelVoucherEntry } = await import('../services/accountingService.js');
+      await cancelVoucherEntry(
+        voucher._id,
+        req.dbConnection,
+        req.user._id,
+        cancelReason,
+        { session, throwOnError: true }
+      );
+    });
+
+    voucher.status = 'Cancelled';
+    voucher.cancelledAt = cancelledAt;
+    voucher.cancelledBy = req.user._id;
+    voucher.cancelReason = cancelReason;
+
+    // Audit trail is deliberately best-effort and runs only after a successful
+    // financial transaction, matching the audit service contract.
     await recordCancel(req.dbConnection, {
       entity: 'Voucher',
       entityId: voucher._id,
@@ -867,28 +955,21 @@ export const cancelVoucher = async (req, res) => {
       reason: cancelReason,
     });
 
-    // Cancel the linked journal entry, if any
-    try {
-      const { cancelVoucherEntry } = await import('../services/accountingService.js');
-      await cancelVoucherEntry(voucher._id, req.dbConnection, req.user._id, cancelReason);
-    } catch (accErr) {
-      console.error('⚠️ Failed to cancel voucher journal entry (non-critical):', accErr.message);
-    }
-    
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: 'Voucher cancelled successfully',
       voucher
     });
-    
   } catch (error) {
     if (handlePeriodLockError(error, res)) return;
     console.error('Error cancelling voucher:', error);
-    res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: 'Error cancelling voucher',
-      error: error.message
+      message: error.statusCode ? error.message : 'Error cancelling voucher',
+      error: error.statusCode ? undefined : error.message
     });
+  } finally {
+    if (session) await session.endSession();
   }
 };
 
@@ -1011,26 +1092,44 @@ export const getBalances = async (req, res) => {
 /**
  * Helper: Update account balance
  */
-const updateAccountBalance = async (voucherType, transactionMode, bankAccountId, amount, dbConnection) => {
+const updateAccountBalance = async (
+  voucherType,
+  transactionMode,
+  bankAccountId,
+  amount,
+  dbConnection,
+  { session = null } = {}
+) => {
   const { BankAccount, CashAccount } = getModels(dbConnection);
   // Ensure amount is a number (req.body values arrive as strings)
   const numAmount = parseFloat(amount) || 0;
   
   if (transactionMode === 'Cash') {
-    const cashAccount = await CashAccount.getCashAccount();
+    let cashQuery = CashAccount.findOne();
+    if (session) cashQuery = cashQuery.session(session);
+    let cashAccount = await cashQuery;
+    if (!cashAccount) {
+      cashAccount = new CashAccount({
+        accountName: 'Cash in Hand',
+        openingBalance: 0,
+        currentBalance: 0
+      });
+    }
     if (voucherType === 'Receipt') {
       cashAccount.currentBalance = (cashAccount.currentBalance || 0) + numAmount;
     } else if (voucherType === 'Payment') {
       cashAccount.currentBalance = (cashAccount.currentBalance || 0) - numAmount;
     }
     cashAccount.lastUpdated = new Date();
-    await cashAccount.save();
+    await cashAccount.save({ session });
   } else if (
     // All non-cash modes (Bank, Cheque, UPI, NEFT, RTGS, Card, Internal) go to/from the bank account
     ['Bank', 'Cheque', 'UPI', 'NEFT', 'RTGS', 'Card', 'Internal'].includes(transactionMode) &&
     bankAccountId
   ) {
-    const bankAccount = await BankAccount.findById(bankAccountId);
+    let bankQuery = BankAccount.findById(bankAccountId);
+    if (session) bankQuery = bankQuery.session(session);
+    const bankAccount = await bankQuery;
     if (bankAccount) {
       if (voucherType === 'Receipt') {
         bankAccount.currentBalance = (bankAccount.currentBalance || 0) + numAmount;
@@ -1038,7 +1137,7 @@ const updateAccountBalance = async (voucherType, transactionMode, bankAccountId,
         bankAccount.currentBalance = (bankAccount.currentBalance || 0) - numAmount;
       }
       bankAccount.updatedAt = new Date();
-      await bankAccount.save();
+      await bankAccount.save({ session });
     }
   }
 };

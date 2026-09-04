@@ -15,6 +15,8 @@ import { userSchema } from "../models/User.js";
 import { regionSchema } from "../models/Region.js";
 import { warehouseSchema } from "../models/Warehouse.js";
 import { sendPushNotification } from '../services/firebaseNotificationService.js';
+import StockMovementService from '../services/stockMovementService.js';
+import StockArrivalService from '../services/stockArrivalService.js';
 import { assertPeriodOpen, handlePeriodLockError } from '../services/periodLockService.js';
 import { recordUpdate, recordCancel } from '../services/auditTrailService.js';
 import { userHasPermission } from '../middleware/routePermissions.js';
@@ -2939,6 +2941,7 @@ export const deleteDealerInvoice = async (req, res) => {
     
     // REVERSE STOCK MOVEMENTS: Restore stock that was deducted
     let stockReversed = false;
+    let reversedStockKeys = [];
     try {
       const stockMovements = await StockMovement.find({
         referenceNo: invoice.invoiceNumber,
@@ -2947,41 +2950,36 @@ export const deleteDealerInvoice = async (req, res) => {
       
       if (stockMovements.length > 0) {
         console.log(`📦 Reversing ${stockMovements.length} stock movements`);
-        
-        for (const movement of stockMovements) {
-          // Create reverse movement
-          const reverseMovement = new StockMovement({
+
+        await StockMovementService.acquireStockLocks(
+          req.dbConnection,
+          stockMovements.map((movement) => StockMovementService.stockKey(
+            movement.productId,
+            movement.warehouseId
+          )),
+          session
+        );
+        await StockMovementService.appendMovements(
+          stockMovements.map((movement) => ({
             productId: movement.productId,
             warehouseId: movement.warehouseId,
-            type: movement.type === 'OUT' ? 'IN' : 'OUT', // Reverse the type
+            type: movement.type === 'OUT' ? 'IN' : 'OUT',
             quantity: movement.quantity,
-            balance: 0, // Will be calculated
             referenceNo: invoice.invoiceNumber,
             referenceType: 'INVOICE_CANCELLATION',
+            operationKey: `INVOICE_CANCELLATION:${invoice._id}:${movement._id}`,
+            movementRole: 'REVERSAL',
             date: new Date(),
             remarks: `Reversal of invoice ${invoice.invoiceNumber} cancellation`,
             createdBy: req.user._id
-          });
-          
-          // Calculate new balance
-          const lastMovement = await StockMovement.findOne({
-            productId: movement.productId,
-            warehouseId: movement.warehouseId
-          }).sort({ date: -1, createdAt: -1 }).session(session);
-          
-          if (lastMovement) {
-            if (reverseMovement.type === 'IN') {
-              reverseMovement.balance = lastMovement.balance + reverseMovement.quantity;
-            } else {
-              reverseMovement.balance = lastMovement.balance - reverseMovement.quantity;
-            }
-          } else {
-            reverseMovement.balance = reverseMovement.type === 'IN' ? reverseMovement.quantity : -reverseMovement.quantity;
-          }
-          
-          await reverseMovement.save({ session });
-        }
-        
+          })),
+          { dbConnection: req.dbConnection, session, locksAcquired: true }
+        );
+
+        reversedStockKeys = stockMovements.map((movement) => ({
+          productId: movement.productId,
+          warehouseId: movement.warehouseId
+        }));
         stockReversed = true;
         console.log(`✅ Stock movements reversed`);
       } else {
@@ -3031,6 +3029,14 @@ export const deleteDealerInvoice = async (req, res) => {
     }
     
     await session.commitTransaction();
+
+    if (reversedStockKeys.length > 0) {
+      try {
+        await StockArrivalService.refreshStockKeys(reversedStockKeys, req.dbConnection);
+      } catch (refreshError) {
+        console.error('Invoice-cancellation stock queue refresh failed:', refreshError.message);
+      }
+    }
     
     console.log(`✅ Invoice ${invoice.invoiceNumber} cancelled successfully`);
 

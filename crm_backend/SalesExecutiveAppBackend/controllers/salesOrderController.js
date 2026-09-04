@@ -379,11 +379,18 @@ export const getProducts = async (req, res) => {
     if (whObjId) stockMatch.warehouseId = whObjId;
 
     const [balanceRows, blockedRows, unblockedRows, grnDocs, total] = await Promise.all([
-      // Latest balance per (product, warehouse)
+      // Canonical movement sum per (product, warehouse). This remains correct
+      // for backdated rows and does not trust denormalized balance snapshots.
       StockMovement.aggregate([
         { $match: stockMatch },
-        { $sort: { date: -1, createdAt: -1 } },
-        { $group: { _id: { p: '$productId', w: '$warehouseId' }, balance: { $first: '$balance' } } },
+        {
+          $group: {
+            _id: { p: '$productId', w: '$warehouseId' },
+            balance: {
+              $sum: { $cond: [{ $eq: ['$type', 'IN'] }, '$quantity', { $multiply: ['$quantity', -1] }] }
+            }
+          }
+        },
       ]),
       // Blocked (OUT / "Stock Blocked")
       StockMovement.aggregate([
@@ -450,7 +457,9 @@ export const getProducts = async (req, res) => {
         const damagedQty   = dmgByPair[key] ?? 0;
         let blockedQty     = (blkByPair[key] ?? 0) - (unblkByPair[key] ?? 0);
         blockedQty = Math.max(0, blockedQty);
-        const netStock = Math.max(0, currentStock - damagedQty - blockedQty);
+        // StockMovement balance already excludes damaged GRN quantity and includes
+        // SALE reservation OUT/IN rows, so neither value is subtracted twice.
+        const netStock = Math.max(0, currentStock);
         warehouseStock.push({
           warehouseId:   w.toString(),
           warehouseName: whNameMap[w] || '',

@@ -1,6 +1,9 @@
 import cron from 'node-cron';
 import { getCompanyConnection, getValidCompanies } from '../config/multiDatabase.js';
 import { salesOrderSchema } from '../models/SalesOrder.js';
+import { stockMovementSchema } from '../models/Stock.js';
+import StockArrivalService from '../services/stockArrivalService.js';
+import StockMovementService from '../services/stockMovementService.js';
 
 const LEASE_ID = 'sales-order-expiration';
 const LEASE_DURATION_MS = 5 * 60 * 1000;
@@ -49,6 +52,48 @@ const releaseCompanyLease = async (dbConnection) => {
   );
 };
 
+const hasOutstandingReservations = async (StockMovement, salesOrder) => {
+  const movements = await StockMovement.find({
+    referenceType: 'SALE',
+    $and: [
+      {
+        $or: [
+          { salesOrder: salesOrder._id },
+          { referenceNo: salesOrder.orderNumber }
+        ]
+      },
+      {
+        $or: [
+          { movementRole: { $in: ['RESERVATION', 'RESERVATION_RELEASE'] } },
+          {
+            movementRole: null,
+            remarks: { $regex: /(Stock Blocked|Stock(?: Fully)? Unblocked)/i }
+          }
+        ]
+      }
+    ]
+  }).lean();
+
+  const groups = new Map();
+  for (const movement of movements) {
+    const key = StockMovementService.stockKey(movement.productId, movement.warehouseId);
+    const group = groups.get(key) || { blocked: 0, released: 0 };
+    const isReservation = movement.movementRole === 'RESERVATION'
+      || (!movement.movementRole
+        && movement.type === 'OUT'
+        && /Stock Blocked/i.test(String(movement.remarks || '')));
+    const isRelease = movement.movementRole === 'RESERVATION_RELEASE'
+      || (!movement.movementRole
+        && movement.type === 'IN'
+        && /Stock(?: Fully)? Unblocked/i.test(String(movement.remarks || '')));
+    if (isReservation) group.blocked += Number(movement.quantity || 0);
+    if (isRelease) group.released += Number(movement.quantity || 0);
+    groups.set(key, group);
+  }
+
+  return [...groups.values()].some((group) => group.blocked > group.released);
+};
+
 export const runSalesOrderExpiration = async () => {
   const now = new Date();
   let expiredCount = 0;
@@ -63,46 +108,79 @@ export const runSalesOrderExpiration = async () => {
 
       const SalesOrder = dbConnection.models.SalesOrder
         || dbConnection.model('SalesOrder', salesOrderSchema);
+      const StockMovement = dbConnection.models.StockMovement
+        || dbConnection.model('StockMovement', stockMovementSchema);
       const expiredCandidates = await SalesOrder.find({
         expiryDate: { $lt: now },
         isExpired: false,
         status: 'Pending'
       })
-        .select('_id expiryDate')
+        .select('_id orderNumber expiryDate')
         .lean();
 
       if (expiredCandidates.length === 0) continue;
 
-      const result = await SalesOrder.bulkWrite(expiredCandidates.map(order => ({
-        updateOne: {
-          filter: {
-            _id: order._id,
-            expiryDate: { $lt: now },
-            isExpired: false,
-            status: 'Pending'
-          },
-          update: {
-            $set: {
-              isExpired: true,
-              expiredAt: now,
-              status: 'Expired',
-              stockAvailable: false
+      let companyExpiredCount = 0;
+      for (const order of expiredCandidates) {
+        let orderLease = null;
+        try {
+          orderLease = await StockMovementService.acquireStockLeases(
+            dbConnection,
+            [`SALES_ORDER:${order._id}`]
+          );
+
+          const hasReservation = await hasOutstandingReservations(
+            StockMovement,
+            order
+          );
+          if (hasReservation) {
+            console.warn(`[SALES_ORDER_EXPIRY] Skipping ${order._id}: unresolved reservation exists.`);
+            continue;
+          }
+
+          const expiredOrder = await SalesOrder.findOneAndUpdate(
+            {
+              _id: order._id,
+              expiryDate: { $lt: now },
+              isExpired: false,
+              status: 'Pending'
             },
-            $push: {
-              expiryHistory: {
-                action: 'expired',
-                previousDate: order.expiryDate,
-                newDate: null,
-                reason: 'Order automatically expired after deadline passed',
-                performedBy: null,
-                performedAt: now
+            {
+              $set: {
+                isExpired: true,
+                expiredAt: now,
+                status: 'Expired',
+                stockAvailable: false
+              },
+              $push: {
+                expiryHistory: {
+                  action: 'expired',
+                  previousDate: order.expiryDate,
+                  newDate: null,
+                  reason: 'Order automatically expired after deadline passed',
+                  performedBy: null,
+                  performedAt: now
+                }
               }
+            },
+            { new: true, runValidators: true }
+          );
+          if (expiredOrder) companyExpiredCount++;
+        } finally {
+          if (orderLease) {
+            try {
+              await StockMovementService.releaseStockLeases(dbConnection, orderLease);
+            } catch (releaseError) {
+              console.error(`[SALES_ORDER_EXPIRY] ${company} order lease release failed:`, releaseError.message);
             }
           }
         }
-      })), { ordered: false });
+      }
 
-      expiredCount += result.modifiedCount || 0;
+      expiredCount += companyExpiredCount;
+      if (companyExpiredCount > 0) {
+        await StockArrivalService.refreshAllPendingOrders(dbConnection);
+      }
     } catch (error) {
       console.error(`[SALES_ORDER_EXPIRY] ${company} failed:`, error.message);
     } finally {

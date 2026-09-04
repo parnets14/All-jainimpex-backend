@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { createHash } from 'node:crypto';
 import { stockMovementSchema } from '../models/Stock.js';
 import { productSchema } from '../models/Product.js';
 import { grnSchema } from '../models/GRN.js';
@@ -18,6 +19,23 @@ const getModels = (dbConnection) => {
     Warehouse: dbConnection.models.Warehouse || dbConnection.model('Warehouse', warehouseSchema),
     SalesOrder: dbConnection.models.SalesOrder || dbConnection.model('SalesOrder', salesOrderSchema),
   };
+};
+
+const getStockRequestIdempotencyKey = (req) => {
+  const value = req.get?.('Idempotency-Key')
+    || req.headers?.['idempotency-key']
+    || req.body?.idempotencyKey;
+  if (value == null || value === '') return null;
+  if (typeof value !== 'string'
+      || value.length < 8
+      || value.length > 100
+      || !/^[A-Za-z0-9._:-]+$/.test(value)) {
+    const error = new Error('Idempotency key must be 8-100 letters, numbers, dots, colons, underscores, or hyphens');
+    error.statusCode = 400;
+    error.code = 'INVALID_IDEMPOTENCY_KEY';
+    throw error;
+  }
+  return value;
 };
 
 // Helper function to calculate damaged quantity from GRN data
@@ -139,8 +157,9 @@ export const getStock = async (req, res) => {
       summary = false
     } = req.query;
 
-    // Lightweight order/invoice stock mode: one aggregation returns the latest
-    // movement balance per product and warehouse, avoiding the GRN/order N+1 path.
+    // Lightweight order/invoice stock mode: aggregate movement direction and
+    // quantity per product/warehouse. Stored balance snapshots are display-only
+    // and can be stale when a valid movement is inserted with a backdated date.
     if (summary === true || summary === 'true') {
       const summaryMatch = {};
       if (warehouseId && mongoose.isValidObjectId(warehouseId)) {
@@ -151,11 +170,18 @@ export const getStock = async (req, res) => {
       const summarySkip = (summaryPage - 1) * summaryLimit;
       const stockRows = await StockMovement.aggregate([
         { $match: summaryMatch },
-        { $sort: { productId: 1, warehouseId: 1, date: -1, createdAt: -1 } },
         {
           $group: {
             _id: { productId: '$productId', warehouseId: '$warehouseId' },
-            netStock: { $first: '$balance' }
+            netStock: {
+              $sum: {
+                $cond: [
+                  { $eq: ['$type', 'IN'] },
+                  '$quantity',
+                  { $multiply: ['$quantity', -1] }
+                ]
+              }
+            }
           }
         },
         { $sort: { '_id.productId': 1, '_id.warehouseId': 1 } },
@@ -681,8 +707,28 @@ export const getStockHistory = async (req, res) => {
 export const createStockTransfer = async (req, res) => {
   // Start a MongoDB session for transaction support
   const session = await req.dbConnection.startSession();
+  let stockLease = null;
+  let idempotencyKey = null;
   
   try {
+    idempotencyKey = getStockRequestIdempotencyKey(req);
+    const requestedItems = Array.isArray(req.body.items) ? req.body.items : [];
+    const leaseKeys = req.body.fromWarehouse && req.body.toWarehouse
+      ? requestedItems
+        .filter((item) => item?.productId)
+        .flatMap((item) => [
+          StockMovementService.stockKey(item.productId, req.body.fromWarehouse),
+          StockMovementService.stockKey(item.productId, req.body.toWarehouse)
+        ])
+      : [];
+    if (idempotencyKey) leaseKeys.push(`TRANSFER_REQUEST:${idempotencyKey}`);
+    if (leaseKeys.length > 0) {
+      stockLease = await StockMovementService.acquireStockLeases(
+        req.dbConnection,
+        leaseKeys
+      );
+    }
+
     // Start transaction
     await session.startTransaction();
     
@@ -695,13 +741,97 @@ export const createStockTransfer = async (req, res) => {
       status = 'pending'
     } = req.body;
 
-    // Validate stock availability before transfer
+    if (!fromWarehouse || !toWarehouse || !Array.isArray(items) || items.length === 0) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: 'Source warehouse, destination warehouse, and at least one item are required'
+      });
+    }
+    if (String(fromWarehouse) === String(toWarehouse)) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: 'Source and destination warehouses must be different'
+      });
+    }
+
+    // Collapse duplicate source stock keys before availability validation and
+    // posting. Otherwise two rows can independently pass against one balance.
+    const transferByProduct = new Map();
     for (const item of items) {
+      const quantity = Number(item.quantity);
+      if (!item.productId || !Number.isFinite(quantity) || quantity <= 0) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: 'Every transfer item requires a product and a positive quantity'
+        });
+      }
+      const key = String(item.productId);
+      const grouped = transferByProduct.get(key) || {
+        ...item,
+        productId: item.productId,
+        quantity: 0
+      };
+      grouped.quantity += quantity;
+      transferByProduct.set(key, grouped);
+    }
+    const transferItems = [...transferByProduct.values()];
+    const requestFingerprint = idempotencyKey
+      ? createHash('sha256').update(JSON.stringify({
+        fromWarehouse,
+        toWarehouse,
+        transferDate: transferDate || null,
+        notes: notes || '',
+        status,
+        items: transferItems.map((item) => ({
+          productId: String(item.productId),
+          quantity: Number(item.quantity)
+        }))
+      })).digest('hex')
+      : null;
+
+    const { StockMovement } = getModels(req.dbConnection);
+    if (idempotencyKey) {
+      const existingMarker = await StockMovement.findOne({
+        referenceType: 'TRANSFER',
+        requestKey: idempotencyKey
+      }).session(session).lean();
+      if (existingMarker) {
+        await session.abortTransaction();
+        if (existingMarker.requestFingerprint !== requestFingerprint) {
+          return res.status(409).json({
+            success: false,
+            code: 'IDEMPOTENCY_KEY_REUSED',
+            message: 'Idempotency key was already used for a different stock transfer'
+          });
+        }
+        const movementCount = await StockMovement.countDocuments({
+          referenceNo: existingMarker.referenceNo,
+          referenceType: 'TRANSFER'
+        });
+        return res.status(200).json({
+          success: true,
+          replayed: true,
+          message: 'Stock transfer already created',
+          data: {
+            transferId: existingMarker.referenceNo,
+            movements: movementCount,
+            status: 'completed'
+          }
+        });
+      }
+    }
+
+    // Validate stock availability before transfer
+    for (const item of transferItems) {
       const validation = await StockMovementService.validateStockAvailability(
         item.productId, 
         fromWarehouse, 
         item.quantity,
-        req.dbConnection
+        req.dbConnection,
+        session
       );
       
       if (!validation.isAvailable) {
@@ -714,66 +844,73 @@ export const createStockTransfer = async (req, res) => {
     }
 
     // Generate transfer ID
-    const transferId = `TRF-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const transferId = idempotencyKey
+      ? `TRF-REQ-${createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 24)}`
+      : `TRF-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
-    // Create stock movements for each item with proper balance calculation
-    const movements = [];
-    
-    for (const item of items) {
-      // Calculate balance for OUT movement from source warehouse
-      const outBalance = await StockMovementService.calculateRunningBalance(
-        item.productId, 
-        fromWarehouse, 
-        -item.quantity,
-        null,
-        req.dbConnection
-      );
-      
-      // OUT movement from source warehouse
-      const outMovement = new StockMovement({
+    await StockMovementService.acquireStockLocks(
+      req.dbConnection,
+      transferItems.flatMap((item) => [
+        StockMovementService.stockKey(item.productId, fromWarehouse),
+        StockMovementService.stockKey(item.productId, toWarehouse)
+      ]),
+      session
+    );
+
+    const movements = transferItems.flatMap((item, index) => ([
+      {
         productId: item.productId,
         warehouseId: fromWarehouse,
         type: 'OUT',
         quantity: item.quantity,
-        balance: outBalance,
         referenceNo: transferId,
         referenceType: 'TRANSFER',
+        operationKey: `TRANSFER:${transferId}:${index}:OUT`,
+        movementRole: 'TRANSFER_OUT',
         date: new Date(transferDate),
         remarks: `Transfer to ${toWarehouse} - ${item.quantity} units`,
-        createdBy: req.user._id
-      });
-
-      // Calculate balance for IN movement to destination warehouse
-      const inBalance = await StockMovementService.calculateRunningBalance(
-        item.productId, 
-        toWarehouse, 
-        item.quantity,
-        null,
-        req.dbConnection
-      );
-
-      // IN movement to destination warehouse
-      const inMovement = new StockMovement({
+        createdBy: req.user._id,
+        ...(idempotencyKey && index === 0 ? {
+          requestKey: idempotencyKey,
+          requestFingerprint
+        } : {})
+      },
+      {
         productId: item.productId,
         warehouseId: toWarehouse,
         type: 'IN',
         quantity: item.quantity,
-        balance: inBalance,
         referenceNo: transferId,
         referenceType: 'TRANSFER',
+        operationKey: `TRANSFER:${transferId}:${index}:IN`,
+        movementRole: 'TRANSFER_IN',
         date: new Date(transferDate),
         remarks: `Transfer from ${fromWarehouse} - ${item.quantity} units`,
         createdBy: req.user._id
-      });
+      }
+    ]));
 
-      movements.push(outMovement, inMovement);
-    }
-
-    // Save all movements within transaction
-    await StockMovement.insertMany(movements, { session });
+    await StockMovementService.appendMovements(movements, {
+      dbConnection: req.dbConnection,
+      session,
+      locksAcquired: true
+    });
     
     // Commit transaction
     await session.commitTransaction();
+
+    try {
+      const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
+      await StockArrivalService.refreshStockKeys(
+        transferItems.flatMap((item) => ([
+          { productId: item.productId, warehouseId: fromWarehouse },
+          { productId: item.productId, warehouseId: toWarehouse }
+        ])),
+        req.dbConnection
+      );
+    } catch (refreshError) {
+      console.error('Transfer stock queue refresh failed (non-critical):', refreshError.message);
+    }
     
     res.json({
       success: true,
@@ -787,13 +924,21 @@ export const createStockTransfer = async (req, res) => {
 
   } catch (error) {
     // Rollback transaction on error
-    await session.abortTransaction();
+    if (session.inTransaction()) await session.abortTransaction();
     console.error('Create stock transfer error:', error);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       success: false,
+      code: error.code,
       message: error.message
     });
   } finally {
+    if (stockLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, stockLease);
+      } catch (releaseError) {
+        console.error('Failed to release stock-transfer lease:', releaseError.message);
+      }
+    }
     // End session
     session.endSession();
   }

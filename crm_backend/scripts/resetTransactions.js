@@ -5,16 +5,18 @@
  *        Warehouses, Regions, Routes, Bank Accounts (master), Cash Account (master),
  *        Account Master (chart of accounts), Price List, Product Price List History,
  *        Employees, Attendance, Claims, Claim Types, Dealer Types, Dealer Categories,
- *        Expense Categories, Fixed Assets (master), Discount Mappings, Opening Stock.
+ *        Expense Categories, Fixed Assets (master), Discount Mappings, Opening Stock,
+ *        Opening Dealer Ledger and Opening Journal Voucher postings.
  *
  * DELETES: Purchase Orders, GRNs, Supplier Invoices, Sales Orders, Dealer Invoices,
- *          Dealer Payments, Supplier Payments, Vouchers, Journal Vouchers, Dealer Ledger,
- *          Payment Allocations, Credit Notes, Debit Notes, Cheques, Expenses,
- *          Stock Movements (non-OPENING), TDS Entries, Financial Year Closings,
+ *          Dealer Payments, Supplier Payments, Vouchers, non-opening Journal Vouchers,
+ *          non-opening Dealer Ledger rows, Payment Allocations, Credit Notes, Debit Notes,
+ *          Cheques, Expenses, Stock Movements (non-OPENING), TDS Entries, Financial Year Closings,
  *          Year-End Checklist, Bank Reconciliation, Audit Trail, Activity Logs,
  *          Notifications, Dealer Order Requests, Collections.
  *
- * RESETS: Dealer paidAmount/pendingAmount → 0, Bank/Cash currentBalance → openingBalance.
+ * RESETS: Dealer paidAmount/pendingAmount/openingBalanceAllocated → 0,
+ *         Bank/Cash currentBalance → openingBalance.
  *
  * Run: node scripts/resetTransactions.js --company=shree-jain-impex
  * Options: --dry-run, --company=X (REQUIRED)
@@ -45,8 +47,6 @@ const COLLECTIONS_TO_DROP = [
   'dealerpayments',
   'supplierpayments',
   'vouchers',
-  'journalvouchers',
-  'dealerledgers',
   'paymentallocations',
   'creditnotes',
   'debitnotes',
@@ -89,6 +89,23 @@ async function reset() {
     }
   }
 
+  // Preserve opening postings because the retained master opening balances still
+  // depend on them after transactional data is cleared.
+  if (existingCollections.includes('dealerledgers')) {
+    const collection = db.db.collection('dealerledgers');
+    const kept = await collection.countDocuments({ transactionType: 'Opening Balance' });
+    const deleted = await collection.countDocuments({ transactionType: { $ne: 'Opening Balance' } });
+    console.log(`\n   📒 dealerledgers: keeping ${kept} opening row(s), deleting ${deleted} others`);
+    if (!DRY_RUN) await collection.deleteMany({ transactionType: { $ne: 'Opening Balance' } });
+  }
+  if (existingCollections.includes('journalvouchers')) {
+    const collection = db.db.collection('journalvouchers');
+    const kept = await collection.countDocuments({ voucherType: 'Opening Entry' });
+    const deleted = await collection.countDocuments({ voucherType: { $ne: 'Opening Entry' } });
+    console.log(`   📘 journalvouchers: keeping ${kept} opening row(s), deleting ${deleted} others`);
+    if (!DRY_RUN) await collection.deleteMany({ voucherType: { $ne: 'Opening Entry' } });
+  }
+
   // 2) Delete non-OPENING stock movements (keep OPENING type so opening stock stays)
   if (existingCollections.includes('stockmovements')) {
     const totalStock = await db.db.collection('stockmovements').countDocuments();
@@ -100,13 +117,13 @@ async function reset() {
     }
   }
 
-  // 3) Reset dealer payment fields
+  // 3) Reset dealer payment/allocation fields
   if (existingCollections.includes('dealers')) {
     const dealerCount = await db.db.collection('dealers').countDocuments();
-    console.log(`\n   👤 Resetting ${dealerCount} dealer(s): paidAmount→0, pendingAmount→0`);
+    console.log(`\n   👤 Resetting ${dealerCount} dealer(s): paidAmount→0, pendingAmount→0, openingBalanceAllocated→0`);
     if (!DRY_RUN) {
       await db.db.collection('dealers').updateMany({}, {
-        $set: { paidAmount: 0, pendingAmount: 0 },
+        $set: { paidAmount: 0, pendingAmount: 0, openingBalanceAllocated: 0 },
       });
     }
   }

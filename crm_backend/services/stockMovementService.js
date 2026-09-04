@@ -1,16 +1,171 @@
-import { stockMovementSchema } from '../models/Stock.js';
+import mongoose from 'mongoose';
+import { stockMovementSchema, stockMutationLockSchema } from '../models/Stock.js';
 import { grnSchema } from '../models/GRN.js';
 import { salesOrderSchema } from '../models/SalesOrder.js';
 
 const getModels = (dbConnection) => {
+  if (!dbConnection) {
+    throw new Error('dbConnection is required for transactional stock operations');
+  }
   return {
     StockMovement: dbConnection.models.StockMovement || dbConnection.model('StockMovement', stockMovementSchema),
+    StockMutationLock: dbConnection.models.StockMutationLock
+      || dbConnection.model('StockMutationLock', stockMutationLockSchema),
     GRN: dbConnection.models.GRN || dbConnection.model('GRN', grnSchema),
     SalesOrder: dbConnection.models.SalesOrder || dbConnection.model('SalesOrder', salesOrderSchema)
   };
 };
 
+const stockKey = (productId, warehouseId) => `${productId}:${warehouseId}`;
+
 class StockMovementService {
+  static stockKey(productId, warehouseId) {
+    if (!productId || !warehouseId) {
+      throw new Error('Both productId and warehouseId are required for a stock key');
+    }
+    return stockKey(productId, warehouseId);
+  }
+
+  static async acquireStockLocks(dbConnection, keys, session) {
+    if (!session) throw new Error('A MongoDB session is required to acquire stock locks');
+    const { StockMutationLock } = getModels(dbConnection);
+    const normalizedKeys = [...new Set((keys || []).filter(Boolean).map(String))].sort();
+
+    for (const key of normalizedKeys) {
+      await StockMutationLock.findOneAndUpdate(
+        { _id: key },
+        { $inc: { version: 1 }, $setOnInsert: { key } },
+        { upsert: true, new: true, session, setDefaultsOnInsert: true }
+      );
+    }
+    return normalizedKeys;
+  }
+
+  static async acquireStockLeases(
+    dbConnection,
+    keys,
+    { leaseMs = 300000, waitMs = 15000, retryMs = 50 } = {}
+  ) {
+    const { StockMutationLock } = getModels(dbConnection);
+    const normalizedKeys = [...new Set((keys || []).filter(Boolean).map(String))].sort();
+    const token = new mongoose.Types.ObjectId().toString();
+    const acquiredKeys = [];
+    const deadline = Date.now() + waitMs;
+
+    try {
+      for (const key of normalizedKeys) {
+        let acquired = false;
+        while (!acquired && Date.now() < deadline) {
+          const now = new Date();
+          const leaseExpiresAt = new Date(now.getTime() + leaseMs);
+          let lock = await StockMutationLock.findOneAndUpdate(
+            {
+              _id: key,
+              $or: [
+                { leaseToken: null },
+                { leaseExpiresAt: { $lte: now } },
+                { leaseExpiresAt: null }
+              ]
+            },
+            { $set: { leaseToken: token, leaseExpiresAt }, $inc: { version: 1 } },
+            { new: true }
+          );
+
+          if (!lock) {
+            try {
+              lock = await StockMutationLock.create({
+                _id: key,
+                key,
+                version: 1,
+                leaseToken: token,
+                leaseExpiresAt
+              });
+            } catch (error) {
+              if (error?.code !== 11000) throw error;
+            }
+          }
+
+          acquired = lock?.leaseToken === token;
+          if (!acquired) await new Promise((resolve) => setTimeout(resolve, retryMs));
+        }
+
+        if (!acquired) {
+          const error = new Error(`Timed out waiting for stock operation lock ${key}`);
+          error.statusCode = 409;
+          error.code = 'STOCK_OPERATION_BUSY';
+          throw error;
+        }
+        acquiredKeys.push(key);
+      }
+      return { token, keys: acquiredKeys };
+    } catch (error) {
+      if (acquiredKeys.length > 0) {
+        await StockMutationLock.updateMany(
+          { _id: { $in: acquiredKeys }, leaseToken: token },
+          { $set: { leaseToken: null, leaseExpiresAt: null } }
+        );
+      }
+      throw error;
+    }
+  }
+
+  static async releaseStockLeases(dbConnection, lease) {
+    if (!lease?.token || !lease?.keys?.length) return;
+    const { StockMutationLock } = getModels(dbConnection);
+    await StockMutationLock.updateMany(
+      { _id: { $in: lease.keys }, leaseToken: lease.token },
+      { $set: { leaseToken: null, leaseExpiresAt: null } }
+    );
+  }
+
+  static async appendMovements(movements, { dbConnection, session, locksAcquired = false } = {}) {
+    if (!dbConnection) throw new Error('dbConnection is required to append stock movements');
+    if (!session) throw new Error('A MongoDB session is required to append stock movements');
+    if (!Array.isArray(movements) || movements.length === 0) return [];
+
+    const { StockMovement } = getModels(dbConnection);
+    const keys = movements.map((movement) => this.stockKey(
+      movement.productId,
+      movement.warehouseId
+    ));
+    if (!locksAcquired) await this.acquireStockLocks(dbConnection, keys, session);
+
+    const operationKeys = movements.map((movement) => movement.operationKey).filter(Boolean);
+    const existingKeys = operationKeys.length > 0
+      ? new Set((await StockMovement.find({ operationKey: { $in: operationKeys } })
+        .select('operationKey')
+        .session(session)
+        .lean()).map((movement) => movement.operationKey))
+      : new Set();
+
+    const balances = new Map();
+    const documents = [];
+    for (const movement of movements) {
+      if (movement.operationKey && existingKeys.has(movement.operationKey)) continue;
+      const key = this.stockKey(movement.productId, movement.warehouseId);
+      let currentBalance = balances.get(key);
+      if (currentBalance == null) {
+        currentBalance = await this.getCurrentStock(
+          movement.productId,
+          movement.warehouseId,
+          dbConnection,
+          session
+        );
+      }
+      const quantity = Number(movement.quantity || 0);
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        throw new Error(`Stock movement quantity must be positive for ${key}`);
+      }
+      const nextBalance = movement.type === 'IN'
+        ? currentBalance + quantity
+        : currentBalance - quantity;
+      balances.set(key, nextBalance);
+      documents.push({ ...movement, balance: nextBalance });
+    }
+
+    if (documents.length === 0) return [];
+    return StockMovement.insertMany(documents, { session });
+  }
   /**
    * Create stock movement entries for a GRN
    * @param {Object} grn - The GRN document
@@ -29,27 +184,25 @@ class StockMovementService {
       for (const item of grn.items) {
         // Create IN movement for accepted quantity
         if (item.acceptedQuantity > 0) {
-          let balance;
-          if (isMigration) {
-            // During migration, use a simple balance calculation
-            balance = item.acceptedQuantity; // Will be recalculated later
-          } else {
-            balance = await this.calculateRunningBalance(item.productId, grn.warehouseId, item.acceptedQuantity, session, dbConnection);
-          }
-          
-          const inMovement = new StockMovement({
+          const inMovement = {
             productId: item.productId,
             warehouseId: grn.warehouseId,
             type: 'IN',
             quantity: item.acceptedQuantity,
-            balance: balance,
+            // appendMovements derives the authoritative post-movement balance.
+            // Migration retains a temporary value and recalculates afterwards.
+            balance: item.acceptedQuantity,
             referenceNo: grn.grnNo,
             referenceType: 'GRN',
+            operationKey: grn._id && item._id
+              ? `GRN:${grn._id}:RECEIPT:${item._id}`
+              : null,
+            movementRole: 'RECEIPT',
             date: grn.grnDate,
             remarks: `GRN: ${grn.grnNo} - Accepted Quantity`,
             createdBy: grn.createdBy
-          });
-          
+          };
+
           movements.push(inMovement);
           console.log(`🔍 [STOCK_MOVEMENT_SERVICE] Created IN movement: ${item.acceptedQuantity} units for product ${item.productId}`);
         }
@@ -61,7 +214,9 @@ class StockMovementService {
       
       // Save all movements with session support
       if (movements.length > 0) {
-        if (session) {
+        if (!isMigration && session && dbConnection) {
+          await this.appendMovements(movements, { dbConnection, session });
+        } else if (session) {
           await StockMovement.insertMany(movements, { session });
         } else {
           await StockMovement.insertMany(movements);
@@ -123,22 +278,20 @@ class StockMovementService {
    */
   static async calculateRunningBalance(productId, warehouseId, additionalQuantity = 0, session = null, dbConnection = null) {
     try {
-      const { StockMovement } = dbConnection ? getModels(dbConnection) : { StockMovement: (await import('../models/Stock.js')).default };
-      // Get the latest balance for this product in this warehouse
-      const query = { productId, warehouseId };
-      const latestMovement = session 
-        ? await StockMovement.findOne(query).sort({ date: -1, createdAt: -1 }).session(session)
-        : await StockMovement.findOne(query).sort({ date: -1, createdAt: -1 });
-      
-      const currentBalance = latestMovement ? latestMovement.balance : 0;
-      const newBalance = currentBalance + additionalQuantity;
-      
+      const currentBalance = await this.getCurrentStock(
+        productId,
+        warehouseId,
+        dbConnection,
+        session
+      );
+      const newBalance = currentBalance + Number(additionalQuantity || 0);
+
       console.log(`🔍 [STOCK_MOVEMENT_SERVICE] Calculated balance for product ${productId} in warehouse ${warehouseId}: ${currentBalance} + ${additionalQuantity} = ${newBalance}`);
-      
+
       return newBalance;
     } catch (error) {
       console.error('Error calculating running balance:', error);
-      return additionalQuantity; // Fallback to just the additional quantity
+      throw error;
     }
   }
   
@@ -256,19 +409,38 @@ class StockMovementService {
    * @param {Object} dbConnection - Database connection for multi-database support
    * @returns {Number} - Current stock level
    */
-  static async getCurrentStock(productId, warehouseId, dbConnection = null) {
-    try {
-      const { StockMovement } = dbConnection ? getModels(dbConnection) : { StockMovement: (await import('../models/Stock.js')).default };
-      const latestMovement = await StockMovement.findOne({
-        productId,
-        warehouseId
-      }).sort({ date: -1, createdAt: -1 });
-      
-      return latestMovement ? latestMovement.balance : 0;
-    } catch (error) {
-      console.error('Error getting current stock:', error);
-      return 0;
+  static async getCurrentStock(productId, warehouseId, dbConnection = null, session = null) {
+    if (!dbConnection) {
+      throw new Error('dbConnection is required to read current stock');
     }
+    if (!mongoose.isValidObjectId(productId) || !mongoose.isValidObjectId(warehouseId)) {
+      throw new Error('Valid productId and warehouseId are required to read current stock');
+    }
+
+    const { StockMovement } = getModels(dbConnection);
+    let aggregation = StockMovement.aggregate([
+      {
+        $match: {
+          productId: new mongoose.Types.ObjectId(String(productId)),
+          warehouseId: new mongoose.Types.ObjectId(String(warehouseId))
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          inbound: {
+            $sum: { $cond: [{ $eq: ['$type', 'IN'] }, '$quantity', 0] }
+          },
+          outbound: {
+            $sum: { $cond: [{ $eq: ['$type', 'OUT'] }, '$quantity', 0] }
+          }
+        }
+      },
+      { $project: { _id: 0, balance: { $subtract: ['$inbound', '$outbound'] } } }
+    ]);
+    if (session) aggregation = aggregation.session(session);
+    const [result] = await aggregation;
+    return Number(result?.balance || 0);
   }
   
   /**
@@ -333,53 +505,33 @@ class StockMovementService {
    * @param {Object} dbConnection - Database connection for multi-database support
    * @returns {Object} - Validation result with available stock
    */
-  static async validateStockAvailability(productId, warehouseId, requiredQuantity, dbConnection = null) {
-    try {
-      const { StockMovement } = dbConnection ? getModels(dbConnection) : { StockMovement: (await import('../models/Stock.js')).default };
-      const currentStock = await this.getCurrentStock(productId, warehouseId, dbConnection);
-      
-      // Calculate blocked stock
-      const blockedResult = await StockMovement.aggregate([
-        {
-          $match: {
-            productId: productId,
-            warehouseId: warehouseId,
-            referenceType: 'SALE'
-          }
-        },
-        {
-          $group: {
-            _id: '$type',
-            totalQuantity: { $sum: '$quantity' }
-          }
-        }
-      ]);
-      
-      let blockedQty = 0;
-      blockedResult.forEach(result => {
-        if (result._id === 'OUT') {
-          blockedQty += result.totalQuantity;
-        } else if (result._id === 'IN') {
-          blockedQty -= result.totalQuantity;
-        }
-      });
-      blockedQty = Math.max(0, blockedQty);
-      
-      const availableStock = currentStock - blockedQty;
-      const isAvailable = availableStock >= requiredQuantity;
-      
-      return {
-        isAvailable,
-        currentStock,
-        blockedQty,
-        availableStock,
-        requiredQuantity,
-        shortfall: isAvailable ? 0 : requiredQuantity - availableStock
-      };
-    } catch (error) {
-      console.error('Error validating stock availability:', error);
-      throw error;
-    }
+  static async validateStockAvailability(
+    productId,
+    warehouseId,
+    requiredQuantity,
+    dbConnection = null,
+    session = null
+  ) {
+    const currentStock = await this.getCurrentStock(
+      productId,
+      warehouseId,
+      dbConnection,
+      session
+    );
+    // SALE reservation OUT movements are already included in currentStock. Do
+    // not subtract them again or available stock is understated twice.
+    const availableStock = currentStock;
+    const required = Number(requiredQuantity || 0);
+    const isAvailable = availableStock >= required;
+
+    return {
+      isAvailable,
+      currentStock,
+      blockedQty: 0,
+      availableStock,
+      requiredQuantity: required,
+      shortfall: isAvailable ? 0 : required - availableStock
+    };
   }
 
   /**

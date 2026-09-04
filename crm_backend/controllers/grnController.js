@@ -70,110 +70,6 @@ const validateGRNQuantities = (items) => {
   }
 };
 
-// Function to check and fulfill pending out-of-stock orders when stock becomes available
-const fulfillPendingOutOfStockOrders = async (grn, session, dbConnection) => {
-  try {
-    console.log(`🔍 Checking for pending out-of-stock orders to fulfill for GRN: ${grn.grnNo}`);
-    
-    // Get SalesOrder model from company-specific connection
-    const { salesOrderSchema } = await import('../models/SalesOrder.js');
-    const SalesOrder = dbConnection.models.SalesOrder || dbConnection.model('SalesOrder', salesOrderSchema);
-    
-    // Get all pending out-of-stock orders
-    const pendingOrders = await SalesOrder.find({
-      isOutOfStock: true,
-      status: "Pending"
-    }).session(session);
-    
-    console.log(`📊 Found ${pendingOrders.length} pending out-of-stock orders`);
-    
-    if (pendingOrders.length === 0) {
-      return;
-    }
-    
-    // Check each GRN item against pending orders
-    for (const grnItem of grn.items) {
-      const productId = grnItem.productId.toString();
-      const warehouseId = grn.warehouseId.toString();
-      const availableQuantity = grnItem.acceptedQuantity;
-      
-      console.log(`🔍 Checking product ${productId} in warehouse ${warehouseId}: ${availableQuantity} units available`);
-      
-      // Find pending orders for this product
-      const relevantOrders = pendingOrders.filter(order => 
-        order.products.some(product => 
-          product.product.toString() === productId && 
-          (product.warehouse === null || product.warehouse.toString() === warehouseId)
-        )
-      );
-      
-      if (relevantOrders.length === 0) {
-        console.log(`   ℹ️ No pending orders found for this product`);
-        continue;
-      }
-      
-      console.log(`   📋 Found ${relevantOrders.length} pending orders for this product`);
-      
-      let remainingStock = availableQuantity;
-      const fulfilledOrders = [];
-      
-      // Try to fulfill orders (FIFO - first in, first out)
-      for (const order of relevantOrders.sort((a, b) => new Date(a.orderDate) - new Date(b.orderDate))) {
-        const orderProduct = order.products.find(product => 
-          product.product.toString() === productId
-        );
-        
-        if (!orderProduct) continue;
-        
-        const requiredQuantity = orderProduct.quantity;
-        
-        if (remainingStock >= requiredQuantity) {
-          // Can fulfill this order completely
-          console.log(`   ✅ Can fulfill order ${order.orderNumber}: ${requiredQuantity} units`);
-          
-          // Update the order to assign warehouse and mark as ready
-          orderProduct.warehouse = grn.warehouseId;
-          orderProduct.warehouseName = grn.warehouseId.name || 'Assigned Warehouse';
-          
-          // Mark order as no longer out-of-stock
-          order.isOutOfStock = false;
-          order.stockValidation = []; // Clear stock validation
-          
-          // Save the order
-          await order.save({ session });
-          
-          fulfilledOrders.push({
-            orderNumber: order.orderNumber,
-            quantity: requiredQuantity
-          });
-          
-          remainingStock -= requiredQuantity;
-        } else if (remainingStock > 0) {
-          // Can partially fulfill this order
-          console.log(`   ⚠️ Can only partially fulfill order ${order.orderNumber}: ${remainingStock}/${requiredQuantity} units`);
-          // For now, we don't handle partial fulfillment - could be added later
-        } else {
-          // No more stock available
-          console.log(`   ❌ No more stock available for order ${order.orderNumber}`);
-          break;
-        }
-      }
-      
-      if (fulfilledOrders.length > 0) {
-        console.log(`   🎉 Fulfilled ${fulfilledOrders.length} orders for product ${productId}:`);
-        fulfilledOrders.forEach(order => {
-          console.log(`     - ${order.orderNumber}: ${order.quantity} units`);
-        });
-      }
-    }
-    
-    console.log(`✅ Completed pending order fulfillment check for GRN: ${grn.grnNo}`);
-  } catch (error) {
-    console.error('Error in fulfillPendingOutOfStockOrders:', error);
-    throw error;
-  }
-};
-
 export const createGRN = async (req, res) => {
   // Get models from company-specific connection
   const { GRN, PurchaseOrder } = getModels(req.dbConnection);
@@ -457,8 +353,29 @@ const generatePONumber = async (dbConnection) => {
 export const inspectGRN = async (req, res) => {
   const { GRN, PurchaseOrder } = getModels(req.dbConnection);
   const session = await req.dbConnection.startSession();
+  let grnLease = null;
+  let stockLease = null;
 
   try {
+    // Serialize the Draft -> received lifecycle before reading the item/warehouse
+    // revision used to choose stock keys. Draft edit and delete use this same key.
+    grnLease = await StockMovementService.acquireStockLeases(
+      req.dbConnection,
+      [`GRN:${req.params.id}`]
+    );
+    const leaseSource = await GRN.findById(req.params.id)
+      .select('items.productId warehouseId')
+      .lean();
+    if (leaseSource) {
+      stockLease = await StockMovementService.acquireStockLeases(
+        req.dbConnection,
+        (leaseSource.items || []).map((item) => StockMovementService.stockKey(
+          item.productId,
+          leaseSource.warehouseId
+        ))
+      );
+    }
+
     await session.startTransaction();
 
     const { id } = req.params;
@@ -601,11 +518,6 @@ export const inspectGRN = async (req, res) => {
       } catch (e) { /* non-critical */ }
     }
 
-    // Check and fulfill pending out-of-stock orders
-    try {
-      await fulfillPendingOutOfStockOrders(grn, session, req.dbConnection);
-    } catch (e) { /* non-critical */ }
-
     // Auto-Apply Purchase Schemes
     try {
       const schemeData = {
@@ -633,13 +545,18 @@ export const inspectGRN = async (req, res) => {
 
     await session.commitTransaction();
 
-    // Post-transaction: check waiting orders for stock
+    // Post-transaction: recalculate the FIFO Pending-order queue once.
     try {
       const StockArrivalService = (await import('../services/stockArrivalService.js')).default;
-      for (const item of grn.items) {
-        await StockArrivalService.checkWaitingOrdersForStock(item.productId, grn.warehouseId, item.acceptedQuantity, req.dbConnection);
-      }
-    } catch (e) { /* non-critical */ }
+      await StockArrivalService.refreshStockKeys(
+        grn.items
+          .filter((item) => Number(item.acceptedQuantity || 0) > 0)
+          .map((item) => ({ productId: item.productId, warehouseId: grn.warehouseId })),
+        req.dbConnection
+      );
+    } catch (e) {
+      console.error('GRN stock queue refresh failed (non-critical):', e.message);
+    }
 
     const populatedGRN = await GRN.findById(grn._id)
       .populate('poId', 'poNumber')
@@ -656,11 +573,29 @@ export const inspectGRN = async (req, res) => {
       autoCreatedPOs: autoCreatedPOs.filter(p => p.reason === 'shortage')
     });
   } catch (error) {
-    await session.abortTransaction();
+    if (session.inTransaction()) await session.abortTransaction();
     if (handlePeriodLockError(error, res)) return;
     console.error('Inspect GRN error:', error);
-    res.status(500).json({ success: false, message: error.message });
+    res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code,
+      message: error.message
+    });
   } finally {
+    if (stockLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, stockLease);
+      } catch (releaseError) {
+        console.error('Failed to release GRN stock lease:', releaseError.message);
+      }
+    }
+    if (grnLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, grnLease);
+      } catch (releaseError) {
+        console.error('Failed to release GRN lifecycle lease:', releaseError.message);
+      }
+    }
     session.endSession();
   }
 };
@@ -824,11 +759,16 @@ export const getGRN = async (req, res) => {
 };
 
 export const updateGRN = async (req, res) => {
+  let grnLease = null;
   try {
     const { GRN } = getModels(req.dbConnection);
-    
     const { id } = req.params;
     const updateData = req.body;
+
+    grnLease = await StockMovementService.acquireStockLeases(
+      req.dbConnection,
+      [`GRN:${id}`]
+    );
 
     const existingGRN = await GRN.findById(id);
     if (!existingGRN) {
@@ -853,7 +793,7 @@ export const updateGRN = async (req, res) => {
 
     // Keep status as Draft — stock is NOT updated on edit (only on inspection)
     updateData.status = 'Draft';
-    
+
     // Remove fields that shouldn't be changed via edit
     delete updateData.inspectedBy;
     delete updateData.inspectedAt;
@@ -870,13 +810,25 @@ export const updateGRN = async (req, res) => {
       }, 0);
     }
 
-    const updatedGRN = await GRN.findByIdAndUpdate(id, updateData, { new: true, runValidators: true })
+    const updatedGRN = await GRN.findOneAndUpdate(
+      { _id: id, status: 'Draft', isInvoiceCreated: { $ne: true } },
+      updateData,
+      { new: true, runValidators: true }
+    )
       .populate('poId', 'poNumber')
       .populate('poIds', 'poNumber')
       .populate('supplierId', 'name companyName')
       .populate('warehouseId', 'name location')
       .populate('items.productId', 'itemName productCode HSNCode')
       .populate('createdBy', 'name email');
+
+    if (!updatedGRN) {
+      return res.status(409).json({
+        success: false,
+        code: 'GRN_LIFECYCLE_CONFLICT',
+        message: 'GRN changed while the Draft edit was being applied. Refresh and try again.'
+      });
+    }
 
     res.json({
       success: true,
@@ -885,17 +837,35 @@ export const updateGRN = async (req, res) => {
     });
   } catch (error) {
     console.error('Update GRN error:', error);
-    res.status(500).json({ success: false, message: error.message });
+    res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code,
+      message: error.statusCode ? error.message : error.message
+    });
+  } finally {
+    if (grnLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, grnLease);
+      } catch (releaseError) {
+        console.error('Failed to release GRN edit lease:', releaseError.message);
+      }
+    }
   }
 };
 
 export const deleteGRN = async (req, res) => {
+  let grnLease = null;
   try {
-    // Get models from company-specific connection
     const { GRN } = getModels(req.dbConnection);
-    
-    const grn = await GRN.findById(req.params.id);
-    
+    const { id } = req.params;
+
+    grnLease = await StockMovementService.acquireStockLeases(
+      req.dbConnection,
+      [`GRN:${id}`]
+    );
+
+    const grn = await GRN.findById(id);
+
     if (!grn) {
       return res.status(404).json({
         success: false,
@@ -913,17 +883,28 @@ export const deleteGRN = async (req, res) => {
       });
     }
 
-    // Delete associated stock movements first
-    try {
-      await StockMovementService.deleteStockMovementsForGRN(req.params.id, req.dbConnection);
-      console.log(`✅ Deleted stock movements for GRN: ${grn.grnNo}`);
-    } catch (stockError) {
-      console.error('Error deleting stock movements:', stockError);
-      // Continue with GRN deletion even if stock movement deletion fails
+    if (grn.status !== 'Draft') {
+      return res.status(409).json({
+        success: false,
+        code: 'RECEIVED_GRN_REVERSAL_REQUIRED',
+        message: 'Only Draft GRNs can be deleted. A received/inspected GRN must be reversed through a controlled stock-reversal workflow.'
+      });
     }
 
-    // Delete the GRN
-    await GRN.findByIdAndDelete(req.params.id);
+    // The predicate is repeated at mutation time so an uncoordinated legacy
+    // writer still cannot delete a posted or invoiced GRN.
+    const deletedGRN = await GRN.findOneAndDelete({
+      _id: id,
+      status: 'Draft',
+      isInvoiceCreated: { $ne: true }
+    });
+    if (!deletedGRN) {
+      return res.status(409).json({
+        success: false,
+        code: 'GRN_LIFECYCLE_CONFLICT',
+        message: 'GRN changed while deletion was being applied. Refresh and try again.'
+      });
+    }
 
     res.json({
       success: true,
@@ -931,10 +912,19 @@ export const deleteGRN = async (req, res) => {
     });
   } catch (error) {
     console.error('Delete GRN error:', error);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       success: false,
+      code: error.code,
       message: error.message
     });
+  } finally {
+    if (grnLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, grnLease);
+      } catch (releaseError) {
+        console.error('Failed to release GRN delete lease:', releaseError.message);
+      }
+    }
   }
 };
 

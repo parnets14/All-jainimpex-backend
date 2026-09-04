@@ -18,6 +18,8 @@ import {
   normalizeRateMap,
   resolveDealerExtraDiscountBySpecificity
 } from '../utils/sequentialDiscountPolicy.js';
+import StockMovementService from '../services/stockMovementService.js';
+import StockArrivalService from '../services/stockArrivalService.js';
 import {
   acquireDealerCreditLease,
   acquireDealerCreditLock,
@@ -54,6 +56,62 @@ const createDiscountPolicyError = (message, code) => {
 };
 
 const objectIdString = (value) => value?._id?.toString?.() || value?.toString?.() || '';
+
+const getOutstandingReservationGroups = async (StockMovement, salesOrder) => {
+  const movements = await StockMovement.find({
+    referenceType: 'SALE',
+    $and: [
+      {
+        $or: [
+          { salesOrder: salesOrder._id },
+          { referenceNo: salesOrder.orderNumber }
+        ]
+      },
+      {
+        $or: [
+          { movementRole: { $in: ['RESERVATION', 'RESERVATION_RELEASE'] } },
+          {
+            movementRole: null,
+            remarks: { $regex: /(Stock Blocked|Stock(?: Fully)? Unblocked)/i }
+          }
+        ]
+      }
+    ]
+  }).lean();
+
+  const groups = new Map();
+  for (const movement of movements) {
+    const key = StockMovementService.stockKey(movement.productId, movement.warehouseId);
+    const group = groups.get(key) || {
+      productId: movement.productId,
+      warehouseId: movement.warehouseId,
+      blockedQuantity: 0,
+      releasedQuantity: 0
+    };
+    const isReservation = movement.movementRole === 'RESERVATION'
+      || (!movement.movementRole
+        && movement.type === 'OUT'
+        && /Stock Blocked/i.test(String(movement.remarks || '')));
+    const isRelease = movement.movementRole === 'RESERVATION_RELEASE'
+      || (!movement.movementRole
+        && movement.type === 'IN'
+        && /Stock(?: Fully)? Unblocked/i.test(String(movement.remarks || '')));
+    if (isReservation) group.blockedQuantity += Number(movement.quantity || 0);
+    if (isRelease) group.releasedQuantity += Number(movement.quantity || 0);
+    groups.set(key, group);
+  }
+
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      outstandingQuantity: Math.max(0, group.blockedQuantity - group.releasedQuantity)
+    }))
+    .filter((group) => group.outstandingQuantity > 0);
+};
+
+const hasOutstandingReservations = async (StockMovement, salesOrder) => (
+  (await getOutstandingReservationGroups(StockMovement, salesOrder)).length > 0
+);
 
 const resolveAndValidateDealerExtraDiscount = ({ submittedItem, dealer, product }) => {
   const configuredRate = resolveDealerExtraDiscountBySpecificity(dealer, product);
@@ -956,7 +1014,7 @@ export const previewSalesOrderCredit = async (req, res) => {
 export const createSalesOrder = async (req, res) => {
   try {
     // Get models from company-specific connection
-    const { SalesOrder, Product, Dealer, StockMovement, User, Notification, Warehouse } = getModels(req.dbConnection);
+    const { SalesOrder, Product, Dealer, User, Notification, Warehouse } = getModels(req.dbConnection);
 
     console.log("Received request body:", req.body);
 
@@ -1114,15 +1172,16 @@ export const createSalesOrder = async (req, res) => {
         // For out-of-stock orders, skip stock validation
         if (!isOutOfStock) {
           // For regular orders, validate stock availability
-          const stock = await StockMovement.findOne({
-            productId: item.product,
-            warehouseId: item.warehouse
-          });
+          const currentStock = await StockMovementService.getCurrentStock(
+            item.product,
+            item.warehouse,
+            req.dbConnection
+          );
 
-          if (stock && stock.netStock < item.quantity) {
+          if (currentStock < item.quantity) {
             return res.status(400).json({
               success: false,
-              message: `Insufficient stock for ${product.itemName} in ${warehouse.name}. Available: ${stock.netStock}, Required: ${item.quantity}`
+              message: `Insufficient stock for ${product.itemName} in ${warehouse.name}. Available: ${currentStock}, Required: ${item.quantity}`
             });
           }
         }
@@ -1270,6 +1329,11 @@ export const createSalesOrder = async (req, res) => {
 
     // Save sales order
     await salesOrder.save();
+    try {
+      await StockArrivalService.refreshAllPendingOrders(req.dbConnection);
+    } catch (refreshError) {
+      console.error('New Sales Order stock queue refresh failed (non-critical):', refreshError.message);
+    }
 
     if (creditOverlimitSnapshot.isOverlimit) {
       try {
@@ -1282,72 +1346,6 @@ export const createSalesOrder = async (req, res) => {
       } catch (notificationError) {
         console.error('Credit-limit notification failed:', notificationError.message);
       }
-    }
-
-    // Handle stock updates based on initial status (only for in-stock orders)
-    if (!isOutOfStock) {
-      if (salesOrder.status === "Confirmed") {
-        console.log("Order created with Confirmed status - blocking stock");
-        for (const product of salesOrder.products) {
-          if (product.warehouse) { // Only process if warehouse is not null
-            // Get current balance before creating the movement
-            const latestMovement = await StockMovement.findOne({
-              productId: product.product,
-              warehouseId: product.warehouse
-            }).sort({ date: -1, createdAt: -1 });
-
-            const currentBalance = latestMovement ? latestMovement.balance : 0;
-            const newBalance = currentBalance - product.quantity;
-
-            const blockMovement = new StockMovement({
-              productId: product.product,
-              warehouseId: product.warehouse,
-              type: 'OUT',
-              quantity: product.quantity,
-              balance: newBalance,
-              referenceNo: salesOrder.orderNumber,
-              referenceType: 'SALE',
-              date: new Date(),
-              remarks: `Order ${salesOrder.orderNumber} - Stock Blocked`,
-              createdBy: req.user._id
-            });
-            await blockMovement.save();
-            console.log(`Blocked ${product.quantity} units of product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
-          }
-        }
-      } else if (salesOrder.status === "Delivered") {
-        console.log("Order created with Delivered status - permanently reducing stock");
-        for (const product of salesOrder.products) {
-          if (product.warehouse) { // Only process if warehouse is not null
-            // Get current balance before creating the movement
-            const latestMovement = await StockMovement.findOne({
-              productId: product.product,
-              warehouseId: product.warehouse
-            }).sort({ date: -1, createdAt: -1 });
-
-            const currentBalance = latestMovement ? latestMovement.balance : 0;
-            const newBalance = currentBalance - product.quantity;
-
-            // Create stock movement for delivered order (permanent reduction)
-            const deliveryMovement = new StockMovement({
-              productId: product.product,
-              warehouseId: product.warehouse,
-              type: 'OUT',
-              quantity: product.quantity,
-              balance: newBalance,
-              referenceNo: salesOrder.orderNumber,
-              referenceType: 'SALE',
-              date: new Date(),
-              remarks: `Order ${salesOrder.orderNumber} - Delivered (Stock Permanently Reduced)`,
-              createdBy: req.user._id
-            });
-            await deliveryMovement.save();
-            console.log(`Order ${salesOrder.orderNumber} delivered - stock permanently reduced for product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
-          }
-        }
-      }
-    } else {
-      console.log("🚨 Out-of-stock order created - no stock movements will be made until stock is available");
     }
 
     // Populate the created order for response
@@ -1447,12 +1445,36 @@ const updateSalesOrderStatusUnlocked = async (req, res) => {
     const { id } = req.params;
 
     // Find the sales order
-    const salesOrder = await SalesOrder.findById(id);
+    let salesOrder = await SalesOrder.findById(id);
     if (!salesOrder) {
       return res.status(404).json({
         success: false,
         message: "Sales order not found"
       });
+    }
+
+    // A previous confirmation attempt may have committed one or more deterministic
+    // reservation rows before the status save failed. Those rows already own this
+    // order's FIFO allocation, so a retry must heal the status instead of letting
+    // its own OUT movements make the readiness refresh reject it.
+    const recoveringConfirmation = status === 'Confirmed'
+      && salesOrder.status === 'Pending'
+      && Boolean(await StockMovement.exists({
+        salesOrder: salesOrder._id,
+        referenceType: 'SALE',
+        movementRole: 'RESERVATION'
+      }));
+
+    if (status === 'Confirmed' && salesOrder.status === 'Pending' && !recoveringConfirmation) {
+      await StockArrivalService.refreshAllPendingOrders(req.dbConnection);
+      salesOrder = await SalesOrder.findById(id);
+      if (salesOrder.orderStockStatus?.overallStatus !== 'ready') {
+        return res.status(409).json({
+          success: false,
+          code: 'SALES_ORDER_NOT_FIFO_READY',
+          message: 'This Sales Order is not next in the stock allocation queue or does not have complete stock yet.'
+        });
+      }
     }
 
     // Enforce the order lifecycle on the server so every UI and API caller
@@ -1502,22 +1524,21 @@ const updateSalesOrderStatusUnlocked = async (req, res) => {
       }
     }
 
-    // Update product warehouses if provided in request (when status is updated from web)
-    let warehouseAssigned = false;
-    if (products && Array.isArray(products) && products.length > 0) {
-      for (let i = 0; i < salesOrder.products.length && i < products.length; i++) {
-        if (products[i].warehouse) {
-          // Check if warehouse changed from null/"No Stock" to actual warehouse
-          const oldWarehouse = salesOrder.products[i].warehouse;
-          const newWarehouse = products[i].warehouse;
-
-          if (!oldWarehouse && newWarehouse) {
-            warehouseAssigned = true;
-          }
-
-          salesOrder.products[i].warehouse = newWarehouse;
-          salesOrder.products[i].warehouseName = products[i].warehouseName || null;
-        }
+    // Status changes cannot also move stock to another warehouse. That would
+    // bypass the stock keys leased by this transition. Use the dedicated
+    // Pending-order warehouse assignment action first.
+    if (Array.isArray(products)) {
+      const warehouseChanged = salesOrder.products.some((line, index) => {
+        const submittedWarehouse = products[index]?.warehouse;
+        return submittedWarehouse
+          && objectIdString(submittedWarehouse) !== objectIdString(line.warehouse);
+      });
+      if (warehouseChanged) {
+        return res.status(409).json({
+          success: false,
+          code: 'ASSIGN_WAREHOUSE_BEFORE_STATUS_CHANGE',
+          message: 'Warehouse changes are not allowed in a status update. Assign the warehouse while the order is Pending, then retry.'
+        });
       }
     }
 
@@ -1534,20 +1555,12 @@ const updateSalesOrderStatusUnlocked = async (req, res) => {
       }
     }
 
-    // AUTOMATIC: If warehouse is assigned to out-of-stock order, keep tracking stock arrival
-    // DO NOT clear isOutOfStock flag - we need it to track stock arrival status
-    if (salesOrder.isOutOfStock && warehouseAssigned) {
-      console.log("🎯 Warehouse assigned to out-of-stock order - keeping isOutOfStock=true for stock tracking");
-      // salesOrder.isOutOfStock = false;  // REMOVED: Keep flag for stock tracking
-      salesOrder.stockValidation = [];  // Clear validation since warehouse is now assigned
-    }
-
     // Out-of-stock orders may enter the normal lifecycle only after every line
     // has been rechecked as ready. A ready Pending order is converted to normal
     // reserved-stock handling as part of the same Confirmed transition.
     const readyOutOfStockConfirmation = salesOrder.isOutOfStock
       && status === 'Confirmed'
-      && salesOrder.orderStockStatus?.overallStatus === 'ready';
+      && (salesOrder.orderStockStatus?.overallStatus === 'ready' || recoveringConfirmation);
     if (salesOrder.isOutOfStock
         && status !== 'Cancelled'
         && status !== 'Rejected'
@@ -1644,32 +1657,48 @@ const updateSalesOrderStatusUnlocked = async (req, res) => {
 
     // Recheck and reserve stock for normal orders and for ready out-of-stock
     // orders entering the normal lifecycle.
+    let pendingReservations = [];
     if (status === 'Confirmed' && (!salesOrder.isOutOfStock || readyOutOfStockConfirmation)) {
-      // CRITICAL: Verify stock availability for all products BEFORE confirming
+      // Verify all still-unreserved lines while the product/warehouse leases are held.
+      // Grouping avoids over-promising when the same stock key appears more than once.
       const stockShortages = [];
+      const requiredByKey = new Map();
 
       for (const product of salesOrder.products) {
-        if (product.warehouse) {
-          // Get current balance
-          const latestMovement = await StockMovement.findOne({
-            productId: product.product,
-            warehouseId: product.warehouse
-          }).sort({ date: -1, createdAt: -1 });
+        if (!product.warehouse) continue;
+        const operationKey = `SO:${salesOrder._id}:RESERVE:${product._id}`;
+        const existingReservation = await StockMovement.exists({ operationKey });
+        if (existingReservation) continue;
 
-          const currentBalance = latestMovement ? latestMovement.balance : 0;
+        const key = StockMovementService.stockKey(product.product, product.warehouse);
+        const requirement = requiredByKey.get(key) || {
+          productId: product.product,
+          warehouseId: product.warehouse,
+          required: 0,
+          lines: []
+        };
+        requirement.required += Number(product.quantity || 0);
+        requirement.lines.push({ product, operationKey });
+        requiredByKey.set(key, requirement);
+      }
 
-          // Check if enough stock available
-          if (currentBalance < product.quantity) {
-            const productDetails = await Product.findById(product.product);
-            stockShortages.push({
-              productName: productDetails?.itemName || product.productName || 'Unknown',
-              productCode: productDetails?.productCode || 'N/A',
-              required: product.quantity,
-              available: currentBalance,
-              shortage: product.quantity - currentBalance
-            });
-          }
+      for (const requirement of requiredByKey.values()) {
+        const currentBalance = await StockMovementService.getCurrentStock(
+          requirement.productId,
+          requirement.warehouseId,
+          req.dbConnection
+        );
+        if (currentBalance < requirement.required) {
+          const productDetails = await Product.findById(requirement.productId);
+          stockShortages.push({
+            productName: productDetails?.itemName || requirement.lines[0]?.product?.productName || 'Unknown',
+            productCode: productDetails?.productCode || 'N/A',
+            required: requirement.required,
+            available: currentBalance,
+            shortage: requirement.required - currentBalance
+          });
         }
+        pendingReservations.push(...requirement.lines);
       }
 
       // If there are stock shortages, provide guidance on splitting the order
@@ -1721,166 +1750,117 @@ OR wait for stock to arrive and this order will be auto-processed.`,
 
     // Handle stock management based on status changes. Ready out-of-stock
     // confirmations use this same reservation path before the tracking flag is cleared.
-    if (!salesOrder.isOutOfStock || readyOutOfStockConfirmation) {
+    if (!salesOrder.isOutOfStock
+        || readyOutOfStockConfirmation
+        || status === 'Cancelled'
+        || status === 'Rejected') {
       if (status === "Confirmed" && originalStatus !== "Confirmed") {
-        // Block stock for confirmed orders - but check if already blocked
-        const existingBlock = await StockMovement.findOne({
-          referenceNo: salesOrder.orderNumber,
-          referenceType: 'SALE',
-          type: 'OUT',
-          remarks: { $regex: /Stock Blocked/ }
-        });
-
-        if (existingBlock) {
-          console.log(`Stock already blocked for order ${salesOrder.orderNumber} - skipping duplicate block`);
-        } else {
         console.log("Blocking stock for confirmed order");
+        for (const reservation of pendingReservations) {
+          const { product, operationKey } = reservation;
+          const currentBalance = await StockMovementService.getCurrentStock(
+            product.product,
+            product.warehouse,
+            req.dbConnection
+          );
+          const newBalance = currentBalance - Number(product.quantity || 0);
+
+          await new StockMovement({
+            productId: product.product,
+            warehouseId: product.warehouse,
+            type: 'OUT',
+            quantity: product.quantity,
+            balance: newBalance,
+            referenceNo: salesOrder.orderNumber,
+            referenceType: 'SALE',
+            operationKey,
+            movementRole: 'RESERVATION',
+            salesOrder: salesOrder._id,
+            salesOrderLine: product._id,
+            date: new Date(),
+            remarks: `Order ${salesOrder.orderNumber} - Stock Blocked`,
+            createdBy: req.user._id
+          }).save();
+          console.log(`Blocked ${product.quantity} units of product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
+        }
+      } else if (status === "Delivered") {
+        console.log("Order delivered - converting each reservation into a permanent delivery movement");
         for (const product of salesOrder.products) {
-          if (product.warehouse) {
-            // Get current balance before creating the movement
+          if (!product.warehouse) continue;
+          if (!stockReservedStatuses.includes(originalStatus)) {
+            throw new Error(`Order ${salesOrder.orderNumber} has no reserved stock to deliver`);
+          }
 
-            const latestMovement = await StockMovement.findOne({
+          const releaseKey = `SO:${salesOrder._id}:DELIVERY_RELEASE:${product._id}`;
+          const deliveryKey = `SO:${salesOrder._id}:DELIVERY:${product._id}`;
+          if (!(await StockMovement.exists({ operationKey: releaseKey }))) {
+            const currentBalance = await StockMovementService.getCurrentStock(
+              product.product,
+              product.warehouse,
+              req.dbConnection
+            );
+            await new StockMovement({
               productId: product.product,
-              warehouseId: product.warehouse
-            }).sort({ date: -1, createdAt: -1 });
+              warehouseId: product.warehouse,
+              type: 'IN',
+              quantity: product.quantity,
+              balance: currentBalance + Number(product.quantity || 0),
+              referenceNo: salesOrder.orderNumber,
+              referenceType: 'SALE',
+              operationKey: releaseKey,
+              movementRole: 'RESERVATION_RELEASE',
+              salesOrder: salesOrder._id,
+              salesOrderLine: product._id,
+              date: new Date(),
+              remarks: `Order ${salesOrder.orderNumber} - Stock Unblocked (Delivered)`,
+              createdBy: req.user._id
+            }).save();
+          }
 
-            const currentBalance = latestMovement ? latestMovement.balance : 0;
-            const newBalance = currentBalance - product.quantity;
-
-            const blockMovement = new StockMovement({
+          if (!(await StockMovement.exists({ operationKey: deliveryKey }))) {
+            const currentBalance = await StockMovementService.getCurrentStock(
+              product.product,
+              product.warehouse,
+              req.dbConnection
+            );
+            await new StockMovement({
               productId: product.product,
               warehouseId: product.warehouse,
               type: 'OUT',
               quantity: product.quantity,
-              balance: newBalance,
+              balance: currentBalance - Number(product.quantity || 0),
               referenceNo: salesOrder.orderNumber,
               referenceType: 'SALE',
+              operationKey: deliveryKey,
+              movementRole: 'DELIVERY',
+              salesOrder: salesOrder._id,
+              salesOrderLine: product._id,
               date: new Date(),
-              remarks: `Order ${salesOrder.orderNumber} - Stock Blocked`,
+              remarks: `Order ${salesOrder.orderNumber} - Delivered (Stock Permanently Reduced)`,
               createdBy: req.user._id
-            });
-            await blockMovement.save();
-            console.log(`Blocked ${product.quantity} units of product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
+            }).save();
           }
         }
-        } // end if !existingBlock
-      } else if (status === "Delivered") {
-        // Confirmed and Processing orders already have reserved stock.
-        console.log(`Order delivered - ${stockReservedStatuses.includes(originalStatus) ? "unblocking and permanently reducing stock" : "permanently reducing stock"}`);
-        for (const product of salesOrder.products) {
-          if (product.warehouse) {
-            // Get current balance before creating the movement
+      } else if (status === "Cancelled" || status === "Rejected") {
+        // Pending can still hold deterministic reservation rows after an
+        // interrupted confirmation. Reconcile actual reservation roles rather
+        // than inferring reservation ownership from the persisted status.
+        console.log("Reconciling reserved stock for cancelled/rejected order");
+        const reservationGroups = await getOutstandingReservationGroups(
+          StockMovement,
+          salesOrder
+        );
 
-            const latestMovement = await StockMovement.findOne({
-              productId: product.product,
-              warehouseId: product.warehouse
-            }).sort({ date: -1, createdAt: -1 });
+        for (const group of reservationGroups) {
+          const quantityToRestore = group.outstandingQuantity;
+          const releaseOperationKey = `SO:${salesOrder._id}:FINAL_RELEASE:${group.productId}:${group.warehouseId}`;
+          if (await StockMovement.exists({ operationKey: releaseOperationKey })) continue;
 
-            const currentBalance = latestMovement ? latestMovement.balance : 0;
-
-            if (stockReservedStatuses.includes(originalStatus)) {
-              // Step 1: Unblock the stock reserved when the order was confirmed
-              const unblockMovement = new StockMovement({
-                productId: product.product,
-                warehouseId: product.warehouse,
-                type: 'IN',
-                quantity: product.quantity,
-                balance: currentBalance + product.quantity,
-                referenceNo: salesOrder.orderNumber,
-                referenceType: 'SALE',
-                date: new Date(),
-                remarks: `Order ${salesOrder.orderNumber} - Stock Unblocked (Delivered)`,
-                createdBy: req.user._id
-              });
-              await unblockMovement.save();
-              console.log(`Unblocked ${product.quantity} units for order ${salesOrder.orderNumber} - product ${product.product} in warehouse ${product.warehouse}`);
-
-              // Step 2: Permanently reduce stock
-              const newBalance = currentBalance; // Balance stays same because we unblocked then reduced
-              const deliveryMovement = new StockMovement({
-                productId: product.product,
-                warehouseId: product.warehouse,
-                type: 'OUT',
-                quantity: product.quantity,
-                balance: newBalance,
-                referenceNo: salesOrder.orderNumber,
-                referenceType: 'SALE',
-                date: new Date(),
-                remarks: `Order ${salesOrder.orderNumber} - Delivered (Stock Permanently Reduced)`,
-                createdBy: req.user._id
-              });
-              await deliveryMovement.save();
-              console.log(`Order ${salesOrder.orderNumber} delivered - stock permanently reduced for product ${product.product} in warehouse ${product.warehouse}. Final balance: ${newBalance}`);
-            } else {
-              // Direct delivery from Pending - reduce stock permanently
-              const newBalance = currentBalance - product.quantity;
-              const deliveryMovement = new StockMovement({
-                productId: product.product,
-                warehouseId: product.warehouse,
-                type: 'OUT',
-                quantity: product.quantity,
-                balance: newBalance,
-                referenceNo: salesOrder.orderNumber,
-                referenceType: 'SALE',
-                date: new Date(),
-                remarks: `Order ${salesOrder.orderNumber} - Delivered (Stock Permanently Reduced)`,
-                createdBy: req.user._id
-              });
-              await deliveryMovement.save();
-              console.log(`Order ${salesOrder.orderNumber} delivered - stock permanently reduced for product ${product.product} in warehouse ${product.warehouse}. Balance: ${currentBalance} -> ${newBalance}`);
-            }
-          }
-        }
-      } else if ((status === "Cancelled" || status === "Rejected") && stockReservedStatuses.includes(originalStatus)) {
-        // Restore stock reserved when the order entered Confirmed, including
-        // orders that subsequently advanced to Processing.
-        console.log("Unblocking stock for cancelled/rejected order");
-
-        // Restore only the still-reserved quantity for each product/warehouse.
-        // This is quantity-aware, so partial-dispatch IN movements release only
-        // their reduced quantity and do not suppress restoration of the remainder.
-        const [outMovements, priorReleaseMovements] = await Promise.all([
-          StockMovement.find({
-            referenceNo: salesOrder.orderNumber,
-            referenceType: 'SALE',
-            type: 'OUT'
-          }),
-          StockMovement.find({
-            referenceNo: salesOrder.orderNumber,
-            referenceType: 'SALE',
-            type: 'IN'
-          })
-        ]);
-
-        const movementKey = (productId, warehouseId) => `${productId}:${warehouseId}`;
-        const reservationGroups = new Map();
-        for (const movement of outMovements) {
-          const key = movementKey(movement.productId, movement.warehouseId);
-          const group = reservationGroups.get(key) || {
-            productId: movement.productId,
-            warehouseId: movement.warehouseId,
-            blockedQuantity: 0,
-            releasedQuantity: 0
-          };
-          group.blockedQuantity += Number(movement.quantity || 0);
-          reservationGroups.set(key, group);
-        }
-        for (const movement of priorReleaseMovements) {
-          const key = movementKey(movement.productId, movement.warehouseId);
-          const group = reservationGroups.get(key);
-          if (group) group.releasedQuantity += Number(movement.quantity || 0);
-        }
-
-        const restoredGroups = [];
-        for (const group of reservationGroups.values()) {
-          const quantityToRestore = Math.max(0, group.blockedQuantity - group.releasedQuantity);
-          if (quantityToRestore <= 0) continue;
-
-          const latestMovement = await StockMovement.findOne({
-            productId: group.productId,
-            warehouseId: group.warehouseId
-          }).sort({ date: -1, createdAt: -1 });
-          const currentBalance = latestMovement ? latestMovement.balance : 0;
+          const currentBalance = await StockMovementService.getCurrentStock(
+            group.productId,
+            group.warehouseId,
+            req.dbConnection
+          );
           const newBalance = currentBalance + quantityToRestore;
 
           await new StockMovement({
@@ -1891,37 +1871,19 @@ OR wait for stock to arrive and this order will be auto-processed.`,
             balance: newBalance,
             referenceNo: salesOrder.orderNumber,
             referenceType: 'SALE',
+            operationKey: releaseOperationKey,
+            movementRole: 'RESERVATION_RELEASE',
+            salesOrder: salesOrder._id,
             date: new Date(),
             remarks: `Order ${salesOrder.orderNumber} - Stock Unblocked (${status})`,
             createdBy: req.user._id
           }).save();
-          restoredGroups.push(group);
           console.log(`Restored ${quantityToRestore} units for ${group.productId} in ${group.warehouseId}. Balance: ${currentBalance} -> ${newBalance}`);
         }
 
-        if (outMovements.length === 0) {
-          console.log(`No reserved OUT movements found for order ${salesOrder.orderNumber}; no stock restoration was required.`);
+        if (reservationGroups.length === 0) {
+          console.log(`No outstanding reservations found for order ${salesOrder.orderNumber}; no stock restoration was required.`);
         }
-
-        // Check whether released stock can fulfill waiting orders.
-        for (const group of restoredGroups) {
-          try {
-            const StockArrivalService = (await import("../services/stockArrivalService.js")).default;
-            const checkResult = await StockArrivalService.checkWaitingOrdersForStock(
-              group.productId,
-              group.warehouseId,
-              0,
-              req.dbConnection
-            );
-            if (checkResult.notifiedOrders > 0) {
-              console.log(`Notified ${checkResult.notifiedOrders} waiting orders about stock availability`);
-            }
-          } catch (error) {
-            console.error("Error checking waiting orders:", error);
-          }
-        }
-      } else if ((status === "Cancelled" || status === "Rejected") && !stockReservedStatuses.includes(originalStatus)) {
-        console.log("Order had no reserved stock to restore");
       }
     } else {
       console.log("🚨 Out-of-stock order - no stock movements will be made");
@@ -1983,6 +1945,19 @@ OR wait for stock to arrive and this order will be auto-processed.`,
     }
 
     await salesOrder.save();
+
+    if (['Confirmed', 'Delivered', 'Cancelled', 'Rejected'].includes(status)) {
+      try {
+        await StockArrivalService.refreshStockKeys(
+          salesOrder.products
+            .filter((line) => line.product && line.warehouse)
+            .map((line) => ({ productId: line.product, warehouseId: line.warehouse })),
+          req.dbConnection
+        );
+      } catch (refreshError) {
+        console.error('Post-transition stock queue refresh failed:', refreshError.message);
+      }
+    }
 
     // NOTE: Credit limit blocking moved to invoice approval stage
     // Sales orders no longer block credit limit on confirmation
@@ -2139,13 +2114,33 @@ OR wait for stock to arrive and this order will be auto-processed.`,
 
 export const updateSalesOrderStatus = async (req, res) => {
   const { SalesOrder } = getModels(req.dbConnection);
-  const order = await SalesOrder.findById(req.params.id).select('dealer').lean();
-  if (!order) {
-    return res.status(404).json({ success: false, message: 'Sales order not found' });
-  }
-
+  let order = null;
   let creditLeaseToken = null;
+  let orderLease = null;
+  let stockLease = null;
   try {
+    // Take the lifecycle lease before reading product keys. Generic edits,
+    // expiry actions, and other status transitions share this same order key.
+    orderLease = await StockMovementService.acquireStockLeases(
+      req.dbConnection,
+      [`SALES_ORDER:${req.params.id}`]
+    );
+
+    order = await SalesOrder.findById(req.params.id)
+      .select('dealer products.product products.warehouse')
+      .lean();
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Sales order not found' });
+    }
+
+    const stockKeys = (order.products || [])
+      .filter((line) => line.product && line.warehouse)
+      .map((line) => StockMovementService.stockKey(line.product, line.warehouse));
+    stockLease = await StockMovementService.acquireStockLeases(
+      req.dbConnection,
+      stockKeys
+    );
+
     if (req.body.status === 'Confirmed') {
       creditLeaseToken = await acquireDealerCreditLease(
         req.dbConnection,
@@ -2162,11 +2157,25 @@ export const updateSalesOrderStatus = async (req, res) => {
       error: error.statusCode ? undefined : error.message
     });
   } finally {
-    if (creditLeaseToken) {
+    if (creditLeaseToken && order?.dealer) {
       try {
         await releaseDealerCreditLease(req.dbConnection, order.dealer, creditLeaseToken);
       } catch (releaseError) {
         console.error('Failed to release dealer credit lease:', releaseError.message);
+      }
+    }
+    if (stockLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, stockLease);
+      } catch (releaseError) {
+        console.error('Failed to release Sales Order stock lease:', releaseError.message);
+      }
+    }
+    if (orderLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, orderLease);
+      } catch (releaseError) {
+        console.error('Failed to release Sales Order lifecycle lease:', releaseError.message);
       }
     }
   }
@@ -2176,12 +2185,19 @@ export const updateSalesOrderStatus = async (req, res) => {
 // @route   PATCH /api/sales-orders/:id/assign-warehouse
 // @access  Private
 export const assignWarehouseToOutOfStockOrder = async (req, res) => {
+  let orderLease = null;
+  let stockLease = null;
   try {
     // Get models from company-specific connection
     const { SalesOrder, Product, StockMovement } = getModels(req.dbConnection);
 
     const { id } = req.params;
     const { products } = req.body; // Array of { productIndex, warehouse, warehouseName }
+
+    orderLease = await StockMovementService.acquireStockLeases(
+      req.dbConnection,
+      [`SALES_ORDER:${id}`]
+    );
 
     // Find the sales order
     const salesOrder = await SalesOrder.findById(id);
@@ -2200,6 +2216,41 @@ export const assignWarehouseToOutOfStockOrder = async (req, res) => {
       });
     }
 
+    if (salesOrder.status !== 'Pending') {
+      return res.status(409).json({
+        success: false,
+        message: 'Warehouse assignment is only allowed while the Sales Order is Pending.'
+      });
+    }
+
+    if (!Array.isArray(products) || products.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'At least one product warehouse assignment is required.'
+      });
+    }
+
+    stockLease = await StockMovementService.acquireStockLeases(
+      req.dbConnection,
+      products
+        .map((update) => {
+          const line = salesOrder.products[update.productIndex];
+          return line?.product && update.warehouse
+            ? StockMovementService.stockKey(line.product, update.warehouse)
+            : null;
+        })
+        .filter(Boolean)
+    );
+
+    // Re-read the lifecycle after taking the order lock.
+    const lockedStatus = await SalesOrder.findById(id).select('status').lean();
+    if (lockedStatus?.status !== 'Pending') {
+      return res.status(409).json({
+        success: false,
+        message: 'Sales Order status changed while assigning the warehouse. Refresh and try again.'
+      });
+    }
+
     // Verify stock availability for all products with assigned warehouses
     for (const productUpdate of products) {
       const product = salesOrder.products[productUpdate.productIndex];
@@ -2212,23 +2263,16 @@ export const assignWarehouseToOutOfStockOrder = async (req, res) => {
       }
 
       if (productUpdate.warehouse) {
-        // Check stock availability
-        const stock = await StockMovement.findOne({
-          productId: product.product,
-          warehouseId: productUpdate.warehouse
-        });
+        const currentStock = await StockMovementService.getCurrentStock(
+          product.product,
+          productUpdate.warehouse,
+          req.dbConnection
+        );
 
-        if (!stock) {
+        if (currentStock < product.quantity) {
           return res.status(400).json({
             success: false,
-            message: `Product ${product.productName} not available in selected warehouse`
-          });
-        }
-
-        if (stock.netStock < product.quantity) {
-          return res.status(400).json({
-            success: false,
-            message: `Insufficient stock for ${product.productName}. Available: ${stock.netStock}, Required: ${product.quantity}`
+            message: `Insufficient stock for ${product.productName}. Available: ${currentStock}, Required: ${product.quantity}`
           });
         }
       }
@@ -2248,6 +2292,7 @@ export const assignWarehouseToOutOfStockOrder = async (req, res) => {
     salesOrder.stockValidation = []; // Clear validation results since warehouse is assigned
 
     await salesOrder.save();
+    await StockArrivalService.checkOrderStockStatus(salesOrder._id, req.dbConnection);
 
     // Populate updated order for response
     const updatedOrder = await SalesOrder.findById(id)
@@ -2260,23 +2305,39 @@ export const assignWarehouseToOutOfStockOrder = async (req, res) => {
 
     res.json({
       success: true,
-      message: "Warehouse assigned successfully. Order is now ready to be confirmed.",
+      message: "Warehouse assigned successfully. Stock readiness has been recalculated.",
       salesOrder: updatedOrder
     });
   } catch (error) {
     console.error("Assign Warehouse Error:", error);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       success: false,
-      message: "Error assigning warehouse",
-      error: error.message
+      code: error.code,
+      message: error.statusCode ? error.message : "Error assigning warehouse",
+      error: error.statusCode ? undefined : error.message
     });
+  } finally {
+    if (stockLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, stockLease);
+      } catch (releaseError) {
+        console.error('Failed to release warehouse-assignment stock lease:', releaseError.message);
+      }
+    }
+    if (orderLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, orderLease);
+      } catch (releaseError) {
+        console.error('Failed to release warehouse-assignment Sales Order lease:', releaseError.message);
+      }
+    }
   }
 };
 
 // @desc    Update sales order
 // @route   PUT /api/sales-orders/:id
 // @access  Private
-export const updateSalesOrder = async (req, res) => {
+const updateSalesOrderUnlocked = async (req, res) => {
   try {
     // Get models from company-specific connection
     const { SalesOrder, Product, Dealer, StockMovement, User, Notification, DealerLedger } = getModels(req.dbConnection);
@@ -2298,6 +2359,7 @@ export const updateSalesOrder = async (req, res) => {
 
     // Normalize status for comparison (trim whitespace, ensure proper case)
     const currentStatus = salesOrder.status ? String(salesOrder.status).trim() : null;
+    const originalUpdatedAt = salesOrder.updatedAt;
 
     // Debug logging
     console.log("🔍 Update Sales Order - Status Check:");
@@ -2319,6 +2381,28 @@ export const updateSalesOrder = async (req, res) => {
     }
 
     console.log("✅ Edit Allowed for status:", currentStatus);
+
+    const reservationSensitiveFields = [
+      'products',
+      'dealer',
+      'isOutOfStock',
+      'salesType',
+      'type',
+      'repriceDiscounts'
+    ];
+    const attemptedReservationField = reservationSensitiveFields.find((field) => (
+      Object.prototype.hasOwnProperty.call(req.body, field)
+    ));
+    const interruptedReservation = currentStatus === 'Pending'
+      && attemptedReservationField
+      && await hasOutstandingReservations(StockMovement, salesOrder);
+    if ((currentStatus !== 'Pending' || interruptedReservation) && attemptedReservationField) {
+      return res.status(409).json({
+        success: false,
+        code: 'RESERVED_ORDER_STOCK_EDIT_FORBIDDEN',
+        message: `Cannot edit ${attemptedReservationField} while stock is reserved. Use Partial Dispatch for quantity reductions or cancel the order first.`
+      });
+    }
 
     const requestedStatus = req.body.status == null ? currentStatus : String(req.body.status).trim();
     if (requestedStatus !== currentStatus) {
@@ -2485,24 +2569,20 @@ export const updateSalesOrder = async (req, res) => {
           });
         }
 
-        // Validate warehouse stock if warehouse is specified
-        if (item.warehouse) {
-          const stock = await StockMovement.findOne({
-            productId: item.product,
-            warehouseId: item.warehouse
-          });
+        // Validate live stock only for normal Pending orders. Out-of-stock
+        // orders intentionally remain editable while waiting for replenishment.
+        const effectiveOutOfStock = req.body.isOutOfStock ?? salesOrder.isOutOfStock;
+        if (item.warehouse && !effectiveOutOfStock) {
+          const currentStock = await StockMovementService.getCurrentStock(
+            item.product,
+            item.warehouse,
+            req.dbConnection
+          );
 
-          if (!stock) {
+          if (currentStock < item.quantity) {
             return res.status(400).json({
               success: false,
-              message: `Product ${product.itemName} not available in selected warehouse`
-            });
-          }
-
-          if (stock.netStock < item.quantity) {
-            return res.status(400).json({
-              success: false,
-              message: `Insufficient stock for ${product.itemName} in ${stock.warehouse}. Available: ${stock.netStock}`
+              message: `Insufficient stock for ${product.itemName}. Available: ${currentStock}, Required: ${item.quantity}`
             });
           }
         }
@@ -2688,200 +2768,6 @@ export const updateSalesOrder = async (req, res) => {
     const originalStatus = salesOrder.status;
     const newStatus = req.body.status;
 
-    // CRITICAL: Credit limit check when status is being changed to Confirmed
-    if (newStatus === "Confirmed" && originalStatus !== "Confirmed") {
-      // Check both the saved order AND any updated creditOverlimit from this request
-      const effectiveCreditOverlimit = req.body.creditOverlimit || salesOrder.creditOverlimit;
-
-      // Block if flagged as overlimit and not approved (including freshly reset approvals)
-      if (effectiveCreditOverlimit &&
-          effectiveCreditOverlimit.isOverlimit &&
-          !effectiveCreditOverlimit.approvedBy) {
-        return res.status(400).json({
-          success: false,
-          message: `Cannot confirm order - Credit limit exceeded by ₹${(effectiveCreditOverlimit.overlimitAmount || 0).toLocaleString()}. Super Admin approval required.`
-        });
-      }
-
-      // Skip live check if order was already approved by Super Admin
-      const alreadyApproved = effectiveCreditOverlimit &&
-                              effectiveCreditOverlimit.isOverlimit &&
-                              effectiveCreditOverlimit.approvedBy;
-
-      if (!alreadyApproved) {
-        // Live credit limit check in case it was never flagged
-        const dealerForCheck = await Dealer.findById(salesOrder.dealer);
-        if (dealerForCheck && dealerForCheck.creditLimit && dealerForCheck.creditLimit > 0) {
-          const currentOutstanding = await getDealerCreditOutstanding(req.dbConnection, salesOrder.dealer, salesOrder._id);
-          const orderAmount = req.body.products
-            ? req.body.products
-              .filter(isCreditEligibleProduct)
-              .reduce((sum, product) => sum + calculateCanonicalCreditLineAmount(product), 0)
-            : (salesOrder.creditAmount ?? salesOrder.totalAmount);
-          const newOutstanding = currentOutstanding + orderAmount;
-
-          if (newOutstanding > dealerForCheck.creditLimit) {
-            const overlimitAmount = newOutstanding - dealerForCheck.creditLimit;
-            await SalesOrder.findByIdAndUpdate(salesOrder._id, {
-              creditOverlimit: {
-                isOverlimit: true,
-                creditLimit: dealerForCheck.creditLimit,
-                currentOutstanding,
-                orderAmount,
-                newOutstanding,
-                overlimitAmount,
-                requiresApproval: true
-              }
-            });
-            return res.status(400).json({
-              success: false,
-              message: `Cannot confirm order - Credit limit exceeded by ₹${overlimitAmount.toLocaleString()}. Super Admin approval required.`,
-              creditOverlimit: { isOverlimit: true, overlimitAmount, creditLimit: dealerForCheck.creditLimit }
-            });
-          }
-        }
-      }
-    }
-
-    // If status is being changed, handle stock management
-    if (newStatus && newStatus !== originalStatus) {
-      // When changing to Confirmed, Processing, or Delivered, ensure warehouses are selected
-      const statusesRequiringWarehouse = ['Confirmed', 'Processing', 'Delivered'];
-      if (statusesRequiringWarehouse.includes(newStatus)) {
-        const productsToCheck = req.body.products || salesOrder.products;
-        for (const product of productsToCheck) {
-          if (!product.warehouse) {
-            return res.status(400).json({
-              success: false,
-              message: `Warehouse must be selected for all products before updating status to ${newStatus}`
-            });
-          }
-        }
-      }
-
-      // Handle stock management for status changes (reuse logic from updateSalesOrderStatus)
-      // For Confirmed status - block stock
-      if (newStatus === "Confirmed" && originalStatus !== "Confirmed") {
-
-        for (const product of req.body.products || salesOrder.products) {
-          if (product.warehouse) {
-            const latestMovement = await StockMovement.findOne({
-              productId: product.product,
-              warehouseId: product.warehouse
-            }).sort({ date: -1, createdAt: -1 });
-
-            const currentBalance = latestMovement ? latestMovement.balance : 0;
-            const newBalance = currentBalance - product.quantity;
-
-            const blockMovement = new StockMovement({
-              productId: product.product,
-              warehouseId: product.warehouse,
-              type: 'OUT',
-              quantity: product.quantity,
-              balance: newBalance,
-              referenceNo: salesOrder.orderNumber,
-              referenceType: 'SALE',
-              date: new Date(),
-              remarks: `Order ${salesOrder.orderNumber} - Stock Blocked`,
-              createdBy: req.user._id
-            });
-            await blockMovement.save();
-          }
-        }
-      }
-      // For Delivered status - permanently reduce stock
-      else if (newStatus === "Delivered") {
-
-        for (const product of req.body.products || salesOrder.products) {
-          if (product.warehouse) {
-            const latestMovement = await StockMovement.findOne({
-              productId: product.product,
-              warehouseId: product.warehouse
-            }).sort({ date: -1, createdAt: -1 });
-
-            const currentBalance = latestMovement ? latestMovement.balance : 0;
-            if (originalStatus === "Confirmed") {
-              // Step 1: Unblock the previously blocked stock
-              const unblockMovement = new StockMovement({
-                productId: product.product,
-                warehouseId: product.warehouse,
-                type: 'IN',
-                quantity: product.quantity,
-                balance: currentBalance + product.quantity,
-                referenceNo: salesOrder.orderNumber,
-                referenceType: 'SALE',
-                date: new Date(),
-                remarks: `Order ${salesOrder.orderNumber} - Stock Unblocked (Delivered)`,
-                createdBy: req.user._id
-              });
-              await unblockMovement.save();
-
-              // Step 2: Permanently reduce stock
-              const newBalance = currentBalance; // Balance stays same because we unblocked then reduced
-              const deliveryMovement = new StockMovement({
-                productId: product.product,
-                warehouseId: product.warehouse,
-                type: 'OUT',
-                quantity: product.quantity,
-                balance: newBalance,
-                referenceNo: salesOrder.orderNumber,
-                referenceType: 'SALE',
-                date: new Date(),
-                remarks: `Order ${salesOrder.orderNumber} - Delivered (Stock Permanently Reduced)`,
-                createdBy: req.user._id
-              });
-              await deliveryMovement.save();
-            } else {
-              // Direct delivery - reduce stock permanently
-              const newBalance = currentBalance - product.quantity;
-              const deliveryMovement = new StockMovement({
-                productId: product.product,
-                warehouseId: product.warehouse,
-                type: 'OUT',
-                quantity: product.quantity,
-                balance: newBalance,
-                referenceNo: salesOrder.orderNumber,
-                referenceType: 'SALE',
-                date: new Date(),
-                remarks: `Order ${salesOrder.orderNumber} - Delivered (Stock Permanently Reduced)`,
-                createdBy: req.user._id
-              });
-              await deliveryMovement.save();
-            }
-          }
-        }
-      }
-      // For Cancelled/Rejected - restore stock if it was Confirmed
-      else if ((newStatus === "Cancelled" || newStatus === "Rejected") && originalStatus === "Confirmed") {
-
-        for (const product of req.body.products || salesOrder.products) {
-          if (product.warehouse) {
-            const latestMovement = await StockMovement.findOne({
-              productId: product.product,
-              warehouseId: product.warehouse
-            }).sort({ date: -1, createdAt: -1 });
-
-            const currentBalance = latestMovement ? latestMovement.balance : 0;
-            const newBalance = currentBalance + product.quantity;
-
-            const unblockMovement = new StockMovement({
-              productId: product.product,
-              warehouseId: product.warehouse,
-              type: 'IN',
-              quantity: product.quantity,
-              balance: newBalance,
-              referenceNo: salesOrder.orderNumber,
-              referenceType: 'SALE',
-              date: new Date(),
-              remarks: `Order ${salesOrder.orderNumber} - Stock Unblocked (${newStatus})`,
-              createdBy: req.user._id
-            });
-            await unblockMovement.save();
-          }
-        }
-      }
-    }
-
     // Update the sales order
     // Preserve isOutOfStock from existing order if not explicitly set in request
     if (req.body.isOutOfStock === undefined || req.body.isOutOfStock === null) {
@@ -2928,8 +2814,12 @@ export const updateSalesOrder = async (req, res) => {
       req.body.discountFinalizedAt = new Date();
     }
 
-    let updatedOrder = await SalesOrder.findByIdAndUpdate(
-      id,
+    let updatedOrder = await SalesOrder.findOneAndUpdate(
+      {
+        _id: id,
+        status: currentStatus,
+        ...(originalUpdatedAt ? { updatedAt: originalUpdatedAt } : {})
+      },
       req.body,
       {
         new: true,
@@ -2941,6 +2831,14 @@ export const updateSalesOrder = async (req, res) => {
       .populate("products.product")
       .populate("products.warehouse", "name")
       .populate("createdBy", "name email");
+
+    if (!updatedOrder) {
+      return res.status(409).json({
+        success: false,
+        code: 'SALES_ORDER_EDIT_CONFLICT',
+        message: 'Sales Order changed while it was being edited. Refresh and try again.'
+      });
+    }
 
     if (req.body.products
         && !updatedOrder.isExpired
@@ -3114,47 +3012,118 @@ export const updateSalesOrder = async (req, res) => {
   }
 };
 
+export const updateSalesOrder = async (req, res) => {
+  let orderLease = null;
+  try {
+    orderLease = await StockMovementService.acquireStockLeases(
+      req.dbConnection,
+      [`SALES_ORDER:${req.params.id}`]
+    );
+    return await updateSalesOrderUnlocked(req, res);
+  } catch (error) {
+    console.error('Sales Order edit serialization error:', error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code,
+      message: error.statusCode ? error.message : 'Error updating Sales Order',
+      error: error.statusCode ? undefined : error.message
+    });
+  } finally {
+    if (orderLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, orderLease);
+      } catch (releaseError) {
+        console.error('Failed to release Sales Order edit lease:', releaseError.message);
+      }
+    }
+  }
+};
+
 // @desc    Delete sales order
 // @route   DELETE /api/sales-orders/:id
 // @access  Private
 export const deleteSalesOrder = async (req, res) => {
+  let orderLease = null;
+  let stockLease = null;
   try {
-    // Get models from company-specific connection
-    const { SalesOrder } = getModels(req.dbConnection);
-
+    const { SalesOrder, StockMovement } = getModels(req.dbConnection);
     const { id } = req.params;
 
-    // Find the sales order
+    orderLease = await StockMovementService.acquireStockLeases(
+      req.dbConnection,
+      [`SALES_ORDER:${id}`]
+    );
+
     const salesOrder = await SalesOrder.findById(id);
     if (!salesOrder) {
-      return res.status(404).json({
-        success: false,
-        message: "Sales order not found"
-      });
+      return res.status(404).json({ success: false, message: "Sales order not found" });
+    }
+    if (salesOrder.status !== 'Pending') {
+      return res.status(400).json({ success: false, message: "Can only delete pending orders" });
     }
 
-    // Only allow deletion of pending orders
-    if (salesOrder.status !== "Pending") {
-      return res.status(400).json({
-        success: false,
-        message: "Can only delete pending orders"
-      });
-    }
+    stockLease = await StockMovementService.acquireStockLeases(
+      req.dbConnection,
+      salesOrder.products
+        .filter((line) => line.product && line.warehouse)
+        .map((line) => StockMovementService.stockKey(line.product, line.warehouse))
+    );
 
-    // Delete the sales order
-    await SalesOrder.findByIdAndDelete(id);
-
-    res.json({
-      success: true,
-      message: "Sales order deleted successfully"
+    const unexpectedReservation = await StockMovement.exists({
+      referenceNo: salesOrder.orderNumber,
+      referenceType: 'SALE',
+      type: 'OUT',
+      $or: [
+        { movementRole: 'RESERVATION' },
+        { remarks: { $regex: /Stock Blocked/i } }
+      ]
     });
+    if (unexpectedReservation) {
+      return res.status(409).json({
+        success: false,
+        code: 'PENDING_ORDER_HAS_STOCK_RESERVATION',
+        message: 'This Pending order has reservation movements and cannot be deleted. Retry confirmation or reconcile the order first.'
+      });
+    }
+
+    const deletedOrder = await SalesOrder.findOneAndDelete({ _id: id, status: 'Pending' });
+    if (!deletedOrder) {
+      return res.status(409).json({
+        success: false,
+        code: 'SALES_ORDER_DELETE_CONFLICT',
+        message: 'Sales Order status changed while it was being deleted. Refresh and try again.'
+      });
+    }
+
+    try {
+      await StockArrivalService.refreshAllPendingOrders(req.dbConnection);
+    } catch (refreshError) {
+      console.error('Post-delete stock queue refresh failed (non-critical):', refreshError.message);
+    }
+    return res.json({ success: true, message: "Sales order deleted successfully" });
   } catch (error) {
     console.error("Delete Sales Order Error:", error);
-    res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: "Error deleting sales order",
-      error: error.message
+      code: error.code,
+      message: error.statusCode ? error.message : "Error deleting sales order",
+      error: error.statusCode ? undefined : error.message
     });
+  } finally {
+    if (stockLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, stockLease);
+      } catch (releaseError) {
+        console.error('Failed to release Sales Order deletion stock lease:', releaseError.message);
+      }
+    }
+    if (orderLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, orderLease);
+      } catch (releaseError) {
+        console.error('Failed to release Sales Order deletion lifecycle lease:', releaseError.message);
+      }
+    }
   }
 };
 
@@ -3187,7 +3156,7 @@ export const getProductStock = async (req, res) => {
     // Get stock information
     const stock = await StockMovement.find(query)
       .populate("warehouseId", "name code address")
-      .sort({ netStock: -1 })
+      .sort({ date: -1, createdAt: -1 })
       .lean();
 
     // Format response
@@ -3657,7 +3626,7 @@ export const getPendingQuantities = async (req, res) => {
  * Extracted from createSalesOrder for reusability in auto-split logic
  */
 export async function createSingleSalesOrder(dbConnection, orderData, userId, company = null) {
-  const { SalesOrder, Product, Dealer, StockMovement, User, Notification, Warehouse } = getModels(dbConnection);
+  const { SalesOrder, Product, Dealer, User, Notification, Warehouse } = getModels(dbConnection);
 
   const {
     dealer,
@@ -3749,13 +3718,14 @@ export async function createSingleSalesOrder(dbConnection, orderData, userId, co
       // For out-of-stock orders, skip stock validation
       if (!isOutOfStock) {
         // For regular orders, validate stock availability
-        const stock = await StockMovement.findOne({
-          productId: item.product,
-          warehouseId: item.warehouse
-        });
+        const currentStock = await StockMovementService.getCurrentStock(
+          item.product,
+          item.warehouse,
+          dbConnection
+        );
 
-        if (stock && stock.netStock < item.quantity) {
-          throw new Error(`Insufficient stock for ${product.itemName} in ${warehouse.name}. Available: ${stock.netStock}, Required: ${item.quantity}`);
+        if (currentStock < item.quantity) {
+          throw new Error(`Insufficient stock for ${product.itemName} in ${warehouse.name}. Available: ${currentStock}, Required: ${item.quantity}`);
         }
       }
 
@@ -3912,6 +3882,11 @@ export async function createSingleSalesOrder(dbConnection, orderData, userId, co
 
   // Save sales order
   await salesOrder.save();
+  try {
+    await StockArrivalService.refreshAllPendingOrders(dbConnection);
+  } catch (refreshError) {
+    console.error('Split Sales Order stock queue refresh failed (non-critical):', refreshError.message);
+  }
 
   const notificationTitle = 'Sales Order Created';
   const notificationMessage = `Sales order ${salesOrder.orderNumber} has been created for you. Total: Rs. ${(salesOrder.totalAmount || 0).toLocaleString('en-IN')}.`;
@@ -3949,65 +3924,6 @@ export async function createSingleSalesOrder(dbConnection, orderData, userId, co
     }
   } catch (notificationError) {
     console.error('Split Sales Order notification failed:', notificationError.message);
-  }
-
-  // Handle stock updates based on initial status (only for in-stock orders)
-  if (!isOutOfStock) {
-    if (salesOrder.status === "Confirmed") {
-      console.log("Order created with Confirmed status - blocking stock");
-      for (const product of salesOrder.products) {
-        if (product.warehouse) {
-          const latestMovement = await StockMovement.findOne({
-            productId: product.product,
-            warehouseId: product.warehouse
-          }).sort({ date: -1, createdAt: -1 });
-
-          const currentBalance = latestMovement ? latestMovement.balance : 0;
-          const newBalance = currentBalance - product.quantity;
-
-          const blockMovement = new StockMovement({
-            productId: product.product,
-            warehouseId: product.warehouse,
-            type: 'OUT',
-            quantity: product.quantity,
-            balance: newBalance,
-            referenceNo: salesOrder.orderNumber,
-            referenceType: 'SALE',
-            date: new Date(),
-            remarks: `Order ${salesOrder.orderNumber} - Stock Blocked`,
-            createdBy: userId
-          });
-          await blockMovement.save();
-        }
-      }
-    } else if (salesOrder.status === "Delivered") {
-      console.log("Order created with Delivered status - permanently reducing stock");
-      for (const product of salesOrder.products) {
-        if (product.warehouse) {
-          const latestMovement = await StockMovement.findOne({
-            productId: product.product,
-            warehouseId: product.warehouse
-          }).sort({ date: -1, createdAt: -1 });
-
-          const currentBalance = latestMovement ? latestMovement.balance : 0;
-          const newBalance = currentBalance - product.quantity;
-
-          const deliveryMovement = new StockMovement({
-            productId: product.product,
-            warehouseId: product.warehouse,
-            type: 'OUT',
-            quantity: product.quantity,
-            balance: newBalance,
-            referenceNo: salesOrder.orderNumber,
-            referenceType: 'SALE',
-            date: new Date(),
-            remarks: `Order ${salesOrder.orderNumber} - Delivered (Stock Permanently Reduced)`,
-            createdBy: userId
-          });
-          await deliveryMovement.save();
-        }
-      }
-    }
   }
 
   // Populate the created order for response
@@ -4206,10 +4122,16 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
 // @route   PATCH /api/sales-orders/:id/set-expiry
 // @access  Private
 export const setOrderExpiry = async (req, res) => {
+  let orderLease = null;
   try {
     const { SalesOrder } = getModels(req.dbConnection);
     const { expiryDate, reason } = req.body;
     const { id } = req.params;
+
+    orderLease = await StockMovementService.acquireStockLeases(
+      req.dbConnection,
+      [`SALES_ORDER:${id}`]
+    );
 
     if (!expiryDate) {
       return res.status(400).json({
@@ -4267,11 +4189,20 @@ export const setOrderExpiry = async (req, res) => {
     });
   } catch (error) {
     console.error("Set Order Expiry Error:", error);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       success: false,
-      message: "Error setting expiry date",
-      error: error.message
+      code: error.code,
+      message: error.statusCode ? error.message : "Error setting expiry date",
+      error: error.statusCode ? undefined : error.message
     });
+  } finally {
+    if (orderLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, orderLease);
+      } catch (releaseError) {
+        console.error('Failed to release set-expiry Sales Order lease:', releaseError.message);
+      }
+    }
   }
 };
 
@@ -4279,10 +4210,16 @@ export const setOrderExpiry = async (req, res) => {
 // @route   PATCH /api/sales-orders/:id/extend-expiry
 // @access  Private
 export const extendOrderExpiry = async (req, res) => {
+  let orderLease = null;
   try {
-    const { SalesOrder } = getModels(req.dbConnection);
+    const { SalesOrder, StockMovement } = getModels(req.dbConnection);
     const { newExpiryDate, reason } = req.body;
     const { id } = req.params;
+
+    orderLease = await StockMovementService.acquireStockLeases(
+      req.dbConnection,
+      [`SALES_ORDER:${id}`]
+    );
 
     if (!newExpiryDate) {
       return res.status(400).json({
@@ -4296,6 +4233,22 @@ export const extendOrderExpiry = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "Sales order not found"
+      });
+    }
+
+    if (!['Pending', 'Expired'].includes(salesOrder.status)) {
+      return res.status(409).json({
+        success: false,
+        code: 'ONLY_PENDING_OR_EXPIRED_ORDER_CAN_EXTEND_EXPIRY',
+        message: 'Expiry can only be extended for Pending or Expired Sales Orders.'
+      });
+    }
+    if (salesOrder.status === 'Expired'
+        && await hasOutstandingReservations(StockMovement, salesOrder)) {
+      return res.status(409).json({
+        success: false,
+        code: 'PENDING_ORDER_HAS_STOCK_RESERVATION',
+        message: 'This expired order has unresolved reservation movements and cannot be reopened until they are reconciled.'
       });
     }
 
@@ -4334,8 +4287,9 @@ export const extendOrderExpiry = async (req, res) => {
     salesOrder.expiryExtendedCount += 1;
     salesOrder.isExpired = false; // Reset if was expired
 
-    // Both automatic expiry (Expired) and manual expiry (Cancelled) reopen to Pending.
-    if (wasExpired && ['Expired', 'Cancelled'].includes(salesOrder.status)) {
+    // An expired order can be reopened under the lifecycle lease. Cancelled
+    // orders stay terminal and must be recreated instead of silently reopened.
+    if (wasExpired && salesOrder.status === 'Expired') {
       salesOrder.status = "Pending";
     }
 
@@ -4355,11 +4309,20 @@ export const extendOrderExpiry = async (req, res) => {
     });
   } catch (error) {
     console.error("Extend Order Expiry Error:", error);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       success: false,
-      message: "Error extending expiry date",
-      error: error.message
+      code: error.code,
+      message: error.statusCode ? error.message : "Error extending expiry date",
+      error: error.statusCode ? undefined : error.message
     });
+  } finally {
+    if (orderLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, orderLease);
+      } catch (releaseError) {
+        console.error('Failed to release extend-expiry Sales Order lease:', releaseError.message);
+      }
+    }
   }
 };
 
@@ -4367,56 +4330,106 @@ export const extendOrderExpiry = async (req, res) => {
 // @route   PATCH /api/sales-orders/:id/expire-now
 // @access  Private
 export const expireOrderNow = async (req, res) => {
+  let orderLease = null;
   try {
-    const { SalesOrder } = getModels(req.dbConnection);
+    const { SalesOrder, StockMovement } = getModels(req.dbConnection);
     const { reason } = req.body;
     const { id } = req.params;
 
-    const salesOrder = await SalesOrder.findById(id);
+    orderLease = await StockMovementService.acquireStockLeases(
+      req.dbConnection,
+      [`SALES_ORDER:${id}`]
+    );
+
+    const salesOrder = await SalesOrder.findById(id).lean();
     if (!salesOrder) {
       return res.status(404).json({
         success: false,
         message: "Sales order not found"
       });
     }
-
+    if (salesOrder.status !== 'Pending') {
+      return res.status(409).json({
+        success: false,
+        code: 'ONLY_PENDING_ORDER_CAN_EXPIRE',
+        message: 'Only Pending Sales Orders can be expired. Cancel a reserved order through the normal status action so stock is released safely.'
+      });
+    }
     if (salesOrder.isExpired) {
       return res.status(400).json({
         success: false,
         message: "Order is already expired"
       });
     }
+    if (await hasOutstandingReservations(StockMovement, salesOrder)) {
+      return res.status(409).json({
+        success: false,
+        code: 'PENDING_ORDER_HAS_STOCK_RESERVATION',
+        message: 'This Pending order has reservation movements. Retry confirmation or cancel/reject it through the normal status action so stock is released.'
+      });
+    }
 
-    // Add to expiry history
-    salesOrder.expiryHistory.push({
-      action: 'expired',
-      previousDate: salesOrder.expiryDate,
-      newDate: new Date(),
-      reason: reason || 'Manually expired',
-      performedBy: req.user._id,
-      performedAt: new Date()
-    });
+    const expiredAt = new Date();
+    const expiryReason = String(reason || 'Manually expired').trim();
+    const expiredOrder = await SalesOrder.findOneAndUpdate(
+      { _id: id, status: 'Pending', isExpired: { $ne: true } },
+      {
+        $set: {
+          isExpired: true,
+          expiredAt,
+          status: 'Expired',
+          stockAvailable: false,
+          remarks: `${salesOrder.remarks || ''} [EXPIRED: ${expiryReason}]`.trim()
+        },
+        $push: {
+          expiryHistory: {
+            action: 'expired',
+            previousDate: salesOrder.expiryDate,
+            newDate: expiredAt,
+            reason: expiryReason,
+            performedBy: req.user._id,
+            performedAt: expiredAt
+          }
+        }
+      },
+      { new: true, runValidators: true }
+    );
 
-    salesOrder.isExpired = true;
-    salesOrder.expiredAt = new Date();
-    salesOrder.status = "Cancelled"; // Auto-cancel expired orders
-    salesOrder.stockAvailable = false;
-    salesOrder.remarks = (salesOrder.remarks || '') + ` [EXPIRED: ${reason || 'Manually expired'}]`;
+    if (!expiredOrder) {
+      return res.status(409).json({
+        success: false,
+        code: 'SALES_ORDER_EXPIRY_CONFLICT',
+        message: 'Sales Order changed while expiry was being applied. Refresh and try again.'
+      });
+    }
 
-    await salesOrder.save();
+    try {
+      await StockArrivalService.refreshAllPendingOrders(req.dbConnection);
+    } catch (refreshError) {
+      console.error('Post-expiry stock queue refresh failed (non-critical):', refreshError.message);
+    }
 
-    res.json({
+    return res.json({
       success: true,
-      message: "Order expired successfully",
-      salesOrder
+      message: 'Order expired successfully',
+      salesOrder: expiredOrder
     });
   } catch (error) {
     console.error("Expire Order Now Error:", error);
-    res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: "Error expiring order",
-      error: error.message
+      code: error.code,
+      message: error.statusCode ? error.message : "Error expiring order",
+      error: error.statusCode ? undefined : error.message
     });
+  } finally {
+    if (orderLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, orderLease);
+      } catch (releaseError) {
+        console.error('Failed to release manual-expiry Sales Order lease:', releaseError.message);
+      }
+    }
   }
 };
 
@@ -4479,16 +4492,30 @@ export const getOrdersExpiringSoon = async (req, res) => {
 // @route   PATCH /api/sales-orders/:id/cancel-expiry
 // @access  Private
 export const cancelOrderExpiry = async (req, res) => {
+  let orderLease = null;
   try {
     const { SalesOrder } = getModels(req.dbConnection);
     const { reason } = req.body;
     const { id } = req.params;
+
+    orderLease = await StockMovementService.acquireStockLeases(
+      req.dbConnection,
+      [`SALES_ORDER:${id}`]
+    );
 
     const salesOrder = await SalesOrder.findById(id);
     if (!salesOrder) {
       return res.status(404).json({
         success: false,
         message: "Sales order not found"
+      });
+    }
+
+    if (salesOrder.status !== 'Pending') {
+      return res.status(409).json({
+        success: false,
+        code: 'ONLY_PENDING_ORDER_CAN_CANCEL_EXPIRY',
+        message: 'Expiry can only be cancelled while the Sales Order is Pending.'
       });
     }
 
@@ -4522,11 +4549,20 @@ export const cancelOrderExpiry = async (req, res) => {
     });
   } catch (error) {
     console.error("Cancel Order Expiry Error:", error);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       success: false,
-      message: "Error cancelling expiry",
-      error: error.message
+      code: error.code,
+      message: error.statusCode ? error.message : "Error cancelling expiry",
+      error: error.statusCode ? undefined : error.message
     });
+  } finally {
+    if (orderLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, orderLease);
+      } catch (releaseError) {
+        console.error('Failed to release cancel-expiry Sales Order lease:', releaseError.message);
+      }
+    }
   }
 };
 
@@ -4808,7 +4844,7 @@ export const checkStockAvailabilityForOutOfStockOrders = async (req, res) => {
 // Auto-expire orders that have passed their expiry date
 export const autoExpireOrders = async (req, res) => {
   try {
-    const { SalesOrder } = getModels(req.dbConnection);
+    const { SalesOrder, StockMovement } = getModels(req.dbConnection);
     const now = new Date();
 
     // Find all orders with expiry date in the past that are not yet expired
@@ -4821,25 +4857,66 @@ export const autoExpireOrders = async (req, res) => {
     let expiredCount = 0;
 
     for (const order of ordersToExpire) {
-      order.isExpired = true;
-      order.expiredAt = now;
-      order.status = "Expired"; // Change status to Expired
-      order.stockAvailable = false;
+      let orderLease = null;
+      try {
+        orderLease = await StockMovementService.acquireStockLeases(
+          req.dbConnection,
+          [`SALES_ORDER:${order._id}`]
+        );
 
-      order.expiryHistory.push({
-        action: 'expired',
-        previousDate: order.expiryDate,
-        newDate: null,
-        reason: 'Order automatically expired after deadline passed',
-        performedBy: null, // System action
-        performedAt: now
-      });
+        if (await hasOutstandingReservations(StockMovement, order)) {
+          console.warn(`Skipping expiry for ${order.orderNumber}: unresolved stock reservation exists.`);
+          continue;
+        }
 
-      await order.save();
-      expiredCount++;
+        const expiredOrder = await SalesOrder.findOneAndUpdate(
+          {
+            _id: order._id,
+            expiryDate: { $lt: now },
+            isExpired: false,
+            status: 'Pending'
+          },
+          {
+            $set: {
+              isExpired: true,
+              expiredAt: now,
+              status: 'Expired',
+              stockAvailable: false
+            },
+            $push: {
+              expiryHistory: {
+                action: 'expired',
+                previousDate: order.expiryDate,
+                newDate: null,
+                reason: 'Order automatically expired after deadline passed',
+                performedBy: null,
+                performedAt: now
+              }
+            }
+          },
+          { new: true, runValidators: true }
+        );
+        if (expiredOrder) expiredCount++;
+      } finally {
+        if (orderLease) {
+          try {
+            await StockMovementService.releaseStockLeases(req.dbConnection, orderLease);
+          } catch (releaseError) {
+            console.error('Failed to release auto-expiry Sales Order lease:', releaseError.message);
+          }
+        }
+      }
     }
 
     console.log(`✅ Auto-expired ${expiredCount} orders`);
+
+    if (expiredCount > 0) {
+      try {
+        await StockArrivalService.refreshAllPendingOrders(req.dbConnection);
+      } catch (refreshError) {
+        console.error('Auto-expiry stock queue refresh failed (non-critical):', refreshError.message);
+      }
+    }
 
     res.json({
       success: true,
@@ -5056,6 +5133,8 @@ export const autoRefreshAllStockStatus = async (req, res) => {
 // @access  Private
 export const partialDispatch = async (req, res) => {
   let session = null;
+  let orderLease = null;
+  let stockLease = null;
   class PartialDispatchHttpError extends Error {
     constructor(status, payload) {
       super(payload.message);
@@ -5071,6 +5150,23 @@ export const partialDispatch = async (req, res) => {
     const { products, action } = req.body;
     // products: [{ productId, newQty, reason }]
     // action: 'new_order' | 'deviation'
+
+    orderLease = await StockMovementService.acquireStockLeases(
+      req.dbConnection,
+      [`SALES_ORDER:${id}`]
+    );
+
+    const leaseSource = await SalesOrder.findById(id)
+      .select('products.product products.warehouse')
+      .lean();
+    if (leaseSource) {
+      stockLease = await StockMovementService.acquireStockLeases(
+        req.dbConnection,
+        (leaseSource.products || [])
+          .filter((line) => line.product && line.warehouse)
+          .map((line) => StockMovementService.stockKey(line.product, line.warehouse))
+      );
+    }
 
     session = await req.dbConnection.startSession();
     const transactionResult = await session.withTransaction(async () => {
@@ -5203,6 +5299,17 @@ export const partialDispatch = async (req, res) => {
       dispatchPlans.push({ update, orderProduct, newQty, sourceLineId });
     }
 
+    await StockMovementService.acquireStockLocks(
+      req.dbConnection,
+      dispatchPlans
+        .filter(({ orderProduct }) => orderProduct.warehouse)
+        .map(({ orderProduct }) => StockMovementService.stockKey(
+          orderProduct.product,
+          orderProduct.warehouse
+        )),
+      session
+    );
+
     const deviations = [];
     const remainingProducts = []; // for new order
 
@@ -5214,28 +5321,27 @@ export const partialDispatch = async (req, res) => {
 
       // Unblock the reduced qty from stock (for qty=0 this unblocks the full original qty)
       if (orderProduct.warehouse) {
-        const latestMovement = await StockMovement.findOne({
-          productId: orderProduct.product,
-          warehouseId: orderProduct.warehouse
-        }).sort({ date: -1, createdAt: -1 }).session(session);
-
-        const currentBalance = latestMovement ? latestMovement.balance : 0;
-        const newBalance = currentBalance + reducedQty;
-
-        await new StockMovement({
+        await StockMovementService.appendMovements([{
           productId: orderProduct.product,
           warehouseId: orderProduct.warehouse,
           type: 'IN',
           quantity: reducedQty,
-          balance: newBalance,
           referenceNo: salesOrder.orderNumber,
           referenceType: 'SALE',
+          operationKey: `SO:${salesOrder._id}:PARTIAL_RELEASE:${orderProduct._id}:${originalQty}:${newQty}`,
+          movementRole: 'RESERVATION_RELEASE',
+          salesOrder: salesOrder._id,
+          salesOrderLine: orderProduct._id,
           date: new Date(),
           remarks: newQty === 0
             ? `Stock Fully Unblocked - Order ${salesOrder.orderNumber} (product skipped in dispatch)`
             : `Stock Unblocked - Order ${salesOrder.orderNumber} Partial Dispatch (${originalQty} → ${newQty})`,
           createdBy: req.user._id
-        }).save({ session });
+        }], {
+          dbConnection: req.dbConnection,
+          session,
+          locksAcquired: true
+        });
       }
 
       if (newQty === 0) {
@@ -5410,9 +5516,21 @@ export const partialDispatch = async (req, res) => {
       return {
         deviationCount: deviations.length,
         deviations,
+        stockKeys: dispatchPlans
+          .filter(({ orderProduct }) => orderProduct.warehouse)
+          .map(({ orderProduct }) => ({
+            productId: orderProduct.product,
+            warehouseId: orderProduct.warehouse
+          })),
         newOrder: newOrder ? { orderNumber: newOrder.orderNumber, _id: newOrder._id } : null
       };
     });
+
+    try {
+      await StockArrivalService.refreshStockKeys(transactionResult.stockKeys, req.dbConnection);
+    } catch (refreshError) {
+      console.error('Partial-dispatch stock queue refresh failed:', refreshError.message);
+    }
 
     const updatedOrder = await SalesOrder.findById(id)
       .populate('dealer', 'name code')
@@ -5444,6 +5562,20 @@ export const partialDispatch = async (req, res) => {
     }
   } finally {
     if (session) await session.endSession();
+    if (stockLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, stockLease);
+      } catch (releaseError) {
+        console.error('Failed to release partial-dispatch stock lease:', releaseError.message);
+      }
+    }
+    if (orderLease) {
+      try {
+        await StockMovementService.releaseStockLeases(req.dbConnection, orderLease);
+      } catch (releaseError) {
+        console.error('Failed to release partial-dispatch Sales Order lease:', releaseError.message);
+      }
+    }
   }
 };
 

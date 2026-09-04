@@ -113,6 +113,15 @@ const dealerLedgerSchema = new mongoose.Schema({
     required: true
   },
   
+  // Voucher source fields. These make voucher-origin ledger entries traceable and
+  // allow combined reports to avoid counting the same financial event twice.
+  referenceType: String,
+  referenceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Voucher'
+  },
+  referenceNumber: String,
+
   // Additional Information
   description: String,
   remarks: String,
