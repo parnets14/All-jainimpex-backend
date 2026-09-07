@@ -394,176 +394,312 @@ export const getProduct = async (req, res) => {
   }
 };
 
+const PRODUCT_TEXT_FIELDS = [
+  "productCode",
+  "HSNCode",
+  "itemName",
+  "aliasName",
+  "description",
+  "unit",
+  "alternateUnit",
+  "internalRate",
+];
+const PRODUCT_RELATION_FIELDS = [
+  "brand",
+  "category",
+  "subcategory",
+  "subcategory1",
+  "subcategory2",
+  "subcategory3",
+  "subcategory4",
+  "subcategory5",
+];
+const PRODUCT_NUMERIC_FIELDS = [
+  "alternateUnitQuantity",
+  "unitPrice",
+  "mrp",
+  "gst",
+  "minStockLevel",
+];
+const EXTENDED_SUBCATEGORY_FIELDS = [
+  "subcategory1",
+  "subcategory2",
+  "subcategory3",
+  "subcategory4",
+  "subcategory5",
+];
+
+const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+
+const productInputError = (message) => {
+  const error = new Error(message);
+  error.statusCode = 400;
+  return error;
+};
+
+const parseFiniteNumber = (value, label, { allowNull = false } = {}) => {
+  if (value === "" || value === null || value === undefined) {
+    if (allowNull) return null;
+    throw productInputError(`${label} is required`);
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw productInputError(`${label} must be a valid number`);
+  }
+  return parsed;
+};
+
+const normalizeRateSlabs = (rateSlabs, unitPrice) => {
+  if (rateSlabs === undefined || rateSlabs === null || rateSlabs.length === 0) {
+    return [{ quantity: 1, rate: unitPrice, amount: unitPrice }];
+  }
+  if (!Array.isArray(rateSlabs)) {
+    throw productInputError("Rate slabs must be an array");
+  }
+
+  return rateSlabs.map((slab, index) => {
+    const quantity = parseFiniteNumber(slab?.quantity, `Rate slab ${index + 1} quantity`);
+    const rate = parseFiniteNumber(slab?.rate, `Rate slab ${index + 1} rate`);
+    if (quantity <= 0 || rate <= 0) {
+      throw productInputError(`Rate slab ${index + 1} quantity and rate must be greater than zero`);
+    }
+    return { quantity, rate, amount: quantity * rate };
+  });
+};
+
+const normalizeProductInput = (body, { partial = false, existingProduct = null } = {}) => {
+  const normalized = {};
+
+  PRODUCT_TEXT_FIELDS.forEach((field) => {
+    if (!partial || hasOwn(body, field)) {
+      const value = typeof body[field] === "string" ? body[field].trim() : body[field];
+      normalized[field] = value || (field === "aliasName" ? "" : undefined);
+    }
+  });
+
+  PRODUCT_RELATION_FIELDS.forEach((field) => {
+    if (!partial || hasOwn(body, field)) {
+      normalized[field] = body[field] || undefined;
+    }
+  });
+
+  PRODUCT_NUMERIC_FIELDS.forEach((field) => {
+    if (!partial || hasOwn(body, field)) {
+      normalized[field] = parseFiniteNumber(body[field], field, {
+        allowNull: [
+          "mrp",
+          "unitPrice",
+          "alternateUnitQuantity",
+          "minStockLevel",
+        ].includes(field),
+      });
+    }
+  });
+
+  ["status", "salesType", "productType"].forEach((field) => {
+    if (!partial || hasOwn(body, field)) normalized[field] = body[field];
+  });
+  if (!partial || hasOwn(body, "images")) {
+    normalized.images = Array.isArray(body.images) ? body.images : [];
+  }
+
+  if (!partial) {
+    normalized.status = normalized.status || "active";
+    normalized.salesType = normalized.salesType || "Regular Sale";
+    normalized.productType = normalized.productType || "Regular Product";
+    normalized.minStockLevel ??= 0;
+    normalized.gst = parseFiniteNumber(body.gst, "GST");
+  }
+
+  const effective = {
+    ...(existingProduct ? existingProduct.toObject() : {}),
+    ...normalized,
+  };
+
+  if (!effective.itemName?.trim()) throw productInputError("Item Name is required");
+  if (!effective.unit?.trim()) throw productInputError("Unit is required");
+  if (!effective.brand || !effective.category || !effective.subcategory) {
+    throw productInputError("Brand, category and subcategory are required");
+  }
+
+  const gst = parseFiniteNumber(effective.gst, "GST");
+  if (gst < 0 || gst > 100) throw productInputError("GST must be between 0 and 100");
+  if (!partial || hasOwn(body, "gst")) normalized.gst = gst;
+
+  const minStockLevel = parseFiniteNumber(effective.minStockLevel ?? 0, "Minimum stock level");
+  if (minStockLevel < 0) throw productInputError("Minimum stock level cannot be negative");
+  if (!partial || hasOwn(body, "minStockLevel")) normalized.minStockLevel = minStockLevel;
+
+  if (effective.alternateUnit) {
+    const alternateQuantity = parseFiniteNumber(
+      effective.alternateUnitQuantity,
+      "Alternate unit quantity"
+    );
+    if (alternateQuantity <= 0) {
+      throw productInputError("Alternate unit quantity must be greater than zero");
+    }
+    normalized.alternateUnitQuantity = alternateQuantity;
+  } else if (!partial || hasOwn(body, "alternateUnit")) {
+    normalized.alternateUnit = undefined;
+    normalized.alternateUnitQuantity = undefined;
+  }
+
+  const effectiveMrp = effective.mrp === "" || effective.mrp === undefined
+    ? null
+    : effective.mrp;
+  const pricingChanged = !partial || ["mrp", "unitPrice", "gst"].some((field) => hasOwn(body, field));
+  let effectiveUnitPrice;
+  if (effectiveMrp !== null) {
+    const parsedMrp = parseFiniteNumber(effectiveMrp, "MRP");
+    if (parsedMrp <= 0) throw productInputError("MRP must be greater than zero");
+    effectiveUnitPrice = Number((parsedMrp / (1 + gst / 100)).toFixed(2));
+    if (pricingChanged) {
+      normalized.mrp = parsedMrp;
+      normalized.unitPrice = effectiveUnitPrice;
+    }
+  } else {
+    effectiveUnitPrice = parseFiniteNumber(effective.unitPrice, "Unit price");
+    if (effectiveUnitPrice <= 0) throw productInputError("Unit price must be greater than zero");
+    if (!partial || hasOwn(body, "unitPrice")) normalized.unitPrice = effectiveUnitPrice;
+    if (hasOwn(body, "mrp")) normalized.mrp = null;
+  }
+
+  const existingUnitPrice = Number(existingProduct?.unitPrice);
+  const unitPriceChanged = partial
+    && pricingChanged
+    && (!Number.isFinite(existingUnitPrice) || Math.abs(existingUnitPrice - effectiveUnitPrice) > 0.005);
+
+  if (!partial || hasOwn(body, "rateSlabs")) {
+    normalized.rateSlabs = normalizeRateSlabs(body.rateSlabs, effectiveUnitPrice);
+  } else if (unitPriceChanged) {
+    const existingSlabs = Array.isArray(effective.rateSlabs) ? effective.rateSlabs : [];
+    const onlySlab = existingSlabs[0];
+    const hasDefaultSlab = existingSlabs.length === 1
+      && Number(onlySlab?.quantity) === 1
+      && Math.abs(Number(onlySlab?.rate) - existingUnitPrice) <= 0.005;
+
+    if (!hasDefaultSlab) {
+      throw productInputError(
+        "Rate slabs are required when changing the price of a product with custom rate slabs"
+      );
+    }
+    normalized.rateSlabs = normalizeRateSlabs(undefined, effectiveUnitPrice);
+  } else if (!Array.isArray(effective.rateSlabs) || effective.rateSlabs.length === 0) {
+    normalized.rateSlabs = normalizeRateSlabs(undefined, effectiveUnitPrice);
+  }
+
+  return normalized;
+};
+
+const validateProductHierarchy = async (models, hierarchy) => {
+  const { Category, Subcategory, ExtendedSubcategory, Brand } = models;
+  const requiredIds = [hierarchy.brand, hierarchy.category, hierarchy.subcategory];
+  const extendedIds = EXTENDED_SUBCATEGORY_FIELDS.map((field) => hierarchy[field]).filter(Boolean);
+  const allIds = [...requiredIds, ...extendedIds];
+  if (allIds.some((id) => !mongoose.isValidObjectId(id))) {
+    throw productInputError("One or more hierarchy selections are invalid");
+  }
+
+  const [brandDoc, categoryDoc, subcategoryDoc, extendedDocs] = await Promise.all([
+    Brand.findById(hierarchy.brand),
+    Category.findById(hierarchy.category),
+    Subcategory.findById(hierarchy.subcategory),
+    extendedIds.length ? ExtendedSubcategory.find({ _id: { $in: extendedIds } }) : [],
+  ]);
+
+  if (!brandDoc) throw productInputError("Brand not found");
+  if (!categoryDoc) throw productInputError("Category not found");
+  if (!subcategoryDoc) throw productInputError("Subcategory not found");
+  if (categoryDoc.brand?.toString() !== hierarchy.brand.toString()) {
+    throw productInputError("Category does not belong to the selected brand");
+  }
+  if (
+    subcategoryDoc.brand?.toString() !== hierarchy.brand.toString() ||
+    subcategoryDoc.category?.toString() !== hierarchy.category.toString()
+  ) {
+    throw productInputError("Subcategory does not belong to the selected brand and category");
+  }
+
+  const extendedById = new Map(extendedDocs.map((doc) => [doc._id.toString(), doc]));
+  let previousId = null;
+  let gapFound = false;
+  for (let index = 0; index < EXTENDED_SUBCATEGORY_FIELDS.length; index += 1) {
+    const field = EXTENDED_SUBCATEGORY_FIELDS[index];
+    const selectedId = hierarchy[field];
+    if (!selectedId) {
+      gapFound = true;
+      previousId = null;
+      continue;
+    }
+    if (gapFound) {
+      throw productInputError(`Extended subcategory level ${index + 1} requires level ${index}`);
+    }
+
+    const doc = extendedById.get(selectedId.toString());
+    if (!doc) throw productInputError(`Extended subcategory level ${index + 1} not found`);
+    if (doc.level !== index + 1) {
+      throw productInputError(`Selected extended subcategory must be level ${index + 1}`);
+    }
+    if (
+      doc.brand?.toString() !== hierarchy.brand.toString() ||
+      doc.category?.toString() !== hierarchy.category.toString() ||
+      doc.subcategory?.toString() !== hierarchy.subcategory.toString()
+    ) {
+      throw productInputError(
+        `Extended subcategory level ${index + 1} does not belong to the selected hierarchy`
+      );
+    }
+
+    const parentId = doc.parentExtendedSubcategory?.toString() || null;
+    if ((index === 0 && parentId !== null) || (index > 0 && parentId !== previousId)) {
+      throw productInputError(`Extended subcategory level ${index + 1} has an invalid parent`);
+    }
+    previousId = selectedId.toString();
+  }
+};
+
+const duplicateProductResponse = (res, error) => {
+  if (error?.code !== 11000) return false;
+  const duplicateField = Object.keys(error.keyPattern || error.keyValue || {})[0] || "product code";
+  res.status(409).json({
+    success: false,
+    message: duplicateField === "productCode"
+      ? "Product code already exists"
+      : `A product with the same ${duplicateField} already exists`,
+  });
+  return true;
+};
+
 // @desc    Create product
 // @route   POST /api/products
 // @access  Private
 export const createProduct = async (req, res) => {
   try {
-    // Get models from company-specific connection
-    const { Product, Category, Subcategory, ExtendedSubcategory, Brand } = getModels(req.dbConnection);
-    
-    const {
-      productCode,
-      HSNCode,
-      itemName,
-      aliasName,
-      description,
-      unit,
-      alternateUnit,
-      alternateUnitQuantity,
-      unitPrice,
-      gst,
-      brand,
-      category,
-      subcategory,
-      subcategory1,
-      subcategory2,
-      subcategory3,
-      subcategory4,
-      subcategory5,
-      rateSlabs,
-      minStockLevel,
-      images,
-      salesType, // FIX: Added missing salesType
-      productType, // FIX: Added missing productType
-      internalRate,
-    } = req.body;
+    const models = getModels(req.dbConnection);
+    const { Product } = models;
+    const productData = normalizeProductInput(req.body);
 
-    // Convert empty productCode to undefined for auto-generation
-    const finalProductCode =
-      productCode && productCode.trim() !== "" ? productCode : undefined;
+    await validateProductHierarchy(models, productData);
 
-    // Check if product code already exists
-    if (finalProductCode) {
+    if (productData.productCode) {
       const existingProduct = await Product.findOne({
-        productCode: finalProductCode,
-      });
+        productCode: productData.productCode,
+      }).select("_id");
       if (existingProduct) {
-        return res.status(400).json({
+        return res.status(409).json({
           success: false,
           message: "Product code already exists",
         });
       }
     }
 
-    // Validate required relationships
-    const categoryExists = await Category.findById(category);
-    if (!categoryExists) {
-      return res.status(400).json({
-        success: false,
-        message: "Category not found",
-      });
-    }
-
-    const subcategoryExists = await Subcategory.findById(subcategory);
-    if (!subcategoryExists) {
-      return res.status(400).json({
-        success: false,
-        message: "Subcategory not found",
-      });
-    }
-
-    const brandExists = await Brand.findById(brand);
-    if (!brandExists) {
-      return res.status(400).json({
-        success: false,
-        message: "Brand not found",
-      });
-    }
-
-    // Verify subcategory belongs to category
-    if (subcategoryExists.category.toString() !== category) {
-      return res.status(400).json({
-        success: false,
-        message: "Subcategory does not belong to the selected category",
-      });
-    }
-
-    // Verify category belongs to brand (brand-first hierarchy)
-    if (categoryExists.brand.toString() !== brand) {
-      return res.status(400).json({
-        success: false,
-        message: "Category does not belong to the selected brand",
-      });
-    }
-
-    // Verify subcategory belongs to brand (brand-first hierarchy)
-    if (subcategoryExists.brand.toString() !== brand) {
-      return res.status(400).json({
-        success: false,
-        message: "Subcategory does not belong to the selected brand",
-      });
-    }
-
-    // Validate extended subcategories if provided
-    const extendedSubcategories = [
-      subcategory1,
-      subcategory2,
-      subcategory3,
-      subcategory4,
-      subcategory5,
-    ];
-    for (let i = 0; i < extendedSubcategories.length; i++) {
-      if (extendedSubcategories[i]) {
-        const extSubcat = await ExtendedSubcategory.findById(
-          extendedSubcategories[i]
-        );
-        if (!extSubcat) {
-          return res.status(400).json({
-            success: false,
-            message: `Extended subcategory ${i + 1} not found`,
-          });
-        }
-
-        // Verify it belongs to the correct brand, category and subcategory
-        if (
-          extSubcat.brand.toString() !== brand ||
-          extSubcat.category.toString() !== category ||
-          extSubcat.subcategory.toString() !== subcategory
-        ) {
-          return res.status(400).json({
-            success: false,
-            message: `Extended subcategory ${
-              i + 1
-            } does not belong to the selected brand, category and subcategory`,
-          });
-        }
-      }
-    }
-
     const product = new Product({
-      productCode: finalProductCode,
-      HSNCode,
-      itemName,
-      aliasName: aliasName || '',
-      internalRate: internalRate !== undefined && internalRate !== '' ? internalRate : null,
-      description,
-      unit,
-      alternateUnit,
-      alternateUnitQuantity,
-      unitPrice,
-      gst,
-      brand,
-      category,
-      subcategory,
-      subcategory1: subcategory1 || undefined,
-      subcategory2: subcategory2 || undefined,
-      subcategory3: subcategory3 || undefined,
-      subcategory4: subcategory4 || undefined,
-      subcategory5: subcategory5 || undefined,
-      minStockLevel,
-      rateSlabs,
-      images: Array.isArray(images) ? images : [],
-      salesType: salesType || "Regular Sale", // FIX: Include salesType with default
-      productType: productType || "Regular Product", // FIX: Include productType with default
+      ...productData,
       createdBy: req.user._id,
     });
-
-    console.log("📸 Creating product with images:", product.images);
-
     await product.save();
 
-    // Populate the saved product
     await product.populate([
       { path: "category", select: "name" },
       { path: "subcategory", select: "name" },
@@ -583,8 +719,12 @@ export const createProduct = async (req, res) => {
     });
   } catch (error) {
     console.error("Create product error:", error);
+    if (duplicateProductResponse(res, error)) return;
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
     if (error.name === "ValidationError") {
-      const messages = Object.values(error.errors).map((val) => val.message);
+      const messages = Object.values(error.errors).map((value) => value.message);
       return res.status(400).json({
         success: false,
         message: messages.join(", "),
@@ -602,43 +742,9 @@ export const createProduct = async (req, res) => {
 // @access  Private
 export const updateProduct = async (req, res) => {
   try {
-    // Get models from company-specific connection
-    const { Product, Category, Subcategory, Brand } = getModels(req.dbConnection);
-    
-    const {
-      productCode,
-      HSNCode,
-      itemName,
-      aliasName,
-      description,
-      unit,
-      alternateUnit,
-      alternateUnitQuantity,
-      unitPrice,
-      gst,
-      brand,
-      category,
-      subcategory,
-      subcategory1,
-      subcategory2,
-      subcategory3,
-      subcategory4,
-      subcategory5,
-      rateSlabs,
-      status,
-      minStockLevel,
-      images,
-      salesType, // FIX: Added missing salesType
-      productType, // FIX: Added missing productType
-      internalRate,
-      mrp, // MRP (GST inclusive price)
-    } = req.body;
-
-    // Convert empty productCode to undefined for auto-generation
-    const finalProductCode =
-      productCode && productCode.trim() !== "" ? productCode : undefined;
-
-    let product = await Product.findById(req.params.id);
+    const models = getModels(req.dbConnection);
+    const { Product } = models;
+    const product = await Product.findById(req.params.id);
 
     if (!product) {
       return res.status(404).json({
@@ -647,130 +753,34 @@ export const updateProduct = async (req, res) => {
       });
     }
 
-    // Check if product code already exists (excluding current product)
-    if (finalProductCode && finalProductCode !== product.productCode) {
+    const updates = normalizeProductInput(req.body, {
+      partial: true,
+      existingProduct: product,
+    });
+    const effectiveHierarchy = {};
+    PRODUCT_RELATION_FIELDS.forEach((field) => {
+      effectiveHierarchy[field] = hasOwn(updates, field) ? updates[field] : product[field];
+    });
+    await validateProductHierarchy(models, effectiveHierarchy);
+
+    if (updates.productCode && updates.productCode !== product.productCode) {
       const existingProduct = await Product.findOne({
-        productCode: finalProductCode,
-      });
+        productCode: updates.productCode,
+        _id: { $ne: product._id },
+      }).select("_id");
       if (existingProduct) {
-        return res.status(400).json({
+        return res.status(409).json({
           success: false,
           message: "Product code already exists",
         });
       }
     }
 
-    // Validate relationships if category, subcategory, or brand are being updated
-    if (category) {
-      const categoryExists = await Category.findById(category);
-      if (!categoryExists) {
-        return res.status(400).json({
-          success: false,
-          message: "Category not found",
-        });
-      }
-    }
-
-    if (subcategory) {
-      const subcategoryExists = await Subcategory.findById(subcategory);
-      if (!subcategoryExists) {
-        return res.status(400).json({
-          success: false,
-          message: "Subcategory not found",
-        });
-      }
-
-      // Verify subcategory belongs to category
-      if (category && subcategoryExists.category.toString() !== category) {
-        return res.status(400).json({
-          success: false,
-          message: "Subcategory does not belong to the selected category",
-        });
-      }
-    }
-
-    if (brand) {
-      const brandExists = await Brand.findById(brand);
-      if (!brandExists) {
-        return res.status(400).json({
-          success: false,
-          message: "Brand not found",
-        });
-      }
-
-      // Verify category belongs to brand (brand-first hierarchy)
-      if (category) {
-        const categoryExists = await Category.findById(category);
-        if (categoryExists && categoryExists.brand.toString() !== brand) {
-          return res.status(400).json({
-            success: false,
-            message: "Category does not belong to the selected brand",
-          });
-        }
-      }
-
-      // Verify subcategory belongs to brand (brand-first hierarchy)
-      if (subcategory) {
-        const subcategoryExists = await Subcategory.findById(subcategory);
-        if (subcategoryExists && subcategoryExists.brand.toString() !== brand) {
-          return res.status(400).json({
-            success: false,
-            message: "Subcategory does not belong to the selected brand",
-          });
-        }
-      }
-    }
-
-    // Update product fields
-    product.productCode = finalProductCode;
-    product.HSNCode = HSNCode;
-    product.itemName = itemName;
-    product.aliasName = aliasName !== undefined ? aliasName : (product.aliasName || '');
-    product.internalRate = internalRate !== undefined && internalRate !== '' ? internalRate : (internalRate === '' ? null : product.internalRate);
-    product.description = description;
-    product.unit = unit;
-    product.alternateUnit = alternateUnit;
-    product.alternateUnitQuantity = alternateUnitQuantity;
-    product.unitPrice = unitPrice;
-    product.mrp = mrp !== undefined ? mrp : product.mrp; // Update MRP if provided
-    product.gst = gst;
-    product.brand = brand;
-    product.category = category;
-    product.subcategory = subcategory;
-    product.subcategory1 = subcategory1 || undefined;
-    product.subcategory2 = subcategory2 || undefined;
-    product.subcategory3 = subcategory3 || undefined;
-    product.subcategory4 = subcategory4 || undefined;
-    product.subcategory5 = subcategory5 || undefined;
-    product.minStockLevel = minStockLevel;
-    product.rateSlabs = rateSlabs;
-    product.status = status;
-
-    // FIX: Update salesType and productType
-    if (salesType !== undefined) {
-      product.salesType = salesType;
-    }
-    if (productType !== undefined) {
-      product.productType = productType;
-    }
-
-    // Update images if provided
-    if (images !== undefined) {
-      product.images = Array.isArray(images) ? images : [];
-      console.log("📸 Updating product images:", {
-        count: product.images.length,
-        images: product.images,
-        productId: product._id,
-        productCode: product.productCode,
-      });
-    } else {
-      console.log("⚠️ Images field not provided in request body");
-    }
-
-    // Save the product to trigger pre-save hooks
+    Object.entries(updates).forEach(([field, value]) => {
+      product[field] = value;
+    });
     await product.save();
 
-    // Populate the updated product
     await product.populate([
       { path: "category", select: "name" },
       { path: "subcategory", select: "name" },
@@ -790,14 +800,18 @@ export const updateProduct = async (req, res) => {
     });
   } catch (error) {
     console.error("Update product error:", error);
+    if (duplicateProductResponse(res, error)) return;
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
     if (error.name === "ValidationError") {
-      const messages = Object.values(error.errors).map((val) => val.message);
+      const messages = Object.values(error.errors).map((value) => value.message);
       return res.status(400).json({
         success: false,
         message: messages.join(", "),
       });
     }
-    if (error.kind === "ObjectId") {
+    if (error.kind === "ObjectId" || error.name === "CastError") {
       return res.status(404).json({
         success: false,
         message: "Product not found",

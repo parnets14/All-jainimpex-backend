@@ -156,6 +156,61 @@ const ROUTE_PERMISSION_MAP = {
   'chat': 'support.chat',
 };
 
+const isObjectIdPathSegment = (value) => /^[a-f\d]{24}$/i.test(value || '');
+
+const isPoQuickAddHierarchyRead = (segments, method) => {
+  if (method !== 'GET') return false;
+  const [prefix] = segments;
+
+  if (prefix === 'brands') {
+    const isBrandList = segments.length === 1;
+    const isBrandCategorySubcategoryList = segments.length === 5
+      && isObjectIdPathSegment(segments[1])
+      && segments[2] === 'categories'
+      && isObjectIdPathSegment(segments[3])
+      && segments[4] === 'subcategories';
+    return isBrandList || isBrandCategorySubcategoryList;
+  }
+
+  if (prefix === 'categories' || prefix === 'subcategories') {
+    return segments.length === 1;
+  }
+
+  if (prefix === 'extended-subcategories') {
+    const isExtendedList = segments.length === 1;
+    const isChildrenList = segments.length === 3
+      && segments[1] === 'by-parent'
+      && isObjectIdPathSegment(segments[2]);
+    return isExtendedList || isChildrenList;
+  }
+
+  return false;
+};
+
+const resolveRoutePermission = (req) => {
+  const pathWithoutQuery = req.originalUrl.replace(/^\/api\//, '').split('?')[0];
+  const segments = pathWithoutQuery.split('/').filter(Boolean);
+  const prefix = segments[0];
+  const defaultPermission = ROUTE_PERMISSION_MAP[prefix];
+
+  if (isPoQuickAddHierarchyRead(segments, req.method)) {
+    return [defaultPermission, 'po.management'];
+  }
+
+  if (prefix === 'products') {
+    const isProductCollection = segments.length === 1;
+    const isProductById = segments.length === 2 && /^[a-f\d]{24}$/i.test(segments[1]);
+    const isSafePoProductOperation =
+      (req.method === 'POST' && isProductCollection)
+      || (req.method === 'GET' && (isProductCollection || isProductById));
+    if (isSafePoProductOperation) {
+      return ['product.master', 'po.management'];
+    }
+  }
+
+  return defaultPermission;
+};
+
 /**
  * Global permission enforcement middleware.
  *
@@ -164,10 +219,7 @@ const ROUTE_PERMISSION_MAP = {
  * authentication middleware for backward compatibility.
  */
 export const enforceRoutePermissions = (req, res, next) => {
-  // Extract the first path segment after /api/ before deciding whether this
-  // request belongs to the centralized CRM permission system.
-  const pathAfterApi = req.originalUrl.replace(/^\/api\//, '').split('/')[0].split('?')[0];
-  const requiredPermission = ROUTE_PERMISSION_MAP[pathAfterApi];
+  const requiredPermission = resolveRoutePermission(req);
 
   // Null and unmapped prefixes are intentionally handled by their own routers.
   if (!requiredPermission) return next();

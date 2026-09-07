@@ -3,11 +3,19 @@ import mongoose from 'mongoose';
 const rateSlabSchema = new mongoose.Schema({
   quantity: {
     type: Number,
-    required: true
+    required: true,
+    validate: {
+      validator: (value) => Number.isFinite(value) && value > 0,
+      message: "Rate slab quantity must be greater than zero"
+    }
   },
   rate: {
     type: Number,
-    required: true
+    required: true,
+    validate: {
+      validator: (value) => Number.isFinite(value) && value > 0,
+      message: "Rate slab rate must be greater than zero"
+    }
   },
   amount: {
     type: Number,
@@ -116,13 +124,19 @@ const productSchema = new mongoose.Schema({
   },
   mrp: {
     type: Number,
-    min: 0,
-    default: null  // MRP including GST (e.g., ₹840)
+    default: null,
+    validate: {
+      validator: (value) => value === null || value === undefined || (Number.isFinite(value) && value > 0),
+      message: "MRP must be greater than zero"
+    }
   },
   unitPrice: {
     type: Number,
     required: true,
-    min: 0
+    validate: {
+      validator: (value) => Number.isFinite(value) && value > 0,
+      message: "Unit price must be greater than zero"
+    }
   },
   rateSlabs: [rateSlabSchema],
   totalAmount: {
@@ -161,35 +175,30 @@ const productSchema = new mongoose.Schema({
 
 // Calculate total amount with GST before saving
 productSchema.pre('save', function(next) {
-  // If MRP is provided, calculate unitPrice from MRP (MRP is GST inclusive)
-  // unitPrice = MRP / (1 + GST/100)
-  if (this.mrp && this.gst !== undefined && this.gst > 0) {
-    this.unitPrice = parseFloat((this.mrp / (1 + this.gst / 100)).toFixed(2));
+  const gstRate = Number(this.gst);
+  const hasMrp = this.mrp !== null && this.mrp !== undefined;
+
+  // MRP is GST-inclusive and is authoritative whenever it is provided.
+  if (hasMrp && Number.isFinite(gstRate)) {
+    this.unitPrice = Number((Number(this.mrp) / (1 + gstRate / 100)).toFixed(2));
   }
 
-  // If unitPrice is provided but no rateSlabs exist, create a default rate slab
-  if (this.unitPrice && (!this.rateSlabs || this.rateSlabs.length === 0)) {
+  if (!Array.isArray(this.rateSlabs) || this.rateSlabs.length === 0) {
     this.rateSlabs = [{
       quantity: 1,
       rate: this.unitPrice,
       amount: this.unitPrice
     }];
   }
-  
-  // Calculate amount for each rate slab
+
   this.rateSlabs.forEach(slab => {
     slab.amount = slab.quantity * slab.rate;
   });
 
-  // totalAmount = MRP if available, otherwise calculate from unitPrice + GST
-  if (this.mrp) {
-    this.totalAmount = this.mrp;
+  if (hasMrp) {
+    this.totalAmount = Number(this.mrp);
   } else {
-    const basePrice = this.unitPrice || (this.rateSlabs[0]?.rate) || 0;
-    if (basePrice && this.gst !== undefined) {
-      const gstAmount = basePrice * (this.gst / 100);
-      this.totalAmount = basePrice + gstAmount;
-    }
+    this.totalAmount = Number(this.unitPrice) * (1 + gstRate / 100);
   }
 
   next();
@@ -262,8 +271,7 @@ productSchema.pre('save', async function(next) {
   next();
 });
 
-// Index for better performance
-productSchema.index({ productCode: 1 });
+// Indexes for better performance. productCode already has a unique index from the field definition.
 productSchema.index({ itemName: 1 });
 productSchema.index({ aliasName: 1 });
 productSchema.index({ category: 1 });
