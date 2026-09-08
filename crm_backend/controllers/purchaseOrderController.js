@@ -20,6 +20,62 @@ const getModels = (dbConnection) => {
   };
 };
 
+const isPurchaseOrderExpired = (purchaseOrder, now = new Date()) => {
+  if (!purchaseOrder) return false;
+  if (purchaseOrder.status === 'Expired') return true;
+
+  const expirationTime = purchaseOrder.expirationDate
+    ? new Date(purchaseOrder.expirationDate).getTime()
+    : null;
+  return purchaseOrder.status === 'Approved'
+    && Number.isFinite(expirationTime)
+    && expirationTime <= now.getTime();
+};
+
+const sendExpiredPurchaseOrderResponse = (res, purchaseOrder) => res.status(409).json({
+  success: false,
+  code: 'PURCHASE_ORDER_EXPIRED',
+  message: `Purchase order ${purchaseOrder.poNumber || ''} has expired and is read-only. Use the dedicated extension/reopen workflow if it must be reactivated.`,
+});
+
+const sendPurchaseOrderNotEditableResponse = (res, purchaseOrder) => res.status(409).json({
+  success: false,
+  code: 'PURCHASE_ORDER_NOT_EDITABLE',
+  message: `Purchase order ${purchaseOrder.poNumber || ''} is ${purchaseOrder.status} and is read-only. Only active Draft purchase orders can be changed.`,
+});
+
+const sendPurchaseOrderLifecycleConflict = (res, purchaseOrder) => {
+  if (!purchaseOrder) {
+    return res.status(404).json({ success: false, message: 'Purchase order not found' });
+  }
+  if (isPurchaseOrderExpired(purchaseOrder)) {
+    return sendExpiredPurchaseOrderResponse(res, purchaseOrder);
+  }
+  if (purchaseOrder.status !== 'Draft') {
+    return sendPurchaseOrderNotEditableResponse(res, purchaseOrder);
+  }
+  return res.status(409).json({
+    success: false,
+    code: 'PURCHASE_ORDER_CONFLICT',
+    message: `Purchase order ${purchaseOrder.poNumber || ''} changed while this update was being applied. Refresh and try again.`,
+  });
+};
+
+// Add an atomic database precondition to Mongoose save(). Drafts do not expire;
+// status alone protects edits and transitions from stale concurrent writes.
+const saveActiveDraftPurchaseOrder = async (PurchaseOrder, purchaseOrder) => {
+  purchaseOrder.$where = { status: 'Draft' };
+
+  try {
+    await purchaseOrder.save();
+    return { saved: true, latest: purchaseOrder };
+  } catch (error) {
+    if (!['DocumentNotFoundError', 'VersionError'].includes(error?.name)) throw error;
+    const latest = await PurchaseOrder.findById(purchaseOrder._id);
+    return { saved: false, latest };
+  }
+};
+
 // Generate PO Number (retry-safe to prevent duplicate key errors)
 const generatePONumber = async (dbConnection) => {
   const { PurchaseOrder } = getModels(dbConnection);
@@ -173,7 +229,7 @@ export const createPurchaseOrder = async (req, res) => {
       lines,
       notes,
       createdBy: req.user._id,
-      expirationDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days to approve
+      expirationDate: null,
     };
 
     // Calculate totals manually before creating the document.
@@ -436,7 +492,6 @@ export const updatePurchaseOrder = async (req, res) => {
       billingAddress,
       shippingAddress,
       lines,
-      status,
       notes,
     } = req.body;
 
@@ -447,6 +502,15 @@ export const updatePurchaseOrder = async (req, res) => {
         success: false,
         message: "Purchase order not found",
       });
+    }
+
+    // Expired POs are immutable through the general edit endpoint. This also covers
+    // the window after expirationDate passes but before the daily cron persists Expired.
+    if (isPurchaseOrderExpired(purchaseOrder)) {
+      return sendExpiredPurchaseOrderResponse(res, purchaseOrder);
+    }
+    if (purchaseOrder.status !== 'Draft') {
+      return sendPurchaseOrderNotEditableResponse(res, purchaseOrder);
     }
 
     // Validate supplier if provided
@@ -478,7 +542,6 @@ export const updatePurchaseOrder = async (req, res) => {
     if (paymentTermsDays) purchaseOrder.paymentTermsDays = paymentTermsDays;
     if (billingAddress) purchaseOrder.billingAddress = billingAddress;
     if (shippingAddress) purchaseOrder.shippingAddress = shippingAddress;
-    if (status) purchaseOrder.status = status;
     if (notes !== undefined) purchaseOrder.notes = notes;
 
     // Update lines if provided
@@ -502,7 +565,10 @@ export const updatePurchaseOrder = async (req, res) => {
       purchaseOrder.lines = lines;
     }
 
-    await purchaseOrder.save();
+    const saveResult = await saveActiveDraftPurchaseOrder(PurchaseOrder, purchaseOrder);
+    if (!saveResult.saved) {
+      return sendPurchaseOrderLifecycleConflict(res, saveResult.latest);
+    }
     console.log("🔄 [SAVED] Purchase order updated");
 
     const updatedPO = await PurchaseOrder.findById(purchaseOrder._id)
@@ -613,7 +679,7 @@ export const deletePurchaseOrder = async (req, res) => {
 export const updatePurchaseOrderStatus = async (req, res) => {
   const { PurchaseOrder, DealerPricing, DealerPricingHistory, Product, PurchaseWishlist } = getModels(req.dbConnection);
   try {
-    const { status } = req.body;
+    const { status, reason } = req.body;
 
     // Check if user is super admin for approval
     if (status === 'Approved' && req.user.role !== 'super_admin') {
@@ -632,15 +698,41 @@ export const updatePurchaseOrderStatus = async (req, res) => {
       });
     }
 
-    const oldStatus = purchaseOrder.status;
-    purchaseOrder.status = status;
-    
-    // Clear expiration when approved (no longer needs to expire)
-    if (status === 'Approved') {
-      purchaseOrder.expirationDate = null;
+    // Status changes cannot be used to reopen or approve an expired PO. Any future
+    // reactivation must go through the dedicated audited extension/reopen workflow.
+    if (isPurchaseOrderExpired(purchaseOrder)) {
+      return sendExpiredPurchaseOrderResponse(res, purchaseOrder);
     }
-    
-    await purchaseOrder.save();
+    if (purchaseOrder.status !== 'Draft') {
+      return sendPurchaseOrderNotEditableResponse(res, purchaseOrder);
+    }
+
+    const oldStatus = purchaseOrder.status;
+    const changedAt = new Date();
+    purchaseOrder.status = status;
+
+    if (status === 'Approved') {
+      purchaseOrder.approvedAt = changedAt;
+      purchaseOrder.approvedBy = req.user._id;
+      purchaseOrder.expirationDate = new Date(changedAt.getTime() + 30 * 24 * 60 * 60 * 1000);
+      purchaseOrder.expirationExtended = false;
+      purchaseOrder.expirationNotified = false;
+    }
+
+    purchaseOrder.statusHistory.push({
+      fromStatus: oldStatus,
+      toStatus: status,
+      changedAt,
+      changedBy: req.user?._id || null,
+      reason: typeof reason === 'string' && reason.trim()
+        ? reason.trim()
+        : `Status changed from ${oldStatus} to ${status}`,
+    });
+
+    const saveResult = await saveActiveDraftPurchaseOrder(PurchaseOrder, purchaseOrder);
+    if (!saveResult.saved) {
+      return sendPurchaseOrderLifecycleConflict(res, saveResult.latest);
+    }
 
     // Auto-sync dealer pricing when PO is approved
     if (status === 'Approved' && oldStatus !== 'Approved') {

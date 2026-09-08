@@ -48,6 +48,68 @@ const normalizeGRNItemRemarks = (value) => (
   typeof value === 'string' ? value.trim().slice(0, 500) : ''
 );
 
+const PO_ACTIVE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+const getEffectiveApprovalInstant = (purchaseOrder) => {
+  const value = purchaseOrder?.approvedAt
+    || purchaseOrder?.updatedAt
+    || purchaseOrder?.orderDate
+    || purchaseOrder?.createdAt;
+  const date = value ? new Date(value) : null;
+  return date && Number.isFinite(date.getTime()) ? date : null;
+};
+
+const getEffectivePOExpiration = (purchaseOrder) => {
+  if (purchaseOrder?.expirationDate) {
+    const explicitDate = new Date(purchaseOrder.expirationDate);
+    if (Number.isFinite(explicitDate.getTime())) return explicitDate;
+  }
+  const approvedAt = getEffectiveApprovalInstant(purchaseOrder);
+  return approvedAt ? new Date(approvedAt.getTime() + PO_ACTIVE_WINDOW_MS) : null;
+};
+
+const effectiveExpiryExpression = () => ({
+  $ifNull: [
+    '$expirationDate',
+    {
+      $dateAdd: {
+        startDate: {
+          $ifNull: [
+            '$approvedAt',
+            { $ifNull: ['$updatedAt', { $ifNull: ['$orderDate', '$createdAt'] }] }
+          ]
+        },
+        unit: 'day',
+        amount: 30
+      }
+    }
+  ]
+});
+
+const futureEffectiveExpiryPredicate = (now) => ({
+  $expr: { $gt: [effectiveExpiryExpression(), now] }
+});
+
+const isPurchaseOrderAvailable = (purchaseOrder, now = new Date()) => {
+  const expirationDate = getEffectivePOExpiration(purchaseOrder);
+  return purchaseOrder?.status === 'Approved'
+    && !purchaseOrder.convertedToGRNId
+    && expirationDate
+    && expirationDate.getTime() > now.getTime();
+};
+
+const findGRNUsingPurchaseOrder = (GRN, purchaseOrderId, session = null) => {
+  const query = GRN.findOne({
+    $or: [
+      { poId: purchaseOrderId },
+      { poIds: purchaseOrderId }
+    ]
+  }).select('_id grnNo');
+  return session ? query.session(session) : query;
+};
+
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 // Validate GRN quantities
 const validateGRNQuantities = (items) => {
   for (const item of items) {
@@ -91,30 +153,100 @@ export const createGRN = async (req, res) => {
       inspectedBy
     } = req.body;
 
-    // Support both single poId and multi poIds
-    const allPoIds = poIds && poIds.length > 0 ? poIds : [poId];
+    // Support both single poId and multi poIds, but never claim the same PO twice.
+    const requestedPoIds = Array.isArray(poIds) && poIds.length > 0 ? poIds : [poId];
+    if (requestedPoIds.length === 0 || requestedPoIds.some((id) => !mongoose.Types.ObjectId.isValid(id))) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        code: 'INVALID_PURCHASE_ORDER_IDS',
+        message: 'At least one valid Purchase Order ID is required'
+      });
+    }
+
+    const allPoIds = [...new Map(
+      requestedPoIds.map((id) => {
+        const objectId = new mongoose.Types.ObjectId(id);
+        return [objectId.toHexString(), objectId];
+      })
+    ).values()];
     const primaryPoId = allPoIds[0];
+    const grnId = new mongoose.Types.ObjectId();
+    const claimTime = new Date();
 
     console.log('Creating GRN with data:', { poIds: allPoIds, warehouseId, itemCount: items?.length });
 
     // Validate quantities first
     validateGRNQuantities(items);
 
-    // Validate ALL POs exist and are approved
+    // Existing GRN references reserve a PO even if legacy claim fields are absent.
+    const existingGRN = await GRN.findOne({
+      $or: [
+        { poId: { $in: allPoIds } },
+        { poIds: { $in: allPoIds } }
+      ]
+    }).select('_id grnNo').session(session);
+    if (existingGRN) {
+      await session.abortTransaction();
+      return res.status(409).json({
+        success: false,
+        code: 'PURCHASE_ORDER_ALREADY_CONVERTED',
+        message: `One or more Purchase Orders are already referenced by GRN ${existingGRN.grnNo || existingGRN._id}`
+      });
+    }
+
+    // Atomically claim every source PO for the preallocated GRN before using its lines.
     const purchaseOrders = [];
     for (const pid of allPoIds) {
-      const po = await PurchaseOrder.findById(pid)
+      const po = await PurchaseOrder.findOneAndUpdate(
+        {
+          _id: pid,
+          status: 'Approved',
+          convertedToGRNId: null,
+          ...futureEffectiveExpiryPredicate(claimTime)
+        },
+        {
+          $set: {
+            convertedToGRNId: grnId,
+            convertedAt: claimTime
+          }
+        },
+        { new: true, session, runValidators: true, timestamps: false }
+      )
         .populate('supplierId')
-        .populate('lines.productId')
-        .session(session);
+        .populate('lines.productId');
 
       if (!po) {
+        const latestPO = await PurchaseOrder.findById(pid).session(session);
+        const conflictingGRN = await findGRNUsingPurchaseOrder(GRN, pid, session);
         await session.abortTransaction();
-        return res.status(404).json({ success: false, message: `Purchase Order not found: ${pid}` });
-      }
-      if (po.status !== 'Approved') {
-        await session.abortTransaction();
-        return res.status(400).json({ success: false, message: `PO ${po.poNumber} is not Approved (status: ${po.status})` });
+
+        if (!latestPO) {
+          return res.status(404).json({
+            success: false,
+            code: 'PURCHASE_ORDER_NOT_FOUND',
+            message: `Purchase Order not found: ${pid}`
+          });
+        }
+        if (latestPO.convertedToGRNId || conflictingGRN) {
+          return res.status(409).json({
+            success: false,
+            code: 'PURCHASE_ORDER_ALREADY_CONVERTED',
+            message: `PO ${latestPO.poNumber} has already been used by another GRN`
+          });
+        }
+        if (latestPO.status === 'Expired' || getEffectivePOExpiration(latestPO)?.getTime() <= claimTime.getTime()) {
+          return res.status(409).json({
+            success: false,
+            code: 'PURCHASE_ORDER_EXPIRED',
+            message: `PO ${latestPO.poNumber} has expired and cannot be converted to a GRN`
+          });
+        }
+        return res.status(409).json({
+          success: false,
+          code: 'PURCHASE_ORDER_NOT_AVAILABLE',
+          message: `PO ${latestPO.poNumber} is ${latestPO.status} and is not available for GRN conversion`
+        });
       }
       purchaseOrders.push(po);
     }
@@ -135,14 +267,14 @@ export const createGRN = async (req, res) => {
       let poLine = null;
       
       if (item.sourcePOId) {
-        matchedPO = purchaseOrders.find(po => po._id.toString() === item.sourcePOId);
-        poLine = matchedPO?.lines.find(l => l.productId._id.toString() === item.productId);
+        matchedPO = purchaseOrders.find(po => po._id.toString() === item.sourcePOId.toString());
+        poLine = matchedPO?.lines.find(l => l.productId._id.toString() === item.productId.toString());
       }
       
       // Fallback: search all POs for this product
       if (!poLine) {
         for (const po of purchaseOrders) {
-          poLine = po.lines.find(l => l.productId._id.toString() === item.productId);
+          poLine = po.lines.find(l => l.productId._id.toString() === item.productId.toString());
           if (poLine) { matchedPO = po; break; }
         }
       }
@@ -214,6 +346,7 @@ export const createGRN = async (req, res) => {
     if (excessLines.length > 0) {
       const excessPONumber = await generatePONumber(req.dbConnection);
       const excessSubtotal = excessLines.reduce((s, l) => s + l.total, 0);
+      const excessApprovedAt = new Date();
       const excessPO = new PurchaseOrder({
         poNumber: excessPONumber,
         supplierId: primaryPO.supplierId._id,
@@ -221,6 +354,17 @@ export const createGRN = async (req, res) => {
         orderDate: new Date(),
         expectedDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         status: 'Approved',
+        approvedAt: excessApprovedAt,
+        approvedBy: req.user._id,
+        convertedToGRNId: grnId,
+        convertedAt: excessApprovedAt,
+        statusHistory: [{
+          fromStatus: 'Draft',
+          toStatus: 'Approved',
+          changedAt: excessApprovedAt,
+          changedBy: req.user._id,
+          reason: 'Auto-approved for excess quantities recorded by this GRN'
+        }],
         isAutoCreated: true,
         autoCreatedReason: 'excess',
         expirationDate: null, // No expiration for approved excess POs — already used in GRN
@@ -270,6 +414,7 @@ export const createGRN = async (req, res) => {
     const grnStatus = 'Draft';
 
     const grnData = {
+      _id: grnId,
       grnNo,
       poId: primaryPoId,
       poIds: allPoIds,
@@ -315,7 +460,14 @@ export const createGRN = async (req, res) => {
       autoCreatedPOs: autoCreatedPOs.length > 0 ? autoCreatedPOs : undefined
     });
   } catch (error) {
-    await session.abortTransaction();
+    if (session.inTransaction()) await session.abortTransaction();
+    if (error?.code === 112 || error?.hasErrorLabel?.('TransientTransactionError')) {
+      return res.status(409).json({
+        success: false,
+        code: 'PURCHASE_ORDER_CLAIM_CONFLICT',
+        message: 'A selected Purchase Order was claimed concurrently. Refresh and try again.'
+      });
+    }
     if (handlePeriodLockError(error, res)) return;
     console.error('Create GRN error:', error);
     res.status(500).json({ success: false, message: error.message });
@@ -452,7 +604,7 @@ export const inspectGRN = async (req, res) => {
         isAutoCreated: true,
         autoCreatedReason: 'shortage',
         parentGRNId: grn._id,
-        expirationDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days to approve
+        expirationDate: null,
         paymentTermsDays: 30,
         billingAddress: 'As per original PO',
         shippingAddress: 'As per original PO',
@@ -512,9 +664,28 @@ export const inspectGRN = async (req, res) => {
     }
 
     // Mark all associated POs as Completed
+    const completedAt = new Date();
     for (const poId of (grn.poIds || [grn.poId])) {
       try {
-        await PurchaseOrder.findByIdAndUpdate(poId, { status: 'Completed' }, { session });
+        const associatedPO = await PurchaseOrder.findById(poId).session(session);
+        if (associatedPO && associatedPO.status !== 'Completed') {
+          await PurchaseOrder.updateOne(
+            { _id: poId, status: associatedPO.status },
+            {
+              $set: { status: 'Completed' },
+              $push: {
+                statusHistory: {
+                  fromStatus: associatedPO.status,
+                  toStatus: 'Completed',
+                  changedAt: completedAt,
+                  changedBy: req.user?._id || null,
+                  reason: `Completed by GRN ${grn.grnNo} inspection`
+                }
+              }
+            },
+            { session, runValidators: true }
+          );
+        }
       } catch (e) { /* non-critical */ }
     }
 
@@ -600,33 +771,129 @@ export const inspectGRN = async (req, res) => {
   }
 };
 
-// ─── EXTEND PO EXPIRATION ───
+// ─── EXTEND OR REACTIVATE PO EXPIRATION ───
 export const extendPOExpiration = async (req, res) => {
   try {
-    const { PurchaseOrder } = getModels(req.dbConnection);
+    const { PurchaseOrder, GRN } = getModels(req.dbConnection);
     const { id } = req.params;
-    const { newExpirationDate, days } = req.body;
+    const { newExpirationDate, days, reason } = req.body;
+    const now = new Date();
 
     const po = await PurchaseOrder.findById(id);
     if (!po) return res.status(404).json({ success: false, message: 'PO not found' });
-    if (!po.expirationDate) return res.status(400).json({ success: false, message: 'This PO has no expiration date' });
 
-    let newDate;
-    if (newExpirationDate) {
-      newDate = new Date(newExpirationDate);
-    } else {
-      newDate = new Date(po.expirationDate.getTime() + (days || 30) * 24 * 60 * 60 * 1000);
+    if (!['Approved', 'Expired'].includes(po.status)) {
+      return res.status(409).json({
+        success: false,
+        code: 'PURCHASE_ORDER_EXTENSION_NOT_ALLOWED',
+        message: `Only Approved or Expired purchase orders can be extended; PO ${po.poNumber} is ${po.status}`
+      });
     }
 
-    po.expirationDate = newDate;
-    po.expirationExtended = true;
-    po.expirationNotified = false; // Reset so it notifies again 1 day before new date
-    await po.save();
+    const existingGRN = await findGRNUsingPurchaseOrder(GRN, po._id);
+    if (po.convertedToGRNId || existingGRN) {
+      return res.status(409).json({
+        success: false,
+        code: 'PURCHASE_ORDER_ALREADY_CONVERTED',
+        message: `PO ${po.poNumber} has already been used by a GRN and cannot be extended`
+      });
+    }
+
+    const hasExplicitDate = newExpirationDate !== undefined && newExpirationDate !== null && newExpirationDate !== '';
+    const hasDays = days !== undefined && days !== null && days !== '';
+    const extensionDays = hasDays ? Number(days) : 30;
+    if (hasDays && (!Number.isFinite(extensionDays) || extensionDays <= 0)) {
+      return res.status(400).json({
+        success: false,
+        code: 'INVALID_EXTENSION_DAYS',
+        message: 'Extension days must be a finite positive number'
+      });
+    }
+
+    let newDate;
+    if (hasExplicitDate) {
+      newDate = new Date(newExpirationDate);
+      if (!Number.isFinite(newDate.getTime()) || newDate.getTime() <= now.getTime()) {
+        return res.status(400).json({
+          success: false,
+          code: 'INVALID_EXPIRATION_DATE',
+          message: 'New expiration date must be a valid date strictly in the future'
+        });
+      }
+    } else {
+      if (!Number.isFinite(extensionDays) || extensionDays <= 0) {
+        return res.status(400).json({
+          success: false,
+          code: 'INVALID_EXTENSION_DAYS',
+          message: 'Extension days must be a finite positive number'
+        });
+      }
+      const effectiveExpiry = getEffectivePOExpiration(po);
+      const baseTime = po.status === 'Approved'
+        ? Math.max(effectiveExpiry?.getTime() || 0, now.getTime())
+        : now.getTime();
+      newDate = new Date(baseTime + extensionDays * 24 * 60 * 60 * 1000);
+    }
+
+    const previousExpirationDate = getEffectivePOExpiration(po);
+    const reactivated = po.status === 'Expired';
+    const update = {
+      $set: {
+        status: reactivated ? 'Approved' : po.status,
+        expirationDate: newDate,
+        expirationExtended: true,
+        expirationNotified: false
+      },
+      $push: {
+        expirationExtensions: {
+          previousExpirationDate,
+          newExpirationDate: newDate,
+          extendedAt: now,
+          extendedBy: req.user?._id || null,
+          reason: typeof reason === 'string' ? reason.trim() : '',
+          reactivated
+        }
+      },
+      $inc: { __v: 1 }
+    };
+
+    if (reactivated) {
+      update.$push.statusHistory = {
+        fromStatus: 'Expired',
+        toStatus: 'Approved',
+        changedAt: now,
+        changedBy: req.user?._id || null,
+        reason: typeof reason === 'string' && reason.trim()
+          ? reason.trim()
+          : 'Purchase order reactivated by expiration extension'
+      };
+    }
+
+    const updatedPO = await PurchaseOrder.findOneAndUpdate(
+      {
+        _id: po._id,
+        status: po.status,
+        convertedToGRNId: null,
+        __v: po.__v
+      },
+      update,
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedPO) {
+      return res.status(409).json({
+        success: false,
+        code: 'PURCHASE_ORDER_LIFECYCLE_CONFLICT',
+        message: `PO ${po.poNumber} changed while its expiration was being extended. Refresh and try again.`
+      });
+    }
 
     res.json({
       success: true,
-      message: `PO expiration extended to ${newDate.toLocaleDateString()}`,
-      data: po
+      message: reactivated
+        ? `PO reactivated and extended to ${newDate.toLocaleDateString()}`
+        : `PO expiration extended to ${newDate.toLocaleDateString()}`,
+      data: updatedPO
     });
   } catch (error) {
     console.error('Extend PO expiration error:', error);
@@ -791,6 +1058,41 @@ export const updateGRN = async (req, res) => {
       });
     }
 
+    // Source POs are claimed atomically when the Draft GRN is created. Allowing
+    // an edit to replace them would split GRN references from PurchaseOrder claims,
+    // so edits may change quantities/notes only, never the source PO set or primary PO.
+    const currentSourceIds = [...new Set(
+      (existingGRN.poIds?.length > 0 ? existingGRN.poIds : [existingGRN.poId])
+        .filter(Boolean)
+        .map((sourceId) => sourceId.toString())
+    )].sort();
+    const requestedSourceIds = [...new Set(
+      (Array.isArray(updateData.poIds) && updateData.poIds.length > 0
+        ? updateData.poIds
+        : updateData.poId
+          ? [updateData.poId]
+          : currentSourceIds
+      ).filter(Boolean).map((sourceId) => sourceId.toString())
+    )].sort();
+    const currentPrimaryPOId = existingGRN.poId?.toString();
+    const requestedPrimaryPOId = updateData.poId?.toString() || currentPrimaryPOId;
+    const sourcePOsChanged = requestedPrimaryPOId !== currentPrimaryPOId
+      || requestedSourceIds.length !== currentSourceIds.length
+      || requestedSourceIds.some((sourceId, index) => sourceId !== currentSourceIds[index]);
+
+    if (sourcePOsChanged) {
+      return res.status(409).json({
+        success: false,
+        code: 'GRN_SOURCE_POS_IMMUTABLE',
+        message: 'Purchase Orders cannot be changed after a GRN is created. Delete this Draft GRN and create a new one to use different POs.'
+      });
+    }
+
+    // Keep source identity and supplier server-controlled during Draft edits.
+    delete updateData.poId;
+    delete updateData.poIds;
+    delete updateData.supplierId;
+
     // Keep status as Draft — stock is NOT updated on edit (only on inspection)
     updateData.status = 'Draft';
 
@@ -800,6 +1102,18 @@ export const updateGRN = async (req, res) => {
 
     // Recalculate totalAmount if items are updated
     if (updateData.items && Array.isArray(updateData.items)) {
+      const currentSourceIdSet = new Set(currentSourceIds);
+      const invalidSourceItem = updateData.items.find((item) => (
+        item.sourcePOId && !currentSourceIdSet.has(item.sourcePOId.toString())
+      ));
+      if (invalidSourceItem) {
+        return res.status(409).json({
+          success: false,
+          code: 'GRN_ITEM_SOURCE_PO_INVALID',
+          message: 'A GRN item references a Purchase Order that is not attached to this Draft GRN.'
+        });
+      }
+
       updateData.totalAmount = updateData.items.reduce((sum, item) => {
         const accepted = (item.receivedQuantity || 0) - (item.damageQuantity || 0);
         item.acceptedQuantity = Math.max(0, accepted);
@@ -855,8 +1169,9 @@ export const updateGRN = async (req, res) => {
 
 export const deleteGRN = async (req, res) => {
   let grnLease = null;
+  let session = null;
   try {
-    const { GRN } = getModels(req.dbConnection);
+    const { GRN, PurchaseOrder } = getModels(req.dbConnection);
     const { id } = req.params;
 
     grnLease = await StockMovementService.acquireStockLeases(
@@ -864,9 +1179,13 @@ export const deleteGRN = async (req, res) => {
       [`GRN:${id}`]
     );
 
-    const grn = await GRN.findById(id);
+    session = await req.dbConnection.startSession();
+    await session.startTransaction();
+
+    const grn = await GRN.findById(id).session(session);
 
     if (!grn) {
+      await session.abortTransaction();
       return res.status(404).json({
         success: false,
         message: 'GRN not found'
@@ -875,6 +1194,7 @@ export const deleteGRN = async (req, res) => {
 
     // Check if invoice has been created for this GRN
     if (grn.isInvoiceCreated) {
+      await session.abortTransaction();
       return res.status(403).json({
         success: false,
         message: 'Cannot delete GRN. Supplier Invoice has already been created for this GRN.',
@@ -884,6 +1204,7 @@ export const deleteGRN = async (req, res) => {
     }
 
     if (grn.status !== 'Draft') {
+      await session.abortTransaction();
       return res.status(409).json({
         success: false,
         code: 'RECEIVED_GRN_REVERSAL_REQUIRED',
@@ -897,8 +1218,9 @@ export const deleteGRN = async (req, res) => {
       _id: id,
       status: 'Draft',
       isInvoiceCreated: { $ne: true }
-    });
+    }).session(session);
     if (!deletedGRN) {
+      await session.abortTransaction();
       return res.status(409).json({
         success: false,
         code: 'GRN_LIFECYCLE_CONFLICT',
@@ -906,11 +1228,48 @@ export const deleteGRN = async (req, res) => {
       });
     }
 
+    const now = new Date();
+    const claimedPOs = await PurchaseOrder.find({ convertedToGRNId: grn._id }).session(session);
+    for (const po of claimedPOs) {
+      const effectiveExpiry = getEffectivePOExpiration(po);
+      const expiryElapsed = !effectiveExpiry || effectiveExpiry.getTime() <= now.getTime();
+      const nextStatus = expiryElapsed ? 'Expired' : 'Approved';
+      const update = {
+        $set: {
+          convertedToGRNId: null,
+          convertedAt: null,
+          status: nextStatus,
+          expirationDate: effectiveExpiry
+        }
+      };
+
+      if (po.status !== nextStatus) {
+        update.$push = {
+          statusHistory: {
+            fromStatus: po.status,
+            toStatus: nextStatus,
+            changedAt: now,
+            changedBy: req.user?._id || null,
+            reason: `GRN ${grn.grnNo} was deleted and released this purchase order claim`
+          }
+        };
+      }
+
+      await PurchaseOrder.updateOne(
+        { _id: po._id, convertedToGRNId: grn._id },
+        update,
+        { session, runValidators: true }
+      );
+    }
+
+    await session.commitTransaction();
+
     res.json({
       success: true,
       message: 'GRN deleted successfully'
     });
   } catch (error) {
+    if (session?.inTransaction()) await session.abortTransaction();
     console.error('Delete GRN error:', error);
     res.status(error.statusCode || 500).json({
       success: false,
@@ -918,6 +1277,7 @@ export const deleteGRN = async (req, res) => {
       message: error.message
     });
   } finally {
+    if (session) session.endSession();
     if (grnLease) {
       try {
         await StockMovementService.releaseStockLeases(req.dbConnection, grnLease);
@@ -1038,44 +1398,48 @@ export const getGRNStats = async (req, res) => {
 
 export const getApprovedPOs = async (req, res) => {
   try {
-    // Get models from company-specific connection
-    const { PurchaseOrder, GRN } = getModels(req.dbConnection);
-    
+    const { PurchaseOrder, GRN, Supplier } = getModels(req.dbConnection);
     const { search = '' } = req.query;
+    const now = new Date();
+    const trimmedSearch = search.trim();
 
-    console.log('Searching approved POs with:', search);
+    const [primaryPOIds, additionalPOIds] = await Promise.all([
+      GRN.distinct('poId'),
+      GRN.distinct('poIds')
+    ]);
+    const usedPOIds = [...new Set(
+      [...primaryPOIds, ...additionalPOIds].filter(Boolean).map((id) => id.toString())
+    )].map((id) => new mongoose.Types.ObjectId(id));
 
     const query = {
-      status: 'Approved'
+      status: 'Approved',
+      convertedToGRNId: null,
+      _id: { $nin: usedPOIds },
+      ...futureEffectiveExpiryPredicate(now)
     };
 
-    // Add search condition if search term exists
-    if (search.trim()) {
+    if (trimmedSearch) {
+      const safeSearch = escapeRegex(trimmedSearch);
+      const matchingSuppliers = await Supplier.find({
+        $or: [
+          { name: { $regex: safeSearch, $options: 'i' } },
+          { companyName: { $regex: safeSearch, $options: 'i' } }
+        ]
+      }).distinct('_id');
+
       query.$or = [
-        { poNumber: { $regex: search, $options: 'i' } },
-        { 'supplierId.name': { $regex: search, $options: 'i' } },
-        { 'supplierId.companyName': { $regex: search, $options: 'i' } }
+        { poNumber: { $regex: safeSearch, $options: 'i' } },
+        { supplierId: { $in: matchingSuppliers } }
       ];
     }
 
-    // Get all approved POs
-    const allPurchaseOrders = await PurchaseOrder.find(query)
+    const purchaseOrders = await PurchaseOrder.find(query)
       .populate('supplierId', 'name companyName contactPerson email')
       .populate('warehouseId', 'name location')
       .populate('lines.productId', 'itemName productCode HSNCode description gst')
-      .select('poNumber supplierId warehouseId lines orderDate expectedDate status')
-      .sort({ createdAt: -1 });
-
-    // Get all PO IDs that already have GRNs
-    const existingGRNs = await GRN.find({}, { poId: 1 });
-    const poIdsWithGRNs = existingGRNs.map(grn => grn.poId.toString());
-
-    // Filter out POs that already have GRNs
-    const purchaseOrders = allPurchaseOrders.filter(po => 
-      !poIdsWithGRNs.includes(po._id.toString())
-    ).slice(0, 20); // Limit to 20 after filtering
-
-    console.log(`Found ${allPurchaseOrders.length} approved POs, ${purchaseOrders.length} without existing GRNs`);
+      .select('poNumber supplierId warehouseId lines orderDate expectedDate status approvedAt approvedBy expirationDate expirationExtended expirationNotified convertedToGRNId convertedAt createdAt updatedAt')
+      .sort({ createdAt: -1 })
+      .limit(20);
 
     res.json({
       success: true,

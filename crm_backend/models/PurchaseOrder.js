@@ -103,6 +103,62 @@ const purchaseOrderLineSchema = new mongoose.Schema({
   }
 });
 
+const statusHistorySchema = new mongoose.Schema({
+  fromStatus: {
+    type: String,
+    enum: ['Draft', 'Submitted', 'Approved', 'Rejected', 'Completed', 'Expired'],
+    required: true
+  },
+  toStatus: {
+    type: String,
+    enum: ['Draft', 'Submitted', 'Approved', 'Rejected', 'Completed', 'Expired'],
+    required: true
+  },
+  changedAt: {
+    type: Date,
+    required: true,
+    default: Date.now
+  },
+  changedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+  },
+  reason: {
+    type: String,
+    default: ''
+  }
+}, { _id: false });
+
+const expirationExtensionSchema = new mongoose.Schema({
+  previousExpirationDate: {
+    type: Date,
+    default: null
+  },
+  newExpirationDate: {
+    type: Date,
+    required: true
+  },
+  extendedAt: {
+    type: Date,
+    required: true,
+    default: Date.now
+  },
+  extendedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+  },
+  reason: {
+    type: String,
+    default: ''
+  },
+  reactivated: {
+    type: Boolean,
+    default: false
+  }
+}, { _id: false });
+
 const purchaseOrderSchema = new mongoose.Schema({
   poNumber: {
     type: String,
@@ -133,6 +189,32 @@ const purchaseOrderSchema = new mongoose.Schema({
     enum: ['Draft', 'Submitted', 'Approved', 'Rejected', 'Completed', 'Expired'],
     default: 'Draft'
   },
+  approvedAt: {
+    type: Date,
+    default: null
+  },
+  approvedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+  },
+  convertedToGRNId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'GRN',
+    default: null
+  },
+  convertedAt: {
+    type: Date,
+    default: null
+  },
+  statusHistory: {
+    type: [statusHistorySchema],
+    default: []
+  },
+  expirationExtensions: {
+    type: [expirationExtensionSchema],
+    default: []
+  },
   // Auto-created PO fields
   isAutoCreated: {
     type: Boolean,
@@ -148,10 +230,10 @@ const purchaseOrderSchema = new mongoose.Schema({
     ref: 'GRN',
     default: null
   },
-  // Expiration (for auto-approved POs)
+  // Approved POs expire if they are not converted to a GRN within the active window.
   expirationDate: {
     type: Date,
-    default: null  // null = no expiration; set to +30 days for auto-approved POs
+    default: null
   },
   expirationExtended: {
     type: Boolean,
@@ -196,6 +278,11 @@ const purchaseOrderSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+// Lifecycle lookups: active approval queues, expiration processing, and GRN claims.
+purchaseOrderSchema.index({ status: 1, convertedToGRNId: 1, expirationDate: 1 });
+purchaseOrderSchema.index({ convertedToGRNId: 1 });
+purchaseOrderSchema.index({ approvedAt: 1 });
 
 // Calculate totals before saving
 // In PurchaseOrder.js - Update the pre-save hook
