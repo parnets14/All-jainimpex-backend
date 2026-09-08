@@ -1399,9 +1399,16 @@ export const getGRNStats = async (req, res) => {
 export const getApprovedPOs = async (req, res) => {
   try {
     const { PurchaseOrder, GRN, Supplier } = getModels(req.dbConnection);
-    const { search = '' } = req.query;
+    const { search = '', supplierId = '' } = req.query;
     const now = new Date();
     const trimmedSearch = search.trim();
+
+    if (supplierId && !mongoose.Types.ObjectId.isValid(supplierId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid supplier ID'
+      });
+    }
 
     const [primaryPOIds, additionalPOIds] = await Promise.all([
       GRN.distinct('poId'),
@@ -1415,6 +1422,7 @@ export const getApprovedPOs = async (req, res) => {
       status: 'Approved',
       convertedToGRNId: null,
       _id: { $nin: usedPOIds },
+      ...(supplierId && { supplierId: new mongoose.Types.ObjectId(supplierId) }),
       ...futureEffectiveExpiryPredicate(now)
     };
 

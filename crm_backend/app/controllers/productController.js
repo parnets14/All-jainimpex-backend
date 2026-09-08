@@ -8,6 +8,7 @@ import { categorySchema } from '../../models/Category.js';
 import { subcategorySchema } from '../../models/Subcategory.js';
 import { extendedSubcategorySchema } from '../../models/ExtendedSubcategory.js';
 import { brandSchema } from '../../models/Brand.js';
+import { buildProductSearchConditions } from '../../utils/productSearch.js';
 
 // ── Model helper (company-specific connection) ────────────────────────────────
 const getModels = (db) => ({
@@ -295,14 +296,13 @@ export const getProductsForDealer = async (req, res) => {
     // Merge with user-supplied filters
     const filter = { ...permFilter };
 
-    if (search) {
-      const searchRegex = { $regex: search, $options: 'i' };
-      const searchOr = [
-        { productCode: searchRegex },
-        { itemName:    searchRegex },
-        { description: searchRegex },
-      ];
-      // Merge with existing $or if present
+    const searchOr = buildProductSearchConditions(search, [
+      'productCode',
+      'itemName',
+      'description',
+    ]);
+    if (searchOr.length > 0) {
+      // Merge with existing permission $or via $and so search cannot broaden access.
       if (filter.$or) {
         filter.$and = [{ $or: filter.$or }, { $or: searchOr }];
         delete filter.$or;

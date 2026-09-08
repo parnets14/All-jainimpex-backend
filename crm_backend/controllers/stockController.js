@@ -8,6 +8,7 @@ import { warehouseSchema } from '../models/Warehouse.js';
 import { salesOrderSchema } from '../models/SalesOrder.js';
 import StockMovementService from '../services/stockMovementService.js';
 import { getInventoryRiskSnapshot, getLowStockSnapshot } from '../services/dashboardStockService.js';
+import { buildProductSearchConditions } from '../utils/productSearch.js';
 
 // Helper function to get models from company-specific connection
 const getModels = (dbConnection) => {
@@ -233,12 +234,13 @@ export const getStock = async (req, res) => {
     const productQuery = {};
     
     // Add search filter
-    if (search) {
-      productQuery.$or = [
-        { productCode: { $regex: search, $options: 'i' } },
-        { itemName: { $regex: search, $options: 'i' } },
-        { HSNCode: { $regex: search, $options: 'i' } }
-      ];
+    const productSearchConditions = buildProductSearchConditions(search, [
+      'productCode',
+      'itemName',
+      'HSNCode'
+    ]);
+    if (productSearchConditions.length > 0) {
+      productQuery.$or = productSearchConditions;
     }
     
     // Add hierarchical filters

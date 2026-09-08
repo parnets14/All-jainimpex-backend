@@ -6,6 +6,7 @@ import {
   updateDealer,
   deleteDealer,
   getDealerStats,
+  getDealerPermissionOptions,
   uploadDealerDocuments,
   getDealerCompleteInfo,
   getDealerAccessibleProducts,
@@ -27,6 +28,9 @@ router.use(attachCompanyDB);
 
 // Get dealer statistics - Allow all authenticated users (needed for dashboard)
 router.get("/stats", logActivity("Dealer Management", "Viewed dealer statistics", "READ"), getDealerStats);
+
+// Get hierarchy metadata for Dealer Master permission selection
+router.get("/permission-options", logActivity("Dealer Management", "Viewed dealer permission options", "READ"), getDealerPermissionOptions);
 
 // Product Access Control Routes
 // Get products accessible to a specific dealer based on hierarchy permissions

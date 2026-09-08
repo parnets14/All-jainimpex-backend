@@ -316,10 +316,6 @@ class StockMovementService {
       
       console.log(`🔍 [STOCK_MOVEMENT_SERVICE] Getting stock history for product: ${productId}`);
       
-      // First, let's check how many total stock movements exist
-      const totalMovementsInDB = await StockMovement.countDocuments({});
-      console.log(`🔍 [STOCK_MOVEMENT_SERVICE] Total stock movements in database: ${totalMovementsInDB}`);
-      
       // Check movements for this specific product
       const query = { productId };
       if (warehouseId) {
@@ -332,14 +328,15 @@ class StockMovementService {
       const limitNum = parseInt(limit);
       const skip = (pageNum - 1) * limitNum;
       
-      const movements = await StockMovement.find(query)
-        .populate('warehouseId', 'name')
-        .populate('productId', 'productCode itemName')
-        .sort({ date: -1, createdAt: -1 })
-        .skip(skip)
-        .limit(limitNum);
-      
-      const totalRecords = await StockMovement.countDocuments(query);
+      const [movements, totalRecords] = await Promise.all([
+        StockMovement.find(query)
+          .populate('warehouseId', 'name')
+          .populate('productId', 'productCode itemName')
+          .sort({ date: -1, createdAt: -1 })
+          .skip(skip)
+          .limit(limitNum),
+        StockMovement.countDocuments(query)
+      ]);
 
       // Enrich SALE movements with dealer name
       const saleOrderNumbers = [...new Set(
@@ -370,20 +367,6 @@ class StockMovementService {
       
       console.log(`🔍 [STOCK_MOVEMENT_SERVICE] Found ${movements.length} movements for product ${productId}`);
       console.log(`🔍 [STOCK_MOVEMENT_SERVICE] Total records for this product: ${totalRecords}`);
-      
-      // Log each movement for debugging
-      movements.forEach((movement, index) => {
-        console.log(`🔍 [STOCK_MOVEMENT_SERVICE] Movement ${index + 1}:`, {
-          _id: movement._id,
-          productId: movement.productId,
-          warehouseId: movement.warehouseId,
-          type: movement.type,
-          quantity: movement.quantity,
-          balance: movement.balance,
-          referenceNo: movement.referenceNo,
-          date: movement.date
-        });
-      });
       
       return {
         movements: enrichedMovements,

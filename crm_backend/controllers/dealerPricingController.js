@@ -11,6 +11,7 @@ import { purchaseOrderSchema } from '../models/PurchaseOrder.js';
 import { supplierInvoiceSchema } from '../models/SupplierInvoice.js';
 import { supplierSchema } from '../models/Supplier.js';
 import { v4 as uuidv4 } from 'uuid';
+import { buildProductSearchConditions } from '../utils/productSearch.js';
 
 // Helper function to get models for the current company database
 const getModels = (dbConnection) => {
@@ -96,11 +97,12 @@ export const getDealerPricing = async (req, res) => {
       productFilter.subcategory = subcategoryId;
     }
 
-    if (search) {
-      productFilter.$or = [
-        { itemName: { $regex: search, $options: 'i' } },
-        { productCode: { $regex: search, $options: 'i' } }
-      ];
+    const productSearchConditions = buildProductSearchConditions(search, [
+      'itemName',
+      'productCode',
+    ]);
+    if (productSearchConditions.length > 0) {
+      productFilter.$or = productSearchConditions;
     }
 
     // If we have product filters, get matching product IDs
@@ -832,11 +834,12 @@ export const previewBulkChanges = async (req, res) => {
       productFilter.subcategory = filters.subcategoryId;
     }
 
-    if (filters.search) {
-      productFilter.$or = [
-        { itemName: { $regex: filters.search, $options: 'i' } },
-        { productCode: { $regex: filters.search, $options: 'i' } }
-      ];
+    const productSearchConditions = buildProductSearchConditions(filters.search, [
+      'itemName',
+      'productCode',
+    ]);
+    if (productSearchConditions.length > 0) {
+      productFilter.$or = productSearchConditions;
     }
 
     // Get matching products
@@ -1429,20 +1432,24 @@ export const getAllPriceHistory = async (req, res) => {
     
     // Search filter - need to find matching products first
     if (search) {
-      const searchLower = search.toLowerCase();
-      const matchingProducts = await Product.find({
-        $or: [
-          { itemName: { $regex: search, $options: 'i' } },
-          { productCode: { $regex: search, $options: 'i' } }
-        ]
-      }).select('_id');
-      
+      const productSearchConditions = buildProductSearchConditions(search, [
+        'itemName',
+        'productCode',
+      ]);
+      const matchingProducts = productSearchConditions.length > 0
+        ? await Product.find({ $or: productSearchConditions }).select('_id')
+        : [];
+
       const productIds = matchingProducts.map(p => p._id);
-      
-      // Add product filter or reason filter
+      const literalSearch = String(search)
+        .trim()
+        .slice(0, 100)
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+      // Keep history-reason search separate from product identity matching.
       filter.$or = [
         { product: { $in: productIds } },
-        { reason: { $regex: search, $options: 'i' } }
+        ...(literalSearch ? [{ reason: { $regex: literalSearch, $options: 'i' } }] : [])
       ];
     }
     
@@ -1586,11 +1593,12 @@ export const getComprehensivePricing = async (req, res) => {
       productFilter.subcategory = subcategoryId;
     }
 
-    if (search) {
-      productFilter.$or = [
-        { itemName: { $regex: search, $options: 'i' } },
-        { productCode: { $regex: search, $options: 'i' } }
-      ];
+    const productSearchConditions = buildProductSearchConditions(search, [
+      'itemName',
+      'productCode',
+    ]);
+    if (productSearchConditions.length > 0) {
+      productFilter.$or = productSearchConditions;
     }
 
     // If we have product filters, get matching product IDs

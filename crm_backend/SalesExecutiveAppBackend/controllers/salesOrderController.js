@@ -4,6 +4,7 @@ import { discountMappingSchema } from '../../models/DiscountMapping.js';
 import { calculateDiscountLine } from '../../utils/sequentialDiscountPolicy.js';
 import { createSingleSalesOrder as createCanonicalSalesOrderRecord } from '../../controllers/salesOrderController.js';
 import { notifyNewSEOrder } from '../../services/adminNotificationService.js';
+import { buildProductSearchConditions } from '../../utils/productSearch.js';
 
 // ── Find applicable discount for a product on the company connection ──────────
 export async function findProductDiscount(productId, product, dealerType, conn, seAllowedLevels = []) {
@@ -274,11 +275,12 @@ export const getProducts = async (req, res) => {
     // ── Merge user-supplied filters ─────────────────────────────────────────
     let query = { ...baseFilter };
 
-    if (search) {
-      const searchOr = [
-        { itemName:    { $regex: search, $options: 'i' } },
-        { productCode: { $regex: search, $options: 'i' } },
-      ];
+    const searchOr = buildProductSearchConditions(search, [
+      'itemName',
+      'productCode',
+      'HSNCode',
+    ]);
+    if (searchOr.length > 0) {
       if (query.$or) {
         // Combine existing $or (from permission filter) with search $or via $and
         query = {

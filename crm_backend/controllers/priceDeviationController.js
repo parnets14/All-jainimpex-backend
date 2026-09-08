@@ -6,6 +6,7 @@ import { productSchema } from "../models/Product.js";
 import { dealerSchema } from "../models/Dealer.js";
 import { supplierSchema } from "../models/Supplier.js";
 import { grnSchema } from "../models/GRN.js";
+import { buildSeparatorInsensitivePattern } from "../utils/productSearch.js";
 
 // Helper function to get models for the current company database
 const getModels = (dbConnection) => {
@@ -143,8 +144,12 @@ export const getPriceDeviationReport = async (req, res) => {
     // Apply search filter
     if (search) {
       const searchLower = search.toLowerCase();
-      data = data.filter(item => 
-        item.product.toLowerCase().includes(searchLower) ||
+      const productSearchPattern = buildSeparatorInsensitivePattern(search);
+      const productSearchRegex = productSearchPattern
+        ? new RegExp(productSearchPattern, 'i')
+        : null;
+      data = data.filter(item =>
+        (productSearchRegex?.test(item.product) ?? false) ||
         item.supplier.toLowerCase().includes(searchLower) ||
         item.remarks.toLowerCase().includes(searchLower)
       );
@@ -761,9 +766,13 @@ export const getEnhancedPurchasePriceDeviation = async (req, res) => {
     // Apply search filter
     if (search) {
       const searchLower = search.toLowerCase();
-      data = data.filter(item => 
+      const productSearchPattern = buildSeparatorInsensitivePattern(search);
+      const productSearchRegex = productSearchPattern
+        ? new RegExp(productSearchPattern, 'i')
+        : null;
+      data = data.filter(item =>
         item.supplierName.toLowerCase().includes(searchLower) ||
-        item.productName.toLowerCase().includes(searchLower) ||
+        (productSearchRegex?.test(item.productName) ?? false) ||
         item.invoiceNumber.toLowerCase().includes(searchLower) ||
         item.poNumber.toLowerCase().includes(searchLower)
       );
@@ -931,9 +940,13 @@ export const getQuantityDeviationReport = async (req, res) => {
     // Apply search filter
     if (search) {
       const searchLower = search.toLowerCase();
-      data = data.filter(item => 
+      const productSearchPattern = buildSeparatorInsensitivePattern(search);
+      const productSearchRegex = productSearchPattern
+        ? new RegExp(productSearchPattern, 'i')
+        : null;
+      data = data.filter(item =>
         item.supplierName.toLowerCase().includes(searchLower) ||
-        item.productName.toLowerCase().includes(searchLower) ||
+        (productSearchRegex?.test(item.productName) ?? false) ||
         item.grnNumber.toLowerCase().includes(searchLower) ||
         item.poNumber.toLowerCase().includes(searchLower)
       );
@@ -1099,9 +1112,13 @@ export const getEnhancedPurchaseDiscountDeviation = async (req, res) => {
     // Apply search filter
     if (search) {
       const searchLower = search.toLowerCase();
-      data = data.filter(item => 
+      const productSearchPattern = buildSeparatorInsensitivePattern(search);
+      const productSearchRegex = productSearchPattern
+        ? new RegExp(productSearchPattern, 'i')
+        : null;
+      data = data.filter(item =>
         item.supplierName.toLowerCase().includes(searchLower) ||
-        item.productName.toLowerCase().includes(searchLower) ||
+        (productSearchRegex?.test(item.productName) ?? false) ||
         item.invoiceNumber.toLowerCase().includes(searchLower) ||
         item.poNumber.toLowerCase().includes(searchLower)
       );

@@ -12,6 +12,7 @@ import { regionSchema } from "../models/Region.js";
 import { dealerCategorySchema } from "../models/DealerCategory.js";
 import { productSchema } from "../models/Product.js";
 import { getDealerCreditExposure } from '../services/dealerCreditService.js';
+import { buildProductSearchConditions } from '../utils/productSearch.js';
 
 // Helper function to get models from company-specific connection
 const getModels = (dbConnection) => {
@@ -114,11 +115,13 @@ export const getDealers = async (req, res) => {
       .skip(skip);
 
     if (compactMode) {
-      // Order/invoice dealer pickers need identity, contact, credit and region
-      // fields only. Avoid document arrays and seven unrelated populations.
+      // Keep Dealer Master list metadata while excluding documents and permission arrays.
       dealerQuery = dealerQuery
-        .select("code name contactPerson phone email address gst dealerType regionId creditLimit creditDays creditDaysRegular creditDaysCD extraDiscounts isActive")
+        .select("code name contactPerson phone email address altAddress gst pan aadhar dealerType regionId routeId salesExecutiveId dealerCategory creditLimit creditDays creditDaysRegular creditDaysCD salesTarget totalOrders totalValue extraDiscounts isActive createdAt location")
         .populate('regionId', 'name code')
+        .populate('routeId', 'name code')
+        .populate('salesExecutiveId', 'name empId email')
+        .populate('dealerCategory', 'name color description')
         .lean();
     } else {
       dealerQuery = dealerQuery
@@ -175,6 +178,7 @@ export const getDealer = async (req, res) => {
     
     const dealer = await Dealer.findById(req.params.id)
       .populate('regionId', 'name code')
+      .populate('routeId', 'name code')
       .populate('salesExecutiveId', 'name empId email')
       .populate('dealerCategory', 'name color description')
       .populate('allowedBrands', 'name description')
@@ -769,12 +773,59 @@ export const getDealerStats = async (req, res) => {
   }
 };
 
+// Get hierarchy metadata for Dealer Master permission selection
+export const getDealerPermissionOptions = async (req, res) => {
+  try {
+    const { Brand, Category, Subcategory, ExtendedSubcategory } = getModels(req.dbConnection);
+
+    const [brands, categories, subcategories, extendedSubcategories] = await Promise.all([
+      Brand.find({})
+        .select("_id name description")
+        .sort({ name: 1 })
+        .lean(),
+      Category.find({})
+        .select("_id name description brand")
+        .sort({ name: 1 })
+        .lean(),
+      Subcategory.find({})
+        .select("_id name description brand category")
+        .sort({ name: 1 })
+        .lean(),
+      ExtendedSubcategory.find({
+        status: "active",
+        level: 1,
+        parentExtendedSubcategory: null,
+      })
+        .select("_id name description brand category subcategory parentExtendedSubcategory level")
+        .sort({ name: 1 })
+        .lean(),
+    ]);
+
+    res.json({
+      success: true,
+      options: {
+        brands,
+        categories,
+        subcategories,
+        extendedSubcategories,
+      },
+    });
+  } catch (error) {
+    console.error("Get dealer permission options error:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 // Upload dealer documents
 export const uploadDealerDocuments = async (req, res) => {
   console.log("=== UPLOAD CONTROLLER CALLED ===");
   console.log("Dealer ID:", req.params.id);
 
   try {
+    const { Dealer } = getModels(req.dbConnection);
     const { id } = req.params;
 
     // Check if dealer exists
@@ -1281,23 +1332,20 @@ export const getDealerAccessibleProducts = async (req, res) => {
     console.log("🔍 Smart filter result:", JSON.stringify(productFilter, null, 2));
 
     // Apply search filter if provided
-    if (search) {
-      const searchConditions = [
-        { itemName: { $regex: search, $options: "i" } },
-        { productCode: { $regex: search, $options: "i" } },
-        { description: { $regex: search, $options: "i" } },
-      ];
-      
-      // Combine with existing filter
+    const searchConditions = buildProductSearchConditions(search, [
+      "itemName",
+      "productCode",
+      "description",
+    ]);
+    if (searchConditions.length > 0) {
+      // Combine with existing filter without broadening permission conditions.
       if (productFilter.$or) {
-        // If filter already has $or, wrap both in $and
         productFilter.$and = [
           { $or: productFilter.$or },
           { $or: searchConditions }
         ];
         delete productFilter.$or;
       } else {
-        // Add search as additional $and condition
         if (!productFilter.$and) {
           productFilter.$and = [];
         }

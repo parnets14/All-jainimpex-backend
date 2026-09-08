@@ -13,6 +13,10 @@ import { warehouseSchema } from "../models/Warehouse.js";
 import StockMovementService from "../services/stockMovementService.js";
 import { getLowStockSnapshot } from "../services/dashboardStockService.js";
 import mongoose from "mongoose";
+import {
+  buildProductSearchConditions,
+  buildSeparatorInsensitivePattern,
+} from "../utils/productSearch.js";
 
 // Helper function to get models from company-specific connection
 const getModels = (dbConnection) => {
@@ -63,11 +67,17 @@ export const getProducts = async (req, res) => {
 
     const filter = {};
 
-    // Enhanced search filter - searches across multiple fields
-    if (search) {
-      // Escape regex special characters to prevent regex errors
-      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&');
-      
+    // Enhanced search filter - searches across explicit product identity fields
+    const productSearchPattern = buildSeparatorInsensitivePattern(search);
+    if (productSearchPattern) {
+      const productSearchConditions = buildProductSearchConditions(search, [
+        "productCode",
+        "itemName",
+        "aliasName",
+        "description",
+        "HSNCode",
+      ]);
+
       // First, try to find matching categories, subcategories, and brands by name
       const [
         matchingCategories,
@@ -79,14 +89,14 @@ export const getProducts = async (req, res) => {
         matchingExtended4,
         matchingExtended5,
       ] = await Promise.all([
-        Category.find({ name: { $regex: escapedSearch, $options: "i" } }).select("_id"),
-        Subcategory.find({ name: { $regex: escapedSearch, $options: "i" } }).select("_id"),
-        Brand.find({ name: { $regex: escapedSearch, $options: "i" } }).select("_id"),
-        ExtendedSubcategory.find({ name: { $regex: escapedSearch, $options: "i" }, level: 1 }).select("_id"),
-        ExtendedSubcategory.find({ name: { $regex: escapedSearch, $options: "i" }, level: 2 }).select("_id"),
-        ExtendedSubcategory.find({ name: { $regex: escapedSearch, $options: "i" }, level: 3 }).select("_id"),
-        ExtendedSubcategory.find({ name: { $regex: escapedSearch, $options: "i" }, level: 4 }).select("_id"),
-        ExtendedSubcategory.find({ name: { $regex: escapedSearch, $options: "i" }, level: 5 }).select("_id"),
+        Category.find({ name: { $regex: productSearchPattern, $options: "i" } }).select("_id"),
+        Subcategory.find({ name: { $regex: productSearchPattern, $options: "i" } }).select("_id"),
+        Brand.find({ name: { $regex: productSearchPattern, $options: "i" } }).select("_id"),
+        ExtendedSubcategory.find({ name: { $regex: productSearchPattern, $options: "i" }, level: 1 }).select("_id"),
+        ExtendedSubcategory.find({ name: { $regex: productSearchPattern, $options: "i" }, level: 2 }).select("_id"),
+        ExtendedSubcategory.find({ name: { $regex: productSearchPattern, $options: "i" }, level: 3 }).select("_id"),
+        ExtendedSubcategory.find({ name: { $regex: productSearchPattern, $options: "i" }, level: 4 }).select("_id"),
+        ExtendedSubcategory.find({ name: { $regex: productSearchPattern, $options: "i" }, level: 5 }).select("_id"),
       ]);
 
       const categoryIds = matchingCategories.map((c) => c._id);
@@ -99,11 +109,7 @@ export const getProducts = async (req, res) => {
       const extended5Ids = matchingExtended5.map((e) => e._id);
 
       filter.$or = [
-        { productCode: { $regex: escapedSearch, $options: "i" } },
-        { itemName: { $regex: escapedSearch, $options: "i" } },
-        { aliasName: { $regex: escapedSearch, $options: "i" } },
-        { description: { $regex: escapedSearch, $options: "i" } },
-        { HSNCode: { $regex: escapedSearch, $options: "i" } },
+        ...productSearchConditions,
         ...(categoryIds.length > 0 ? [{ category: { $in: categoryIds } }] : []),
         ...(subcategoryIds.length > 0
           ? [{ subcategory: { $in: subcategoryIds } }]
@@ -979,12 +985,13 @@ export const exportProductsToPDF = async (req, res) => {
     const filter = {};
 
     // Apply same filters as getProducts
-    if (search) {
-      filter.$or = [
-        { productCode: { $regex: search, $options: "i" } },
-        { itemName: { $regex: search, $options: "i" } },
-        { description: { $regex: search, $options: "i" } },
-      ];
+    const productSearchConditions = buildProductSearchConditions(search, [
+      "productCode",
+      "itemName",
+      "description",
+    ]);
+    if (productSearchConditions.length > 0) {
+      filter.$or = productSearchConditions;
     }
 
     if (category) filter.category = category;
@@ -1103,12 +1110,13 @@ export const exportProductsToExcel = async (req, res) => {
     const filter = {};
 
     // Apply same filters as getProducts
-    if (search) {
-      filter.$or = [
-        { productCode: { $regex: search, $options: "i" } },
-        { itemName: { $regex: search, $options: "i" } },
-        { description: { $regex: search, $options: "i" } },
-      ];
+    const productSearchConditions = buildProductSearchConditions(search, [
+      "productCode",
+      "itemName",
+      "description",
+    ]);
+    if (productSearchConditions.length > 0) {
+      filter.$or = productSearchConditions;
     }
 
     if (category) filter.category = category;
@@ -1292,17 +1300,15 @@ export const getPriceList = async (req, res) => {
 
     const filter = {};
 
-    if (search) {
-      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\\/]/g, "\\$&");
+    const productSearchPattern = buildSeparatorInsensitivePattern(search);
+    if (productSearchPattern) {
       const [matchingCategories, matchingSubcategories, matchingBrands] = await Promise.all([
-        Category.find({ name: { $regex: escapedSearch, $options: "i" } }).select("_id"),
-        Subcategory.find({ name: { $regex: escapedSearch, $options: "i" } }).select("_id"),
-        Brand.find({ name: { $regex: escapedSearch, $options: "i" } }).select("_id"),
+        Category.find({ name: { $regex: productSearchPattern, $options: "i" } }).select("_id"),
+        Subcategory.find({ name: { $regex: productSearchPattern, $options: "i" } }).select("_id"),
+        Brand.find({ name: { $regex: productSearchPattern, $options: "i" } }).select("_id"),
       ]);
       filter.$or = [
-        { productCode: { $regex: escapedSearch, $options: "i" } },
-        { itemName: { $regex: escapedSearch, $options: "i" } },
-        { aliasName: { $regex: escapedSearch, $options: "i" } },
+        ...buildProductSearchConditions(search, ["productCode", "itemName", "aliasName"]),
         ...(matchingCategories.length ? [{ category: { $in: matchingCategories.map(c => c._id) } }] : []),
         ...(matchingSubcategories.length ? [{ subcategory: { $in: matchingSubcategories.map(s => s._id) } }] : []),
         ...(matchingBrands.length ? [{ brand: { $in: matchingBrands.map(b => b._id) } }] : []),

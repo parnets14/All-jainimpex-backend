@@ -415,10 +415,12 @@ export const getPurchaseOrders = async (req, res) => {
         { $count: "total" }
       ];
       
-      const countResult = await PurchaseOrder.aggregate(countPipeline);
+      const [countResult, searchResults] = await Promise.all([
+        PurchaseOrder.aggregate(countPipeline),
+        PurchaseOrder.aggregate(aggregationPipeline)
+      ]);
       total = countResult.length > 0 ? countResult[0].total : 0;
-      
-      purchaseOrders = await PurchaseOrder.aggregate(aggregationPipeline);
+      purchaseOrders = searchResults;
       
       // Now populate the results using regular populate
       const poIds = purchaseOrders.map(po => po._id);
@@ -432,20 +434,21 @@ export const getPurchaseOrders = async (req, res) => {
         .sort(sort)
         .lean();
     } else {
-      // Use regular find for non-search queries
-      total = await PurchaseOrder.countDocuments(query);
-      
-      purchaseOrders = await PurchaseOrder.find(query)
-        .populate("supplierId", "name companyName email gstin contactPerson")
-        .populate("warehouseId", "name address contact")
-        .populate(
-          "lines.productId",
-          "itemName productCode HSNCode description gst"
-        )
-        .sort(sort)
-        .limit(parseInt(limit))
-        .skip((parseInt(page) - 1) * parseInt(limit))
-        .lean();
+      // Count and page reads are independent and retain the same response shape.
+      [total, purchaseOrders] = await Promise.all([
+        PurchaseOrder.countDocuments(query),
+        PurchaseOrder.find(query)
+          .populate("supplierId", "name companyName email gstin contactPerson")
+          .populate("warehouseId", "name address contact")
+          .populate(
+            "lines.productId",
+            "itemName productCode HSNCode description gst"
+          )
+          .sort(sort)
+          .limit(parseInt(limit))
+          .skip((parseInt(page) - 1) * parseInt(limit))
+          .lean()
+      ]);
     }
     
     // Calculate pagination

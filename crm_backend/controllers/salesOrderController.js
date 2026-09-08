@@ -20,6 +20,7 @@ import {
 } from '../utils/sequentialDiscountPolicy.js';
 import StockMovementService from '../services/stockMovementService.js';
 import StockArrivalService from '../services/stockArrivalService.js';
+import { buildProductSearchConditions } from '../utils/productSearch.js';
 import {
   acquireDealerCreditLease,
   acquireDealerCreditLock,
@@ -652,12 +653,19 @@ export const getSalesOrders = async (req, res) => {
 
     // Search functionality
     if (search) {
+      const literalSearch = String(search)
+        .trim()
+        .slice(0, 100)
+        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       query.$or = [
-        { orderNumber: { $regex: search, $options: "i" } },
-        { dealerName: { $regex: search, $options: "i" } },
-        { "products.productName": { $regex: search, $options: "i" } }
+        ...(literalSearch ? [
+          { orderNumber: { $regex: literalSearch, $options: "i" } },
+          { dealerName: { $regex: literalSearch, $options: "i" } },
+        ] : []),
+        ...buildProductSearchConditions(search, ["products.productName"]),
       ];
 
+      if (query.$or.length === 0) delete query.$or;
     }
 
     // Filter by status
@@ -5599,11 +5607,19 @@ export const getDispatchDeviations = async (req, res) => {
       if (toDate) query.orderDate.$lte = new Date(new Date(toDate).setHours(23, 59, 59, 999));
     }
     if (search) {
+      const literalSearch = String(search)
+        .trim()
+        .slice(0, 100)
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       query.$or = [
-        { orderNumber: { $regex: search, $options: 'i' } },
-        { dealerName: { $regex: search, $options: 'i' } },
-        { 'deviations.productName': { $regex: search, $options: 'i' } }
+        ...(literalSearch ? [
+          { orderNumber: { $regex: literalSearch, $options: 'i' } },
+          { dealerName: { $regex: literalSearch, $options: 'i' } },
+        ] : []),
+        ...buildProductSearchConditions(search, ['deviations.productName']),
       ];
+
+      if (query.$or.length === 0) delete query.$or;
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
