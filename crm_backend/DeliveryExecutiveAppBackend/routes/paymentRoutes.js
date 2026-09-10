@@ -10,14 +10,15 @@ import {
   uploadPaymentFiles,
 } from '../controllers/paymentController.js';
 import { protect } from '../middleware/protect.js';
+import { protect as protectAdmin } from '../../middleware/authMiddleware.js';
 import { attachDeModels } from '../middleware/deCompanyMiddleware.js';
 
-// Admin/Web routes (no protect for admin access - handled by main server)
-router.get('/all', attachDeModels, getAllCollections);
-router.put('/:paymentId/verify', attachDeModels, verifyPayment);
+// Admin/Web routes use the main CRM token and the same tenant resolver.
+router.get('/all', protectAdmin, attachDeModels, getAllCollections);
+router.put('/:paymentId/verify', protectAdmin, attachDeModels, verifyPayment);
 
 // Mobile App routes (protected)
-router.post('/', protect, uploadPaymentFiles, createPayment);
+router.post('/', protect, attachDeModels, uploadPaymentFiles, createPayment);
 router.post('/skip', protect, attachDeModels, async (req, res) => {
   try {
     const { DeliveryAssignment } = req.deModels;
@@ -46,9 +47,9 @@ router.post('/skip', protect, attachDeModels, async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to skip collection', error: error.message });
   }
 });
-router.get('/today', protect, getTodayPayments);
-router.get('/history', protect, getPaymentHistory);
-router.get('/:paymentId', protect, getPaymentById);
+router.get('/today', protect, attachDeModels, getTodayPayments);
+router.get('/history', protect, attachDeModels, getPaymentHistory);
+router.get('/:paymentId', protect, attachDeModels, getPaymentById);
 
 export default router;
 

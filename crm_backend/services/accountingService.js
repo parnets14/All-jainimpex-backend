@@ -2,6 +2,7 @@
 // Automatic Accounting Entry Service
 // Creates journal entries automatically for business transactions
 
+import { randomUUID } from 'node:crypto';
 import { journalVoucherSchema } from '../models/JournalVoucher.js';
 import { accountMasterSchema } from '../models/AccountMaster.js';
 
@@ -39,29 +40,11 @@ const getSystemAccount = async (accountName, dbConnection, { session, throwOnErr
 /**
  * Generate journal voucher number
  */
-const generateJournalNumber = async (dbConnection, { session } = {}) => {
-  const { JournalVoucher } = getModels(dbConnection);
+const generateJournalNumber = async () => {
   const date = new Date();
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
-  
-  const prefix = `JV-${year}${month}`;
-  let lastJournalQuery = JournalVoucher.findOne({
-    voucherNumber: { $regex: `^${prefix}` }
-  }).sort({ voucherNumber: -1 });
-  if (session) lastJournalQuery = lastJournalQuery.session(session);
-  const lastJournal = await lastJournalQuery;
-  
-  let sequence = 1;
-  if (lastJournal && lastJournal.voucherNumber) {
-    const parts = lastJournal.voucherNumber.split('-');
-    const lastSeq = parseInt(parts[parts.length - 1]);
-    if (!isNaN(lastSeq)) {
-      sequence = lastSeq + 1;
-    }
-  }
-  
-  return `${prefix}-${String(sequence).padStart(4, '0')}`;
+  return `JV-${year}${month}-${randomUUID().replaceAll('-', '').toUpperCase()}`;
 };
 
 /**
@@ -70,81 +53,157 @@ const generateJournalNumber = async (dbConnection, { session } = {}) => {
  * Credit: Sales Account
  * Credit: GST Payable (if GST applicable)
  */
-export const createDealerInvoiceEntry = async (invoice, dbConnection, userId) => {
+export const createDealerInvoiceEntry = async (
+  invoice,
+  dbConnection,
+  userId,
+  { session, throwOnError = false } = {}
+) => {
   try {
     const { JournalVoucher } = getModels(dbConnection);
-    
-    console.log(`📝 Creating automatic journal entry for Dealer Invoice: ${invoice.invoiceNumber}`);
-    
-    // Get system accounts
-    const debtorsAccount = await getSystemAccount('Sundry Debtors', dbConnection);
-    const salesAccount = await getSystemAccount('Sales Account', dbConnection);
-    const gstPayableAccount = await getSystemAccount('GST Payable', dbConnection);
-    
-    if (!debtorsAccount || !salesAccount) {
-      console.error('❌ Required system accounts not found');
-      return null;
+    const postingKey = `dealer-invoice:${invoice._id}:original`;
+    let existingQuery = JournalVoucher.findOne({ postingKey });
+    if (session) existingQuery = existingQuery.session(session);
+    const existing = await existingQuery;
+    if (existing) return existing;
+
+    const rawTotalAmount = Number(invoice.totalAmount);
+    const rawGstAmount = Number(invoice.gstAmount ?? invoice.totalGst ?? 0);
+    if (!Number.isFinite(rawTotalAmount) || rawTotalAmount <= 0
+      || !Number.isFinite(rawGstAmount) || rawGstAmount < 0 || rawGstAmount > rawTotalAmount) {
+      throw new Error('Dealer invoice contains invalid total/GST amounts');
     }
-    
-    const entries = [];
-    
-    // Handle both gstAmount and totalGst field names
-    const gstAmount = invoice.gstAmount || invoice.totalGst || 0;
-    
-    // Debit: Sundry Debtors (Total Amount including GST)
-    entries.push({
-      accountId: debtorsAccount._id,
-      accountName: debtorsAccount.accountName,
-      accountGroup: debtorsAccount.accountGroup,
-      debit: invoice.totalAmount,
-      credit: 0,
-      narration: `Sales to ${invoice.dealerName || 'Dealer'} - Invoice ${invoice.invoiceNumber}`
-    });
-    
-    // Credit: Sales Account (Subtotal without GST)
-    entries.push({
-      accountId: salesAccount._id,
-      accountName: salesAccount.accountName,
-      accountGroup: salesAccount.accountGroup,
-      debit: 0,
-      credit: invoice.subtotal,
-      narration: `Sales - Invoice ${invoice.invoiceNumber}`
-    });
-    
-    // Credit: GST Payable (GST Amount)
-    if (gstAmount && gstAmount > 0 && gstPayableAccount) {
+    const totalInMinorUnits = Math.round(rawTotalAmount * 100);
+    const gstInMinorUnits = Math.round(rawGstAmount * 100);
+    if (gstInMinorUnits > totalInMinorUnits) {
+      throw new Error('Dealer invoice GST cannot exceed its rounded total');
+    }
+    const salesInMinorUnits = totalInMinorUnits - gstInMinorUnits;
+    const totalAmount = totalInMinorUnits / 100;
+    const gstAmount = gstInMinorUnits / 100;
+    const salesAmount = salesInMinorUnits / 100;
+    const debtorsAccount = await getSystemAccount('Sundry Debtors', dbConnection, { session, throwOnError: true });
+    const salesAccount = await getSystemAccount('Sales Account', dbConnection, { session, throwOnError: true });
+    const gstPayableAccount = gstAmount > 0
+      ? await getSystemAccount('GST Payable', dbConnection, { session, throwOnError: true })
+      : null;
+
+    const entries = [
+      {
+        accountId: debtorsAccount._id,
+        accountName: debtorsAccount.accountName,
+        accountGroup: debtorsAccount.accountGroup,
+        debit: totalAmount,
+        credit: 0,
+        narration: `Sales to ${invoice.dealerName || 'Dealer'} - Invoice ${invoice.invoiceNumber}`
+      },
+      {
+        accountId: salesAccount._id,
+        accountName: salesAccount.accountName,
+        accountGroup: salesAccount.accountGroup,
+        debit: 0,
+        credit: salesAmount,
+        narration: `Net sales - Invoice ${invoice.invoiceNumber}`
+      }
+    ];
+    if (gstAmount > 0) {
       entries.push({
         accountId: gstPayableAccount._id,
         accountName: gstPayableAccount.accountName,
         accountGroup: gstPayableAccount.accountGroup,
         debit: 0,
         credit: gstAmount,
-        narration: `GST on Sales - Invoice ${invoice.invoiceNumber}`
+        narration: `Output GST - Invoice ${invoice.invoiceNumber}`
       });
     }
-    
-    const voucherNumber = await generateJournalNumber(dbConnection);
-    
-    const journalVoucher = await JournalVoucher.create({
+
+    const voucherNumber = await generateJournalNumber(dbConnection, { session });
+    const journalVoucher = new JournalVoucher({
       voucherNumber,
       voucherDate: invoice.invoiceDate || new Date(),
       voucherType: 'Sales',
       referenceType: 'DealerInvoice',
       referenceId: invoice._id,
       referenceNumber: invoice.invoiceNumber,
+      postingKey,
       entries,
-      totalDebit: invoice.totalAmount,
-      totalCredit: invoice.totalAmount,
+      totalDebit: totalAmount,
+      totalCredit: totalAmount,
+      totalAmount,
       narration: `Automatic entry for Dealer Invoice ${invoice.invoiceNumber}`,
       isAutoGenerated: true,
       createdBy: userId
     });
-    
-    console.log(`✅ Journal entry created: ${voucherNumber}`);
+    await journalVoucher.save({ session });
     return journalVoucher;
-    
   } catch (error) {
     console.error('❌ Error creating dealer invoice journal entry:', error);
+    if (throwOnError) throw error;
+    return null;
+  }
+};
+
+export const reverseDealerInvoiceEntry = async (
+  invoice,
+  dbConnection,
+  userId,
+  reason,
+  { session, throwOnError = false, reversalDate = new Date() } = {}
+) => {
+  try {
+    const effectiveReversalDate = new Date(reversalDate);
+    if (Number.isNaN(effectiveReversalDate.getTime())) {
+      throw new Error('Dealer invoice reversal date is invalid');
+    }
+    const { JournalVoucher } = getModels(dbConnection);
+    let originalQuery = JournalVoucher.findOne({
+      $or: [
+        { postingKey: `dealer-invoice:${invoice._id}:original` },
+        { referenceType: 'DealerInvoice', referenceId: invoice._id, isAutoGenerated: true }
+      ]
+    });
+    if (session) originalQuery = originalQuery.session(session);
+    const original = await originalQuery;
+    if (!original) throw new Error(`Journal entry for invoice ${invoice.invoiceNumber} was not found`);
+    if (original.reversedBy) {
+      let replayQuery = JournalVoucher.findById(original.reversedBy);
+      if (session) replayQuery = replayQuery.session(session);
+      return replayQuery;
+    }
+
+    const postingKey = `dealer-invoice:${invoice._id}:reversal`;
+    const voucherNumber = await generateJournalNumber(dbConnection, { session });
+    const reversal = new JournalVoucher({
+      voucherNumber,
+      voucherDate: effectiveReversalDate,
+      voucherType: 'Sales',
+      referenceType: 'DealerInvoice',
+      referenceId: invoice._id,
+      referenceNumber: invoice.invoiceNumber,
+      postingKey,
+      reversalOf: original._id,
+      entries: original.entries.map((line) => ({
+        accountId: line.accountId,
+        accountName: line.accountName,
+        accountGroup: line.accountGroup,
+        debit: Number(line.credit || 0),
+        credit: Number(line.debit || 0),
+        narration: `Reversal: ${line.narration || invoice.invoiceNumber}`
+      })),
+      totalDebit: original.totalCredit,
+      totalCredit: original.totalDebit,
+      totalAmount: original.totalAmount || original.totalDebit,
+      narration: `Cancellation of Dealer Invoice ${invoice.invoiceNumber}: ${reason || 'No reason provided'}`,
+      isAutoGenerated: true,
+      createdBy: userId
+    });
+    await reversal.save({ session });
+    original.reversedBy = reversal._id;
+    await original.save({ session });
+    return reversal;
+  } catch (error) {
+    console.error('❌ Error reversing dealer invoice journal entry:', error);
+    if (throwOnError) throw error;
     return null;
   }
 };
@@ -706,6 +765,7 @@ export const cancelVoucherEntry = async (
 
 export default {
   createDealerInvoiceEntry,
+  reverseDealerInvoiceEntry,
   createSupplierInvoiceEntry,
   createDealerPaymentEntry,
   createSupplierPaymentEntry,

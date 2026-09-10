@@ -101,6 +101,24 @@ const paymentAllocationSchema = new mongoose.Schema({
 
   notes: String,
 
+  // Reversal lifecycle. Accounting allocations are never deleted.
+  status: {
+    type: String,
+    enum: ['Active', 'Reversed'],
+    default: 'Active',
+    index: true
+  },
+  reversedAt: Date,
+  reversedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  reversalReason: String,
+  reversalKey: {
+    type: String,
+    trim: true
+  },
+
   // Audit
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
@@ -118,6 +136,10 @@ const paymentAllocationSchema = new mongoose.Schema({
 paymentAllocationSchema.index({ voucherId: 1 });
 paymentAllocationSchema.index({ partyId: 1, allocationDate: -1 });
 paymentAllocationSchema.index({ 'allocations.invoiceId': 1 });
+paymentAllocationSchema.index(
+  { reversalKey: 1 },
+  { unique: true, partialFilterExpression: { reversalKey: { $type: 'string' } } }
+);
 
 const PaymentAllocation = mongoose.model('PaymentAllocation', paymentAllocationSchema);
 

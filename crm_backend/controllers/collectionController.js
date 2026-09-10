@@ -7,7 +7,8 @@ import { bankAccountSchema } from '../models/BankAccount.js';
 import { cashAccountSchema } from '../models/CashAccount.js';
 import { dealerLedgerSchema } from '../models/DealerLedger.js';
 import { generateVoucherNumber, getFinancialYear } from '../services/voucherNumberService.js';
-import { requiresCashSplitting, validateCashTransaction } from '../services/cashSplittingService.js';
+import { requiresCashSplitting, validateCashTransaction, getSplitPreview } from '../services/cashSplittingService.js';
+import { postDealerReceipt } from '../services/dealerReceiptService.js';
 
 const getModels = (dbConnection) => {
   return {
@@ -381,13 +382,8 @@ export const createVoucherFromCollection = async (req, res) => {
       });
     }
 
-    // Check if voucher already created for this collection
-    if (collection.voucherId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Voucher already created for this collection'
-      });
-    }
+    // A prior voucher link is not an error: the canonical source key below
+    // returns the original vouchers safely on retries/timeouts.
 
     // Get dealer info
     const dealer = await Dealer.findById(collection.dealer).select('name code').lean();
@@ -416,6 +412,98 @@ export const createVoucherFromCollection = async (req, res) => {
       return res.status(400).json({ success: false, message: validation.message });
     }
 
+    // Approved SE collections now post through the same atomic receipt service
+    // used by manual and app payments. The source key makes retries safe.
+    if (collection.status === 'Approved') {
+      const needsSplitting = requiresCashSplitting(transactionMode, totalAmount);
+      const splitRows = needsSplitting
+        ? getSplitPreview(totalAmount, new Date(voucherDate), {
+            frequency: splitFrequency || 1,
+            direction: splitDirection || 'backward',
+            skipWeekends: false,
+          })
+        : [{ date: new Date(voucherDate), amount: Number(totalAmount) }];
+      const tenders = splitRows.map((split) => ({
+        mode: transactionMode,
+        amount: split.amount,
+        date: split.date,
+        bankAccountId: bankAccount || null,
+        chequeNumber: collection.chequeNumber,
+        chequeDate: collection.chequeDate,
+        chequeBank: collection.bankName || 'Not Provided',
+        upiTransactionId: collection.transactionId,
+        referenceNumber: collection.transactionId || collection.chequeNumber,
+        narration,
+      }));
+
+      const session = await req.dbConnection.startSession();
+      let postingResult;
+      let linkedCollection;
+      try {
+        await session.withTransaction(async () => {
+          linkedCollection = await Collection.findOne({
+            _id: collection._id,
+            status: 'Approved',
+          }).session(session);
+          if (!linkedCollection) {
+            const error = new Error('Collection changed while posting; please refresh and retry');
+            error.statusCode = 409;
+            throw error;
+          }
+          postingResult = await postDealerReceipt({
+            dbConnection: req.dbConnection,
+            dealerId: linkedCollection.dealer,
+            receiptDate: voucherDate,
+            sourceType: 'SECollection',
+            sourceId: linkedCollection._id,
+            tenders,
+            actorId: user._id,
+            narration,
+            notes: linkedCollection.notes || '',
+          }, { session });
+
+          linkedCollection.receiptVoucherIds = postingResult.vouchers.map((voucher) => voucher._id);
+          linkedCollection.voucherId = postingResult.vouchers[0]._id;
+          linkedCollection.voucherNumber = postingResult.vouchers[0].voucherNumber;
+          linkedCollection.voucherCreatedAt = linkedCollection.voucherCreatedAt || new Date();
+          linkedCollection.voucherCreatedBy = user._id;
+          linkedCollection.receiptPostedAt = linkedCollection.receiptPostedAt || new Date();
+          await linkedCollection.save({ session });
+        });
+      } finally {
+        await session.endSession();
+      }
+
+      notifySE(req.dbConnection, linkedCollection.collectedBy, 'voucher_created',
+        '🧾 Voucher Created',
+        `Voucher ${linkedCollection.voucherNumber} created from your collection ${linkedCollection.collectionNumber} (${fmtCurrency(totalAmount)})`,
+        { collectionId: linkedCollection._id.toString(), voucherNumber: linkedCollection.voucherNumber }
+      );
+
+      return res.status(postingResult.replayed ? 200 : 201).json({
+        success: true,
+        replayed: postingResult.replayed,
+        message: postingResult.replayed
+          ? 'Receipt voucher already created; returning the original result'
+          : needsSplitting
+            ? `Receipt voucher created with ${postingResult.vouchers.length} splits for cash compliance`
+            : 'Receipt voucher created successfully',
+        vouchers: postingResult.vouchers.map((voucher) => ({
+          _id: voucher._id,
+          voucherNumber: voucher.voucherNumber,
+          voucherDate: voucher.voucherDate,
+          totalAmount: voucher.totalAmount,
+        })),
+        collection: {
+          _id: linkedCollection._id,
+          collectionNumber: linkedCollection.collectionNumber,
+          voucherId: linkedCollection.voucherId,
+          voucherNumber: linkedCollection.voucherNumber,
+        },
+      });
+    }
+
+    // Legacy fallback retained only for historical non-standard statuses.
     // Prepare voucher data
     const voucherData = {
       voucherType: 'Receipt',

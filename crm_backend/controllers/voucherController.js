@@ -8,6 +8,8 @@ import { supplierInvoiceSchema } from '../models/SupplierInvoice.js';
 import { paymentAllocationSchema } from '../models/PaymentAllocation.js';
 import { generateVoucherNumber, getFinancialYear } from '../services/voucherNumberService.js';
 import { assertPeriodOpen, handlePeriodLockError } from '../services/periodLockService.js';
+import { postDealerReceipt, reverseDealerReceipt } from '../services/dealerReceiptService.js';
+import { reversePaymentAllocationById } from './paymentAllocationController.js';
 import { recordCancel } from '../services/auditTrailService.js';
 import { 
   splitCashPayment, 
@@ -137,6 +139,70 @@ export const createReceiptVoucher = async (req, res) => {
         splitPreview,
         message: validation.message,
         daysRequired: validation.daysRequired
+      });
+    }
+
+    // Dealer receipts use the canonical atomic posting service. Other party
+    // types retain their existing voucher path until supplier posting is
+    // consolidated separately.
+    if (partyType === 'Dealer') {
+      if (!partyId) {
+        return res.status(400).json({ success: false, message: 'Dealer is required for a dealer receipt' });
+      }
+      const sourceId = req.get?.('Idempotency-Key') || req.body.idempotencyKey;
+      if (!sourceId || !/^[A-Za-z0-9._:-]{16,100}$/.test(String(sourceId))) {
+        return res.status(400).json({
+          success: false,
+          message: 'A stable Idempotency-Key of 16-100 letters, numbers, dots, colons, underscores, or hyphens is required',
+        });
+      }
+      const splitPreview = needsSplitting
+        ? getSplitPreview(normalizedTotalAmount, new Date(voucherDate), {
+            frequency: splitFrequency || 1,
+            direction: splitDirection || 'backward',
+            skipWeekends: false
+          })
+        : [{ date: new Date(voucherDate), amount: normalizedTotalAmount }];
+      const tenders = splitPreview.map((split) => ({
+        mode: transactionMode,
+        amount: split.amount,
+        date: split.date,
+        bankAccountId: bankAccount || null,
+        chequeNumber,
+        chequeDate,
+        chequeBank: req.body.chequeBank || 'Not Provided',
+        upiTransactionId,
+        referenceNumber,
+        narration
+      }));
+      const result = await postDealerReceipt({
+        dbConnection: req.dbConnection,
+        dealerId: partyId,
+        receiptDate: voucherDate,
+        sourceType: 'ManualVoucher',
+        sourceId,
+        tenders,
+        actorId: req.user._id,
+        narration,
+        notes
+      });
+      return res.status(result.replayed ? 200 : 201).json({
+        success: true,
+        replayed: result.replayed,
+        message: result.replayed
+          ? 'Receipt voucher already posted; returning the original result'
+          : needsSplitting
+            ? `Receipt voucher created with ${result.vouchers.length} splits for cash compliance`
+            : 'Receipt voucher created successfully',
+        vouchers: result.vouchers,
+        splitInfo: needsSplitting ? {
+          totalSplits: result.vouchers.length,
+          splits: result.vouchers.map((voucher) => ({
+            voucherNumber: voucher.voucherNumber,
+            date: voucher.voucherDate,
+            amount: voucher.totalAmount
+          }))
+        } : null
       });
     }
     
@@ -294,9 +360,10 @@ export const createReceiptVoucher = async (req, res) => {
     console.error('Error message:', error.message);
     console.error('Error stack:', error.stack);
     console.error('Request body:', JSON.stringify(req.body, null, 2));
-    res.status(500).json({
+    const statusCode = Number.isInteger(error.statusCode) ? error.statusCode : 500;
+    res.status(statusCode).json({
       success: false,
-      message: 'Error creating receipt voucher',
+      message: statusCode < 500 ? error.message : 'Error creating receipt voucher',
       error: error.message,
       details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
@@ -809,6 +876,56 @@ export const cancelVoucher = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Voucher is already cancelled'
+      });
+    }
+
+    // Canonical dealer receipts compose allocation reversal and financial
+    // reversal in one transaction. Reversing one tender from a multi-tender
+    // source through this endpoint reverses the complete source receipt.
+    if (voucher.partyType === 'Dealer'
+      && voucher.voucherType === 'Receipt'
+      && voucher.sourceType
+      && voucher.sourceId) {
+      const sourceVouchers = await Voucher.find({
+        sourceType: voucher.sourceType,
+        sourceId: voucher.sourceId,
+      });
+      session = await req.dbConnection.startSession();
+      let reversalResult;
+      await session.withTransaction(async () => {
+        const activeAllocations = await PaymentAllocation.find({
+          voucherId: { $in: sourceVouchers.map((item) => item._id) },
+          $or: [{ status: 'Active' }, { status: null }, { status: { $exists: false } }],
+        }).session(session);
+        for (const allocation of activeAllocations) {
+          await reversePaymentAllocationById({
+            dbConnection: req.dbConnection,
+            allocationId: allocation._id,
+            userId: req.user._id,
+            reason: cancelReason,
+          }, { session });
+        }
+        reversalResult = await reverseDealerReceipt({
+          dbConnection: req.dbConnection,
+          voucherIds: sourceVouchers.map((item) => item._id),
+          actorId: req.user._id,
+          reason: cancelReason,
+          reversalDate: new Date(),
+        }, { session });
+      });
+
+      await recordCancel(req.dbConnection, {
+        entity: 'Voucher',
+        entityId: voucher._id,
+        documentNumber: voucher.voucherNumber || '',
+        req,
+        reason: cancelReason,
+      });
+      return res.status(200).json({
+        success: true,
+        replayed: reversalResult.replayed,
+        message: reversalResult.replayed ? 'Receipt was already reversed' : 'Receipt and its allocations reversed successfully',
+        vouchers: reversalResult.vouchers,
       });
     }
 

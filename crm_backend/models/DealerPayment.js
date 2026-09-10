@@ -41,6 +41,10 @@ const dealerPaymentSchema = new mongoose.Schema({
     required: true,
     enum: ["Cash", "Cheque", "UPI", "Bank Transfer"]
   },
+  receivingBankAccount: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'BankAccount'
+  },
   paymentType: {
     type: String,
     required: true,
@@ -49,7 +53,7 @@ const dealerPaymentSchema = new mongoose.Schema({
   status: {
     type: String,
     required: true,
-    enum: ["Pending", "Approved", "Rejected"],
+    enum: ["Pending", "Approved", "Rejected", "Reversed"],
     default: "Pending"
   },
   
@@ -163,8 +167,18 @@ const dealerPaymentSchema = new mongoose.Schema({
         ref: "DealerInvoice"
       },
       invoiceNumber: String,
+      targetType: {
+        type: String,
+        enum: ['Invoice', 'OpeningBalance'],
+        default: 'Invoice'
+      },
       adjustedAmount: Number,
-      adjustedDate: Date
+      adjustedDate: Date,
+      paymentAllocationId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'PaymentAllocation'
+      },
+      allocationRowId: mongoose.Schema.Types.ObjectId
     }]
   },
   
@@ -188,6 +202,20 @@ const dealerPaymentSchema = new mongoose.Schema({
     maxlength: 64
   },
   
+  // Canonical receipt linkage. Legacy fields remain for API compatibility,
+  // while these fields make Voucher/ledger/journal the financial authority.
+  receiptVoucherIds: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Voucher'
+  }],
+  receiptPostedAt: Date,
+  receiptReversedAt: Date,
+  reversedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  reversalReason: String,
+
   // Audit fields
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,

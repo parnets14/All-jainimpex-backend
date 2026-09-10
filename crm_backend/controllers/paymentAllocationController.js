@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { paymentAllocationSchema } from '../models/PaymentAllocation.js';
 import { voucherSchema } from '../models/Voucher.js';
 import { dealerSchema } from '../models/Dealer.js';
+import { dealerPaymentSchema } from '../models/DealerPayment.js';
 import { dealerInvoiceSchema } from '../models/DealerInvoice.js';
 import { supplierInvoiceSchema } from '../models/SupplierInvoice.js';
 import { generateAllocationNumber } from '../services/voucherNumberService.js';
@@ -13,6 +14,8 @@ const getModels = (dbConnection) => ({
     || dbConnection.model('Voucher', voucherSchema),
   Dealer: dbConnection.models.Dealer
     || dbConnection.model('Dealer', dealerSchema),
+  DealerPayment: dbConnection.models.DealerPayment
+    || dbConnection.model('DealerPayment', dealerPaymentSchema),
   DealerInvoice: dbConnection.models.DealerInvoice
     || dbConnection.model('DealerInvoice', dealerInvoiceSchema),
   SupplierInvoice: dbConnection.models.SupplierInvoice
@@ -126,7 +129,7 @@ const runAllocationTransaction = async (dbConnection, work, maxAttempts = 5) => 
  * Canonical allocation primitive. It joins an existing session when supplied,
  * allowing a multi-voucher plan to commit or roll back as one transaction.
  */
-const allocateVoucherBatch = async ({
+export const allocateVoucherBatch = async ({
   dbConnection,
   voucherId,
   rows,
@@ -147,6 +150,7 @@ const allocateVoucherBatch = async ({
       PaymentAllocation,
       Voucher,
       Dealer,
+      DealerPayment,
       DealerInvoice,
       SupplierInvoice
     } = getModels(dbConnection);
@@ -210,6 +214,30 @@ const allocateVoucherBatch = async ({
     }
 
     const isSupplier = voucher.partyType === 'Supplier';
+    let advancePayment = null;
+    if (voucher.partyType === 'Dealer'
+      && voucher.sourceType === 'DealerPayment'
+      && mongoose.isValidObjectId(voucher.sourceId)) {
+      advancePayment = await DealerPayment.findOne({
+        _id: voucher.sourceId,
+        dealer: voucher.partyId,
+        paymentCategory: 'Advance Payment',
+        status: 'Approved',
+      }).session(session);
+      if (advancePayment) {
+        const remainingAdvanceInMinorUnits = toMinorUnits(
+          advancePayment.advanceDetails?.remainingAdvance ?? 0
+        );
+        if (remainingAdvanceInMinorUnits == null
+          || remainingAdvanceInMinorUnits < totalAllocatedInMinorUnits) {
+          throw createAllocationError(
+            staleStateStatus,
+            'Advance compatibility balance is lower than the requested allocation'
+          );
+        }
+      }
+    }
+
     const InvoiceModel = isSupplier ? SupplierInvoice : DealerInvoice;
     const ownerField = isSupplier ? 'supplier' : 'dealer';
     const invoiceRows = normalizedRows.filter((row) => row.targetType === 'Invoice');
@@ -352,6 +380,13 @@ const allocateVoucherBatch = async ({
       createdBy: userId
     }], { session });
 
+    const linkedVoucherAllocations = paymentAllocation.allocations.map((row) => ({
+      ...row.toObject(),
+      paymentAllocationId: paymentAllocation._id,
+      allocationRowId: row._id,
+      allocationDate
+    }));
+
     const nextAllocatedInMinorUnits = allocatedInMinorUnits + totalAllocatedInMinorUnits;
     const nextUnallocatedInMinorUnits = voucherTotalInMinorUnits - nextAllocatedInMinorUnits;
     const voucherResult = await Voucher.updateOne({
@@ -375,7 +410,7 @@ const allocateVoucherBatch = async ({
       },
       $push: {
         allocations: {
-          $each: persistedAllocations.map((allocation) => ({ ...allocation, allocationDate }))
+          $each: linkedVoucherAllocations
         }
       }
     }, { session });
@@ -448,10 +483,306 @@ const allocateVoucherBatch = async ({
       }
     }
 
+    if (advancePayment) {
+      const currentRemainingInMinorUnits = toMinorUnits(
+        advancePayment.advanceDetails?.remainingAdvance ?? 0
+      );
+      const currentAdjustedInMinorUnits = toMinorUnits(
+        advancePayment.advanceDetails?.adjustedAmount ?? 0
+      );
+      if (currentRemainingInMinorUnits == null || currentAdjustedInMinorUnits == null) {
+        throw createAllocationError(409, 'Advance compatibility balances are invalid');
+      }
+      const adjustmentRows = paymentAllocation.allocations.map((row) => ({
+        invoice: row.invoiceId || undefined,
+        invoiceNumber: row.targetLabel,
+        targetType: row.targetType || 'Invoice',
+        adjustedAmount: row.allocatedAmount,
+        adjustedDate: allocationDate,
+        paymentAllocationId: paymentAllocation._id,
+        allocationRowId: row._id,
+      }));
+      const paymentResult = await DealerPayment.updateOne({
+        _id: advancePayment._id,
+        status: 'Approved',
+        'advanceDetails.remainingAdvance': Number(advancePayment.advanceDetails?.remainingAdvance ?? 0),
+      }, {
+        $set: {
+          'advanceDetails.adjustedAmount': fromMinorUnits(
+            currentAdjustedInMinorUnits + totalAllocatedInMinorUnits
+          ),
+          'advanceDetails.remainingAdvance': fromMinorUnits(
+            currentRemainingInMinorUnits - totalAllocatedInMinorUnits
+          ),
+        },
+        $push: {
+          'advanceDetails.adjustedAgainstInvoices': { $each: adjustmentRows },
+        },
+      }, { session });
+      if (paymentResult.matchedCount !== 1) {
+        throw createAllocationError(409, 'Advance payment changed while allocating; please retry');
+      }
+
+      const dealerMirrorResult = await Dealer.updateOne({
+        _id: voucher.partyId,
+        advanceBalance: { $gte: totalAllocated },
+        advancePayments: {
+          $elemMatch: {
+            payment: advancePayment._id,
+            remainingAmount: { $gte: totalAllocated },
+          },
+        },
+      }, {
+        $inc: {
+          advanceBalance: -totalAllocated,
+          'advancePayments.$.adjustedAmount': totalAllocated,
+          'advancePayments.$.remainingAmount': -totalAllocated,
+        },
+      }, { session });
+      if (dealerMirrorResult.matchedCount !== 1) {
+        throw createAllocationError(
+          409,
+          'Dealer advance mirror is missing or inconsistent; migrate it before allocating'
+        );
+      }
+    }
+
     return paymentAllocation;
   };
 
   return existingSession ? execute(existingSession) : runAllocationTransaction(dbConnection, execute);
+};
+
+export const reversePaymentAllocationById = async ({
+  dbConnection,
+  allocationId,
+  userId,
+  reason,
+}, { session: existingSession = null } = {}) => {
+  if (!mongoose.isValidObjectId(allocationId)) {
+    throw createAllocationError(400, 'A valid payment allocation ID is required');
+  }
+  if (!reason || !String(reason).trim()) {
+    throw createAllocationError(400, 'Reversal reason is required');
+  }
+
+  const execute = async (session) => {
+    const {
+      PaymentAllocation,
+      Voucher,
+      Dealer,
+      DealerPayment,
+      DealerInvoice,
+      SupplierInvoice,
+    } = getModels(dbConnection);
+    const allocation = await PaymentAllocation.findById(allocationId).session(session);
+    if (!allocation) throw createAllocationError(404, 'Payment allocation not found');
+    if (allocation.status === 'Reversed') return { allocation, replayed: true };
+
+    const voucher = await Voucher.findById(allocation.voucherId).session(session);
+    if (!voucher) throw createAllocationError(409, 'Source voucher no longer exists');
+    if (voucher.status !== 'Posted') throw createAllocationError(409, 'Only allocations on posted vouchers can be reversed');
+
+    let advancePayment = null;
+    if (voucher.partyType === 'Dealer'
+      && voucher.sourceType === 'DealerPayment'
+      && mongoose.isValidObjectId(voucher.sourceId)) {
+      advancePayment = await DealerPayment.findOne({
+        _id: voucher.sourceId,
+        dealer: voucher.partyId,
+        paymentCategory: 'Advance Payment',
+      }).session(session);
+      if (advancePayment) {
+        const linkedAdjustments = (advancePayment.advanceDetails?.adjustedAgainstInvoices || [])
+          .filter((row) => String(row.paymentAllocationId || '') === String(allocation._id));
+        if (linkedAdjustments.length !== allocation.allocations.length) {
+          throw createAllocationError(
+            409,
+            'This advance allocation has no stable compatibility links and must be migrated before reversal'
+          );
+        }
+      }
+    }
+
+    const linkedRows = (voucher.allocations || []).filter(
+      (row) => String(row.paymentAllocationId || '') === String(allocation._id)
+    );
+    if (linkedRows.length !== allocation.allocations.length) {
+      throw createAllocationError(
+        409,
+        'This legacy allocation has no stable voucher-row links and must be migrated before reversal'
+      );
+    }
+
+    const totalInMinorUnits = toMinorUnits(allocation.totalAllocated);
+    const currentAllocatedInMinorUnits = toMinorUnits(voucher.allocatedAmount ?? 0);
+    const currentUnallocatedInMinorUnits = toMinorUnits(
+      voucher.unallocatedAmount ?? (Number(voucher.totalAmount) - Number(voucher.allocatedAmount || 0))
+    );
+    if (totalInMinorUnits == null || totalInMinorUnits <= 0
+      || currentAllocatedInMinorUnits == null || currentAllocatedInMinorUnits < totalInMinorUnits
+      || currentUnallocatedInMinorUnits == null || currentUnallocatedInMinorUnits < 0) {
+      throw createAllocationError(409, 'Voucher allocation balances are inconsistent');
+    }
+
+    for (const row of allocation.allocations) {
+      const amountInMinorUnits = toMinorUnits(row.allocatedAmount);
+      if (amountInMinorUnits == null || amountInMinorUnits <= 0) {
+        throw createAllocationError(409, 'Allocation contains an invalid amount');
+      }
+
+      if ((row.targetType ?? 'Invoice') === 'OpeningBalance') {
+        const dealer = await Dealer.findById(allocation.partyId).session(session);
+        if (!dealer) throw createAllocationError(404, 'Dealer not found');
+        const currentOpeningAllocated = toMinorUnits(dealer.openingBalanceAllocated ?? 0);
+        if (currentOpeningAllocated == null || currentOpeningAllocated < amountInMinorUnits) {
+          throw createAllocationError(409, 'Opening balance allocation changed; reversal cannot continue');
+        }
+        const openingResult = await Dealer.updateOne({
+          _id: dealer._id,
+          openingBalanceAllocated: Number(dealer.openingBalanceAllocated ?? 0),
+        }, {
+          $set: { openingBalanceAllocated: fromMinorUnits(currentOpeningAllocated - amountInMinorUnits) }
+        }, { session });
+        if (openingResult.matchedCount !== 1) {
+          throw createAllocationError(409, 'Opening balance changed while reversing; please retry');
+        }
+        continue;
+      }
+
+      const InvoiceModel = allocation.partyType === 'Supplier' ? SupplierInvoice : DealerInvoice;
+      const invoice = await InvoiceModel.findById(row.invoiceId).session(session);
+      if (!invoice) throw createAllocationError(409, `Allocated invoice ${row.targetLabel || row.invoiceId} no longer exists`);
+      const currentPaidInMinorUnits = toMinorUnits(invoice.paidAmount ?? 0);
+      if (currentPaidInMinorUnits == null || currentPaidInMinorUnits < amountInMinorUnits) {
+        throw createAllocationError(409, `Invoice ${invoice.invoiceNumber} payment balance changed; reversal cannot continue`);
+      }
+      const nextPaidInMinorUnits = currentPaidInMinorUnits - amountInMinorUnits;
+      const invoiceTotalInMinorUnits = toMinorUnits(
+        allocation.partyType === 'Supplier'
+          ? (invoice.supplierBilledTotal ?? invoice.totalAmount)
+          : invoice.totalAmount
+      );
+      if (invoiceTotalInMinorUnits == null || nextPaidInMinorUnits > invoiceTotalInMinorUnits) {
+        throw createAllocationError(409, `Invoice ${invoice.invoiceNumber} totals are inconsistent`);
+      }
+      const nextPaid = fromMinorUnits(nextPaidInMinorUnits);
+      const invoiceUpdate = {
+        paidAmount: nextPaid,
+        paymentStatus: nextPaidInMinorUnits === 0 ? 'Pending' : 'Partial',
+      };
+      if (allocation.partyType !== 'Supplier') {
+        invoiceUpdate.pendingAmount = fromMinorUnits(invoiceTotalInMinorUnits - nextPaidInMinorUnits);
+      }
+      const invoiceResult = await InvoiceModel.updateOne({
+        _id: invoice._id,
+        paidAmount: Number(invoice.paidAmount ?? 0),
+      }, { $set: invoiceUpdate }, { session });
+      if (invoiceResult.matchedCount !== 1) {
+        throw createAllocationError(409, `Invoice ${invoice.invoiceNumber} changed while reversing; please retry`);
+      }
+    }
+
+    const nextAllocated = fromMinorUnits(currentAllocatedInMinorUnits - totalInMinorUnits);
+    const nextUnallocated = fromMinorUnits(currentUnallocatedInMinorUnits + totalInMinorUnits);
+    const voucherResult = await Voucher.updateOne({
+      _id: voucher._id,
+      status: 'Posted',
+      allocatedAmount: Number(voucher.allocatedAmount ?? 0),
+    }, {
+      $set: {
+        allocatedAmount: nextAllocated,
+        unallocatedAmount: nextUnallocated,
+        allocationType: nextAllocated === 0 ? 'OnAccount' : 'Mixed',
+      },
+      $pull: { allocations: { paymentAllocationId: allocation._id } },
+    }, { session });
+    if (voucherResult.matchedCount !== 1) {
+      throw createAllocationError(409, 'Voucher changed while reversing; please retry');
+    }
+
+    if (advancePayment) {
+      const remainingInMinorUnits = toMinorUnits(
+        advancePayment.advanceDetails?.remainingAdvance ?? 0
+      );
+      const adjustedInMinorUnits = toMinorUnits(
+        advancePayment.advanceDetails?.adjustedAmount ?? 0
+      );
+      if (remainingInMinorUnits == null
+        || adjustedInMinorUnits == null
+        || adjustedInMinorUnits < totalInMinorUnits) {
+        throw createAllocationError(409, 'Advance compatibility balances are inconsistent');
+      }
+      const paymentResult = await DealerPayment.updateOne({
+        _id: advancePayment._id,
+        'advanceDetails.adjustedAmount': Number(advancePayment.advanceDetails?.adjustedAmount ?? 0),
+      }, {
+        $set: {
+          'advanceDetails.adjustedAmount': fromMinorUnits(adjustedInMinorUnits - totalInMinorUnits),
+          'advanceDetails.remainingAdvance': fromMinorUnits(remainingInMinorUnits + totalInMinorUnits),
+        },
+        $pull: {
+          'advanceDetails.adjustedAgainstInvoices': { paymentAllocationId: allocation._id },
+        },
+      }, { session });
+      if (paymentResult.matchedCount !== 1) {
+        throw createAllocationError(409, 'Advance payment changed while reversing; please retry');
+      }
+
+      const dealerMirrorResult = await Dealer.updateOne({
+        _id: voucher.partyId,
+        advancePayments: {
+          $elemMatch: {
+            payment: advancePayment._id,
+            adjustedAmount: { $gte: allocation.totalAllocated },
+          },
+        },
+      }, {
+        $inc: {
+          advanceBalance: allocation.totalAllocated,
+          'advancePayments.$.adjustedAmount': -allocation.totalAllocated,
+          'advancePayments.$.remainingAmount': allocation.totalAllocated,
+        },
+      }, { session });
+      if (dealerMirrorResult.matchedCount !== 1) {
+        throw createAllocationError(
+          409,
+          'Dealer advance mirror is missing or inconsistent; migrate it before reversal'
+        );
+      }
+    }
+
+    allocation.status = 'Reversed';
+    allocation.reversedAt = new Date();
+    allocation.reversedBy = userId;
+    allocation.reversalReason = String(reason).trim();
+    allocation.reversalKey = `payment-allocation:${allocation._id}:reversal`;
+    await allocation.save({ session });
+    return { allocation, replayed: false };
+  };
+
+  return existingSession
+    ? execute(existingSession)
+    : runAllocationTransaction(dbConnection, execute);
+};
+
+export const reversePaymentAllocation = async (req, res) => {
+  try {
+    const result = await reversePaymentAllocationById({
+      dbConnection: req.dbConnection,
+      allocationId: req.params.id,
+      userId: req.user._id,
+      reason: req.body.reason,
+    });
+    return res.json({
+      success: true,
+      replayed: result.replayed,
+      message: result.replayed ? 'Payment allocation was already reversed' : 'Payment allocation reversed successfully',
+      data: result.allocation,
+    });
+  } catch (error) {
+    return sendAllocationError(res, error, 'reversing payment allocation');
+  }
 };
 
 const sendAllocationError = (res, error, operation) => {

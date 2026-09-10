@@ -1,6 +1,12 @@
 import mongoose from 'mongoose';
 
 const cashAccountSchema = new mongoose.Schema({
+  // New rows carry a unique singleton key; the sparse index remains compatible
+  // with an existing legacy cash-account document that has no key yet.
+  singletonKey: {
+    type: String,
+    default: 'primary'
+  },
   accountName: {
     type: String,
     default: 'Cash in Hand',
@@ -39,6 +45,11 @@ cashAccountSchema.statics.getCashAccount = async function() {
   }
   return cashAccount;
 };
+
+cashAccountSchema.index(
+  { singletonKey: 1 },
+  { unique: true, partialFilterExpression: { singletonKey: { $type: 'string' } } }
+);
 
 const CashAccount = mongoose.model('CashAccount', cashAccountSchema);
 

@@ -239,7 +239,7 @@ app.use(
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Idempotency-Key'],
     exposedHeaders: ['Content-Type', 'Authorization'],
     // Allow preflight requests
     preflightContinue: false,

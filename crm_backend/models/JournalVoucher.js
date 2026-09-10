@@ -54,6 +54,9 @@ const journalVoucherSchema = new mongoose.Schema({
   cancelledAt: Date,
   cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   cancelReason: String,
+  postingKey: { type: String, trim: true },
+  reversalOf: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalVoucher' },
+  reversedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalVoucher' },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
 }, { timestamps: true });
 
@@ -68,6 +71,11 @@ journalVoucherSchema.pre('save', async function (next) {
   }
   next();
 });
+
+journalVoucherSchema.index(
+  { postingKey: 1 },
+  { unique: true, partialFilterExpression: { postingKey: { $type: 'string' } } }
+);
 
 // Export schema for multi-database support
 export { journalVoucherSchema };

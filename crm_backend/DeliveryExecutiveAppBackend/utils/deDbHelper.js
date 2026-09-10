@@ -9,14 +9,14 @@ import { deliveryAssignmentSchema } from '../models/DeliveryAssignment.js';
 import { deliveryPaymentSchema } from '../models/DeliveryPayment.js';
 import { deliveryRouteSchema } from '../models/DeliveryRoute.js';
 
-/** Resolve company from query/body/token (same as SE/Dealer web modules) */
+/** Resolve company from the authenticated token context. Request data cannot override it. */
 export function resolveCompanyKey(req) {
-  const company =
-    req.query?.company ||
-    req.body?.company ||
-    req.company ||
-    req.user?.company ||
-    'jain-impex';
+  const company = req.company || req.user?.company;
+  if (!company) {
+    const err = new Error('Authenticated company context is required');
+    err.statusCode = 401;
+    throw err;
+  }
 
   if (!isValidCompany(company)) {
     const err = new Error(

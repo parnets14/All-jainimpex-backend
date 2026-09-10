@@ -116,6 +116,17 @@ const deliveryPaymentSchema = new mongoose.Schema({
   verificationNotes: {
     type: String
   },
+  receiptVoucherIds: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Voucher'
+  }],
+  receiptPostedAt: Date,
+  receiptReversedAt: Date,
+  reversedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  reversalReason: String,
   notes: {
     type: String
   }
@@ -127,6 +138,14 @@ const deliveryPaymentSchema = new mongoose.Schema({
 deliveryPaymentSchema.index({ deliveryExecutive: 1, collectedAt: -1 });
 deliveryPaymentSchema.index({ verificationStatus: 1 });
 deliveryPaymentSchema.index({ dealer: 1 });
+deliveryPaymentSchema.index(
+  { deliveryAssignment: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { verificationStatus: { $in: ['pending', 'verified'] } },
+    name: 'uniq_active_delivery_payment_claim',
+  }
+);
 
 // Calculate total amount before saving
 deliveryPaymentSchema.pre('save', function(next) {

@@ -1,6 +1,9 @@
 import DeliveryPayment from '../models/DeliveryPayment.js';
 import DeliveryAssignment from '../models/DeliveryAssignment.js';
 import SalesOrder from '../../models/SalesOrder.js';
+import { dealerInvoiceSchema } from '../../models/DealerInvoice.js';
+import { postDealerReceipt, createReceiptError } from '../../services/dealerReceiptService.js';
+import { allocateVoucherBatch } from '../../controllers/paymentAllocationController.js';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
@@ -53,6 +56,7 @@ export const uploadPaymentFiles = upload.fields([
 // Create payment collection
 export const createPayment = async (req, res) => {
   try {
+    const { DeliveryPayment, DeliveryAssignment, db } = req.deModels;
     const { 
       deliveryAssignment, 
       dealer, 
@@ -87,6 +91,20 @@ export const createPayment = async (req, res) => {
         success: false,
         message: 'Unauthorized to create payment for this assignment',
       });
+    }
+    if (assignment.status !== 'delivered') {
+      return res.status(409).json({ success: false, message: 'Payment can only be collected after delivery' });
+    }
+    if (String(assignment.dealer) !== String(dealer)
+      || String(assignment.salesOrder) !== String(salesOrder)) {
+      return res.status(409).json({
+        success: false,
+        message: 'Dealer or Sales Order does not match the delivery assignment',
+      });
+    }
+    if (assignment.paymentCollected
+      || await DeliveryPayment.exists({ deliveryAssignment, verificationStatus: { $in: ['pending', 'verified'] } })) {
+      return res.status(409).json({ success: false, message: 'Payment was already recorded for this delivery' });
     }
 
     // Parse cheque details if provided
@@ -218,8 +236,7 @@ export const createPayment = async (req, res) => {
       }
     }
 
-    // Create payment record
-    const payment = new DeliveryPayment({
+    const paymentData = {
       deliveryAssignment,
       deliveryExecutive: executiveId,
       dealer,
@@ -233,16 +250,52 @@ export const createPayment = async (req, res) => {
       receiptImage,
       notes,
       verificationStatus: 'pending'
-    });
+    };
 
-    await payment.save();
+    const session = await db.startSession();
+    let paymentId;
+    try {
+      await session.withTransaction(async () => {
+        const existingPayment = await DeliveryPayment.exists({
+          deliveryAssignment,
+          verificationStatus: { $in: ['pending', 'verified'] },
+        }).session(session);
+        if (existingPayment) {
+          throw createReceiptError(409, 'Payment was already recorded for this delivery');
+        }
 
-    // Mark assignment as payment collected
-    await DeliveryAssignment.findByIdAndUpdate(deliveryAssignment, {
-      paymentCollected: true,
-      paymentCollectedAt: new Date()
-    });
+        const claim = await DeliveryAssignment.updateOne({
+          _id: deliveryAssignment,
+          deliveryExecutive: executiveId,
+          dealer,
+          salesOrder,
+          status: 'delivered',
+          paymentCollected: { $ne: true },
+        }, {
+          $set: {
+            paymentCollected: true,
+            paymentCollectedAt: new Date(),
+          },
+          $unset: {
+            paymentSkippedAt: 1,
+            paymentSkipReason: 1,
+          },
+        }, { session });
+        if (claim.matchedCount !== 1) {
+          throw createReceiptError(409, 'This delivery payment was already claimed or the assignment changed');
+        }
 
+        const [payment] = await DeliveryPayment.create([paymentData], { session });
+        paymentId = payment._id;
+      }, {
+        readConcern: { level: 'snapshot' },
+        writeConcern: { w: 'majority' },
+      });
+    } finally {
+      await session.endSession();
+    }
+
+    const payment = await DeliveryPayment.findById(paymentId);
     res.status(201).json({
       success: true,
       message: 'Payment recorded successfully',
@@ -250,9 +303,16 @@ export const createPayment = async (req, res) => {
     });
   } catch (error) {
     console.error('Create payment error:', error);
-    res.status(500).json({
+    const duplicateClaim = error?.code === 11000
+      && (error?.keyPattern?.deliveryAssignment || error?.keyValue?.deliveryAssignment);
+    const statusCode = duplicateClaim ? 409 : (error.statusCode || 500);
+    res.status(statusCode).json({
       success: false,
-      message: 'Failed to record payment',
+      message: duplicateClaim
+        ? 'Payment was already recorded for this delivery'
+        : error.statusCode
+          ? error.message
+          : 'Failed to record payment',
       error: error.message,
     });
   }
@@ -261,6 +321,7 @@ export const createPayment = async (req, res) => {
 // Get today's payments
 export const getTodayPayments = async (req, res) => {
   try {
+    const { DeliveryPayment } = req.deModels;
     const executiveId = req.user.userId || req.user._id;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -309,6 +370,7 @@ export const getTodayPayments = async (req, res) => {
 // Get payment history
 export const getPaymentHistory = async (req, res) => {
   try {
+    const { DeliveryPayment } = req.deModels;
     const executiveId = req.user.userId || req.user._id;
     const { page = 1, limit = 20, startDate, endDate } = req.query;
 
@@ -363,6 +425,7 @@ export const getPaymentHistory = async (req, res) => {
 // Get payment by ID
 export const getPaymentById = async (req, res) => {
   try {
+    const { DeliveryPayment } = req.deModels;
     const { paymentId } = req.params;
     const executiveId = req.user?.userId || req.user?._id;
 
@@ -403,12 +466,13 @@ export const getPaymentById = async (req, res) => {
 // Verify payment (Admin - Web CRM)
 export const verifyPayment = async (req, res) => {
   try {
-    const { DeliveryPayment } = req.deModels;
+    const { DeliveryPayment, DeliveryAssignment, db } = req.deModels;
+    const DealerInvoice = db.models.DealerInvoice || db.model('DealerInvoice', dealerInvoiceSchema);
     const { paymentId } = req.params;
-    const { verificationStatus, verificationNotes } = req.body;
+    const { verificationStatus, verificationNotes, bankAccount } = req.body;
     const verifierId = req.user?.userId || req.user?._id;
 
-    // Validate status
+    if (!verifierId) return res.status(401).json({ success: false, message: 'Authentication required' });
     if (!['verified', 'rejected'].includes(verificationStatus)) {
       return res.status(400).json({
         success: false,
@@ -416,38 +480,154 @@ export const verifyPayment = async (req, res) => {
       });
     }
 
-    const payment = await DeliveryPayment.findById(paymentId);
+    const session = await db.startSession();
+    let result;
+    try {
+      await session.withTransaction(async () => {
+        const payment = await DeliveryPayment.findById(paymentId).session(session);
+        if (!payment) throw createReceiptError(404, 'Payment not found');
 
-    if (!payment) {
-      return res.status(404).json({
-        success: false,
-        message: 'Payment not found',
+        if (payment.verificationStatus === 'verified'
+          && verificationStatus === 'verified'
+          && payment.receiptVoucherIds?.length) {
+          result = { paymentId: payment._id, replayed: true };
+          return;
+        }
+        if (payment.verificationStatus !== 'pending') {
+          throw createReceiptError(
+            409,
+            `Payment is already ${payment.verificationStatus} and cannot be processed again`
+          );
+        }
+
+        if (verificationStatus === 'rejected') {
+          payment.verificationStatus = 'rejected';
+          payment.verifiedBy = verifierId;
+          payment.verifiedAt = new Date();
+          payment.verificationNotes = verificationNotes || '';
+          await payment.save({ session });
+          await DeliveryAssignment.updateOne(
+            { _id: payment.deliveryAssignment },
+            {
+              $set: { paymentCollected: false, paymentCollectedAt: null },
+              $unset: { paymentSkippedAt: 1, paymentSkipReason: 1 },
+            },
+            { session }
+          );
+          result = { paymentId: payment._id, replayed: false };
+          return;
+        }
+
+        const tenders = [];
+        if (Number(payment.cashAmount || 0) > 0) {
+          tenders.push({ mode: 'Cash', amount: payment.cashAmount, date: payment.collectedAt });
+        }
+        for (const cheque of payment.chequeDetails || []) {
+          if (Number(cheque.amount || 0) <= 0) continue;
+          tenders.push({
+            mode: 'Cheque',
+            amount: cheque.amount,
+            date: payment.collectedAt,
+            cheque: {
+              chequeNo: cheque.chequeNumber,
+              chequeDate: cheque.chequeDate,
+              bankName: cheque.bankName,
+              image: cheque.chequeImage,
+            },
+          });
+        }
+        if (Number(payment.upiDetails?.amount || 0) > 0) {
+          tenders.push({
+            mode: 'UPI',
+            amount: payment.upiDetails.amount,
+            date: payment.collectedAt,
+            bankAccountId: bankAccount || null,
+            transactionId: payment.upiDetails.transactionId,
+            upiTransactionId: payment.upiDetails.transactionId,
+          });
+        }
+        if (Number(payment.accountDetails?.amount || 0) > 0) {
+          tenders.push({
+            mode: 'Bank',
+            amount: payment.accountDetails.amount,
+            date: payment.collectedAt,
+            bankAccountId: bankAccount || null,
+            transactionId: payment.accountDetails.transactionId,
+          });
+        }
+
+        const receipt = await postDealerReceipt({
+          dbConnection: db,
+          dealerId: payment.dealer,
+          receiptDate: payment.collectedAt,
+          sourceType: 'DeliveryPayment',
+          sourceId: payment._id,
+          tenders,
+          actorId: verifierId,
+          narration: payment.notes || `Delivery collection ${payment._id}`,
+          notes: verificationNotes || '',
+        }, { session });
+
+        // A Delivery payment is allocated only when the Sales Order resolves to
+        // exactly one active invoice. Ambiguous/no-invoice receipts stay on account.
+        const invoiceCandidates = await DealerInvoice.find({
+          salesOrder: payment.salesOrder,
+          dealer: payment.dealer,
+          status: 'Approved',
+          isDraft: { $ne: true },
+          isDeleted: { $ne: true },
+          paymentStatus: { $ne: 'Paid' },
+        }).session(session);
+        if (invoiceCandidates.length === 1) {
+          const invoice = invoiceCandidates[0];
+          let invoiceRemaining = Math.max(0, Number(invoice.totalAmount) - Number(invoice.paidAmount || 0));
+          for (const voucher of receipt.vouchers) {
+            if (invoiceRemaining <= 0) break;
+            const amount = Math.min(invoiceRemaining, Number(voucher.totalAmount));
+            if (amount <= 0) continue;
+            await allocateVoucherBatch({
+              dbConnection: db,
+              voucherId: voucher._id,
+              rows: [{ targetType: 'Invoice', invoiceId: invoice._id, allocatedAmount: amount }],
+              userId: verifierId,
+              notes: `Delivery payment allocated to ${invoice.invoiceNumber}`,
+              expectedPartyId: payment.dealer,
+              expectedPartyType: 'Dealer',
+              expectedVoucherType: 'Receipt',
+              staleStateStatus: 409,
+            }, { session });
+            invoiceRemaining -= amount;
+          }
+        }
+
+        payment.receiptVoucherIds = receipt.vouchers.map((voucher) => voucher._id);
+        payment.receiptPostedAt = payment.receiptPostedAt || new Date();
+        payment.verificationStatus = 'verified';
+        payment.verifiedBy = verifierId;
+        payment.verifiedAt = new Date();
+        payment.verificationNotes = verificationNotes || '';
+        await payment.save({ session });
+        result = { paymentId: payment._id, replayed: receipt.replayed };
+      }, {
+        readConcern: { level: 'snapshot' },
+        writeConcern: { w: 'majority' },
       });
+    } finally {
+      await session.endSession();
     }
 
-    // Update payment verification
-    payment.verificationStatus = verificationStatus;
-    payment.verifiedBy = verifierId;
-    payment.verifiedAt = new Date();
-    if (verificationNotes) {
-      payment.verificationNotes = verificationNotes;
-    }
-
-    await payment.save();
-
-    // Populate for response
-    await payment.populate('verifiedBy', 'name');
-
-    res.json({
+    const payment = await DeliveryPayment.findById(result.paymentId).populate('verifiedBy', 'name');
+    return res.json({
       success: true,
-      message: `Payment ${verificationStatus} successfully`,
+      replayed: result.replayed,
+      message: result.replayed ? 'Payment was already verified' : `Payment ${verificationStatus} successfully`,
       data: payment,
     });
   } catch (error) {
     console.error('Verify payment error:', error);
-    res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: 'Failed to verify payment',
+      message: error.statusCode ? error.message : 'Failed to verify payment',
       error: error.message,
     });
   }

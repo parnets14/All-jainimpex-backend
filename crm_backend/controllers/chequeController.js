@@ -1,10 +1,26 @@
 import { chequeSchema } from "../models/Cheque.js";
 import { dealerSchema } from "../models/Dealer.js";
+import { voucherSchema } from "../models/Voucher.js";
+import { bankAccountSchema } from "../models/BankAccount.js";
+import { journalVoucherSchema } from "../models/JournalVoucher.js";
+import { accountMasterSchema } from "../models/AccountMaster.js";
+import { dealerLedgerSchema } from "../models/DealerLedger.js";
+import { paymentAllocationSchema } from "../models/PaymentAllocation.js";
+import { postDealerReceipt, reverseDealerReceipt, createReceiptError } from "../services/dealerReceiptService.js";
+import { reversePaymentAllocationById } from "./paymentAllocationController.js";
+import { getFinancialYear } from "../services/voucherNumberService.js";
+import { assertPeriodOpen, handlePeriodLockError } from "../services/periodLockService.js";
 
 const getModels = (dbConnection) => {
   return {
     Cheque: dbConnection.models.Cheque || dbConnection.model('Cheque', chequeSchema),
-    Dealer: dbConnection.models.Dealer || dbConnection.model('Dealer', dealerSchema)
+    Dealer: dbConnection.models.Dealer || dbConnection.model('Dealer', dealerSchema),
+    Voucher: dbConnection.models.Voucher || dbConnection.model('Voucher', voucherSchema),
+    BankAccount: dbConnection.models.BankAccount || dbConnection.model('BankAccount', bankAccountSchema),
+    JournalVoucher: dbConnection.models.JournalVoucher || dbConnection.model('JournalVoucher', journalVoucherSchema),
+    AccountMaster: dbConnection.models.AccountMaster || dbConnection.model('AccountMaster', accountMasterSchema),
+    DealerLedger: dbConnection.models.DealerLedger || dbConnection.model('DealerLedger', dealerLedgerSchema),
+    PaymentAllocation: dbConnection.models.PaymentAllocation || dbConnection.model('PaymentAllocation', paymentAllocationSchema)
   };
 };
 
@@ -177,64 +193,54 @@ export const getCheque = async (req, res) => {
 // Create new cheque
 export const createCheque = async (req, res) => {
   try {
-    const { Cheque, Dealer } = getModels(req.dbConnection);
+    const { Cheque } = getModels(req.dbConnection);
     const {
       chequeNo,
       amount,
       date,
-      status = "Not Deposited",
       bankName,
       bankBranch,
       bankAccountNo,
       dealerId,
       remarks,
     } = req.body;
-
-    // Validate required fields
     if (!chequeNo || !amount || !date || !bankName || !dealerId) {
       return res.status(400).json({
         success: false,
         message: "Missing required fields: chequeNo, amount, date, bankName, dealerId",
       });
     }
-
-    // Check if dealer exists
-    const dealer = await Dealer.findById(dealerId);
-    if (!dealer) {
-      return res.status(404).json({
-        success: false,
-        message: "Dealer not found",
-      });
-    }
-
-    // Check if cheque number already exists
-    const existingCheque = await Cheque.findOne({ chequeNo, isDeleted: false });
-    if (existingCheque) {
+    if (req.body.status && req.body.status !== 'Not Deposited') {
       return res.status(400).json({
         success: false,
-        message: "Cheque number already exists",
+        message: 'New cheques must start as Not Deposited and follow the deposit/clearance workflow',
       });
     }
 
-    // Create cheque
-    const cheque = new Cheque({
-      chequeNo: chequeNo.toUpperCase(),
-      amount: parseFloat(amount),
-      date: new Date(date),
-      status,
-      bankName,
-      bankBranch,
-      bankAccountNo,
+    const result = await postDealerReceipt({
+      dbConnection: req.dbConnection,
       dealerId,
-      remarks,
-      createdBy: req.user._id,
+      receiptDate: date,
+      sourceType: 'ChequeRegistry',
+      sourceId: String(chequeNo).trim().toUpperCase(),
+      tenders: [{
+        mode: 'Cheque',
+        amount,
+        date,
+        cheque: {
+          chequeNo,
+          chequeDate: date,
+          bankName,
+          bankBranch,
+          bankAccountNo,
+        },
+      }],
+      actorId: req.user._id,
+      narration: remarks || `Cheque ${String(chequeNo).trim().toUpperCase()} received`,
     });
 
-    await cheque.save();
-
-    // Populate dealer info for response
-    await cheque.populate("dealerId", "name code phone address");
-
+    const cheque = await Cheque.findById(result.cheques[0]._id)
+      .populate("dealerId", "name code phone address");
     const chequeObj = cheque.toObject();
     if (chequeObj.dealerId) {
       chequeObj.dealerName = chequeObj.dealerId.name;
@@ -242,17 +248,19 @@ export const createCheque = async (req, res) => {
       chequeObj.dealerPhone = chequeObj.dealerId.phone;
       chequeObj.dealerAddress = chequeObj.dealerId.address;
     }
-
-    res.status(201).json({
+    return res.status(result.replayed ? 200 : 201).json({
       success: true,
-      message: "Cheque created successfully",
+      replayed: result.replayed,
+      message: result.replayed ? "Cheque was already recorded" : "Cheque received and posted successfully",
       cheque: chequeObj,
     });
   } catch (error) {
+    if (handlePeriodLockError(error, res)) return;
     console.error("Create cheque error:", error);
-    res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: error.message,
+      message: error.statusCode ? error.message : "Failed to receive cheque",
+      error: error.message,
     });
   }
 };
@@ -271,6 +279,17 @@ export const updateCheque = async (req, res) => {
         success: false,
         message: "Cheque not found",
       });
+    }
+
+    if (cheque.receiptVoucher) {
+      const allowedFields = new Set(['remarks']);
+      const disallowed = Object.keys(updateData).filter((key) => !allowedFields.has(key));
+      if (disallowed.length > 0) {
+        return res.status(409).json({
+          success: false,
+          message: 'Posted cheque financial fields cannot be edited. Use deposit, clear, or bounce actions.',
+        });
+      }
     }
 
     // Check if dealer exists (if dealerId is being updated)
@@ -359,6 +378,13 @@ export const deleteCheque = async (req, res) => {
       });
     }
 
+    if (cheque.receiptVoucher) {
+      return res.status(409).json({
+        success: false,
+        message: 'Posted cheques cannot be deleted. Bounce or reverse the receipt instead.',
+      });
+    }
+
     // Soft delete
     cheque.isDeleted = true;
     cheque.updatedBy = req.user._id;
@@ -380,50 +406,169 @@ export const deleteCheque = async (req, res) => {
 // Update cheque status
 export const updateChequeStatus = async (req, res) => {
   try {
-    const { Cheque } = getModels(req.dbConnection);
+    const models = getModels(req.dbConnection);
     const { id } = req.params;
-    const { status, remarks, bounceReason } = req.body;
-
-    const validStatuses = ["Not Deposited", "Deposited", "Cleared", "Bounced"];
-    if (!validStatuses.includes(status)) {
+    const { status, remarks, bounceReason, bankAccount, statusDate } = req.body;
+    if (!['Deposited', 'Cleared', 'Bounced'].includes(status)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid status. Must be one of: Not Deposited, Deposited, Cleared, Bounced",
+        message: 'Status must be Deposited, Cleared, or Bounced',
       });
     }
+    if (status === 'Bounced' && !String(bounceReason || '').trim()) {
+      return res.status(400).json({ success: false, message: 'Bounce reason is required' });
+    }
+    const eventDate = new Date(statusDate || Date.now());
+    if (Number.isNaN(eventDate.getTime())) {
+      return res.status(400).json({ success: false, message: 'Status date is invalid' });
+    }
+    await assertPeriodOpen(req.dbConnection, eventDate, `cheque ${status.toLowerCase()}`);
 
-    const cheque = await Cheque.findOne({ _id: id, isDeleted: false });
-    if (!cheque) {
-      return res.status(404).json({
-        success: false,
-        message: "Cheque not found",
+    const session = await req.dbConnection.startSession();
+    let chequeId;
+    let replayed = false;
+    try {
+      await session.withTransaction(async () => {
+        const cheque = await models.Cheque.findOne({ _id: id, isDeleted: false }).session(session);
+        if (!cheque) throw createReceiptError(404, 'Cheque not found');
+        chequeId = cheque._id;
+        if (cheque.status === status) {
+          replayed = true;
+          return;
+        }
+        if (!cheque.receiptVoucher) {
+          throw createReceiptError(409, 'Legacy cheque has no posted receipt and must be migrated before status changes');
+        }
+
+        const allowed = {
+          'Not Deposited': ['Deposited', 'Bounced'],
+          Deposited: ['Cleared', 'Bounced'],
+          Cleared: ['Bounced'],
+          Bounced: [],
+        };
+        if (!allowed[cheque.status]?.includes(status)) {
+          throw createReceiptError(409, `Cheque cannot move from ${cheque.status} to ${status}`);
+        }
+
+        if (status === 'Deposited') {
+          const targetBankId = bankAccount || cheque.depositBankAccount;
+          if (!targetBankId) throw createReceiptError(400, 'Select the bank account where the cheque was deposited');
+          const bank = await models.BankAccount.findOne({ _id: targetBankId, isActive: { $ne: false } }).session(session);
+          if (!bank) throw createReceiptError(400, 'Selected bank account was not found or is inactive');
+          cheque.status = 'Deposited';
+          cheque.depositDate = eventDate;
+          cheque.depositBankAccount = bank._id;
+        } else if (status === 'Cleared') {
+          const targetBankId = bankAccount || cheque.depositBankAccount;
+          if (!targetBankId) throw createReceiptError(400, 'Select the bank account that cleared the cheque');
+          const bank = await models.BankAccount.findOne({ _id: targetBankId, isActive: { $ne: false } }).session(session);
+          if (!bank) throw createReceiptError(400, 'Selected bank account was not found or is inactive');
+          const bankResult = await models.BankAccount.updateOne(
+            { _id: bank._id, currentBalance: bank.currentBalance },
+            { $inc: { currentBalance: cheque.amount }, $set: { updatedAt: new Date() } },
+            { session }
+          );
+          if (bankResult.matchedCount !== 1) throw createReceiptError(409, 'Bank balance changed while clearing; please retry');
+
+          const [bankControl, chequesInHand] = await Promise.all([
+            models.AccountMaster.findOne({ accountName: 'Bank Account' }).session(session),
+            models.AccountMaster.findOne({ accountName: 'Cheques in Hand' }).session(session),
+          ]);
+          if (!bankControl || !chequesInHand) {
+            throw createReceiptError(409, 'Bank Account or Cheques in Hand system account is not configured');
+          }
+          const clearanceJournal = new models.JournalVoucher({
+            voucherNumber: `JV-CHQ-${String(cheque._id).slice(-12).toUpperCase()}-CLR`,
+            voucherDate: eventDate,
+            financialYear: getFinancialYear(eventDate),
+            voucherType: 'Receipt',
+            referenceType: 'Manual',
+            referenceId: cheque._id,
+            referenceNumber: cheque.chequeNo,
+            postingKey: `${cheque.postingKey}:clearance`,
+            entries: [
+              { accountId: bankControl._id, accountName: bankControl.accountName, accountGroup: bankControl.accountGroup, debit: cheque.amount, credit: 0, narration: `Cheque ${cheque.chequeNo} cleared` },
+              { accountId: chequesInHand._id, accountName: chequesInHand.accountName, accountGroup: chequesInHand.accountGroup, debit: 0, credit: cheque.amount, narration: `Cheque ${cheque.chequeNo} moved to bank` },
+            ],
+            totalDebit: cheque.amount,
+            totalCredit: cheque.amount,
+            totalAmount: cheque.amount,
+            narration: `Clearance of cheque ${cheque.chequeNo}`,
+            isAutoGenerated: true,
+            createdBy: req.user._id,
+          });
+          await clearanceJournal.save({ session });
+          cheque.status = 'Cleared';
+          cheque.clearingDate = eventDate;
+          cheque.depositBankAccount = bank._id;
+          cheque.clearanceJournal = clearanceJournal._id;
+        } else {
+          const activeAllocations = await models.PaymentAllocation.find({
+            voucherId: cheque.receiptVoucher,
+            $or: [{ status: 'Active' }, { status: null }, { status: { $exists: false } }],
+          }).session(session);
+          for (const allocation of activeAllocations) {
+            await reversePaymentAllocationById({
+              dbConnection: req.dbConnection,
+              allocationId: allocation._id,
+              userId: req.user._id,
+              reason: `Cheque ${cheque.chequeNo} bounced: ${String(bounceReason).trim()}`,
+            }, { session });
+          }
+
+          const receiptReversal = await reverseDealerReceipt({
+            dbConnection: req.dbConnection,
+            voucherIds: [cheque.receiptVoucher],
+            actorId: req.user._id,
+            reason: `Cheque ${cheque.chequeNo} bounced: ${String(bounceReason).trim()}`,
+            reversalDate: eventDate,
+          }, { session });
+          const receiptReversalJournal = await models.JournalVoucher.findOne({
+            referenceId: cheque.receiptVoucher,
+            postingKey: { $regex: /:reversal-journal$/ },
+          }).session(session);
+          cheque.status = 'Bounced';
+          cheque.bounceDate = eventDate;
+          cheque.bounceReason = String(bounceReason).trim();
+          cheque.bounceJournal = receiptReversalJournal?._id;
+          if (receiptReversal.replayed) replayed = true;
+        }
+
+        if (remarks) cheque.remarks = remarks;
+        cheque.updatedBy = req.user._id;
+        await cheque.save({ session });
+        await models.Voucher.updateOne(
+          { _id: cheque.receiptVoucher },
+          { $set: { chequeStatus: status === 'Deposited' ? 'Pending' : status } },
+          { session }
+        );
+        await models.DealerLedger.updateMany(
+          { referenceId: cheque.receiptVoucher, 'chequeDetails.chequeNo': cheque.chequeNo },
+          { $set: { 'chequeDetails.status': status === 'Deposited' ? 'Pending' : status } },
+          { session }
+        );
+      }, {
+        readConcern: { level: 'snapshot' },
+        writeConcern: { w: 'majority' },
       });
+    } finally {
+      await session.endSession();
     }
 
-    // Update status and related fields
-    cheque.status = status;
-    cheque.updatedBy = req.user._id;
-
-    if (remarks) {
-      cheque.remarks = remarks;
-    }
-
-    if (status === "Bounced" && bounceReason) {
-      cheque.bounceReason = bounceReason;
-    }
-
-    await cheque.save();
-
-    res.json({
+    const cheque = await models.Cheque.findById(chequeId).populate('dealerId', 'name code');
+    return res.json({
       success: true,
-      message: "Cheque status updated successfully",
+      replayed,
+      message: replayed ? `Cheque was already ${status.toLowerCase()}` : `Cheque ${status.toLowerCase()} successfully`,
       cheque,
     });
   } catch (error) {
-    console.error("Update cheque status error:", error);
-    res.status(500).json({
+    if (handlePeriodLockError(error, res)) return;
+    console.error('Update cheque status error:', error);
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: error.message,
+      message: error.statusCode ? error.message : 'Failed to update cheque status',
+      error: error.message,
     });
   }
 };

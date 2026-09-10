@@ -122,6 +122,13 @@ const dealerLedgerSchema = new mongoose.Schema({
   },
   referenceNumber: String,
 
+  // Stable canonical-posting identity. This is intentionally separate from
+  // referenceId so legacy rows can coexist without an unsafe migration.
+  postingKey: {
+    type: String,
+    trim: true
+  },
+
   // Additional Information
   description: String,
   remarks: String,
@@ -245,6 +252,11 @@ dealerLedgerSchema.virtual('paymentStatus').get(function() {
   if (this.agingDays > 0) return 'Overdue';
   return 'Pending';
 });
+
+dealerLedgerSchema.index(
+  { postingKey: 1 },
+  { unique: true, partialFilterExpression: { postingKey: { $type: "string" } } }
+);
 
 // Export schema for multi-database support
 export { dealerLedgerSchema };

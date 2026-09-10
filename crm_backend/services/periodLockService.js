@@ -45,17 +45,19 @@ const toDate = (value) => {
  * Find the Closed financial-year record (if any) that contains `date`.
  * @returns {Promise<Object|null>} the closing record or null
  */
-export const findClosedPeriodForDate = async (dbConnection, date) => {
+export const findClosedPeriodForDate = async (dbConnection, date, { session = null } = {}) => {
   if (!dbConnection) return null;
   const target = toDate(date);
   if (!target) return null;
 
   const { FinancialYearClosing } = getModels(dbConnection);
-  return FinancialYearClosing.findOne({
+  let query = FinancialYearClosing.findOne({
     status: 'Closed',
     fyStartDate: { $lte: target },
     fyEndDate: { $gte: target },
-  }).lean();
+  });
+  if (session) query = query.session(session);
+  return query.lean();
 };
 
 /**
@@ -74,8 +76,13 @@ export const isPeriodLocked = async (dbConnection, date) => {
  * @param {Date|string} date - the transaction date of the document
  * @param {string} [label='transaction'] - friendly name for the message
  */
-export const assertPeriodOpen = async (dbConnection, date, label = 'transaction') => {
-  const closed = await findClosedPeriodForDate(dbConnection, date);
+export const assertPeriodOpen = async (
+  dbConnection,
+  date,
+  label = 'transaction',
+  { session = null } = {}
+) => {
+  const closed = await findClosedPeriodForDate(dbConnection, date, { session });
   if (closed) {
     throw new PeriodLockedError(
       `Financial year ${closed.financialYear} is closed. This ${label} (dated ${toDate(date).toLocaleDateString('en-IN')}) cannot be added or modified. Ask a super-admin to reopen the year first.`,

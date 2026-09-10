@@ -119,6 +119,11 @@ const voucherSchema = new mongoose.Schema({
   
   // Invoice and opening-balance allocation snapshots
   allocations: [{
+    paymentAllocationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'PaymentAllocation'
+    },
+    allocationRowId: mongoose.Schema.Types.ObjectId,
     targetType: {
       type: String,
       enum: ['Invoice', 'OpeningBalance'],
@@ -192,6 +197,38 @@ const voucherSchema = new mongoose.Schema({
     uploadedAt: Date
   }],
   
+  // Canonical source identity. postingKey is unique per financial tender and
+  // makes retries safe even when the client times out after commit.
+  sourceType: {
+    type: String,
+    trim: true
+  },
+  sourceId: {
+    type: String,
+    trim: true
+  },
+  sourceSequence: {
+    type: Number,
+    min: 1
+  },
+  postingKey: {
+    type: String,
+    trim: true
+  },
+  postingFingerprint: {
+    type: String,
+    minlength: 64,
+    maxlength: 64
+  },
+  journalVoucher: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'JournalVoucher'
+  },
+  cheque: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Cheque'
+  },
+
   // Status and workflow
   status: {
     type: String,
@@ -246,6 +283,11 @@ voucherSchema.index({ voucherDate: 1, voucherType: 1 });
 voucherSchema.index({ partyId: 1, voucherDate: -1 });
 voucherSchema.index({ status: 1, voucherDate: -1 });
 voucherSchema.index({ 'allocations.invoiceId': 1 });
+voucherSchema.index(
+  { postingKey: 1 },
+  { unique: true, partialFilterExpression: { postingKey: { $type: 'string' } } }
+);
+voucherSchema.index({ sourceType: 1, sourceId: 1, sourceSequence: 1 });
 
 // Calculate unallocated amount before save
 voucherSchema.pre('save', function(next) {

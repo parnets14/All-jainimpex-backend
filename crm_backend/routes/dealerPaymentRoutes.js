@@ -7,6 +7,7 @@ import {
   getAvailableInvoicesForPayment,
   getDealerPaymentStats,
   deleteDealerPayment,
+  reverseDealerPayment,
   recordAdvancePayment,
   adjustAdvanceAgainstInvoice,
   getDealerAdvanceBalance,
@@ -72,6 +73,8 @@ router.post("/adjust-advance", logActivity("Dealer Payment", "Adjusted advance a
 // @desc    Update payment status (approve/reject) - handles both regular and advance payments
 // @access  Private
 router.put("/:id/status", logActivity("Dealer Payment", "Updated payment status", "UPDATE"), updateDealerPaymentStatusWithAdvance);
+
+router.post("/:id/reverse", logActivity("Dealer Payment", "Reversed dealer payment", "UPDATE"), reverseDealerPayment);
 
 // @route   DELETE /api/dealer-payments/:id
 // @desc    Delete dealer payment

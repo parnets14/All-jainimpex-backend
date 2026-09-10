@@ -38,11 +38,24 @@ const collectionSchema = new mongoose.Schema({
   // Status
   status: {
     type: String,
-    enum: ['Pending', 'Approved', 'Rejected'],
+    enum: ['Pending', 'Approved', 'Rejected', 'Reversed'],
     default: 'Pending'
   },
   // Notes
   notes: String,
+  // All tender vouchers are retained; voucherId/voucherNumber below remain
+  // compatibility aliases for the first voucher.
+  receiptVoucherIds: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Voucher'
+  }],
+  receiptPostedAt: Date,
+  receiptReversedAt: Date,
+  reversedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  reversalReason: String,
   // Voucher reference (set when admin creates voucher from this collection)
   voucherId: {
     type: mongoose.Schema.Types.ObjectId,

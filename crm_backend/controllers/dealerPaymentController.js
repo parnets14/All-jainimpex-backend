@@ -3,6 +3,10 @@ import { dealerLedgerSchema } from "../models/DealerLedger.js";
 import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
 import { dealerSchema } from "../models/Dealer.js";
 import { assertPeriodOpen, handlePeriodLockError } from "../services/periodLockService.js";
+import { postDealerReceipt, reverseDealerReceipt } from "../services/dealerReceiptService.js";
+import { allocateVoucherBatch, reversePaymentAllocationById } from "./paymentAllocationController.js";
+import { voucherSchema } from "../models/Voucher.js";
+import { paymentAllocationSchema } from "../models/PaymentAllocation.js";
 import mongoose from "mongoose";
 import { createHash } from "node:crypto";
 
@@ -12,7 +16,9 @@ const getModels = (dbConnection) => {
     DealerPayment: dbConnection.models.DealerPayment || dbConnection.model('DealerPayment', dealerPaymentSchema),
     DealerLedger: dbConnection.models.DealerLedger || dbConnection.model('DealerLedger', dealerLedgerSchema),
     DealerInvoice: dbConnection.models.DealerInvoice || dbConnection.model('DealerInvoice', dealerInvoiceSchema),
-    Dealer: dbConnection.models.Dealer || dbConnection.model('Dealer', dealerSchema)
+    Dealer: dbConnection.models.Dealer || dbConnection.model('Dealer', dealerSchema),
+    Voucher: dbConnection.models.Voucher || dbConnection.model('Voucher', voucherSchema),
+    PaymentAllocation: dbConnection.models.PaymentAllocation || dbConnection.model('PaymentAllocation', paymentAllocationSchema)
   };
 };
 
@@ -223,7 +229,8 @@ const createPaymentFingerprint = ({
   remarks,
   chequeDetails,
   upiDetails,
-  bankTransferDetails
+  bankTransferDetails,
+  receivingBankAccount
 }) => {
   const canonicalRequest = {
     dealerInvoiceId: String(dealerInvoiceId || ""),
@@ -248,7 +255,8 @@ const createPaymentFingerprint = ({
       accountNumber: bankTransferDetails.accountNumber || "",
       transactionId: bankTransferDetails.transactionId || "",
       remarks: bankTransferDetails.remarks || ""
-    } : null
+    } : null,
+    receivingBankAccount: receivingBankAccount ? String(receivingBankAccount) : null
   };
 
   return createHash("sha256")
@@ -290,6 +298,87 @@ const runPaymentTransaction = async (dbConnection, work, maxNumberRetries = 3) =
   throw createPaymentError(409, "Could not reserve a unique payment number; please retry");
 };
 
+const paymentTender = (payment) => ({
+  mode: payment.paymentMethod,
+  amount: payment.paymentAmount,
+  date: payment.paymentDate,
+  bankAccountId: payment.receivingBankAccount || null,
+  referenceNumber: payment.upiDetails?.transactionId
+    || payment.bankTransferDetails?.transactionId
+    || payment.chequeDetails?.chequeNo
+    || payment.paymentNumber,
+  upiTransactionId: payment.upiDetails?.transactionId || null,
+  cheque: payment.paymentMethod === "Cheque" ? {
+    chequeNo: payment.chequeDetails?.chequeNo,
+    chequeDate: payment.chequeDetails?.chequeDate,
+    bankName: payment.chequeDetails?.bankName,
+  } : null,
+  narration: payment.remarks || `Dealer payment ${payment.paymentNumber}`,
+});
+
+const postApprovedDealerPayment = async ({
+  payment,
+  userId,
+  dbConnection,
+  session,
+  invoice = null,
+}) => {
+  const receipt = await postDealerReceipt({
+    dbConnection,
+    dealerId: payment.dealer,
+    receiptDate: payment.paymentDate,
+    sourceType: "DealerPayment",
+    sourceId: payment._id,
+    tenders: [paymentTender(payment)],
+    actorId: userId,
+    narration: payment.remarks || `Dealer payment ${payment.paymentNumber}`,
+  }, { session });
+
+  if (invoice) {
+    if (receipt.vouchers.length !== 1) {
+      throw createPaymentError(409, "Invoice payment must create exactly one receipt voucher");
+    }
+    await allocateVoucherBatch({
+      dbConnection,
+      voucherId: receipt.vouchers[0]._id,
+      rows: [{
+        targetType: "Invoice",
+        invoiceId: invoice._id,
+        allocatedAmount: payment.paymentAmount,
+      }],
+      userId,
+      notes: `Allocated from dealer payment ${payment.paymentNumber}`,
+      expectedPartyId: payment.dealer,
+      expectedPartyType: "Dealer",
+      expectedVoucherType: "Receipt",
+      staleStateStatus: 409,
+    }, { session });
+  } else if (payment.paymentCategory === "Advance Payment") {
+    const { Dealer } = getModels(dbConnection);
+    const dealerUpdate = await Dealer.updateOne(
+      { _id: payment.dealer },
+      {
+        $inc: { advanceBalance: payment.paymentAmount },
+        $push: {
+          advancePayments: {
+            payment: payment._id,
+            amount: payment.paymentAmount,
+            date: payment.paymentDate,
+            adjustedAmount: 0,
+            remainingAmount: payment.paymentAmount,
+          },
+        },
+      },
+      { session }
+    );
+    if (dealerUpdate.matchedCount !== 1) throw createPaymentError(404, "Dealer not found for advance payment");
+  }
+
+  payment.receiptVoucherIds = receipt.vouchers.map((voucher) => voucher._id);
+  payment.receiptPostedAt = payment.receiptPostedAt || new Date();
+  return receipt;
+};
+
 // @desc    Create new dealer payment
 // @route   POST /api/dealer-payments
 // @access  Private
@@ -308,7 +397,8 @@ export const createDealerPayment = async (req, res) => {
       remarks,
       chequeDetails,
       upiDetails,
-      bankTransferDetails
+      bankTransferDetails,
+      receivingBankAccount
     } = req.body;
 
     const source = req.paymentOrigin === "App" ? "App" : "Web";
@@ -336,7 +426,8 @@ export const createDealerPayment = async (req, res) => {
       remarks,
       chequeDetails,
       upiDetails,
-      bankTransferDetails
+      bankTransferDetails,
+      receivingBankAccount
     });
     const invoiceQuery = {
       _id: dealerInvoiceId,
@@ -416,6 +507,7 @@ export const createDealerPayment = async (req, res) => {
           paymentDate: new Date(paymentDate || Date.now()),
           paymentAmount: normalizedPaymentAmount,
           paymentMethod,
+          receivingBankAccount: receivingBankAccount || undefined,
           paymentType,
           status: source === "App" ? "Approved" : "Pending",
           remarks: remarks || "",
@@ -458,13 +550,14 @@ export const createDealerPayment = async (req, res) => {
         await payment.save({ session });
 
         if (source === "App") {
-          await updateInvoiceAndLedger(
+          await postApprovedDealerPayment({
             payment,
             invoice,
-            req.user._id,
-            req.dbConnection,
-            session
-          );
+            userId: req.user._id,
+            dbConnection: req.dbConnection,
+            session,
+          });
+          await payment.save({ session });
         }
 
         return { paymentId: payment._id, replayed: false };
@@ -518,83 +611,6 @@ export const createDealerPayment = async (req, res) => {
 export const updateDealerPaymentStatus = async (req, res) => (
   updateDealerPaymentStatusWithAdvance(req, res)
 );
-
-// Helper function to update invoice and create ledger entry
-async function updateInvoiceAndLedger(payment, invoice, userId, dbConnection, session = null) {
-  const { Dealer, DealerLedger } = getModels(dbConnection);
-
-  const invoiceTotal = Number(invoice.totalAmount);
-  const currentPaidAmount = Number(invoice.paidAmount ?? 0);
-  const paymentAmount = Number(payment.paymentAmount);
-  const TOLERANCE = 0.01;
-
-  if (!Number.isFinite(invoiceTotal) || invoiceTotal < 0
-    || !Number.isFinite(currentPaidAmount) || currentPaidAmount < 0
-    || !Number.isFinite(paymentAmount) || paymentAmount <= 0) {
-    const error = new Error("Invoice or payment has invalid totals");
-    error.statusCode = 400;
-    throw error;
-  }
-
-  const resultingPaidAmount = currentPaidAmount + paymentAmount;
-  if (resultingPaidAmount > invoiceTotal + TOLERANCE) {
-    const error = new Error("Payment exceeds the Invoice's remaining amount");
-    error.statusCode = 409;
-    throw error;
-  }
-
-  const remainingAmount = invoiceTotal - resultingPaidAmount;
-  if (remainingAmount <= TOLERANCE) {
-    invoice.paidAmount = invoiceTotal;
-    invoice.pendingAmount = 0;
-    invoice.paymentStatus = "Paid";
-  } else {
-    invoice.paidAmount = resultingPaidAmount;
-    invoice.pendingAmount = remainingAmount;
-    invoice.paymentStatus = "Partial";
-  }
-  invoice.paymentDate = payment.paymentDate;
-
-  await invoice.save(session ? { session } : undefined);
-
-  // Force concurrent ledger postings for the same dealer to conflict and retry.
-  if (session) {
-    const dealerLock = await Dealer.updateOne(
-      { _id: payment.dealer },
-      { $inc: { ledgerPostingVersion: 1 } },
-      { session }
-    );
-    if (dealerLock.matchedCount !== 1) {
-      throw createPaymentError(404, "Dealer not found while posting payment ledger");
-    }
-  }
-
-  const ledgerEntry = new DealerLedger({
-    dealer: payment.dealer,
-    dealerName: invoice.dealer.name,
-    dealerCode: invoice.dealer.code,
-    entryDate: payment.paymentDate,
-    transactionType: "Payment",
-    dealerPayment: payment._id,
-    invoice: payment.dealerInvoice,
-    invoiceNumber: payment.invoiceNumber,
-    invoiceValue: payment.invoiceAmount,
-    paymentReceived: paymentAmount,
-    paymentMethod: payment.paymentMethod,
-    chequeDetails: payment.chequeDetails,
-    upiDetails: payment.upiDetails,
-    bankTransferDetails: payment.bankTransferDetails,
-    debitAmount: 0,
-    creditAmount: paymentAmount,
-    runningBalance: 0,
-    description: `Payment ${payment.paymentNumber} for Invoice ${payment.invoiceNumber}`,
-    remarks: payment.remarks,
-    createdBy: userId
-  });
-
-  await ledgerEntry.save(session ? { session } : undefined);
-  console.log(`Created dealer ledger entry for payment: ${payment.paymentNumber}`);
-}
 
 // @desc    Get available invoices for payment
 // @route   GET /api/dealer-payments/available-invoices
@@ -753,6 +769,69 @@ export const getDealerPaymentStats = async (req, res) => {
 // @desc    Delete dealer payment
 // @route   DELETE /api/dealer-payments/:id
 // @access  Private
+export const reverseDealerPayment = async (req, res) => {
+  const { DealerPayment, PaymentAllocation } = getModels(req.dbConnection);
+  const { reason } = req.body;
+  if (!reason || !String(reason).trim()) {
+    return res.status(400).json({ success: false, message: 'Reversal reason is required' });
+  }
+  try {
+    const result = await runPaymentTransaction(req.dbConnection, async (session) => {
+      const payment = await DealerPayment.findById(req.params.id).session(session);
+      if (!payment) throw createPaymentError(404, 'Payment not found');
+      if (payment.status === 'Reversed') return { paymentId: payment._id, replayed: true };
+      if (payment.status !== 'Approved') {
+        throw createPaymentError(409, `Only approved payments can be reversed; current status is ${payment.status}`);
+      }
+      if (!payment.receiptVoucherIds?.length) {
+        throw createPaymentError(409, 'This legacy payment has no canonical receipt and must be migrated before reversal');
+      }
+
+      const allocations = await PaymentAllocation.find({
+        voucherId: { $in: payment.receiptVoucherIds },
+        $or: [{ status: 'Active' }, { status: null }, { status: { $exists: false } }],
+      }).session(session);
+      for (const allocation of allocations) {
+        await reversePaymentAllocationById({
+          dbConnection: req.dbConnection,
+          allocationId: allocation._id,
+          userId: req.user._id,
+          reason: String(reason).trim(),
+        }, { session });
+      }
+
+      await reverseDealerReceipt({
+        dbConnection: req.dbConnection,
+        voucherIds: payment.receiptVoucherIds,
+        actorId: req.user._id,
+        reason: String(reason).trim(),
+        reversalDate: new Date(),
+      }, { session });
+
+      return { paymentId: payment._id, replayed: false };
+    });
+
+    const payment = await DealerPayment.findById(result.paymentId)
+      .populate('dealer', 'name code companyName')
+      .populate('dealerInvoice', 'invoiceNumber totalAmount paymentStatus')
+      .populate('reversedBy', 'name email');
+    return res.json({
+      success: true,
+      replayed: result.replayed,
+      message: result.replayed ? 'Payment was already reversed' : 'Payment and allocations reversed successfully',
+      payment,
+    });
+  } catch (error) {
+    if (handlePeriodLockError(error, res)) return;
+    console.error('Reverse Dealer Payment Error:', error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.statusCode ? error.message : 'Error reversing dealer payment',
+      error: error.message,
+    });
+  }
+};
+
 export const deleteDealerPayment = async (req, res) => {
   const { DealerPayment } = getModels(req.dbConnection);
   try {
@@ -804,297 +883,190 @@ export const recordAdvancePayment = async (req, res) => {
       remarks,
       chequeDetails,
       upiDetails,
-      bankTransferDetails
+      bankTransferDetails,
+      receivingBankAccount,
     } = req.body;
     const source = req.paymentOrigin === "App" ? "App" : "Web";
-
-    // Validate required fields
-    if (!dealerId || !paymentAmount || !paymentMethod) {
+    const normalizedAmount = Number(paymentAmount);
+    if (!dealerId || !Number.isFinite(normalizedAmount) || normalizedAmount <= 0 || !paymentMethod) {
       return res.status(400).json({
         success: false,
-        message: "Dealer ID, payment amount, and payment method are required"
+        message: "Dealer ID, a positive payment amount, and payment method are required"
       });
     }
 
-    // Get dealer details
-    const dealer = await Dealer.findById(dealerId);
-    if (!dealer) {
-      return res.status(404).json({
-        success: false,
-        message: "Dealer not found"
-      });
-    }
-
-    // Block posting into a closed financial year
-    await assertPeriodOpen(req.dbConnection, paymentDate || Date.now(), 'advance payment');
-
-    // Create advance payment data
-    const paymentData = {
-      dealer: dealerId,
-      paymentDate: new Date(paymentDate || Date.now()),
-      paymentAmount: parseFloat(paymentAmount),
+    const idempotencyKey = getIdempotencyKey(req);
+    const fingerprint = createPaymentFingerprint({
+      dealerInvoiceId: dealerId,
+      paymentAmount: normalizedAmount,
       paymentMethod,
       paymentType: "Full",
-      paymentCategory: "Advance Payment",
-      status: source === "App" ? "Approved" : "Pending",
-      remarks: remarks || "",
-      invoiceNumber: "ADVANCE",
-      invoiceAmount: 0,
-      remainingAmount: 0,
-      source: source,
-      advanceDetails: {
-        isAdvance: true,
-        advanceAmount: parseFloat(paymentAmount),
-        adjustedAmount: 0,
-        remainingAdvance: parseFloat(paymentAmount),
-        adjustedAgainstInvoices: []
-      },
-      createdBy: req.user._id
-    };
+      paymentDate,
+      remarks,
+      chequeDetails,
+      upiDetails,
+      bankTransferDetails,
+      receivingBankAccount,
+    });
 
-    // Add method-specific details
-    if (paymentMethod === "Cheque" && chequeDetails) {
-      paymentData.chequeDetails = {
-        chequeNo: chequeDetails.chequeNo,
-        bankName: chequeDetails.bankName,
-        chequeDate: new Date(chequeDetails.chequeDate),
-        remarks: chequeDetails.remarks || ""
-      };
-    } else if (paymentMethod === "UPI" && upiDetails) {
-      paymentData.upiDetails = {
-        upiId: upiDetails.upiId,
-        transactionId: upiDetails.transactionId,
-        remarks: upiDetails.remarks || ""
-      };
-    } else if (paymentMethod === "Bank Transfer" && bankTransferDetails) {
-      paymentData.bankTransferDetails = {
-        bankName: bankTransferDetails.bankName,
-        accountNumber: bankTransferDetails.accountNumber,
-        transactionId: bankTransferDetails.transactionId,
-        remarks: bankTransferDetails.remarks || ""
-      };
-    }
+    const transactionResult = await runPaymentTransaction(req.dbConnection, async (session) => {
+      if (idempotencyKey) {
+        const replay = await DealerPayment.findOne({ dealer: dealerId, source, idempotencyKey }).session(session);
+        if (replay) {
+          if (!paymentReplayMatches(replay, fingerprint)) {
+            throw createPaymentError(409, "Idempotency key was already used for a different payment");
+          }
+          return { paymentId: replay._id, replayed: true };
+        }
+      }
 
-    const payment = new DealerPayment(paymentData);
-    await payment.save();
+      const dealer = await Dealer.findById(dealerId).session(session);
+      if (!dealer) throw createPaymentError(404, "Dealer not found");
+      await assertPeriodOpen(req.dbConnection, paymentDate || Date.now(), "advance payment");
 
-    // If payment is from App (auto-approved), update dealer and ledger immediately
-    if (source === "App" && payment.status === "Approved") {
-      await processAdvancePayment(payment, dealer, req.user._id, req.dbConnection);
-    }
+      const payment = new DealerPayment({
+        dealer: dealerId,
+        paymentDate: new Date(paymentDate || Date.now()),
+        paymentAmount: normalizedAmount,
+        paymentMethod,
+        receivingBankAccount: receivingBankAccount || undefined,
+        paymentType: "Full",
+        paymentCategory: "Advance Payment",
+        status: source === "App" ? "Approved" : "Pending",
+        remarks: remarks || "",
+        invoiceNumber: "ADVANCE",
+        invoiceAmount: 0,
+        remainingAmount: 0,
+        source,
+        idempotencyKey: idempotencyKey || undefined,
+        idempotencyFingerprint: idempotencyKey ? fingerprint : undefined,
+        advanceDetails: {
+          isAdvance: true,
+          advanceAmount: normalizedAmount,
+          adjustedAmount: 0,
+          remainingAdvance: normalizedAmount,
+          adjustedAgainstInvoices: []
+        },
+        chequeDetails: paymentMethod === "Cheque" ? chequeDetails : undefined,
+        upiDetails: paymentMethod === "UPI" ? upiDetails : undefined,
+        bankTransferDetails: paymentMethod === "Bank Transfer" ? bankTransferDetails : undefined,
+        createdBy: req.user._id,
+        ...(source === "App" ? { approvedBy: req.user._id, approvedAt: new Date() } : {}),
+      });
+      await payment.save({ session });
 
-    // Populate the created payment
-    const populatedPayment = await DealerPayment.findById(payment._id)
+      if (source === "App") {
+        await postApprovedDealerPayment({
+          payment,
+          userId: req.user._id,
+          dbConnection: req.dbConnection,
+          session,
+        });
+        await payment.save({ session });
+      }
+      return { paymentId: payment._id, replayed: false };
+    });
+
+    const populatedPayment = await DealerPayment.findById(transactionResult.paymentId)
       .populate("dealer", "name code companyName")
       .populate("createdBy", "name email");
 
-    res.status(201).json({
+    return res.status(transactionResult.replayed ? 200 : 201).json({
       success: true,
-      message: "Advance payment recorded successfully",
+      replayed: transactionResult.replayed,
+      message: transactionResult.replayed
+        ? "Advance payment already recorded; returning the original result"
+        : "Advance payment recorded successfully",
       payment: populatedPayment
     });
   } catch (error) {
     if (handlePeriodLockError(error, res)) return;
     console.error("Record Advance Payment Error:", error);
-    res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: "Error recording advance payment",
+      message: error.statusCode ? error.message : "Error recording advance payment",
       error: error.message
     });
   }
 };
 
-// Helper function to process advance payment (update dealer and create ledger entry)
-async function processAdvancePayment(payment, dealer, userId, dbConnection, session = null) {
-  const { Dealer, DealerLedger } = getModels(dbConnection);
-
-  await Dealer.findByIdAndUpdate(
-    dealer._id,
-    {
-      $inc: { advanceBalance: payment.paymentAmount },
-      $push: {
-        advancePayments: {
-          payment: payment._id,
-          amount: payment.paymentAmount,
-          date: payment.paymentDate,
-          adjustedAmount: 0,
-          remainingAmount: payment.paymentAmount
-        }
-      }
-    },
-    session ? { session } : undefined
-  );
-
-  const ledgerEntry = new DealerLedger({
-    dealer: dealer._id,
-    dealerName: dealer.name,
-    dealerCode: dealer.code,
-    entryDate: payment.paymentDate,
-    transactionType: "Advance Payment",
-    dealerPayment: payment._id,
-    paymentReceived: payment.paymentAmount,
-    paymentMethod: payment.paymentMethod,
-    chequeDetails: payment.chequeDetails,
-    upiDetails: payment.upiDetails,
-    bankTransferDetails: payment.bankTransferDetails,
-    debitAmount: 0,
-    creditAmount: payment.paymentAmount,
-    runningBalance: 0,
-    description: `Advance payment ${payment.paymentNumber}`,
-    remarks: payment.remarks,
-    advanceDetails: {
-      isAdvance: true,
-      advancePaymentId: payment._id
-    },
-    createdBy: userId
-  });
-
-  await ledgerEntry.save(session ? { session } : undefined);
-  console.log(`Created advance payment ledger entry: ${payment.paymentNumber}`);
-}
-
 // @desc    Adjust advance payment against invoice
 // @route   POST /api/dealer-payments/adjust-advance
 // @access  Private
 export const adjustAdvanceAgainstInvoice = async (req, res) => {
-  const { DealerInvoice, DealerPayment, Dealer, DealerLedger } = getModels(req.dbConnection);
+  const { DealerInvoice, DealerPayment } = getModels(req.dbConnection);
   try {
     const { invoiceId, advancePaymentId, adjustmentAmount } = req.body;
-
-    // Validate required fields
-    if (!invoiceId || !advancePaymentId || !adjustmentAmount) {
+    const amount = Number(adjustmentAmount);
+    if (!invoiceId || !advancePaymentId || !Number.isFinite(amount) || amount <= 0) {
       return res.status(400).json({
         success: false,
-        message: "Invoice ID, advance payment ID, and adjustment amount are required"
+        message: "Invoice ID, advance payment ID, and a positive adjustment amount are required"
       });
     }
 
-    // Get invoice
-    const invoice = await DealerInvoice.findOne({
-      _id: invoiceId,
-      isDraft: false,
-      isDeleted: { $ne: true }
+    const result = await runPaymentTransaction(req.dbConnection, async (session) => {
+      const invoice = await DealerInvoice.findOne({
+        _id: invoiceId,
+        status: "Approved",
+        isDraft: false,
+        isDeleted: { $ne: true }
+      }).session(session);
+      if (!invoice) throw createPaymentError(404, "Invoice not found or is a draft/cancelled");
+
+      const advancePayment = await DealerPayment.findOne({
+        _id: advancePaymentId,
+        dealer: invoice.dealer,
+        paymentCategory: "Advance Payment",
+        status: "Approved"
+      }).session(session);
+      if (!advancePayment) throw createPaymentError(404, "Advance payment not found or not approved");
+      if (!advancePayment.receiptVoucherIds?.length) {
+        throw createPaymentError(409, "This legacy advance has no canonical receipt voucher and must be migrated before allocation");
+      }
+
+      const remainingAdvance = Number(advancePayment.advanceDetails?.remainingAdvance ?? 0);
+      if (amount > remainingAdvance + 0.01) {
+        throw createPaymentError(409, `Adjustment amount exceeds remaining advance of ₹${remainingAdvance}`);
+      }
+
+      const allocation = await allocateVoucherBatch({
+        dbConnection: req.dbConnection,
+        voucherId: advancePayment.receiptVoucherIds[0],
+        rows: [{ targetType: "Invoice", invoiceId, allocatedAmount: amount }],
+        userId: req.user._id,
+        notes: `Advance ${advancePayment.paymentNumber} allocated against ${invoice.invoiceNumber}`,
+        expectedPartyId: invoice.dealer,
+        expectedPartyType: "Dealer",
+        expectedVoucherType: "Receipt",
+        staleStateStatus: 409,
+      }, { session });
+
+      const updatedAdvancePayment = await DealerPayment.findById(advancePayment._id).session(session);
+      if (!updatedAdvancePayment) {
+        throw createPaymentError(409, 'Advance payment disappeared after allocation');
+      }
+
+      const updatedInvoice = await DealerInvoice.findById(invoiceId).session(session);
+      return { allocation, advancePayment: updatedAdvancePayment, invoice: updatedInvoice };
     });
 
-    if (!invoice) {
-      return res.status(404).json({
-        success: false,
-        message: "Invoice not found or is a draft/cancelled"
-      });
-    }
-
-    // Get advance payment
-    const advancePayment = await DealerPayment.findOne({
-      _id: advancePaymentId,
-      paymentCategory: "Advance Payment",
-      status: "Approved"
-    });
-
-    if (!advancePayment) {
-      return res.status(404).json({
-        success: false,
-        message: "Advance payment not found or not approved"
-      });
-    }
-
-    // Validate adjustment amount
-    const remainingAdvance = advancePayment.advanceDetails.remainingAdvance || 0;
-    if (adjustmentAmount > remainingAdvance) {
-      return res.status(400).json({
-        success: false,
-        message: `Adjustment amount (₹${adjustmentAmount}) exceeds remaining advance (₹${remainingAdvance})`
-      });
-    }
-
-    const invoiceBalance = invoice.totalAmount - (invoice.paidAmount || 0);
-    if (adjustmentAmount > invoiceBalance) {
-      return res.status(400).json({
-        success: false,
-        message: `Adjustment amount (₹${adjustmentAmount}) exceeds invoice balance (₹${invoiceBalance})`
-      });
-    }
-
-    // Update advance payment
-    advancePayment.advanceDetails.adjustedAmount += adjustmentAmount;
-    advancePayment.advanceDetails.remainingAdvance -= adjustmentAmount;
-    advancePayment.advanceDetails.adjustedAgainstInvoices.push({
-      invoice: invoiceId,
-      invoiceNumber: invoice.invoiceNumber,
-      adjustedAmount: adjustmentAmount,
-      adjustedDate: new Date()
-    });
-    await advancePayment.save();
-
-    // Update invoice
-    invoice.paidAmount = (invoice.paidAmount || 0) + adjustmentAmount;
-    const TOLERANCE = 0.01;
-    const newRemainingAmount = invoice.totalAmount - invoice.paidAmount;
-    
-    if (newRemainingAmount <= TOLERANCE) {
-      invoice.paymentStatus = "Paid";
-      invoice.paidAmount = invoice.totalAmount;
-    } else {
-      invoice.paymentStatus = "Partial";
-    }
-    await invoice.save();
-
-    // Update dealer's advance balance
-    await Dealer.findByIdAndUpdate(invoice.dealer, {
-      $inc: { advanceBalance: -adjustmentAmount }
-    });
-
-    // Create ledger entry for adjustment
-    const lastEntry = await DealerLedger.findOne(
-      { dealer: invoice.dealer },
-      {},
-      { sort: { 'createdAt': -1 } }
-    );
-    
-    let previousBalance = 0;
-    if (lastEntry) {
-      previousBalance = lastEntry.runningBalance;
-    }
-    
-    const ledgerEntry = new DealerLedger({
-      dealer: invoice.dealer,
-      dealerName: invoice.dealerName,
-      dealerCode: invoice.dealerCode,
-      entryDate: new Date(),
-      transactionType: "Advance Adjustment",
-      invoice: invoiceId,
-      invoiceNumber: invoice.invoiceNumber,
-      invoiceValue: invoice.totalAmount,
-      paymentReceived: adjustmentAmount,
-      debitAmount: adjustmentAmount,
-      creditAmount: 0,
-      runningBalance: previousBalance - adjustmentAmount,
-      description: `Advance adjusted against ${invoice.invoiceNumber}`,
-      remarks: `Advance payment ${advancePayment.paymentNumber} adjusted`,
-      advanceDetails: {
-        isAdvance: false,
-        advancePaymentId: advancePaymentId,
-        adjustedInvoiceId: invoiceId
-      },
-      createdBy: req.user._id
-    });
-    
-    await ledgerEntry.save();
-
-    res.json({
+    return res.json({
       success: true,
-      message: "Advance adjusted successfully",
+      message: "Advance allocated successfully",
       data: {
-        adjustedAmount: adjustmentAmount,
-        remainingAdvance: advancePayment.advanceDetails.remainingAdvance,
-        invoicePaymentStatus: invoice.paymentStatus,
-        invoiceRemainingAmount: invoice.totalAmount - invoice.paidAmount
+        allocationId: result.allocation._id,
+        adjustedAmount: amount,
+        remainingAdvance: result.advancePayment.advanceDetails.remainingAdvance,
+        invoicePaymentStatus: result.invoice.paymentStatus,
+        invoiceRemainingAmount: result.invoice.pendingAmount
       }
     });
   } catch (error) {
     console.error("Adjust Advance Error:", error);
-    res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: "Error adjusting advance payment",
+      message: error.statusCode ? error.message : "Error adjusting advance payment",
       error: error.message
     });
   }
@@ -1233,13 +1205,12 @@ export const updateDealerPaymentStatusWithAdvance = async (req, res) => {
           if (!dealer) {
             throw createPaymentError(404, "Dealer not found for advance payment");
           }
-          await processAdvancePayment(
+          await postApprovedDealerPayment({
             payment,
-            dealer,
-            req.user._id,
-            req.dbConnection,
-            session
-          );
+            userId: req.user._id,
+            dbConnection: req.dbConnection,
+            session,
+          });
         } else {
           const invoice = await DealerInvoice.findOne({
             _id: payment.dealerInvoice,
@@ -1254,13 +1225,13 @@ export const updateDealerPaymentStatusWithAdvance = async (req, res) => {
             throw createPaymentError(404, "Invoice not found, is a draft, or has been cancelled");
           }
 
-          await updateInvoiceAndLedger(
+          await postApprovedDealerPayment({
             payment,
             invoice,
-            req.user._id,
-            req.dbConnection,
-            session
-          );
+            userId: req.user._id,
+            dbConnection: req.dbConnection,
+            session,
+          });
         }
 
         payment.status = "Approved";

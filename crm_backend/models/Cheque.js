@@ -74,6 +74,32 @@ const chequeSchema = new mongoose.Schema(
       trim: true,
     },
     
+    // Canonical accounting links
+    receiptVoucher: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Voucher'
+    },
+    receiptJournal: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'JournalVoucher'
+    },
+    clearanceJournal: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'JournalVoucher'
+    },
+    bounceJournal: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'JournalVoucher'
+    },
+    depositBankAccount: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'BankAccount'
+    },
+    postingKey: {
+      type: String,
+      trim: true
+    },
+
     // System Fields
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -139,7 +165,6 @@ chequeSchema.virtual("formattedAmount").get(function () {
 });
 
 // Indexes for better performance
-chequeSchema.index({ chequeNo: 1 });
 chequeSchema.index({ dealerId: 1 });
 chequeSchema.index({ status: 1 });
 chequeSchema.index({ date: -1 });
@@ -147,6 +172,10 @@ chequeSchema.index({ amount: -1 });
 chequeSchema.index({ bankName: "text" });
 chequeSchema.index({ isDeleted: 1 });
 chequeSchema.index({ createdAt: -1 });
+chequeSchema.index(
+  { postingKey: 1 },
+  { unique: true, partialFilterExpression: { postingKey: { $type: 'string' } } }
+);
 
 // Ensure virtual fields are serialized
 chequeSchema.set("toJSON", { virtuals: true });
@@ -158,13 +187,13 @@ chequeSchema.pre("save", function (next) {
     const now = new Date();
     switch (this.status) {
       case "Deposited":
-        this.depositDate = now;
+        if (!this.depositDate) this.depositDate = now;
         break;
       case "Cleared":
-        this.clearingDate = now;
+        if (!this.clearingDate) this.clearingDate = now;
         break;
       case "Bounced":
-        this.bounceDate = now;
+        if (!this.bounceDate) this.bounceDate = now;
         break;
     }
   }

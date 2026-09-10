@@ -90,6 +90,15 @@ const SYSTEM_ACCOUNTS = [
     description: 'Cash in hand'
   },
   {
+    accountName: 'Cheques in Hand',
+    accountGroup: 'Current Assets',
+    accountType: 'Asset',
+    openingBalance: 0,
+    currentBalance: 0,
+    isSystem: true,
+    description: 'Dealer cheques received but not yet cleared into bank'
+  },
+  {
     accountName: 'Bank Account',
     accountGroup: 'Current Assets',
     accountType: 'Asset',

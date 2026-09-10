@@ -21,6 +21,7 @@ router.post('/auto-allocate', logActivity("Payment Allocation", "Auto-allocated 
 router.post('/batch', logActivity("Payment Allocation", "Created payment allocation batch", "CREATE"), paymentAllocationController.createPaymentAllocationBatch);
 router.post('/', logActivity("Payment Allocation", "Created payment allocation", "CREATE"), paymentAllocationController.createPaymentAllocation);
 router.get('/', logActivity("Payment Allocation", "Viewed payment allocations list", "READ"), paymentAllocationController.getPaymentAllocations);
+router.post('/:id/reverse', logActivity("Payment Allocation", "Reversed payment allocation", "UPDATE"), paymentAllocationController.reversePaymentAllocation);
 router.get('/:id', logActivity("Payment Allocation", "Viewed payment allocation details", "READ"), paymentAllocationController.getPaymentAllocationById);
 
 export default router;

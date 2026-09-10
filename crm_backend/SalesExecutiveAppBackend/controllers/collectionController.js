@@ -61,7 +61,7 @@ export const createCollection = async (req, res) => {
       bankName,
       transactionId: effectiveTransactionId,
       receiptImage: req.file ? `/uploads/receipts/${req.file.filename}` : null,
-      notes,
+      notes: notes || req.body.remarks || '',
       cashSplitRequired: req.body.cashSplitRequired === 'true' || req.body.cashSplitRequired === true,
       collectedBy: user._id,
       collectedByName: user.name,

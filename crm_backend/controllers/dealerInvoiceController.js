@@ -19,6 +19,7 @@ import StockMovementService from '../services/stockMovementService.js';
 import StockArrivalService from '../services/stockArrivalService.js';
 import { assertPeriodOpen, handlePeriodLockError } from '../services/periodLockService.js';
 import { recordUpdate, recordCancel } from '../services/auditTrailService.js';
+import { createDealerInvoiceEntry, reverseDealerInvoiceEntry } from '../services/accountingService.js';
 import { userHasPermission } from '../middleware/routePermissions.js';
 import {
   acquireDealerCreditLock,
@@ -1087,7 +1088,8 @@ export const getDealerInvoices = async (req, res) => {
     const [paymentAllocations, approvedLegacyPayments, total] = await Promise.all([
       invoiceIds.length > 0
         ? PaymentAllocation.find({
-          'allocations.invoiceId': { $in: invoiceIds }
+          'allocations.invoiceId': { $in: invoiceIds },
+          $or: [{ status: 'Active' }, { status: null }, { status: { $exists: false } }]
         })
           .select('allocationNumber allocationDate voucherId allocations.invoiceId allocations.allocatedAmount')
           .populate('voucherId', 'voucherNumber voucherDate voucherType transactionMode')
@@ -1096,7 +1098,11 @@ export const getDealerInvoices = async (req, res) => {
       invoiceIds.length > 0
         ? DealerPayment.find({
           dealerInvoice: { $in: invoiceIds },
-          status: 'Approved'
+          status: 'Approved',
+          $or: [
+            { receiptVoucherIds: { $exists: false } },
+            { receiptVoucherIds: { $size: 0 } }
+          ]
         })
           .select('dealerInvoice paymentNumber paymentDate paymentMethod paymentAmount paymentType')
           .lean()
@@ -2555,6 +2561,13 @@ export const approveDealerInvoice = async (req, res) => {
       throw ledgerError; // Fail the transaction if ledger creation fails
     }
     
+    // GL posting is part of the same transaction as invoice approval and the
+    // dealer subledger. Missing accounts or an unbalanced journal abort approval.
+    await createDealerInvoiceEntry(invoice, req.dbConnection, req.user._id, {
+      session,
+      throwOnError: true,
+    });
+
     // NOW create notifications
     try {
       const salesOrder = invoice.salesOrder ? await SalesOrder.findById(invoice.salesOrder).session(session) : null;
@@ -2636,15 +2649,6 @@ export const approveDealerInvoice = async (req, res) => {
     }
     
     await session.commitTransaction();
-    
-    // Create automatic journal entry for accounting
-    try {
-      const { createDealerInvoiceEntry } = await import('../services/accountingService.js');
-      await createDealerInvoiceEntry(invoice, req.dbConnection, req.user._id);
-    } catch (accountingError) {
-      console.error('⚠️ Failed to create automatic journal entry (non-critical):', accountingError.message);
-      // Don't fail the invoice approval if journal entry fails
-    }
     
     // Populate and return the approved invoice
     const populatedInvoice = await DealerInvoice.findById(invoice._id)
@@ -2816,6 +2820,7 @@ export const deleteDealerInvoice = async (req, res) => {
     await session.startTransaction();
     
     const { reason } = req.body;
+    const cancellationDate = new Date();
     const invoice = await DealerInvoice.findById(req.params.id).session(session);
 
     if (!invoice) {
@@ -2851,8 +2856,14 @@ export const deleteDealerInvoice = async (req, res) => {
 
     console.log(`📄 Invoice ${invoice._id}, Status: ${invoice.status}, Draft: ${invoice.isDraft}`);
 
-    // Block deletion/cancellation of an invoice dated in a closed financial year
-    await assertPeriodOpen(req.dbConnection, invoice.invoiceDate, 'dealer invoice cancellation');
+    // Draft deletion validates its document date. An approved cancellation
+    // validates the exact date used by every reversal record.
+    await assertPeriodOpen(
+      req.dbConnection,
+      isApprovedCancellation ? cancellationDate : invoice.invoiceDate,
+      'dealer invoice cancellation',
+      { session }
+    );
 
     await acquireDealerCreditLock(req.dbConnection, invoice.dealer, session);
 
@@ -2908,7 +2919,7 @@ export const deleteDealerInvoice = async (req, res) => {
 
       // SOFT DELETE: Mark as cancelled
       invoice.isDeleted = true;
-      invoice.deletedAt = new Date();
+      invoice.deletedAt = cancellationDate;
       invoice.deletedBy = req.user._id;
       invoice.deletionReason = reason || 'No reason provided';
       invoice.cancellationReason = reason || 'No reason provided';
@@ -2969,7 +2980,7 @@ export const deleteDealerInvoice = async (req, res) => {
             referenceType: 'INVOICE_CANCELLATION',
             operationKey: `INVOICE_CANCELLATION:${invoice._id}:${movement._id}`,
             movementRole: 'REVERSAL',
-            date: new Date(),
+            date: cancellationDate,
             remarks: `Reversal of invoice ${invoice.invoiceNumber} cancellation`,
             createdBy: req.user._id
           })),
@@ -3006,7 +3017,7 @@ export const deleteDealerInvoice = async (req, res) => {
             dealer: entry.dealer,
             transactionType: 'Adjustment', // Use valid enum value
             invoiceNumber: invoice.invoiceNumber,
-            entryDate: new Date(),
+            entryDate: cancellationDate,
             debitAmount: entry.creditAmount || 0, // Reverse: debit becomes credit
             creditAmount: entry.debitAmount || 0, // Reverse: credit becomes debit
             runningBalance: 0, // Will be calculated by pre-save hook
@@ -3027,6 +3038,14 @@ export const deleteDealerInvoice = async (req, res) => {
       console.error('Error reversing dealer ledger during invoice cancellation:', ledgerError);
       throw ledgerError;
     }
+
+    await reverseDealerInvoiceEntry(
+      invoice,
+      req.dbConnection,
+      req.user._id,
+      reason || 'No reason provided',
+      { session, throwOnError: true, reversalDate: cancellationDate }
+    );
     
     await session.commitTransaction();
 
