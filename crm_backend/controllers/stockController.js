@@ -269,6 +269,93 @@ export const getStock = async (req, res) => {
     // Get total count for pagination
     const totalProducts = await Product.countDocuments(productQuery);
 
+    // Efficient global aggregate: sum IN and OUT movements across ALL matching products
+    // to get dashboard totals that cover all pages, not just the current one.
+    // We also count low-stock products using their minStockLevel.
+    const allMatchingProductIds = await Product.distinct('_id', productQuery);
+
+    const [movementAgg, damageAgg] = await Promise.all([
+      allMatchingProductIds.length > 0
+        ? StockMovement.aggregate([
+            { $match: { productId: { $in: allMatchingProductIds } } },
+            {
+              $group: {
+                _id: '$productId',
+                inQty:      { $sum: { $cond: [{ $eq: ['$type', 'IN']  }, '$quantity', 0] } },
+                outQty:     { $sum: { $cond: [{ $eq: ['$type', 'OUT'] }, '$quantity', 0] } },
+                damagedQty: {
+                  $sum: {
+                    $cond: [
+                      { $and: [
+                        { $eq: ['$type', 'OUT'] },
+                        { $regexMatch: { input: { $ifNull: ['$remarks', ''] }, regex: /damage/i } }
+                      ]},
+                      '$quantity',
+                      0
+                    ]
+                  }
+                },
+              },
+            },
+            {
+              // Join with Product to get minStockLevel for low-stock detection
+              $lookup: {
+                from: 'products',
+                localField: '_id',
+                foreignField: '_id',
+                as: 'productInfo',
+              },
+            },
+            {
+              $set: {
+                netStock: { $subtract: ['$inQty', '$outQty'] },
+                minStockLevel: { $ifNull: [{ $first: '$productInfo.minStockLevel' }, 0] },
+              },
+            },
+            {
+              $group: {
+                _id: null,
+                totalQuantity:   { $sum: { $subtract: ['$inQty', '$outQty'] } },
+                damagedQuantity: { $sum: '$damagedQty' },
+                lowStockItems: {
+                  $sum: {
+                    $cond: [
+                      {
+                        $and: [
+                          { $gt: ['$minStockLevel', 0] },
+                          { $lte: [{ $subtract: ['$inQty', '$outQty'] }, '$minStockLevel'] },
+                        ],
+                      },
+                      1,
+                      0,
+                    ],
+                  },
+                },
+              },
+            },
+          ])
+        : Promise.resolve([]),
+      // Fallback damaged count directly from GRN damage records
+      allMatchingProductIds.length > 0
+        ? req.dbConnection.collection('grns').aggregate([
+            { $match: { 'items.productId': { $in: allMatchingProductIds } } },
+            { $unwind: '$items' },
+            { $match: { 'items.productId': { $in: allMatchingProductIds } } },
+            {
+              $group: {
+                _id: null,
+                damagedQuantity: { $sum: { $ifNull: ['$items.damageQuantity', 0] } },
+              },
+            },
+          ]).toArray()
+        : Promise.resolve([]),
+    ]);
+
+    const globalTotalQuantity   = movementAgg[0]?.totalQuantity   ?? 0;
+    const globalLowStockItems   = movementAgg[0]?.lowStockItems   ?? 0;
+    // Use GRN-based damage as the authoritative source (matches per-row calculation)
+    const globalDamagedQuantity = damageAgg[0]?.damagedQuantity   ?? 0;
+
     // Get paginated products
     const products = await Product.find(productQuery)
       .skip(skip)
@@ -655,9 +742,20 @@ export const getStock = async (req, res) => {
     const allStockEntries = await Promise.all(stockPromises);
     const stockData = allStockEntries.flat().filter(entry => entry); // Flatten and remove nulls
 
+    // Compute global totals from the already-processed current page plus
+    // the backend-known totalProducts count. Quantity totals across all pages
+    // would require a full scan; expose totalProducts from countDocuments so the
+    // frontend stat card is always accurate for the product count.
     res.json({
       success: true,
       data: stockData,
+      aggregateStats: {
+        totalProducts,                                      // accurate count across all pages
+        totalQuantity:   Math.max(0, globalTotalQuantity),  // net IN-OUT across all matching products
+        netStock:        Math.max(0, globalTotalQuantity),  // same as totalQuantity (IN minus OUT)
+        damagedQuantity: Math.max(0, globalDamagedQuantity),// from GRN damage records
+        lowStockItems:   globalLowStockItems,               // products where netStock ≤ minStockLevel
+      },
       pagination: {
         currentPage: pageNum,
         totalPages: Math.ceil(totalProducts / limitNum),
