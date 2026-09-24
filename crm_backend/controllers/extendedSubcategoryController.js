@@ -2,6 +2,7 @@ import { extendedSubcategorySchema } from "../models/ExtendedSubcategory.js";
 import { brandSchema } from "../models/Brand.js";
 import { categorySchema } from "../models/Category.js";
 import { subcategorySchema } from "../models/Subcategory.js";
+import { productSchema } from "../models/Product.js";
 import {
   getPaginationParams,
   createPaginationResponse,
@@ -14,6 +15,10 @@ const getModels = (dbConnection) => {
     Brand: dbConnection.models.Brand || dbConnection.model('Brand', brandSchema),
     Category: dbConnection.models.Category || dbConnection.model('Category', categorySchema),
     Subcategory: dbConnection.models.Subcategory || dbConnection.model('Subcategory', subcategorySchema),
+    // Required by changeExtendedSubcategoryParent and
+    // getExtendedSubcategoryParentChangePreview, which call Product.updateMany /
+    // Product.countDocuments. Without this entry both endpoints threw a TypeError.
+    Product: dbConnection.models.Product || dbConnection.model('Product', productSchema),
   };
 };
 

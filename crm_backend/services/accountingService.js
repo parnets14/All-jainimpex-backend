@@ -5,11 +5,15 @@
 import { randomUUID } from 'node:crypto';
 import { journalVoucherSchema } from '../models/JournalVoucher.js';
 import { accountMasterSchema } from '../models/AccountMaster.js';
+import { serviceChargeMasterSchema } from '../models/ServiceChargeMaster.js';
 
 const getModels = (dbConnection) => {
   return {
     JournalVoucher: dbConnection.models.JournalVoucher || dbConnection.model('JournalVoucher', journalVoucherSchema),
-    AccountMaster: dbConnection.models.AccountMaster || dbConnection.model('AccountMaster', accountMasterSchema)
+    AccountMaster: dbConnection.models.AccountMaster || dbConnection.model('AccountMaster', accountMasterSchema),
+    // Required by the service-charge posting blocks below. Without this entry the
+    // destructure yields undefined and `.findById` throws on the first charge.
+    ServiceChargeMaster: dbConnection.models.ServiceChargeMaster || dbConnection.model('ServiceChargeMaster', serviceChargeMasterSchema)
   };
 };
 
@@ -78,13 +82,28 @@ export const createDealerInvoiceEntry = async (
     if (gstInMinorUnits > totalInMinorUnits) {
       throw new Error('Dealer invoice GST cannot exceed its rounded total');
     }
-    const salesInMinorUnits = totalInMinorUnits - gstInMinorUnits;
+    
+    // Service charges — each charge is amount + tax, so serviceChargesTotal is GST-inclusive
+    const serviceChargesSubtotal = invoice.serviceChargesSubtotal || 0;
+    const serviceChargesTax = invoice.serviceChargesTax || 0;
+    const serviceChargesTotal = invoice.serviceChargesTotal || 0;
+
     const totalAmount = totalInMinorUnits / 100;
-    const gstAmount = gstInMinorUnits / 100;
-    const salesAmount = salesInMinorUnits / 100;
+    const gstAmount = invoice.totalGst || 0;
+    const productGst = gstAmount;
+
+    // Every amount on this invoice is MRP-based, i.e. GST-INCLUSIVE, and
+    // invoice.totalAmount already contains the service charges. The GST is posted
+    // separately to GST Payable below, so the revenue line must be net of GST.
+    // Crediting Sales with the GST-inclusive amount *as well* counted the GST twice
+    // and left the voucher out of balance by exactly the GST amount — which is why
+    // the JournalVoucher validator rejected it.
+    const productInclGst = totalAmount - serviceChargesTotal;
+    const salesAmount = productInclGst - productGst;
+    
     const debtorsAccount = await getSystemAccount('Sundry Debtors', dbConnection, { session, throwOnError: true });
     const salesAccount = await getSystemAccount('Sales Account', dbConnection, { session, throwOnError: true });
-    const gstPayableAccount = gstAmount > 0
+    const gstPayableAccount = gstAmount > 0 || serviceChargesTax > 0
       ? await getSystemAccount('GST Payable', dbConnection, { session, throwOnError: true })
       : null;
 
@@ -106,6 +125,8 @@ export const createDealerInvoiceEntry = async (
         narration: `Net sales - Invoice ${invoice.invoiceNumber}`
       }
     ];
+    
+    // Add product GST entry
     if (gstAmount > 0) {
       entries.push({
         accountId: gstPayableAccount._id,
@@ -113,8 +134,65 @@ export const createDealerInvoiceEntry = async (
         accountGroup: gstPayableAccount.accountGroup,
         debit: 0,
         credit: gstAmount,
-        narration: `Output GST - Invoice ${invoice.invoiceNumber}`
+        narration: `Output GST on products - Invoice ${invoice.invoiceNumber}`
       });
+    }
+    
+    // Add service charge entries
+    if (invoice.serviceCharges && invoice.serviceCharges.length > 0) {
+      const { ServiceChargeMaster } = getModels(dbConnection);
+      
+      for (const charge of invoice.serviceCharges) {
+        // Get service charge master to find account
+        let serviceAccount;
+        if (charge.serviceChargeId) {
+          const chargeMaster = await ServiceChargeMaster.findById(charge.serviceChargeId).session(session);
+          if (chargeMaster && chargeMaster.accountId) {
+            const { AccountMaster } = getModels(dbConnection);
+            serviceAccount = await AccountMaster.findById(chargeMaster.accountId).session(session);
+          }
+        }
+        
+        // Fallback to default Service Income account
+        if (!serviceAccount) {
+          serviceAccount = await getSystemAccount('Service Income', dbConnection, { session, throwOnError: false });
+          if (!serviceAccount) {
+            // Create default Service Income account if it doesn't exist
+            const { AccountMaster } = getModels(dbConnection);
+            serviceAccount = new AccountMaster({
+              accountName: 'Service Income',
+              accountGroup: 'Indirect Income',
+              accountType: 'Income',
+              openingBalance: 0,
+              openingBalanceType: 'Cr',
+              createdBy: userId
+            });
+            await serviceAccount.save({ session });
+          }
+        }
+        
+        // Post service charge amount (excluding tax)
+        entries.push({
+          accountId: serviceAccount._id,
+          accountName: serviceAccount.accountName,
+          accountGroup: serviceAccount.accountGroup,
+          debit: 0,
+          credit: charge.amount,
+          narration: `${charge.chargeName} - Invoice ${invoice.invoiceNumber}`
+        });
+        
+        // Post service charge GST if applicable
+        if (charge.taxAmount > 0 && gstPayableAccount) {
+          entries.push({
+            accountId: gstPayableAccount._id,
+            accountName: gstPayableAccount.accountName,
+            accountGroup: gstPayableAccount.accountGroup,
+            debit: 0,
+            credit: charge.taxAmount,
+            narration: `GST on ${charge.chargeName} - Invoice ${invoice.invoiceNumber}`
+          });
+        }
+      }
     }
 
     const voucherNumber = await generateJournalNumber(dbConnection, { session });
@@ -212,6 +290,7 @@ export const reverseDealerInvoiceEntry = async (
  * Create automatic journal entry for Supplier Invoice
  * Debit: Purchase Account
  * Debit: GST Input Credit (if GST applicable)
+ * Debit: Service Expense accounts (for each service charge)
  * Credit: Sundry Creditors
  */
 export const createSupplierInvoiceEntry = async (invoice, dbConnection, userId) => {
@@ -233,38 +312,104 @@ export const createSupplierInvoiceEntry = async (invoice, dbConnection, userId) 
     const entries = [];
     
     // Handle both gstAmount and totalGst field names (embedded GST, reverse-calculated)
-    const gstAmount = invoice.gstAmount || invoice.totalGst || 0;
+    const productGst = invoice.gstAmount || invoice.totalGst || 0;
 
     // Use supplier billed total if available (what we actually owe), otherwise our calculated total
     const invoiceTotal = invoice.supplierBilledTotal || invoice.totalAmount || 0;
+    
+    // Product amounts: invoiceTotal includes product + service charges + all taxes
+    // Calculate product portion
+    const productSubtotal = invoice.subtotal || 0;
+    const productDiscount = invoice.totalDiscount || 0;
+    const productAfterDiscount = productSubtotal - productDiscount;
+    
+    // Service charges
+    const serviceChargesSubtotal = invoice.serviceChargesSubtotal || 0;
+    const serviceChargesTax = invoice.serviceChargesTax || 0;
 
-    // invoiceTotal is GST-INCLUSIVE. Split it for double-entry:
-    //   Purchase Account (base, GST-exclusive) + GST Input Credit (embedded GST) = Creditors (inclusive)
-    const purchaseBase = invoiceTotal - gstAmount;
-
-    // Debit: Purchase Account (base value, excluding embedded GST)
+    // Debit: Purchase Account (base value, EXCLUDING the embedded GST).
+    // productAfterDiscount is GST-inclusive, so the embedded GST must come out here —
+    // it is debited separately to GST Input Credit below. Debiting the inclusive
+    // amount double-counted the tax and left the voucher out of balance.
     entries.push({
       accountId: purchaseAccount._id,
       accountName: purchaseAccount.accountName,
       accountGroup: purchaseAccount.accountGroup,
-      debit: purchaseBase,
+      debit: productAfterDiscount - productGst,
       credit: 0,
       narration: `Purchase from ${invoice.supplierName || 'Supplier'} - Invoice ${invoice.invoiceNumber}`
     });
     
-    // Debit: GST Input Credit (GST Amount)
-    if (gstAmount && gstAmount > 0 && gstInputAccount) {
+    // Debit: GST Input Credit (Product GST Amount)
+    if (productGst && productGst > 0 && gstInputAccount) {
       entries.push({
         accountId: gstInputAccount._id,
         accountName: gstInputAccount.accountName,
         accountGroup: gstInputAccount.accountGroup,
-        debit: gstAmount,
+        debit: productGst,
         credit: 0,
         narration: `GST on Purchase - Invoice ${invoice.invoiceNumber}`
       });
     }
     
-    // Credit: Sundry Creditors (Total Amount including GST)
+    // Add service charge entries
+    if (invoice.serviceCharges && invoice.serviceCharges.length > 0) {
+      const { ServiceChargeMaster } = getModels(dbConnection);
+      
+      for (const charge of invoice.serviceCharges) {
+        // Get service charge master to find account
+        let serviceAccount;
+        if (charge.serviceChargeId) {
+          const chargeMaster = await ServiceChargeMaster.findById(charge.serviceChargeId);
+          if (chargeMaster && chargeMaster.accountId) {
+            const { AccountMaster } = getModels(dbConnection);
+            serviceAccount = await AccountMaster.findById(chargeMaster.accountId);
+          }
+        }
+        
+        // Fallback to default Service Expense account
+        if (!serviceAccount) {
+          serviceAccount = await getSystemAccount('Service Expense', dbConnection);
+          if (!serviceAccount) {
+            // Create default Service Expense account if it doesn't exist
+            const { AccountMaster } = getModels(dbConnection);
+            serviceAccount = new AccountMaster({
+              accountName: 'Service Expense',
+              accountGroup: 'Direct Expenses',
+              accountType: 'Expense',
+              openingBalance: 0,
+              openingBalanceType: 'Dr',
+              createdBy: userId
+            });
+            await serviceAccount.save();
+          }
+        }
+        
+        // Debit: Service Expense account (amount excluding tax)
+        entries.push({
+          accountId: serviceAccount._id,
+          accountName: serviceAccount.accountName,
+          accountGroup: serviceAccount.accountGroup,
+          debit: charge.amount,
+          credit: 0,
+          narration: `${charge.chargeName} from ${invoice.supplierName} - Invoice ${invoice.invoiceNumber}`
+        });
+        
+        // Debit: GST Input Credit for service charge tax
+        if (charge.taxAmount > 0 && gstInputAccount) {
+          entries.push({
+            accountId: gstInputAccount._id,
+            accountName: gstInputAccount.accountName,
+            accountGroup: gstInputAccount.accountGroup,
+            debit: charge.taxAmount,
+            credit: 0,
+            narration: `GST on ${charge.chargeName} - Invoice ${invoice.invoiceNumber}`
+          });
+        }
+      }
+    }
+    
+    // Credit: Sundry Creditors (Total Amount including GST and service charges)
     entries.push({
       accountId: creditorsAccount._id,
       accountName: creditorsAccount.accountName,

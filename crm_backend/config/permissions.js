@@ -99,6 +99,11 @@ export const AVAILABLE_PERMISSIONS = {
       description: "Manage supplier master data"
     },
     {
+      id: "service.charge.master",
+      name: "Service Charge Master",
+      description: "Manage service charge master data"
+    },
+    {
       id: "supplier.management",
       name: "Supplier Management",
       description: "Full supplier management access"

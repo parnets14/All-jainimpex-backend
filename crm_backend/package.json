@@ -5,7 +5,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "migrate:payment-collected": "node scripts/updatePaymentCollectedField.js"
+    "audit:schema": "node scripts/auditSchemaConsistency.js",
+    "migrate:payment-collected": "node scripts/updatePaymentCollectedField.js",
+    "migrate:account-parent-groups": "node scripts/backfillAccountParentGroups.js"
   },
   "keywords": [],
   "author": "",

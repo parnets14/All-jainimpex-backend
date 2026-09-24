@@ -1,5 +1,6 @@
 import { journalVoucherSchema } from '../models/JournalVoucher.js';
 import { accountMasterSchema } from '../models/AccountMaster.js';
+import { parentGroupFor, PRIMARY_GROUPS } from '../config/accountGroups.js';
 
 const getModels = (dbConnection) => ({
   JournalVoucher:
@@ -168,21 +169,61 @@ export const getTrialBalance = async (req, res) => {
     const groups = {};
     for (const r of rows) {
       if (!groups[r.accountGroup]) {
-        groups[r.accountGroup] = { accountGroup: r.accountGroup, accounts: [], groupDebit: 0, groupCredit: 0 };
+        groups[r.accountGroup] = {
+          accountGroup: r.accountGroup,
+          accounts: [],
+          groupDebit: 0,
+          groupCredit: 0,
+          groupMovementDebit: 0,
+          groupMovementCredit: 0,
+        };
       }
-      groups[r.accountGroup].accounts.push(r);
-      groups[r.accountGroup].groupDebit += r.closingDebit;
-      groups[r.accountGroup].groupCredit += r.closingCredit;
+      const g = groups[r.accountGroup];
+      g.accounts.push(r);
+      g.groupDebit += r.closingDebit;
+      g.groupCredit += r.closingCredit;
+      g.groupMovementDebit += r.movementDebit;
+      g.groupMovementCredit += r.movementCredit;
     }
+    // Every subtotal the report displays is computed here, so the client never has
+    // to re-derive a figure and the printed/exported numbers always agree.
     const grouped = Object.values(groups).map((g) => ({
       ...g,
+      // Primary group this ledger group belongs to (Assets / Liabilities / Income / Expenses)
+      parentGroup: parentGroupFor(g.accountGroup),
       groupDebit: round2(g.groupDebit),
       groupCredit: round2(g.groupCredit),
+      groupMovementDebit: round2(g.groupMovementDebit),
+      groupMovementCredit: round2(g.groupMovementCredit),
+      // Positive = the group closes on the debit side, negative = credit side
+      groupNetClosing: round2(g.groupDebit - g.groupCredit),
     }));
+
+    // Roll the ledger groups up into their primary groups so the report can be
+    // read at either level without the client doing the arithmetic.
+    const buildParentRow = (parent, children) => ({
+      parentGroup: parent,
+      groupCount: children.length,
+      accountCount: children.reduce((s, g) => s + g.accounts.length, 0),
+      debit: round2(children.reduce((s, g) => s + g.groupDebit, 0)),
+      credit: round2(children.reduce((s, g) => s + g.groupCredit, 0)),
+      net: round2(children.reduce((s, g) => s + g.groupNetClosing, 0)),
+    });
+
+    const parentGrouped = PRIMARY_GROUPS
+      .map((parent) => buildParentRow(parent, grouped.filter((g) => g.parentGroup === parent)))
+      .filter((p) => p.groupCount > 0);
+
+    const unclassifiedGroups = grouped.filter((g) => !g.parentGroup);
+    if (unclassifiedGroups.length > 0) {
+      parentGrouped.push(buildParentRow('Unclassified', unclassifiedGroups));
+    }
 
     totalDebit = round2(totalDebit);
     totalCredit = round2(totalCredit);
     const difference = round2(totalDebit - totalCredit);
+    const totalMovementDebit = round2(rows.reduce((s, r) => s + r.movementDebit, 0));
+    const totalMovementCredit = round2(rows.reduce((s, r) => s + r.movementCredit, 0));
 
     res.json({
       success: true,
@@ -191,11 +232,14 @@ export const getTrialBalance = async (req, res) => {
         financialYear: financialYear || null,
         rows,
         grouped,
+        parentGrouped,
         totals: {
           totalDebit,
           totalCredit,
           difference,
           isBalanced: Math.abs(difference) < 0.01,
+          totalMovementDebit,
+          totalMovementCredit,
         },
         note: financialYear
           ? `Financial-year view (${financialYear}): opening balances are carried forward from prior years for balance-sheet accounts; income/expense accounts reset each year. Built from posted journal vouchers.`

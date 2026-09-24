@@ -298,6 +298,69 @@ const supplierInvoiceSchema = new mongoose.Schema({
     default: null
   },
   
+  // Service Charges (NEW)
+  serviceCharges: [{
+    serviceChargeId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ServiceChargeMaster"
+    },
+    chargeName: {
+      type: String,
+      required: true
+    },
+    description: String,
+    sacCode: String,
+    amount: {
+      type: Number,
+      required: true,
+      min: 0
+    },
+    taxApplicable: {
+      type: Boolean,
+      default: false
+    },
+    taxRate: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100
+    },
+    cgst: {
+      type: Number,
+      default: 0
+    },
+    sgst: {
+      type: Number,
+      default: 0
+    },
+    igst: {
+      type: Number,
+      default: 0
+    },
+    taxAmount: {
+      type: Number,
+      default: 0
+    },
+    totalAmount: {
+      type: Number,
+      required: true
+    }
+  }],
+  
+  // Service Charges Totals (NEW)
+  serviceChargesSubtotal: {
+    type: Number,
+    default: 0
+  },
+  serviceChargesTax: {
+    type: Number,
+    default: 0
+  },
+  serviceChargesTotal: {
+    type: Number,
+    default: 0
+  },
+  
   // Status and Tracking
   status: {
     type: String,
@@ -387,8 +450,35 @@ supplierInvoiceSchema.pre("save", function(next) {
   this.totalDiscountPercentage = (this.directDiscountPercentage || 0) + (this.floatingDiscountPercentage || 0);
   this.totalDiscountAmount = Math.max(this.totalDiscount, (this.subtotal * this.totalDiscountPercentage) / 100);
 
-  // Calculate totalAmount: subtotal - discount + GST
-  this.totalAmount = this.subtotal - this.totalDiscount + this.totalGst;
+  // Calculate product total: subtotal - discount + GST
+  const productTotal = this.subtotal - this.totalDiscount + this.totalGst;
+  
+  // Calculate service charges totals
+  this.serviceCharges = this.serviceCharges || [];
+  this.serviceCharges.forEach(charge => {
+    // Calculate tax amounts if applicable
+    if (charge.taxApplicable && charge.taxRate > 0) {
+      const taxAmount = (charge.amount * charge.taxRate) / 100;
+      charge.cgst = taxAmount / 2;
+      charge.sgst = taxAmount / 2;
+      charge.igst = 0; // For now, intra-state only. TODO: Add inter-state logic
+      charge.taxAmount = taxAmount;
+      charge.totalAmount = charge.amount + taxAmount;
+    } else {
+      charge.cgst = 0;
+      charge.sgst = 0;
+      charge.igst = 0;
+      charge.taxAmount = 0;
+      charge.totalAmount = charge.amount;
+    }
+  });
+  
+  this.serviceChargesSubtotal = this.serviceCharges.reduce((sum, charge) => sum + (charge.amount || 0), 0);
+  this.serviceChargesTax = this.serviceCharges.reduce((sum, charge) => sum + (charge.taxAmount || 0), 0);
+  this.serviceChargesTotal = this.serviceCharges.reduce((sum, charge) => sum + (charge.totalAmount || 0), 0);
+  
+  // Grand total = products + service charges
+  this.totalAmount = productTotal + this.serviceChargesTotal;
 
   next();
 });

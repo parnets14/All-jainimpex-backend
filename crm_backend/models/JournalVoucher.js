@@ -1,16 +1,15 @@
 import mongoose from 'mongoose';
+import { LEDGER_GROUPS } from '../config/accountGroups.js';
 
 const journalEntryLineSchema = new mongoose.Schema({
   accountId: { type: mongoose.Schema.Types.ObjectId, ref: 'AccountMaster' },
   accountName: { type: String, required: true, trim: true },
+  // Shares the canonical list with AccountMaster. This used to be a separate copy
+  // that drifted — it was missing 'Indirect Income', so posting service income to
+  // the ledger failed validation even after the account itself was created.
   accountGroup: {
     type: String,
-    enum: [
-      'Capital', 'Reserves & Surplus', 'Loans & Liabilities', 'Current Liabilities',
-      'Fixed Assets', 'Current Assets', 'Sales', 'Purchase',
-      'Direct Expenses', 'Indirect Expenses', 'Duties & Taxes',
-      'GST Payable', 'GST Input Credit', 'Sundry Debtors', 'Sundry Creditors', 'Other'
-    ]
+    enum: LEDGER_GROUPS
   },
   debit: { type: Number, default: 0, min: 0 },
   credit: { type: Number, default: 0, min: 0 },

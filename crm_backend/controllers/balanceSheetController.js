@@ -881,6 +881,27 @@ export const getBalanceSheetV2 = async (req, res) => {
     const totalEquity = totalCapital + netProfit;
     const netWorth = totalEquity;
 
+    // ── KEY FINANCIAL RATIOS ─────────────────────────────────────────────────
+    // Computed here (not in the client) so every screen and export shows the same
+    // numbers, and so ratios use the correct bases. Returns null when the
+    // denominator is zero rather than a misleading 0 or Infinity.
+    const safeRatio = (numerator, denominator) =>
+      denominator ? Number((numerator / denominator).toFixed(2)) : null;
+    const safePct = (numerator, denominator) =>
+      denominator ? Number(((numerator / denominator) * 100).toFixed(2)) : null;
+
+    const ratios = {
+      // Current Ratio = current assets / current liabilities (NOT total assets / total liabilities)
+      currentRatio: safeRatio(totalCurrentAssets, totalCurrentLiabilities),
+      // Quick Ratio = (current assets - inventory) / current liabilities
+      quickRatio: safeRatio(totalCurrentAssets - inventoryValue, totalCurrentLiabilities),
+      debtEquityRatio: safeRatio(totalLiabilities, totalEquity),
+      workingCapital: totalCurrentAssets - totalCurrentLiabilities,
+      grossMarginPct: safePct(grossProfit, netSales),
+      netMarginPct: safePct(netProfit, netSales),
+      equityRatioPct: safePct(totalEquity, totalAssets)
+    };
+
     // ── BUILD RESPONSE ───────────────────────────────────────────────────────
     const response = {
       success: true,
@@ -890,8 +911,14 @@ export const getBalanceSheetV2 = async (req, res) => {
         totalAssets,
         totalLiabilities,
         totalEquity,
-        netWorth
+        netWorth,
+        totalCurrentAssets,
+        totalCurrentLiabilities,
+        totalNonCurrentAssets: netFixedAssets,
+        totalNonCurrentLiabilities: totalLoans,
+        inventoryValue
       },
+      ratios,
       equityAndLiabilities: {
         total: totalLiabilities + totalEquity,
         groups: [

@@ -7,6 +7,7 @@ import { purchaseOrderSchema } from "../models/PurchaseOrder.js";
 import { warehouseSchema } from "../models/Warehouse.js";
 import { assertPeriodOpen, handlePeriodLockError } from "../services/periodLockService.js";
 import { recordUpdate, recordStatusChange } from "../services/auditTrailService.js";
+import { normalizeServiceCharges } from "../utils/serviceChargeUtils.js";
 import mongoose from "mongoose";
 
 const getModels = (dbConnection) => {
@@ -123,7 +124,8 @@ export const getSupplierInvoice = async (req, res) => {
       .populate("items.product")
       .populate("items.warehouse", "name")
       .populate("approvedBy", "name email")
-      .populate("createdBy", "name email");
+      .populate("createdBy", "name email")
+      .populate("serviceCharges.serviceChargeId", "chargeName sacCode taxApplicable taxRate");
 
     if (!supplierInvoice) {
       return res.status(404).json({
@@ -169,7 +171,8 @@ export const createSupplierInvoice = async (req, res) => {
       totalGst: frontendTotalGst,
       totalAmount: frontendTotalAmount,
       grandTotal: frontendGrandTotal,
-      purchaseDiscountSummary
+      purchaseDiscountSummary,
+      serviceCharges
     } = req.body;
     
     console.log('💰 Frontend Totals:', { 
@@ -387,6 +390,7 @@ export const createSupplierInvoice = async (req, res) => {
       totalGst: totalGst,
       totalAmount: totalAmount,
       grandTotal: grandTotal,
+      serviceCharges: normalizeServiceCharges(serviceCharges),
       supplierBilledTotal: req.body.supplierBilledTotal || null,
       // Purchase discount summary
       purchaseDiscountSummary: purchaseDiscountSummary || {
@@ -694,6 +698,20 @@ export const updateSupplierInvoice = async (req, res) => {
       updateData.totalGst = calculatedTotalGst;
       updateData.totalAmount = calculatedSubtotal - calculatedTotalDiscount;
       updateData.grandTotal = calculatedSubtotal - calculatedTotalDiscount;
+    }
+
+    // Service charges: normalize rows, recompute their totals, and roll them into the grand total.
+    // findByIdAndUpdate bypasses the model's pre-save hook, so this must be done explicitly here.
+    if (Object.prototype.hasOwnProperty.call(req.body, "serviceCharges")) {
+      updateData.serviceCharges = normalizeServiceCharges(req.body.serviceCharges);
+      updateData.serviceChargesSubtotal = updateData.serviceCharges.reduce((sum, c) => sum + (c.amount || 0), 0);
+      updateData.serviceChargesTax = updateData.serviceCharges.reduce((sum, c) => sum + (c.taxAmount || 0), 0);
+      updateData.serviceChargesTotal = updateData.serviceCharges.reduce((sum, c) => sum + (c.totalAmount || 0), 0);
+
+      if (updateData.items && updateData.items.length > 0) {
+        updateData.totalAmount = (updateData.totalAmount || 0) + updateData.serviceChargesTotal;
+        updateData.grandTotal = (updateData.grandTotal || 0) + updateData.serviceChargesTotal;
+      }
     }
 
     // Update the supplier invoice

@@ -11,6 +11,10 @@ const getModels = (dbConnection) => {
   };
 };
 
+// Upper bound on a single page request. The UI asks for this when exporting the
+// full filtered set rather than only the page currently on screen.
+const MAX_EXPORT_LIMIT = 20000;
+
 // Get all download logs with filters and pagination
 export const getDownloadLogs = async (req, res) => {
   try {
@@ -70,15 +74,18 @@ export const getDownloadLogs = async (req, res) => {
       }
     }
 
-    // Calculate pagination
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    // Pagination. The cap lets a client pull every filtered row in one request
+    // (needed for a full Excel export) while still bounding the query.
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(Math.max(1, parseInt(limit) || 10), MAX_EXPORT_LIMIT);
+    const skip = (pageNum - 1) * limitNum;
 
     // Get download logs with pagination
     const downloadLogs = await DownloadLog.find(filter)
       .populate("user", "username email role")
       .sort({ timestamp: -1 })
       .skip(skip)
-      .limit(parseInt(limit));
+      .limit(limitNum);
 
     // Get total count for pagination
     const total = await DownloadLog.countDocuments(filter);
@@ -93,10 +100,10 @@ export const getDownloadLogs = async (req, res) => {
       success: true,
       data: downloadLogs,
       pagination: {
-        currentPage: parseInt(page),
-        totalPages: Math.ceil(total / parseInt(limit)),
+        currentPage: pageNum,
+        totalPages: Math.ceil(total / limitNum),
         totalItems: total,
-        itemsPerPage: parseInt(limit),
+        itemsPerPage: limitNum,
       },
       filters: {
         modules,

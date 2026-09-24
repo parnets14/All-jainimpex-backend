@@ -32,6 +32,7 @@ import {
   normalizeRateMap,
   resolveDealerExtraDiscountBySpecificity
 } from '../utils/sequentialDiscountPolicy.js';
+import { normalizeServiceCharges } from '../utils/serviceChargeUtils.js';
 
 // Helper function to get models from company-specific connection
 const getModels = (dbConnection) => {
@@ -1468,7 +1469,8 @@ export const getDealerInvoice = async (req, res) => {
       .populate("items.product", "itemName productCode HSNCode description")
       .populate("items.oneTimePriceIncreaseAppliedBy", "name email")
       .populate("items.warehouse", "name address")
-      .populate("items.appliedDiscounts.discountId", "mappingType levels validFrom validTo");
+      .populate("items.appliedDiscounts.discountId", "mappingType levels validFrom validTo")
+      .populate("serviceCharges.serviceChargeId", "chargeName sacCode taxApplicable taxRate");
 
     if (!invoice) {
       return res.status(404).json({
@@ -1748,7 +1750,7 @@ export const calculateDiscountsAndPoints = async (req, res) => {
 export const createDealerInvoice = async (req, res) => {
   try {
     // Get models from company-specific connection
-    const { DealerInvoice, Dealer, Product, SalesOrder, Stock, StockMovement, DealerLedger, Points, Notification } = getModels(req.dbConnection);
+    const { DealerInvoice, Dealer, Product, SalesOrder, StockMovement, DealerLedger, Points, Notification } = getModels(req.dbConnection);
     
     console.log("Creating dealer invoice with data:", {
       dealerId: req.body.dealerId,
@@ -1966,6 +1968,7 @@ export const createDealerInvoice = async (req, res) => {
       totalGst: totalGst || 0,
       totalAmount: totalAmount || 0,
       totalPoints: totalPoints || 0,
+      serviceCharges: normalizeServiceCharges(req.body.serviceCharges),
       createdBy: req.user._id
     };
 
@@ -2167,7 +2170,7 @@ export const approveDealerInvoice = async (req, res) => {
   
   try {
     // Get models from company-specific connection
-    const { DealerInvoice, Dealer, Product, SalesOrder, Stock, StockMovement, DealerLedger, Points, Notification } = getModels(req.dbConnection);
+    const { DealerInvoice, Dealer, Product, SalesOrder, StockMovement, DealerLedger, Points, Notification } = getModels(req.dbConnection);
     
     await session.startTransaction();
     
@@ -2737,6 +2740,11 @@ export const updateDealerInvoice = async (req, res) => {
       if (Object.prototype.hasOwnProperty.call(req.body, field)) {
         invoice.set(field, field === "items" ? canonicalItems : req.body[field]);
       }
+    }
+
+    // Service charges are normalized separately so unselected rows are discarded
+    if (Object.prototype.hasOwnProperty.call(req.body, "serviceCharges")) {
+      invoice.set("serviceCharges", normalizeServiceCharges(req.body.serviceCharges));
     }
 
     if (req.body.customerInfo && typeof req.body.customerInfo === "object") {
