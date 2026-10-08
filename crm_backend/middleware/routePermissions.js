@@ -90,6 +90,7 @@ const ROUTE_PERMISSION_MAP = {
   'collections': 'payment',
   'payment-allocations': 'finance.management',
   'points': 'purchasing.points',
+  'schemes': ['schemes.view', 'schemes.manage', 'schemes.process', 'purchasing.points'],
   'dealer-order-requests': 'sales.order.dashboard',
 
   // Finance & Accounts

@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { purchaseSchemeBenefitsSchema } from './purchaseSchemeBenefit.js';
 
 const grnSchema = new mongoose.Schema({
   grnNo: {
@@ -172,6 +173,14 @@ const grnSchema = new mongoose.Schema({
   invoiceCreatedAt: {
     type: Date,
     default: null
+  },
+  // Purchase schemes (the `Points` model) that fired on this receipt.
+  // Written once at inspection time by services/schemeService.js. Purely a
+  // record of what the engine detected — it does not alter stock, item cost or
+  // the ledger, so it is safe to recompute or clear without side effects.
+  purchaseSchemeBenefits: {
+    type: purchaseSchemeBenefitsSchema,
+    default: () => ({})
   }
 }, {
   timestamps: true

@@ -827,7 +827,7 @@ export const getExtendedSubcategoryWithParentChain = async (req, res) => {
 // @access  Private
 export const changeExtendedSubcategoryParent = async (req, res) => {
   try {
-    const { ExtendedSubcategory, Product } = getModels(req.dbConnection);
+    const { ExtendedSubcategory, Product, Brand, Category, Subcategory } = getModels(req.dbConnection);
     const { id } = req.params;
     const {
       newParentId, // Can be subcategoryId (for Level 1) or extendedSubcategoryId (for Level 2+)
@@ -931,7 +931,7 @@ newParentExtended) {
       }
 
       // Check if new parent is a descendant of this item (would create circular reference)
-      const isDescendant = await checkIfDescendant(id, newParentId);
+      const isDescendant = await checkIfDescendant(ExtendedSubcategory, id, newParentId);
       if (isDescendant) {
         return res.status(400).json({
           success: false,
@@ -988,7 +988,7 @@ newParentExtended) {
     }
 
     // Count affected items (all descendants)
-    const descendantCount = await countAllDescendants(id);
+    const descendantCount = await countAllDescendants(ExtendedSubcategory, id);
 
     // Start transaction
     const session = await req.dbConnection.startSession();
@@ -1014,6 +1014,7 @@ newParentExtended) {
 
       // Recursively update all descendants
       await updateExtendedDescendantsRecursively(
+        ExtendedSubcategory,
         id,
         newBrandId,
         newCategoryId,
@@ -1084,8 +1085,11 @@ newParentExtended) {
   }
 };
 
-// Helper function to check if targetId is a descendant of sourceId
-async function checkIfDescendant(sourceId, targetId) {
+// Helper function to check if targetId is a descendant of sourceId.
+// The model is PASSED IN — this is a module-level helper with no `req`, so it
+// cannot call getModels() itself. It previously referenced `ExtendedSubcategory`
+// directly, which threw "ReferenceError: ExtendedSubcategory is not defined".
+async function checkIfDescendant(ExtendedSubcategory, sourceId, targetId) {
   let current = await ExtendedSubcategory.findById(targetId);
 
   while (current && current.parentExtendedSubcategory) {
@@ -1100,8 +1104,8 @@ async function checkIfDescendant(sourceId, targetId) {
   return false;
 }
 
-// Helper function to count all descendants
-async function countAllDescendants(parentId) {
+// Helper function to count all descendants. Model passed in for the same reason.
+async function countAllDescendants(ExtendedSubcategory, parentId) {
   const directChildren = await ExtendedSubcategory.find({
     parentExtendedSubcategory: parentId,
   });
@@ -1109,14 +1113,15 @@ async function countAllDescendants(parentId) {
   let count = directChildren.length;
 
   for (const child of directChildren) {
-    count += await countAllDescendants(child._id);
+    count += await countAllDescendants(ExtendedSubcategory, child._id);
   }
 
   return count;
 }
 
-// Helper function to recursively update descendants
+// Helper function to recursively update descendants. Model passed in.
 async function updateExtendedDescendantsRecursively(
+  ExtendedSubcategory,
   parentId,
   newBrandId,
   newCategoryId,
@@ -1146,6 +1151,7 @@ async function updateExtendedDescendantsRecursively(
 
     // Recursively update its children
     await updateExtendedDescendantsRecursively(
+      ExtendedSubcategory,
       child._id,
       newBrandId,
       newCategoryId,
@@ -1161,7 +1167,7 @@ async function updateExtendedDescendantsRecursively(
 // @access  Private
 export const getExtendedSubcategoryParentChangePreview = async (req, res) => {
   try {
-    const { ExtendedSubcategory, Product } = getModels(req.dbConnection);
+    const { ExtendedSubcategory, Product, Brand, Category, Subcategory } = getModels(req.dbConnection);
     const { id } = req.params;
     const {
       newParentId,
@@ -1242,7 +1248,7 @@ export const getExtendedSubcategoryParentChangePreview = async (req, res) => {
           hasConflict = true;
           conflictMessage = "Cannot set item as its own parent";
         } else {
-          const isDescendant = await checkIfDescendant(id, newParentId);
+          const isDescendant = await checkIfDescendant(ExtendedSubcategory, id, newParentId);
           if (isDescendant) {
             hasConflict = true;
             conflictMessage =
@@ -1278,7 +1284,7 @@ export const getExtendedSubcategoryParentChangePreview = async (req, res) => {
     }
 
     // Count affected items
-    const descendantCount = await countAllDescendants(id);
+    const descendantCount = await countAllDescendants(ExtendedSubcategory, id);
 
     const levelFieldMap = {
       1: "subcategory1",

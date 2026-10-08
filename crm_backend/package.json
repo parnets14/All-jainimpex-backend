@@ -6,6 +6,7 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "audit:schema": "node scripts/auditSchemaConsistency.js",
+    "backfill:scheme-progress": "node scripts/backfillSchemeProgress.js",
     "migrate:payment-collected": "node scripts/updatePaymentCollectedField.js",
     "migrate:account-parent-groups": "node scripts/backfillAccountParentGroups.js"
   },

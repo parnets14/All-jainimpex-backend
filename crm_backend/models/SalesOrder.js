@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { appliedSchemeSchema } from "./appliedScheme.js";
 
 const productSchema = new mongoose.Schema({
   product: {
@@ -178,6 +179,22 @@ const salesOrderSchema = new mongoose.Schema({
     type: String,
     required: true,
     unique: true
+  },
+  /**
+   * Correlates Sales Orders that were split from ONE user action, so scheme
+   * progress can be reported per dealer intent rather than per order row.
+   *
+   * Two ways a split happens:
+   *  1. auto-split by product.salesType  → up to 2 independent orders, no parent link
+   *  2. partial dispatch shortage        → source order + a new Pending remainder
+   *
+   * Both orders of a split share the same orderGroupId. A non-split order also
+   * gets one (equal to its own orderNumber) so queries never need a fallback.
+   */
+  orderGroupId: {
+    type: String,
+    default: null,
+    index: true
   },
   dealer: {
     type: mongoose.Schema.Types.ObjectId,
@@ -444,6 +461,24 @@ const salesOrderSchema = new mongoose.Schema({
       type: Date,
       default: null
     }
+  },
+  /**
+   * The schemes the salesman chose to GIVE on this order.
+   *
+   * `default: undefined` is deliberate and load-bearing: it keeps the field
+   * ABSENT on orders that never went through the picker (older documents, and
+   * any API caller that does not send it), which the engine reads as "no gate —
+   * count every matching scheme", i.e. exactly the behaviour before this field
+   * existed. An ARRAY — including an empty one — switches the gate ON and
+   * restricts this order to precisely those schemes, so an unticked scheme is
+   * neither counted toward progress nor rewarded at invoice time.
+   *
+   * `schemeCode`/`schemeName` are snapshotted so the order still reads correctly
+   * if the scheme is later renamed or deleted.
+   */
+  appliedSchemes: {
+    type: [appliedSchemeSchema],
+    default: undefined
   }
 }, {
   timestamps: true
@@ -504,6 +539,11 @@ salesOrderSchema.pre("save", async function(next) {
     const year = new Date().getFullYear();
     const count = await mongoose.model("SalesOrder").countDocuments();
     this.orderNumber = `SO-${year}-${String(count + 1).padStart(4, "0")}`;
+  }
+  // A standalone order is its own group, so downstream grouping never needs a
+  // null check. Callers that create split siblings set this explicitly first.
+  if (!this.orderGroupId) {
+    this.orderGroupId = this.orderNumber;
   }
   next();
 });

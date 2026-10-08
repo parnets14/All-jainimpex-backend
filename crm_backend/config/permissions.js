@@ -326,6 +326,21 @@ export const AVAILABLE_PERMISSIONS = {
       description: "Manage purchasing points"
     },
     {
+      id: "schemes.view",
+      name: "Schemes - View",
+      description: "View scheme master, scheme progress, entitlements and scheme reports"
+    },
+    {
+      id: "schemes.manage",
+      name: "Schemes - Manage",
+      description: "Create, edit and delete schemes (slab-based offers) and their slabs"
+    },
+    {
+      id: "schemes.process",
+      name: "Schemes - Process Rewards",
+      description: "Edit, reject and process detected scheme rewards (points, credit note, cashback, discount) from the Rewards module"
+    },
+    {
       id: "po.management",
       name: "PO Management",
       description: "Manage purchase orders"

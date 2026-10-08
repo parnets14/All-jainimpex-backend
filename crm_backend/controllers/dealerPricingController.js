@@ -286,7 +286,7 @@ export const getDealerPricing = async (req, res) => {
 // @access  Private
 export const getDealerPricingByProduct = async (req, res) => {
   try {
-    const { DealerPricing, Product, DealerPricingSchedule, DealerPricingHistory } = getModels(req.dbConnection);
+    const { DealerPricing, Product, DealerPricingSchedule, DealerPricingHistory, PurchaseOrder } = getModels(req.dbConnection);
     const { productId } = req.params;
 
     let pricing = await DealerPricing.findOne({ product: productId, isActive: true })
@@ -356,7 +356,7 @@ export const getDealerPricingByProduct = async (req, res) => {
 // @access  Private
 export const createOrUpdateDealerPricing = async (req, res) => {
   try {
-    const { DealerPricing, Product, DealerPricingHistory } = getModels(req.dbConnection);
+    const { DealerPricing, Product, DealerPricingHistory, PurchaseOrder } = getModels(req.dbConnection);
     const { productId, sellingPrice, purchasePrice, mrp, notes } = req.body;
 
     if (!productId || !sellingPrice) {
@@ -1315,7 +1315,7 @@ export const applyScheduledChanges = async (req, res) => {
 // @access  Private
 export const cancelScheduledChange = async (req, res) => {
   try {
-    const { DealerPricingSchedule } = getModels(req.dbConnection);
+    const { DealerPricingSchedule, DealerPricing } = getModels(req.dbConnection);
     const { id } = req.params;
 
     const schedule = await DealerPricingSchedule.findById(id);
@@ -1777,7 +1777,7 @@ export const getComprehensivePricing = async (req, res) => {
 // @access  Private
 export const validateAndSyncAllPricing = async (req, res) => {
   try {
-    const { DealerPricing, Product, PurchaseOrder, DiscountMapping } = getModels(req.dbConnection);
+    const { DealerPricing, Product, PurchaseOrder, DiscountMapping, SupplierInvoice, DealerPricingHistory } = getModels(req.dbConnection);
     console.log('🚨 COMPREHENSIVE PRICE VALIDATION AND AUTO-SYNC SYSTEM STARTING...\n');
     
     const results = {
@@ -2181,7 +2181,7 @@ export const getPriceValidationWarnings = async (req, res) => {
 // @access  Private
 export const autoCreateMissingPricingRecords = async (req, res) => {
   try {
-    const { DealerPricing, Product } = getModels(req.dbConnection);
+    const { DealerPricing, Product, PurchaseOrder } = getModels(req.dbConnection);
     console.log('🔄 Auto-creating missing pricing records for all products...');
     
     // Get all products with rate slabs
@@ -2289,7 +2289,7 @@ export const autoCreateMissingPricingRecords = async (req, res) => {
 // @access  Private
 export const autoSyncNewProduct = async (req, res) => {
   try {
-    const { DealerPricing, Product, PurchaseOrder, DiscountMapping } = getModels(req.dbConnection);
+    const { DealerPricing, Product, PurchaseOrder, DiscountMapping, DealerPricingHistory } = getModels(req.dbConnection);
     const { productId } = req.body;
     
     if (!productId) {

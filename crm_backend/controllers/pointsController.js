@@ -2,6 +2,10 @@ import { pointsSchema } from "../models/Points.js";
 import { categorySchema } from "../models/Category.js";
 import { subcategorySchema } from "../models/Subcategory.js";
 import { brandSchema } from "../models/Brand.js";
+import {
+  slugSchemeCode,
+  validateAndNormalizeSlabs
+} from "../utils/pointsSlabPolicy.js";
 
 // Helper function to get models for the current company database
 const getModels = (dbConnection) => {
@@ -17,6 +21,22 @@ const getModels = (dbConnection) => {
   };
 };
 
+/**
+ * Legacy `benefitType` enum only holds one value, but a slab reward can carry
+ * several at once. Mirror the most significant one so old readers stay sane.
+ * Order matters: points first because that is the historical default.
+ */
+const topSlabBenefitType = (slabs = []) => {
+  const top = slabs[slabs.length - 1];
+  if (!top) return "points";
+  const r = top.reward || {};
+  if (Number(r.points || 0) > 0) return "points";
+  if (Number(r.extraQuantity || 0) > 0) return "extraQuantity";
+  if (Number(r.discountPercentage || 0) > 0) return "discount";
+  if (Number(r.cashbackAmount || 0) > 0) return "cashback";
+  return "points";
+};
+
 // @desc    Add purchase/sale points
 // @route   POST /api/points
 // @access  Private
@@ -25,6 +45,8 @@ const addPoints = async (req, res) => {
     const { Points, Brand } = getModels(req.dbConnection);
     const {
       type,
+      schemeCode,
+      schemeName,
       brand,
       category,
       subcategory,
@@ -39,7 +61,8 @@ const addPoints = async (req, res) => {
       validTo,
       autoApplyGRN,
       autoApplySupplierInvoice,
-      description
+      description,
+      slabs
     } = req.body;
 
     // Validate relationships
@@ -66,18 +89,68 @@ const addPoints = async (req, res) => {
       });
     }
 
+    // Slab-based payload is now the primary shape. A payload with `slabs` is
+    // validated as a ladder; one without falls back to the legacy single
+    // threshold so existing callers keep working unchanged.
+    const hasSlabs = Array.isArray(slabs) && slabs.length > 0;
+    let normalizedSlabs = [];
+
+    if (hasSlabs) {
+      const result = validateAndNormalizeSlabs(slabs);
+      if (!result.valid) {
+        return res.status(400).json({ success: false, message: result.error });
+      }
+      normalizedSlabs = result.slabs;
+    } else if (inputValue === undefined || inputValue === null || inputValue === "") {
+      return res.status(400).json({
+        success: false,
+        message: "Provide either a slabs array or a legacy inputValue threshold"
+      });
+    }
+
+    const finalSchemeCode = schemeCode ? slugSchemeCode(schemeCode) : null;
+    if (schemeCode && !finalSchemeCode) {
+      return res.status(400).json({
+        success: false,
+        message: "Scheme code must contain at least one letter or digit"
+      });
+    }
+    if (finalSchemeCode) {
+      const clash = await Points.findOne({ schemeCode: finalSchemeCode });
+      if (clash) {
+        return res.status(409).json({
+          success: false,
+          message: `Scheme code ${finalSchemeCode} is already in use`
+        });
+      }
+    }
+
     const pointsEntry = new Points({
       type,
+      schemeCode: finalSchemeCode,
+      schemeName: schemeName || "",
       brand,
       category,
       subcategory,
-      calculationType,
-      inputValue,
-      benefitType: benefitType || 'points',
-      points: points || 0,
-      extraQuantity: extraQuantity || 0,
-      discountPercentage: discountPercentage || 0,
-      cashbackAmount: cashbackAmount || 0,
+      // Legacy mirrors: when a slab ladder is supplied, mirror the TOP tier
+      // into the legacy fields so older readers (reports, exports, the
+      // client-side schemeService) still see a sensible threshold/benefit.
+      calculationType: hasSlabs ? "amount" : calculationType,
+      inputValue: hasSlabs
+        ? normalizedSlabs[normalizedSlabs.length - 1].from
+        : inputValue,
+      benefitType: hasSlabs ? topSlabBenefitType(normalizedSlabs) : (benefitType || 'points'),
+      points: hasSlabs ? normalizedSlabs[normalizedSlabs.length - 1].reward.points : (points || 0),
+      extraQuantity: hasSlabs
+        ? normalizedSlabs[normalizedSlabs.length - 1].reward.extraQuantity
+        : (extraQuantity || 0),
+      discountPercentage: hasSlabs
+        ? normalizedSlabs[normalizedSlabs.length - 1].reward.discountPercentage
+        : (discountPercentage || 0),
+      cashbackAmount: hasSlabs
+        ? normalizedSlabs[normalizedSlabs.length - 1].reward.cashbackAmount
+        : (cashbackAmount || 0),
+      slabs: normalizedSlabs,
       validFrom: validFrom ? new Date(validFrom) : new Date(),
       validTo: validTo ? new Date(validTo) : new Date(Date.now() + 365 * 24 * 60 * 60 * 1000), // 1 year from now
       autoApplyGRN: autoApplyGRN || false,
@@ -150,6 +223,20 @@ const getPoints = async (req, res) => {
       }
     }
 
+    // Scheme code / name search
+    if (req.query.search) {
+      const rx = new RegExp(
+        String(req.query.search).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+        "i"
+      );
+      query.$or = [{ schemeCode: rx }, { schemeName: rx }, { description: rx }];
+    }
+
+    // Slab-aware vs legacy filter. A row is "slab-based" iff it has at least
+    // one stored slab; everything else is a legacy single-threshold row.
+    if (req.query.hasSlabs === "true") query["slabs.0"] = { $exists: true };
+    if (req.query.hasSlabs === "false") query["slabs.0"] = { $exists: false };
+
     const points = await Points.find(query)
       .populate("brand", "name")
       .populate("category", "name")
@@ -163,7 +250,12 @@ const getPoints = async (req, res) => {
 
     res.json({
       success: true,
-      points,
+      // `effectiveSlabs` normalises legacy rows into a one-entry ladder so the
+      // client renders one shape for every row without any migration.
+      points: points.map((doc) => ({
+        ...doc.toObject(),
+        effectiveSlabs: doc.effectiveSlabs()
+      })),
       pagination: {
         currentPage: page,
         totalPages: Math.ceil(totalItems / limit),
@@ -343,6 +435,8 @@ const updatePoints = async (req, res) => {
     const { id } = req.params;
     const {
       type,
+      schemeCode,
+      schemeName,
       brand,
       category,
       subcategory,
@@ -357,7 +451,8 @@ const updatePoints = async (req, res) => {
       validTo,
       autoApplyGRN,
       autoApplySupplierInvoice,
-      description
+      description,
+      slabs
     } = req.body;
 
     const pointsEntry = await Points.findById(id);
@@ -395,21 +490,78 @@ const updatePoints = async (req, res) => {
       }
     }
 
+    // Slabs are only touched when the caller actually sends them, so a legacy
+    // edit that omits `slabs` leaves the stored ladder (or its absence) alone.
+    let normalizedSlabs;
+    if (Array.isArray(slabs)) {
+      if (slabs.length === 0) {
+        // Explicit empty array = "no ladder", allowed for legacy-style rows.
+        normalizedSlabs = [];
+      } else {
+        const result = validateAndNormalizeSlabs(slabs);
+        if (!result.valid) {
+          return res.status(400).json({ success: false, message: result.error });
+        }
+        normalizedSlabs = result.slabs;
+      }
+    }
+
+    // Scheme code uniqueness — only checked when a new, non-empty code is sent
+    // and it differs from what is already stored.
+    let finalSchemeCode;
+    if (schemeCode !== undefined) {
+      const slug = schemeCode ? slugSchemeCode(schemeCode) : null;
+      if (schemeCode && !slug) {
+        return res.status(400).json({
+          success: false,
+          message: "Scheme code must contain at least one letter or digit"
+        });
+      }
+      if (slug && slug !== (pointsEntry.schemeCode || null)) {
+        const clash = await Points.findOne({ schemeCode: slug, _id: { $ne: id } });
+        if (clash) {
+          return res.status(409).json({
+            success: false,
+            message: `Scheme code ${slug} is already in use`
+          });
+        }
+      }
+      finalSchemeCode = slug;
+    }
+
+    // When a ladder is supplied, keep the legacy mirror fields in step with the
+    // top tier that the ladder itself drives.
+    const ladder = normalizedSlabs && normalizedSlabs.length > 0 ? normalizedSlabs : null;
+    const top = ladder ? ladder[ladder.length - 1] : null;
+
     // Update the points entry with default values for missing fields
     const updatedPoints = await Points.findByIdAndUpdate(
       id,
       {
         type: type || pointsEntry.type,
+        ...(finalSchemeCode !== undefined && { schemeCode: finalSchemeCode }),
+        ...(schemeName !== undefined && { schemeName }),
         brand: brand || pointsEntry.brand,
         category: category || pointsEntry.category,
         subcategory: subcategory || pointsEntry.subcategory,
-        calculationType: calculationType || pointsEntry.calculationType,
-        inputValue: inputValue !== undefined ? inputValue : pointsEntry.inputValue,
-        benefitType: benefitType !== undefined ? benefitType : (pointsEntry.benefitType || 'points'),
-        points: points !== undefined ? points : (pointsEntry.points || 0),
-        extraQuantity: extraQuantity !== undefined ? extraQuantity : (pointsEntry.extraQuantity || 0),
-        discountPercentage: discountPercentage !== undefined ? discountPercentage : (pointsEntry.discountPercentage || 0),
-        cashbackAmount: cashbackAmount !== undefined ? cashbackAmount : (pointsEntry.cashbackAmount || 0),
+        calculationType: ladder ? "amount" : (calculationType || pointsEntry.calculationType),
+        inputValue: top
+          ? top.from
+          : (inputValue !== undefined ? inputValue : pointsEntry.inputValue),
+        benefitType: ladder
+          ? topSlabBenefitType(ladder)
+          : (benefitType !== undefined ? benefitType : (pointsEntry.benefitType || 'points')),
+        points: top ? top.reward.points : (points !== undefined ? points : (pointsEntry.points || 0)),
+        extraQuantity: top
+          ? top.reward.extraQuantity
+          : (extraQuantity !== undefined ? extraQuantity : (pointsEntry.extraQuantity || 0)),
+        discountPercentage: top
+          ? top.reward.discountPercentage
+          : (discountPercentage !== undefined ? discountPercentage : (pointsEntry.discountPercentage || 0)),
+        cashbackAmount: top
+          ? top.reward.cashbackAmount
+          : (cashbackAmount !== undefined ? cashbackAmount : (pointsEntry.cashbackAmount || 0)),
+        ...(normalizedSlabs !== undefined && { slabs: normalizedSlabs }),
         validFrom: validFrom !== undefined ? new Date(validFrom) : (pointsEntry.validFrom || new Date()),
         validTo: validTo !== undefined ? new Date(validTo) : (pointsEntry.validTo || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)),
         autoApplyGRN: autoApplyGRN !== undefined ? autoApplyGRN : (pointsEntry.autoApplyGRN || false),
@@ -459,11 +611,48 @@ const deletePoints = async (req, res) => {
   }
 };
 
+// @desc    Check whether a scheme code is still available
+// @route   GET /api/points/check-code
+// @access  Private
+const checkSchemeCode = async (req, res) => {
+  try {
+    const { Points } = getModels(req.dbConnection);
+    const { code, excludeId } = req.query;
+
+    const slug = slugSchemeCode(code);
+    if (!slug) {
+      return res.json({
+        success: true,
+        available: false,
+        schemeCode: "",
+        message: "Enter at least one letter or digit"
+      });
+    }
+
+    const query = { schemeCode: slug };
+    if (excludeId) query._id = { $ne: excludeId };
+
+    const existing = await Points.findOne(query).select("_id schemeName").lean();
+
+    res.json({
+      success: true,
+      available: !existing,
+      schemeCode: slug,
+      message: existing
+        ? `Already used${existing.schemeName ? ` by "${existing.schemeName}"` : ""}`
+        : "Available"
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 export {
   addPoints,
   getPoints,
   getPointsStats,
   getPointsByBrand,
   updatePoints,
-  deletePoints
+  deletePoints,
+  checkSchemeCode
 };

@@ -7,10 +7,14 @@ import {
   getPointsStats,
   getPointsByBrand,
   deletePoints,
-  updatePoints
+  updatePoints,
+  checkSchemeCode
 } from "../controllers/pointsController.js";
 
 const router = express.Router();
+
+// NOTE: static segments MUST stay above "/:id" or Express matches them as an id.
+router.get("/check-code", protect, logActivity("Points Management", "Checked scheme code", "READ"), checkSchemeCode);
 
 router.post("/", protect, logActivity("Points Management", "Added points", "CREATE"), addPoints);
 router.get("/", protect, logActivity("Points Management", "Viewed points list", "READ"), getPoints);

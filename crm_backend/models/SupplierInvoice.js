@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { purchaseSchemeBenefitsSchema as supplierInvoiceSchemeBenefitsSchema } from "./purchaseSchemeBenefit.js";
 
 const supplierInvoiceItemSchema = new mongoose.Schema({
   product: {
@@ -394,7 +395,14 @@ const supplierInvoiceSchema = new mongoose.Schema({
   },
   remarks: String,
   supplierInvoiceRef: String, // Supplier's own invoice number for reference
-  internalNotes: String
+  internalNotes: String,
+  // Purchase schemes (the `Points` model) that fired when this invoice was
+  // approved. Written by services/schemeService.js. A record only — it does not
+  // change the invoice totals, the ledger or stock, so it is safe to recompute.
+  purchaseSchemeBenefits: {
+    type: supplierInvoiceSchemeBenefitsSchema,
+    default: () => ({})
+  }
 }, {
   timestamps: true
 });

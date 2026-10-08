@@ -1,3 +1,8 @@
+// `multer` was referenced below but never imported, so this error handler itself
+// threw "ReferenceError: multer is not defined" — turning every upload failure
+// into a confusing 500 instead of the intended message.
+import multer from 'multer';
+
 export const handleUploadErrors = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     // Multer-specific errors

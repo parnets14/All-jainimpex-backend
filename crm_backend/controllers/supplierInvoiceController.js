@@ -8,6 +8,7 @@ import { warehouseSchema } from "../models/Warehouse.js";
 import { assertPeriodOpen, handlePeriodLockError } from "../services/periodLockService.js";
 import { recordUpdate, recordStatusChange } from "../services/auditTrailService.js";
 import { normalizeServiceCharges } from "../utils/serviceChargeUtils.js";
+import schemeService from "../services/schemeService.js";
 import mongoose from "mongoose";
 
 const getModels = (dbConnection) => {
@@ -957,6 +958,68 @@ export const updateSupplierInvoiceStatus = async (req, res) => {
         }
       } catch (ledgerError) {
         console.error("⚠️ Error creating supplier ledger entry on approval:", ledgerError.message);
+      }
+
+      // Auto-Apply Purchase Schemes (the `Points` model / "Purchasing Points" module).
+      // Mirrors the GRN hook: invoice lines carry a `product` ref but no scope, so
+      // the product's brand/category/subcategory is looked up before matching.
+      try {
+        const { Product } = getModels(req.dbConnection);
+        const productIds = (supplierInvoice.items || [])
+          .map((item) => item.product)
+          .filter(Boolean);
+
+        const products = productIds.length > 0
+          ? await Product.find({ _id: { $in: productIds } })
+              .select("brand category subcategory")
+              .lean()
+          : [];
+
+        const scopeByProduct = new Map(
+          products.map((product) => [
+            String(product._id),
+            { brand: product.brand, category: product.category, subcategory: product.subcategory }
+          ])
+        );
+
+        const schemeItems = (supplierInvoice.items || []).map((item) => ({
+          productId: item.product,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          totalPrice: item.totalPrice,
+          ...(scopeByProduct.get(String(item.product)) || {})
+        }));
+
+        const schemeResult = await schemeService.checkAndApplyPurchaseSchemes(
+          req.dbConnection,
+          { items: schemeItems, at: supplierInvoice.invoiceDate || new Date() }
+        );
+
+        supplierInvoice.purchaseSchemeBenefits = {
+          appliedAt: schemeResult.schemes.length > 0 ? new Date() : null,
+          schemes: schemeResult.schemes.map((row) => ({
+            schemeId: row.schemeId,
+            schemeCode: row.schemeCode,
+            schemeName: row.schemeName,
+            slabSeq: row.slabSeq,
+            slabLabel: row.slabLabel,
+            basis: row.basis,
+            measuredValue: row.measuredValue,
+            points: row.points,
+            extraQuantity: row.extraQuantity,
+            discountAmount: row.discountAmount,
+            cashbackAmount: row.cashbackAmount,
+            description: row.description
+          })),
+          totalPoints: schemeResult.totalPoints,
+          totalExtraQuantity: schemeResult.totalExtraQuantity,
+          totalDiscountAmount: schemeResult.totalDiscountAmount,
+          totalCashbackAmount: schemeResult.totalCashbackAmount
+        };
+        await supplierInvoice.save();
+      } catch (schemeError) {
+        // Advisory only — never block an approval on it, but do log it.
+        console.error("⚠️ Purchase scheme auto-apply failed (non-critical):", schemeError.message);
       }
     }
 

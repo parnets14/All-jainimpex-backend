@@ -1176,6 +1176,10 @@ export const getWarehouses = async (req, res) => {
 // Test endpoint to verify stock separation by warehouse
 export const testStockSeparation = async (req, res) => {
   try {
+    // This handler never resolved its models, so Product/GRN below threw
+    // "ReferenceError: X is not defined" on every call.
+    const { Product, GRN } = getModels(req.dbConnection);
+
     console.log(`🧪 [TEST] Testing stock separation by warehouse`);
     
     // Get a sample product
@@ -1295,6 +1299,8 @@ export const forceCreateStockMovements = async (req, res) => {
 
 export const debugProductGRNs = async (req, res) => {
   try {
+    const { Product, GRN } = getModels(req.dbConnection);
+
     const { productId } = req.params;
     console.log(`🔍 [DEBUG] Getting GRN details for product: ${productId}`);
 
@@ -1348,6 +1354,8 @@ export const debugProductGRNs = async (req, res) => {
 // Simple test endpoint to debug GRN structure
 export const testGRNStructure = async (req, res) => {
   try {
+    const { GRN } = getModels(req.dbConnection);
+
     console.log(`🧪 [TEST] Testing GRN structure`);
     
     // Get a single GRN to test
@@ -1533,6 +1541,8 @@ export const debugStockCalculation = async (req, res) => {
 // Debug endpoint to check stock movements for a specific product-warehouse combination
 export const debugStockMovements = async (req, res) => {
   try {
+    const { StockMovement, GRN } = getModels(req.dbConnection);
+
     const { productId, warehouseId } = req.params;
     
     console.log(`🔍 [DEBUG_STOCK_MOVEMENTS] Checking movements for product: ${productId}, warehouse: ${warehouseId}`);
@@ -1626,6 +1636,8 @@ export const debugWarehouses = async (req, res) => {
 // Debug endpoint to check transfer data structure
 export const debugTransfers = async (req, res) => {
   try {
+    const { StockMovement } = getModels(req.dbConnection);
+
     const { limit = 2 } = req.query;
     
     const movements = await StockMovement.find({ referenceType: 'TRANSFER' })

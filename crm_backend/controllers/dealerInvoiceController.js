@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
+import { appliedSchemeIdList } from "../models/appliedScheme.js";
 import { salesOrderSchema } from "../models/SalesOrder.js";
 import { dealerSchema } from "../models/Dealer.js";
 import { productSchema } from "../models/Product.js";
@@ -33,6 +34,10 @@ import {
   resolveDealerExtraDiscountBySpecificity
 } from '../utils/sequentialDiscountPolicy.js';
 import { normalizeServiceCharges } from '../utils/serviceChargeUtils.js';
+import { schemeSchema } from '../models/Scheme.js';
+import { schemeProgressSchema } from '../models/SchemeProgress.js';
+import { schemeApplicationSchema } from '../models/SchemeApplication.js';
+import schemeEngine from '../services/schemeEngine.js';
 
 // Helper function to get models from company-specific connection
 const getModels = (dbConnection) => {
@@ -52,6 +57,9 @@ const getModels = (dbConnection) => {
     User: dbConnection.models.User || dbConnection.model('User', userSchema),
     Region: dbConnection.models.Region || dbConnection.model('Region', regionSchema),
     Warehouse: dbConnection.models.Warehouse || dbConnection.model('Warehouse', warehouseSchema),
+    Scheme: dbConnection.models.Scheme || dbConnection.model('Scheme', schemeSchema),
+    SchemeProgress: dbConnection.models.SchemeProgress || dbConnection.model('SchemeProgress', schemeProgressSchema),
+    SchemeApplication: dbConnection.models.SchemeApplication || dbConnection.model('SchemeApplication', schemeApplicationSchema),
   };
 };
 
@@ -1972,6 +1980,19 @@ export const createDealerInvoice = async (req, res) => {
       createdBy: req.user._id
     };
 
+    // Inherit the salesman's scheme opt-in from the order it was raised against,
+    // so the reward commit at approval honours the same choice. Left ABSENT when
+    // the order carried no gate, which keeps every pre-existing invoice
+    // behaving exactly as it did before this field existed.
+    if (salesOrder && Array.isArray(salesOrder.appliedSchemes)) {
+      invoiceData.appliedSchemes = salesOrder.appliedSchemes.map((row) => ({
+        schemeId: row.schemeId,
+        schemeCode: row.schemeCode || '',
+        schemeName: row.schemeName || '',
+        eligibleAtOrder: Boolean(row.eligibleAtOrder)
+      }));
+    }
+
     // Add customer information if provided
     if (customerInfo) {
       invoiceData.customerName = customerInfo.name || dealer.name;
@@ -2570,6 +2591,213 @@ export const approveDealerInvoice = async (req, res) => {
       session,
       throwOnError: true,
     });
+
+    // ---------------------------------------------------------------------
+    // SCHEME FREEZE — approval is the ONLY moment progress becomes a reward.
+    //
+    // For each slab the dealer has now qualified for:
+    //   - autoAtInvoice rewards (points / extra discount) are applied here and
+    //     written back onto the invoice lines so totals stay truthful;
+    //   - manual rewards (credit note, cashback, gift) are left pending and
+    //     surfaced in the Rewards module for the user to edit and process.
+    //
+    // Runs inside the same transaction: if anything below fails the whole
+    // approval rolls back, so an invoice can never be approved without its
+    // scheme consequences.
+    // ---------------------------------------------------------------------
+    const schemeOutcome = [];
+    try {
+      const schemeLines = (invoice.items || []).map((item) => ({
+        product: item.product,
+        productCode: item.productCode,
+        productName: item.productName,
+        brandName: item.brand,
+        categoryName: item.category,
+        subcategoryName: item.subcategory,
+        // The invoice's own sales type. The ledger block above derives a
+        // Regular/CD/Mixed value, but that `let` is scoped to its try block and is
+        // not visible here. Sales type is deliberately NOT a scheme dimension
+        // (lineMatchesScope ignores it), so the invoice value is enough.
+        salesType: invoice.salesType || item.salesType || '',
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        amount: item.totalPrice
+      }));
+
+      const frozen = await schemeEngine.commitInvoiceAchievements(req.dbConnection, {
+        dealerId: invoice.dealer,
+        invoiceId: invoice._id,
+        documentNumber: invoice.invoiceNumber,
+        lines: schemeLines,
+        at: invoice.invoiceDate || new Date(),
+        session,
+        // Payment-terms dimension: schemes may target "immediate" vs "30 days credit".
+        creditDays: invoice.creditDays ?? null,
+        // The order this invoice came from. A cumulative scheme supersedes the
+        // order's contributions with the invoice's, so the same goods are not
+        // counted twice (order 3 pcs + invoice 3 pcs = 6).
+        salesOrderId: invoice.salesOrder || null,
+        // Opt-in gate inherited from the sales order. null/undefined = no gate
+        // (legacy). An array — even empty — freezes only those schemes.
+        schemeIds: appliedSchemeIdList(invoice.appliedSchemes)
+      });
+
+      if (frozen.length > 0) {
+        console.log(`🎁 Scheme slabs frozen on invoice ${invoice.invoiceNumber}:`,
+          frozen.map((f) => `${f.schemeCode}#${f.slabSeq}(${f.rewardType})`).join(', '));
+      }
+
+      // Create the pending entitlements the Rewards module will present.
+      const { SchemeApplication, SchemeProgress } = getModels(req.dbConnection);
+      const progressRows = await SchemeProgress.find({
+        dealer: invoice.dealer,
+        scheme: { $in: frozen.map((f) => f.schemeId) }
+      }).session(session);
+
+      // Dealer is needed to stamp route/region on each entitlement.
+      const dealerDoc = await Dealer.findById(invoice.dealer)
+        .select('name code routeId routeName regionId regionName')
+        .lean();
+
+      // Sales order carries the split group so reports can trace one intent.
+      const salesOrderDoc = invoice.salesOrder
+        ? await SalesOrder.findById(invoice.salesOrder).select('orderNumber orderGroupId').lean()
+        : null;
+
+      for (const row of frozen) {
+        schemeOutcome.push({
+          schemeId: row.schemeId,
+          schemeCode: row.schemeCode,
+          schemeName: row.schemeName,
+          slabSeq: row.slabSeq,
+          slabLabel: row.slabLabel,
+          product: row.product || null,
+          ladderLabel: row.ladderLabel || '',
+          measuredValue: row.measuredValue,
+          rewardType: row.rewardType,
+          autoApplied: row.autoApplied,
+          reward: row.rewardSnapshot
+        });
+
+        // Auto rewards are already handed over — no manual step needed. But the
+        // points amount still has to reach the invoice so the dealer sees it.
+        if (row.rewardType === 'points' && row.autoApplied) {
+          const pts = Number(row.rewardSnapshot?.points || 0);
+          if (pts > 0) {
+            invoice.totalPoints = Number(invoice.totalPoints || 0) + pts;
+          }
+        }
+
+        if (row.autoApplied) continue;
+
+        // One pending entitlement per scheme+slab+PRODUCT per invoice. Guarded so a
+        // retried approval cannot create duplicates. The product is part of the key
+        // because two per-product ladders can legitimately sit at the same slabSeq.
+        const already = await SchemeApplication.findOne({
+          invoice: invoice._id,
+          scheme: row.schemeId,
+          slabSeq: row.slabSeq,
+          product: row.product || null
+        }).session(session);
+        if (already) continue;
+
+        // A ONE-TIME offer must not mint a second reward for the same dealer.
+        //
+        // The achievement is a single row per ladder (upgraded in place), but
+        // entitlements are created per invoice — so a dealer whose next invoice
+        // lands on the same slab would otherwise be handed the reward again.
+        // `allowRepeat: false` means "one achievement per dealer".
+        if (!row.allowRepeat) {
+          const alreadyIssued = await SchemeApplication.findOne({
+            scheme: row.schemeId,
+            dealer: invoice.dealer,
+            slabSeq: row.slabSeq,
+            product: row.product || null,
+            status: { $nin: ['Rejected', 'Revoked'] }
+          }).session(session);
+          if (alreadyIssued) continue;
+        }
+
+        const progressRow = progressRows.find(
+          (p) => String(p.scheme) === String(row.schemeId)
+        );
+
+        const snapshot = row.rewardSnapshot || {};
+        const application = new SchemeApplication({
+          scheme: row.schemeId,
+          schemeCode: row.schemeCode,
+          schemeName: row.schemeName,
+          dealer: invoice.dealer,
+          dealerName: invoice.dealerName || '',
+          dealerCode: invoice.dealerCode || '',
+          // Denormalised so the register can filter/search by route without a join.
+          route: dealerDoc?.routeId || null,
+          routeName: dealerDoc?.routeName || '',
+          region: invoice.region || dealerDoc?.regionId || null,
+          regionName: invoice.regionName || dealerDoc?.regionName || '',
+          progress: progressRow?._id || null,
+          slabSeq: row.slabSeq,
+          slabLabel: row.slabLabel,
+          product: row.product || null,
+          ladderLabel: row.ladderLabel || '',
+          measuredValue: row.measuredValue,
+          basis: row.basis,
+          detectedReward: snapshot,
+          rewardType: row.rewardType,
+          rewardPoints: Number(snapshot.points || 0),
+          rewardPercentage: Number(snapshot.percentage || 0),
+          rewardAmount: Number(snapshot.amount || 0),
+          rewardFreeItemQuantity: Number(snapshot.freeItemQuantity || 0),
+          rewardFreeItemRule: snapshot.freeItemRule || '',
+          rewardGiftName: snapshot.giftName || '',
+          rewardDescription: snapshot.description || '',
+          status: 'Pending',
+          sourceDocuments: [{
+            documentType: 'DealerInvoice',
+            documentId: invoice._id,
+            documentNumber: invoice.invoiceNumber,
+            amount: invoice.totalAmount,
+            occurredAt: invoice.invoiceDate || new Date()
+          }],
+          invoice: invoice._id,
+          invoiceNumber: invoice.invoiceNumber,
+          salesOrder: invoice.salesOrder || null,
+          orderGroupId: salesOrderDoc?.orderGroupId || null,
+          createdBy: req.user._id
+        });
+        application.editHistory.push({
+          action: 'created',
+          note: `Detected on invoice approval ${invoice.invoiceNumber}. Slab ${row.slabLabel || row.slabSeq}.`,
+          performedBy: req.user._id,
+          performedByName: req.user?.name || '',
+          performedAt: new Date()
+        });
+        await application.save({ session });
+
+        // Mark the achievement as converted so the register's pending filter
+        // shows only what is still owed.
+        if (progressRow) {
+          const achievement = progressRow.achievements.find(
+            (a) => Number(a.slabSeq) === Number(row.slabSeq) && !a.revocationPending
+          );
+          if (achievement) {
+            achievement.redeemed = true;
+            achievement.redeemedAt = new Date();
+            achievement.application = application._id;
+            progressRow.markModified('achievements');
+            await progressRow.save({ session });
+          }
+        }
+      }
+
+      if (invoice.totalPoints) {
+        invoice.markModified('totalPoints');
+        await invoice.save({ session });
+      }
+    } catch (schemeError) {
+      console.error('Error freezing scheme achievements:', schemeError);
+      throw schemeError; // Approval and its scheme consequences are atomic
+    }
 
     // NOW create notifications
     try {

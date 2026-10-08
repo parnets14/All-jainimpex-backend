@@ -1129,6 +1129,10 @@ export const getDealerAdvanceBalance = async (req, res) => {
 // @access  Private
 export const getOverdueInvoices = async (req, res) => {
   try {
+    // This handler never resolved its models, so DealerInvoice below threw
+    // "ReferenceError: DealerInvoice is not defined" on every call.
+    const { DealerInvoice } = getModels(req.dbConnection);
+
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 

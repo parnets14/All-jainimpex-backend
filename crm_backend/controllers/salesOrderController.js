@@ -1,5 +1,9 @@
 // Sales Order Controller - Fixed duplicate function declarations
 import { salesOrderSchema } from "../models/SalesOrder.js";
+import {
+  normalizeAppliedSchemes,
+  appliedSchemeIdList
+} from "../models/appliedScheme.js";
 import { productSchema } from "../models/Product.js";
 import { dealerSchema } from "../models/Dealer.js";
 import { stockMovementSchema } from "../models/Stock.js";
@@ -31,6 +35,7 @@ import {
   isSalesOrderCreditEligibleProduct,
   releaseDealerCreditLease
 } from '../services/dealerCreditService.js';
+import schemeEngine from '../services/schemeEngine.js';
 
 // Helper function to get models from company-specific connection
 const getModels = (dbConnection) => {
@@ -48,6 +53,19 @@ const getModels = (dbConnection) => {
     DealerLedger: dbConnection.models.DealerLedger || dbConnection.model('DealerLedger', dealerLedgerSchema),
   };
 };
+
+/**
+ * Read the salesman's scheme opt-in off the request body.
+ *
+ * `undefined` when the caller never sent the field — keeps the legacy "count
+ * every matching scheme" behaviour. An ARRAY (including an empty one) turns the
+ * gate ON. Shared with the invoice path so both read it identically.
+ */
+const readAppliedSchemes = (body = {}) =>
+  normalizeAppliedSchemes(body.appliedSchemes ?? body.appliedSchemeIds);
+
+/** Scheme ids for the engine gate, or null when no gate was requested. */
+const appliedSchemeIds = appliedSchemeIdList;
 
 const createDiscountPolicyError = (message, code) => {
   const error = new Error(message);
@@ -1259,6 +1277,14 @@ export const createSalesOrder = async (req, res) => {
       stockValidation: stockValidation || []
     });
 
+    // Scheme opt-in from the eligibility panel. Left untouched when the client
+    // did not send it, so the field stays absent and the engine keeps counting
+    // every matching scheme (legacy behaviour).
+    const appliedSelection = readAppliedSchemes(req.body);
+    if (appliedSelection !== undefined) {
+      salesOrder.appliedSchemes = appliedSelection;
+    }
+
     // Initialize stock tracking fields for ALL orders (not just out-of-stock)
     // This ensures stock status is always available for display
     for (const product of validatedProducts) {
@@ -1364,12 +1390,48 @@ export const createSalesOrder = async (req, res) => {
       .populate("products.warehouse", "name")
       .populate("createdBy", "name email");
 
+    // ADVISORY scheme progress (same contract as the auto-split path).
+    let schemePreview = { schemes: [] };
+    try {
+      const schemeLines = (salesOrder.products || []).map((p) => ({
+        product: p.product,
+        productCode: p.productCode,
+        productName: p.productName || p.name,
+        brandName: p.brandName,
+        categoryName: p.categoryName,
+        subcategoryName: p.subcategoryName,
+        salesType: salesOrder.salesType,
+        quantity: p.quantity,
+        unitPrice: p.unitPrice,
+        amount: p.totalPrice ?? (Number(p.unitPrice || 0) * Number(p.quantity || 0))
+      }));
+
+      await schemeEngine.recordOrderContributions(req.dbConnection, {
+        dealerId: salesOrder.dealer,
+        orderId: salesOrder._id,
+        documentNumber: salesOrder.orderNumber,
+        orderGroupId: salesOrder.orderGroupId,
+        lines: schemeLines,
+        schemeIds: appliedSchemeIds(appliedSelection)
+      });
+
+      schemePreview = await schemeEngine.previewSchemesForLines(req.dbConnection, {
+        dealerId: salesOrder.dealer,
+        lines: schemeLines,
+        // Payment-terms dimension (item #11).
+        paymentTerms: salesOrder.creditDays ?? null
+      });
+    } catch (schemeError) {
+      console.error("⚠️ Scheme progress recording failed (non-critical):", schemeError.message);
+    }
+
     res.status(201).json({
       success: true,
       message: isOutOfStock ?
         "Out-of-stock sales order created successfully. Status is locked to Pending until stock is available." :
         "Sales order created successfully",
-      salesOrder: populatedOrder
+      salesOrder: populatedOrder,
+      schemePreview
     });
 
     // Persist the in-app notification even when the dealer has no push token.
@@ -2435,6 +2497,14 @@ const updateSalesOrderUnlocked = async (req, res) => {
     delete req.body.discountAmount;
     delete req.body.totalAmount;
 
+    // Scheme opt-in is decided once, on the create screen, and the order's
+    // progress contributions were written against that choice. A generic edit
+    // must not move it: the contributions are not recomputed here, so accepting
+    // a new selection would leave the stored progress disagreeing with the
+    // order's own gate. Changing it means recreating the order.
+    delete req.body.appliedSchemes;
+    delete req.body.appliedSchemeIds;
+
     const unsafeUpdateKey = Object.keys(req.body).find(
       (key) => key.startsWith('$') || key.includes('.')
     );
@@ -3390,7 +3460,10 @@ export const getSalesOrderStats = async (req, res) => {
 export const getSalesOrdersByDealer = async (req, res) => {
   try {
     // Get models from company-specific connection
-    const { SalesOrder } = getModels(req.dbConnection);
+    // `Dealer` is needed below for the existence check — it used to be missing
+    // from this destructure, so this endpoint threw
+    // "ReferenceError: Dealer is not defined" on every call.
+    const { SalesOrder, Dealer } = getModels(req.dbConnection);
 
     const { dealerId } = req.params;
     const { page = 1, limit = 10, status } = req.query;
@@ -3656,7 +3729,8 @@ export async function createSingleSalesOrder(dbConnection, orderData, userId, co
     isOutOfStock,
     stockValidation,
     salesType, // NEW: 'Regular Sale' or 'CD Sales'
-    creditDaysApplied // NEW: Actual credit days applied
+    creditDaysApplied, // NEW: Actual credit days applied
+    orderGroupId // NEW: correlates split siblings from one user action
   } = orderData;
 
   // Generate unique order number
@@ -3826,6 +3900,7 @@ export async function createSingleSalesOrder(dbConnection, orderData, userId, co
   // Create sales order
   const salesOrder = new SalesOrder({
     orderNumber,
+    orderGroupId, // NEW: set by the auto-split caller; pre-save defaults it to orderNumber
     dealer,
     dealerName: dealerData.name,
     dealerCode: dealerData.code,
@@ -3868,6 +3943,17 @@ export async function createSingleSalesOrder(dbConnection, orderData, userId, co
       lastChecked: new Date()
     }
   });
+
+  // Scheme opt-in from the eligibility panel (same contract as createSalesOrder).
+  //
+  // Read from `orderData`, NOT `req` — this helper is called from
+  // createSalesOrderWithAutoSplit (which passes orderData, userId and company
+  // explicitly) and has no `req` in scope. `orderData` is built by spreading
+  // req.body minus dealer/products, so the selection arrives intact.
+  const appliedSelection = readAppliedSchemes(orderData);
+  if (appliedSelection !== undefined) {
+    salesOrder.appliedSchemes = appliedSelection;
+  }
 
   // Automatically set 15-day expiry for Pending orders
   if (salesOrder.status === "Pending") {
@@ -3960,6 +4046,12 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
 
     const { dealer, products, ...orderData } = req.body;
 
+    // Scheme opt-in from the eligibility panel, read ONCE here and reused below.
+    // `orderData` is req.body minus dealer/products, so the selection is intact;
+    // it is also what createSingleSalesOrder reads, so both halves of the split
+    // persist the same gate.
+    const appliedSelection = readAppliedSchemes(orderData);
+
     // Validate dealer exists
     const dealerData = await Dealer.findById(dealer);
     if (!dealerData) {
@@ -4017,6 +4109,11 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
 
     const createdOrders = [];
 
+    // One user action → one group. Both split siblings share this id so scheme
+    // progress and reporting can be traced back to the single dealer intent.
+    const orderGroupId = `SOG-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+    console.log("🔗 Order group id:", orderGroupId);
+
     // Create Regular Sales Order if there are regular products
     if (regularProducts.length > 0) {
       console.log("\n📝 Creating Regular Sales Order...");
@@ -4026,7 +4123,8 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
         products: regularProducts,
         salesType: 'Regular Sale',
         creditDays: dealerData.creditDaysRegular || dealerData.creditDays || 30,
-        creditDaysApplied: dealerData.creditDaysRegular || dealerData.creditDays || 30
+        creditDaysApplied: dealerData.creditDaysRegular || dealerData.creditDays || 30,
+        orderGroupId
       };
 
       const regularOrder = await createSingleSalesOrder(
@@ -4048,7 +4146,8 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
         products: cdProducts,
         salesType: 'CD Sales',
         creditDays: dealerData.creditDaysCD || dealerData.creditDays || 30,
-        creditDaysApplied: dealerData.creditDaysCD || dealerData.creditDays || 30
+        creditDaysApplied: dealerData.creditDaysCD || dealerData.creditDays || 30,
+        orderGroupId
       };
 
       const cdOrder = await createSingleSalesOrder(
@@ -4067,13 +4166,70 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
         success: false,
         message: "No products to create order"
       });
-    } else if (createdOrders.length === 1) {
+    }
+
+    // ADVISORY scheme progress. Recorded after the orders exist so splitting,
+    // CD/Regular and out-of-stock never distort the dealer's running total.
+    // Writes progress buckets only — no slab is crossed, nothing is handed over.
+    let schemePreview = { schemes: [] };
+    try {
+      const schemeLines = createdOrders.flatMap((order) =>
+        (order.products || []).map((p) => ({
+          product: p.product,
+          productCode: p.productCode,
+          productName: p.productName || p.name,
+          brandName: p.brandName,
+          categoryName: p.categoryName,
+          subcategoryName: p.subcategoryName,
+          salesType: order.salesType,
+          quantity: p.quantity,
+          unitPrice: p.unitPrice,
+          amount: p.totalPrice ?? (Number(p.unitPrice || 0) * Number(p.quantity || 0))
+        }))
+      );
+
+      for (const order of createdOrders) {
+        await schemeEngine.recordOrderContributions(req.dbConnection, {
+          dealerId: dealer,
+          orderId: order._id,
+          documentNumber: order.orderNumber,
+          orderGroupId: order.orderGroupId,
+          lines: (order.products || []).map((p) => ({
+            product: p.product,
+            productCode: p.productCode,
+            productName: p.productName || p.name,
+            brandName: p.brandName,
+            categoryName: p.categoryName,
+            subcategoryName: p.subcategoryName,
+            salesType: order.salesType,
+            quantity: p.quantity,
+            unitPrice: p.unitPrice,
+            amount: p.totalPrice ?? (Number(p.unitPrice || 0) * Number(p.quantity || 0))
+          })),
+          schemeIds: appliedSchemeIds(appliedSelection)
+        });
+      }
+
+      schemePreview = await schemeEngine.previewSchemesForLines(req.dbConnection, {
+        dealerId: dealer,
+        lines: schemeLines,
+        // Payment-terms dimension (item #11).
+        paymentTerms: dealerData.creditDaysRegular || dealerData.creditDays || 30
+      });
+      console.log("🎁 Scheme schemes matched:", schemePreview.schemes.length);
+    } catch (schemeError) {
+      // Scheme progress is advisory on the order screen — never fail the order.
+      console.error("⚠️ Scheme progress recording failed (non-critical):", schemeError.message);
+    }
+
+    if (createdOrders.length === 1) {
       console.log("\n✅ Single order created successfully");
       res.status(201).json({
         success: true,
         message: "Sales order created successfully",
         salesOrder: createdOrders[0],
-        isSplit: false
+        isSplit: false,
+        schemePreview
       });
     } else {
       console.log("\n✅ Orders split successfully - 2 orders created");
@@ -4082,8 +4238,10 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
         message: "Orders created successfully! Your order was split into Regular and CD Sales orders.",
         salesOrders: createdOrders,
         isSplit: true,
+        orderGroupId,
         regularOrder: createdOrders.find(o => o.salesType === 'Regular Sale'),
-        cdOrder: createdOrders.find(o => o.salesType === 'CD Sales')
+        cdOrder: createdOrders.find(o => o.salesType === 'CD Sales'),
+        schemePreview
       });
     }
 
@@ -4991,6 +5149,10 @@ export const refreshOrderStockStatus = async (req, res) => {
 // @access  Private
 export const refreshOrderStockStatusByOrderNumber = async (req, res) => {
   try {
+    // This handler never resolved its models at all, so `SalesOrder.findOne`
+    // threw "ReferenceError: SalesOrder is not defined" on every call.
+    const { SalesOrder } = getModels(req.dbConnection);
+
     const { orderNumber } = req.params;
 
     // Find order by order number
@@ -5469,6 +5631,9 @@ export const partialDispatch = async (req, res) => {
       };
       newOrder = new SalesOrder({
         orderNumber,
+        // The remainder belongs to the same group as the order it was split from,
+        // so the pair is always visible as one dealer intent.
+        orderGroupId: salesOrder.orderGroupId || salesOrder.orderNumber,
         dealer: salesOrder.dealer,
         dealerName: salesOrder.dealerName,
         dealerCode: salesOrder.dealerCode,

@@ -689,30 +689,71 @@ export const inspectGRN = async (req, res) => {
       } catch (e) { /* non-critical */ }
     }
 
-    // Auto-Apply Purchase Schemes
+    // Auto-Apply Purchase Schemes (the `Points` model / "Purchasing Points" module).
+    //
+    // A GRN line only carries a productId, but a scheme's scope IS the
+    // brand + category + subcategory triple, so the products have to be looked
+    // up before anything can match. Without this the matcher saw no scope at all
+    // and every scheme was skipped.
     try {
-      const schemeData = {
-        supplierId: grn.supplierId,
-        items: grn.items.map(item => ({
-          productId: item.productId,
-          acceptedQuantity: item.acceptedQuantity,
-          unitPrice: item.unitPrice,
-          totalPrice: item.totalPrice
+      const { Product } = getModels(req.dbConnection);
+      const productIds = grn.items.map((item) => item.productId).filter(Boolean);
+
+      const products = productIds.length > 0
+        ? await Product.find({ _id: { $in: productIds } })
+            .select('brand category subcategory')
+            .lean()
+            .session(session)
+        : [];
+
+      const scopeByProduct = new Map(
+        products.map((product) => [
+          String(product._id),
+          { brand: product.brand, category: product.category, subcategory: product.subcategory }
+        ])
+      );
+
+      const schemeItems = grn.items.map((item) => ({
+        productId: item.productId,
+        acceptedQuantity: item.acceptedQuantity,
+        unitPrice: item.unitPrice,
+        totalPrice: item.totalPrice,
+        ...(scopeByProduct.get(String(item.productId)) || {})
+      }));
+
+      const schemeResult = await schemeService.checkAndApplyPurchaseSchemesForGRN(
+        req.dbConnection,
+        { items: schemeItems, at: grn.inspectedAt || new Date() }
+      );
+
+      grn.purchaseSchemeBenefits = {
+        appliedAt: schemeResult.schemes.length > 0 ? new Date() : null,
+        schemes: schemeResult.schemes.map((row) => ({
+          schemeId: row.schemeId,
+          schemeCode: row.schemeCode,
+          schemeName: row.schemeName,
+          slabSeq: row.slabSeq,
+          slabLabel: row.slabLabel,
+          basis: row.basis,
+          measuredValue: row.measuredValue,
+          points: row.points,
+          extraQuantity: row.extraQuantity,
+          discountAmount: row.discountAmount,
+          cashbackAmount: row.cashbackAmount,
+          description: row.description
         })),
-        totalAmount: grn.totalAmount,
-        grnDate: new Date().toISOString()
+        totalPoints: schemeResult.totalPoints,
+        totalExtraQuantity: schemeResult.totalExtraQuantity,
+        totalDiscountAmount: schemeResult.totalDiscountAmount,
+        totalCashbackAmount: schemeResult.totalCashbackAmount
       };
-      const schemeResult = await schemeService.checkAndApplyPurchaseSchemesForGRN(schemeData);
-      if (schemeResult.appliedSchemes.length > 0) {
-        await schemeService.logSchemeApplication({
-          grnId: grn._id,
-          supplierId: grn.supplierId,
-          appliedSchemes: schemeResult.appliedSchemes,
-          totalBenefits: schemeResult.totalBenefits,
-          appliedAt: new Date().toISOString()
-        });
-      }
-    } catch (e) { /* non-critical */ }
+      await grn.save({ session });
+    } catch (e) {
+      // Purchase schemes are advisory — never block a goods receipt on them.
+      // But DO surface the failure: the previous silent catch is exactly why
+      // this path was dead for so long without anyone noticing.
+      console.error('Purchase scheme auto-apply failed (non-critical):', e.message);
+    }
 
     await session.commitTransaction();
 
@@ -1099,6 +1140,11 @@ export const updateGRN = async (req, res) => {
     // Remove fields that shouldn't be changed via edit
     delete updateData.inspectedBy;
     delete updateData.inspectedAt;
+
+    // Scheme benefits are written only by the engine at inspection time.
+    // Clearing them on a Draft edit keeps the field server-owned rather than
+    // letting a client post an arbitrary payout onto the document.
+    delete updateData.purchaseSchemeBenefits;
 
     // Recalculate totalAmount if items are updated
     if (updateData.items && Array.isArray(updateData.items)) {

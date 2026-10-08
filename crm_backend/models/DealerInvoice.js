@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { appliedSchemeSchema } from "./appliedScheme.js";
 import {
   calculateDiscountLine,
   calculateOneTimeInvoicePriceIncrease
@@ -440,6 +441,18 @@ const dealerInvoiceSchema = new mongoose.Schema({
       orientation: 'portrait', // portrait, landscape
       showImages: false
     }
+  },
+  /**
+   * Schemes the salesman opted to give, inherited from the Sales Order this
+   * invoice was raised against.
+   *
+   * `default: undefined` keeps the field ABSENT when nothing was chosen, which
+   * the engine reads as "no gate". An ARRAY (including empty) restricts the
+   * reward commit to exactly those schemes.
+   */
+  appliedSchemes: {
+    type: [appliedSchemeSchema],
+    default: undefined
   }
 }, {
   timestamps: true
