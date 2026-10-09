@@ -171,6 +171,15 @@ const productSchema = new mongoose.Schema({
   stockCheckedAt: {
     type: Date,
     default: null
+  },
+  isSchemeFreeItem: {
+    type: Boolean,
+    default: false
+  },
+  schemeCode: {
+    type: String,
+    default: '',
+    trim: true
   }
 });
 

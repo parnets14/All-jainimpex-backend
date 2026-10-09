@@ -197,7 +197,16 @@ const invoiceItemSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: "Warehouse"
   },
-  warehouseName: String
+  warehouseName: String,
+  isSchemeFreeItem: {
+    type: Boolean,
+    default: false
+  },
+  schemeCode: {
+    type: String,
+    default: '',
+    trim: true
+  }
 });
 
 const dealerInvoiceSchema = new mongoose.Schema({

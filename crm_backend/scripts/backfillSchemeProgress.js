@@ -83,7 +83,9 @@ const linesFromInvoice = (invoice) => (invoice.items || []).map((item) => ({
   salesType: invoice.salesType || item.salesType,
   quantity: item.quantity,
   unitPrice: item.unitPrice,
-  amount: item.totalPrice
+  amount: item.totalPrice,
+  isSchemeFreeItem: Boolean(item.isSchemeFreeItem),
+  schemeCode: item.schemeCode || ''
 }));
 
 /**

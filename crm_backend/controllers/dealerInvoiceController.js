@@ -489,6 +489,28 @@ const canonicalizeInvoiceItems = async ({
       );
     }
 
+    if (submittedItem.isSchemeFreeItem || sourceLine?.isSchemeFreeItem) {
+      return {
+        ...submittedItem,
+        _id: sourceLine?._id || submittedItem._id,
+        sourceSalesOrderLineId: sourceLine?._id || null,
+        product: product._id,
+        unitPrice: 0,
+        mrp: 0,
+        productCode: sourceLine?.productCode || product.productCode,
+        productName: sourceLine?.productName || product.itemName,
+        HSNCode: sourceLine?.HSNCode || product.HSNCode,
+        quantity: Number(submittedItem.quantity || sourceLine?.quantity || 1),
+        gst: 0,
+        gstAmount: 0,
+        discountPercentage: 0,
+        discountAmount: 0,
+        totalPrice: 0,
+        isSchemeFreeItem: true,
+        schemeCode: submittedItem.schemeCode || sourceLine?.schemeCode || null
+      };
+    }
+
     if (sourceLine) {
       if (haveDiscountDrivingFieldsChanged(submittedItem, sourceLine)) {
         throw createDiscountPolicyError(
@@ -2621,7 +2643,11 @@ export const approveDealerInvoice = async (req, res) => {
         salesType: invoice.salesType || item.salesType || '',
         quantity: item.quantity,
         unitPrice: item.unitPrice,
-        amount: item.totalPrice
+        amount: item.totalPrice,
+        // A scheme-granted free item must not count as a purchase. The engine
+        // filters on this flag, so it has to survive this mapper.
+        isSchemeFreeItem: Boolean(item.isSchemeFreeItem),
+        schemeCode: item.schemeCode || ''
       }));
 
       const frozen = await schemeEngine.commitInvoiceAchievements(req.dbConnection, {
@@ -2639,7 +2665,8 @@ export const approveDealerInvoice = async (req, res) => {
         salesOrderId: invoice.salesOrder || null,
         // Opt-in gate inherited from the sales order. null/undefined = no gate
         // (legacy). An array — even empty — freezes only those schemes.
-        schemeIds: appliedSchemeIdList(invoice.appliedSchemes)
+        schemeIds: appliedSchemeIdList(invoice.appliedSchemes),
+        freeItemResolver: schemeEngine.resolveFreeItemProduct
       });
 
       if (frozen.length > 0) {
@@ -2661,7 +2688,7 @@ export const approveDealerInvoice = async (req, res) => {
 
       // Sales order carries the split group so reports can trace one intent.
       const salesOrderDoc = invoice.salesOrder
-        ? await SalesOrder.findById(invoice.salesOrder).select('orderNumber orderGroupId').lean()
+        ? await SalesOrder.findById(invoice.salesOrder).select('orderNumber orderGroupId appliedSchemes').lean()
         : null;
 
       for (const row of frozen) {
@@ -2688,7 +2715,26 @@ export const approveDealerInvoice = async (req, res) => {
           }
         }
 
-        if (row.autoApplied) continue;
+        // Extra discount applied automatically at invoice
+        if (row.rewardType === 'discount' && row.autoApplied) {
+          const disc = Number(row.rewardSnapshot?.amount || 0);
+          if (disc > 0) {
+            invoice.totalDiscount = Number(invoice.totalDiscount || 0) + disc;
+            invoice.totalAmount = Math.max(0, Number(invoice.totalAmount || 0) - disc);
+            invoice.grandTotal = Math.max(0, Number(invoice.grandTotal || 0) - disc);
+          }
+        }
+
+        const freeItemGivenOnOrder = (invoice.items || []).some(
+          (it) => it.isSchemeFreeItem && it.schemeCode === row.schemeCode
+        ) || (salesOrderDoc?.appliedSchemes || []).some(
+          // The applied-scheme row carries `schemeId`, not `scheme` — reading the
+          // wrong key made this half of the test permanently false.
+          (s) => (s.schemeCode === row.schemeCode || String(s.schemeId) === String(row.schemeId))
+            && s.freeItemAction === 'now'
+        );
+
+        if (row.autoApplied && row.rewardType !== 'freeItem') continue;
 
         // One pending entitlement per scheme+slab+PRODUCT per invoice. Guarded so a
         // retried approval cannot create duplicates. The product is part of the key
@@ -2723,6 +2769,9 @@ export const approveDealerInvoice = async (req, res) => {
         );
 
         const snapshot = row.rewardSnapshot || {};
+        const freeItemInfo = row.entitlement?.freeItem || row.resolvedFreeItem || {};
+        const isFreeItemNow = row.rewardType === 'freeItem' && freeItemGivenOnOrder;
+
         const application = new SchemeApplication({
           scheme: row.schemeId,
           schemeCode: row.schemeCode,
@@ -2742,16 +2791,23 @@ export const approveDealerInvoice = async (req, res) => {
           ladderLabel: row.ladderLabel || '',
           measuredValue: row.measuredValue,
           basis: row.basis,
-          detectedReward: snapshot,
+          detectedReward: {
+            ...snapshot,
+            freeItemProduct: freeItemInfo.productId || null
+          },
           rewardType: row.rewardType,
           rewardPoints: Number(snapshot.points || 0),
           rewardPercentage: Number(snapshot.percentage || 0),
           rewardAmount: Number(snapshot.amount || 0),
           rewardFreeItemQuantity: Number(snapshot.freeItemQuantity || 0),
           rewardFreeItemRule: snapshot.freeItemRule || '',
+          rewardFreeItemProduct: freeItemInfo.productId || null,
+          rewardFreeItemProductName: freeItemInfo.productName || '',
           rewardGiftName: snapshot.giftName || '',
           rewardDescription: snapshot.description || '',
-          status: 'Pending',
+          status: isFreeItemNow ? 'Given' : 'Pending',
+          givenQuantity: isFreeItemNow ? Number(snapshot.freeItemQuantity || 0) : 0,
+          remarks: isFreeItemNow ? 'Free item fulfilled directly on Sales Order / Invoice' : '',
           sourceDocuments: [{
             documentType: 'DealerInvoice',
             documentId: invoice._id,
@@ -2766,8 +2822,10 @@ export const approveDealerInvoice = async (req, res) => {
           createdBy: req.user._id
         });
         application.editHistory.push({
-          action: 'created',
-          note: `Detected on invoice approval ${invoice.invoiceNumber}. Slab ${row.slabLabel || row.slabSeq}.`,
+          action: isFreeItemNow ? 'processed' : 'created',
+          note: isFreeItemNow
+            ? `Free product delivered on order/invoice ${invoice.invoiceNumber}. Slab ${row.slabLabel || row.slabSeq}.`
+            : `Detected on invoice approval ${invoice.invoiceNumber}. Slab ${row.slabLabel || row.slabSeq}.`,
           performedBy: req.user._id,
           performedByName: req.user?.name || '',
           performedAt: new Date()

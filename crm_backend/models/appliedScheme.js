@@ -22,14 +22,16 @@ export const appliedSchemeSchema = new mongoose.Schema({
   // Whether the document alone already crossed the slab when it was saved.
   // Informational only: a scheme may be ticked while still in progress, because
   // a cumulative offer (buy 10 get 1 free) completes across several orders.
-  eligibleAtOrder: { type: Boolean, default: false }
+  eligibleAtOrder: { type: Boolean, default: false },
+  // For free item rewards: 'now' (added on this order directly) or 'later' (pending in Schemes & Rewards).
+  freeItemAction: { type: String, enum: ['now', 'later'], default: 'later' }
 }, { _id: false });
 
 /**
  * Normalise whatever the client posted into rows this schema accepts.
  *
  * Accepts a list of ids (`["<id>"]`) or the richer rows the eligibility panel
- * sends (`[{ schemeId, schemeCode, schemeName, eligibleAtOrder }]`).
+ * sends (`[{ schemeId, schemeCode, schemeName, eligibleAtOrder, freeItemAction }]`).
  * Returns `undefined` when the client sent nothing, so the caller can leave the
  * field absent and preserve the legacy no-gate behaviour.
  */
@@ -39,14 +41,15 @@ export const normalizeAppliedSchemes = (raw) => {
   const rows = raw
     .map((row) => {
       if (typeof row === 'string') {
-        return { schemeId: row, schemeCode: '', schemeName: '', eligibleAtOrder: false };
+        return { schemeId: row, schemeCode: '', schemeName: '', eligibleAtOrder: false, freeItemAction: 'later' };
       }
       if (row && typeof row === 'object' && row.schemeId) {
         return {
           schemeId: row.schemeId,
           schemeCode: row.schemeCode || '',
           schemeName: row.schemeName || '',
-          eligibleAtOrder: Boolean(row.eligibleAtOrder)
+          eligibleAtOrder: Boolean(row.eligibleAtOrder),
+          freeItemAction: row.freeItemAction === 'now' ? 'now' : 'later'
         };
       }
       return null;

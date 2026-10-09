@@ -795,7 +795,11 @@ export const processEntitlement = async (req, res) => {
 
       // Amount actually handed over. Partial redemption gives half unless the
       // caller supplied explicit values.
-      const fullAmount = Number(application.rewardAmount || 0);
+      let fullAmount = Number(application.rewardAmount || 0);
+      if (fullAmount === 0 && Number(application.rewardPercentage || 0) > 0 && Number(application.measuredValue || 0) > 0) {
+        fullAmount = Math.round(((Number(application.measuredValue) * Number(application.rewardPercentage)) / 100) * 100) / 100;
+        application.rewardAmount = fullAmount;
+      }
       const giveAmount = partial
         ? Number(req.body.giveAmount ?? fullAmount / 2)
         : fullAmount;

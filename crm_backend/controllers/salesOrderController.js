@@ -1403,7 +1403,12 @@ export const createSalesOrder = async (req, res) => {
         salesType: salesOrder.salesType,
         quantity: p.quantity,
         unitPrice: p.unitPrice,
-        amount: p.totalPrice ?? (Number(p.unitPrice || 0) * Number(p.quantity || 0))
+        amount: p.totalPrice ?? (Number(p.unitPrice || 0) * Number(p.quantity || 0)),
+        // Carry the free-item flag through: the engine excludes these from the
+        // qualifying lines, so dropping it here would make a scheme-granted free
+        // item count as a purchase.
+        isSchemeFreeItem: Boolean(p.isSchemeFreeItem),
+        schemeCode: p.schemeCode || ''
       }));
 
       await schemeEngine.recordOrderContributions(req.dbConnection, {
@@ -4184,7 +4189,11 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
           salesType: order.salesType,
           quantity: p.quantity,
           unitPrice: p.unitPrice,
-          amount: p.totalPrice ?? (Number(p.unitPrice || 0) * Number(p.quantity || 0))
+          amount: p.totalPrice ?? (Number(p.unitPrice || 0) * Number(p.quantity || 0)),
+          // See the createSalesOrder path — a scheme-granted free item must not
+          // count as a purchase.
+          isSchemeFreeItem: Boolean(p.isSchemeFreeItem),
+          schemeCode: p.schemeCode || ''
         }))
       );
 

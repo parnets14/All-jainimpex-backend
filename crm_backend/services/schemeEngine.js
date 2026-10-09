@@ -65,6 +65,13 @@ export const normalizeLine = (line = {}) => {
       ? line.subcategory
       : (product.subcategory?.name || ''),
     salesType: line.salesType || product.salesType || '',
+    // A free item granted BY a scheme must never count as a purchase towards any
+    // scheme. `evaluateSchemes` filters on this flag, but this function rebuilds
+    // the line from an explicit field list — so omitting it here silently made
+    // that filter a no-op, and the freebie inflated the dealer's measured total
+    // (order of 10 + its own 1 free item measured 11, drifting every slab).
+    isSchemeFreeItem: Boolean(line.isSchemeFreeItem),
+    schemeCode: line.schemeCode || product.schemeCode || '',
     quantity: toNumber(line.quantity),
     unitPrice: toNumber(line.unitPrice || line.mrp),
     amount: toNumber(line.amount ?? (toNumber(line.quantity) * toNumber(line.unitPrice || line.mrp)))
@@ -416,6 +423,56 @@ export const rewardHasValue = (reward = {}) =>
   || Boolean(reward.giftName && String(reward.giftName).trim());
 
 /**
+ * Computes the scaled reward taking allowRepeat into account and converting
+ * percentage rewards to their monetary equivalent.
+ *
+ * `measuredValue` is in the scheme's BASIS units — pieces for a quantity scheme,
+ * rupees for an amount scheme. A percentage is only meaningful against money, so
+ * on a quantity scheme it must be applied to `monetaryValue` (the rupee value of
+ * the qualifying goods) instead. Without this, "buy 20 pcs get 5%" paid
+ * 20 × 5% = ₹1 instead of 5% of the ₹2,000 of goods = ₹100.
+ *
+ * When no `monetaryValue` is supplied the basis is assumed to already be money,
+ * which preserves the amount-scheme behaviour exactly.
+ */
+export const computeScaledReward = (reward = {}, {
+  allowRepeat = false,
+  slabFrom = 0,
+  measuredValue = 0,
+  basis = 'amount',
+  monetaryValue = 0
+} = {}) => {
+  const multiplier = (allowRepeat && Number(slabFrom) > 0)
+    ? Math.max(1, Math.floor(toNumber(measuredValue) / Number(slabFrom)))
+    : 1;
+
+  const basePoints = toNumber(reward.points);
+  const baseQty = toNumber(reward.freeItemQuantity);
+  const baseAmount = toNumber(reward.amount);
+  const percentage = toNumber(reward.percentage);
+
+  let totalAmount = baseAmount * multiplier;
+  if (percentage > 0) {
+    const pctBase = (basis === 'quantity' && toNumber(monetaryValue) > 0)
+      ? toNumber(monetaryValue)
+      : toNumber(measuredValue);
+    if (pctBase > 0) {
+      totalAmount += Math.round(((pctBase * percentage) / 100) * 100) / 100;
+    }
+  }
+
+  return {
+    ...reward,
+    multiplier,
+    points: basePoints * multiplier,
+    freeItemQuantity: baseQty * multiplier,
+    amount: totalAmount,
+    baseAmount: baseAmount * multiplier,
+    percentage
+  };
+};
+
+/**
  * The measured value for a set of lines under a scheme's basis.
  */
 export const measureLines = (lines = [], basis = 'quantity') => {
@@ -453,7 +510,7 @@ export const evaluateSchemes = ({
     if (scheme.appliesTo && scheme.appliesTo !== 'dealer') continue;
     if (!dealerMatchesScope(dealer, scheme.dealerScope || {})) continue;
 
-    const qualifyingLines = normalizedLines.filter((line) => lineMatchesScope(line, scheme.scope || {}));
+    const qualifyingLines = normalizedLines.filter((line) => !line.isSchemeFreeItem && lineMatchesScope(line, scheme.scope || {}));
     if (qualifyingLines.length === 0) continue;
 
     const basis = scheme.condition?.basis || 'quantity';
@@ -552,7 +609,7 @@ export const loadCandidateSchemes = async (dbConnection, { appliesTo = 'dealer',
     .populate('scope.brand', 'name')
     .populate('scope.category', 'name')
     .populate('scope.subcategory', 'name')
-    .populate('scope.brand', 'name')
+    .populate('slabs.reward.freeItemProduct', 'itemName productCode mrp unitPrice')
     .lean();
 };
 
@@ -626,7 +683,14 @@ export const previewSchemesForLines = async (dbConnection, { dealerId, lines = [
           label: entry.slab.label,
           from: entry.slab.from,
           to: entry.slab.to,
-          reward: entry.slab.reward
+          reward: computeScaledReward(entry.slab.reward, {
+            allowRepeat: entry.scheme.allowRepeat,
+            slabFrom: entry.slab.from,
+            measuredValue: entry.measuredValue,
+            basis: entry.basis,
+            monetaryValue: measureLines(entry.qualifyingLines, 'amount')
+          }),
+          freeItem: resolveFreeItemProduct(entry.slab, entry.qualifyingLines)
         }
         : null,
       nextSlab: entry.nextSlab
@@ -653,7 +717,17 @@ export const previewSchemesForLines = async (dbConnection, { dealerId, lines = [
             label: p.slab.label,
             from: p.slab.from,
             to: p.slab.to,
-            reward: p.slab.reward
+            reward: computeScaledReward(p.slab.reward, {
+              allowRepeat: entry.scheme.allowRepeat,
+              slabFrom: p.slab.from,
+              measuredValue: p.measuredValue,
+              basis: entry.basis,
+              monetaryValue: measureLines(
+                entry.qualifyingLines.filter((l) => toId(l.productId) === toId(p.product)),
+                'amount'
+              )
+            }),
+            freeItem: resolveFreeItemProduct(p.slab, entry.qualifyingLines.filter((l) => toId(l.productId) === toId(p.product)))
           }
           : null,
         nextSlab: p.nextSlab
@@ -723,15 +797,17 @@ export const buildContribution = ({
  *   specificProduct -> the configured product
  */
 export const resolveFreeItemProduct = (slab, qualifyingLines = []) => {
-  const reward = slab?.reward || {};
+  const reward = slab?.reward || slab?.rewardSnapshot || slab || {};
   const rule = reward.freeItemRule || 'sameProduct';
 
   if (rule === 'specificProduct' && reward.freeItemProduct) {
     const match = qualifyingLines.find((l) => l.productId === toId(reward.freeItemProduct));
+    const prodObj = (reward.freeItemProduct && typeof reward.freeItemProduct === 'object') ? reward.freeItemProduct : null;
     return {
       productId: toId(reward.freeItemProduct),
-      productName: match?.productName || '',
-      unitPrice: match?.unitPrice ?? 0,
+      productName: match?.productName || prodObj?.itemName || prodObj?.name || '',
+      productCode: match?.productCode || prodObj?.productCode || '',
+      unitPrice: match?.unitPrice ?? prodObj?.mrp ?? prodObj?.unitPrice ?? 0,
       rule
     };
   }
@@ -745,6 +821,7 @@ export const resolveFreeItemProduct = (slab, qualifyingLines = []) => {
     return {
       productId: cheapest.productId,
       productName: cheapest.productName,
+      productCode: cheapest.productCode || '',
       unitPrice: cheapest.unitPrice,
       rule
     };
@@ -756,6 +833,7 @@ export const resolveFreeItemProduct = (slab, qualifyingLines = []) => {
   return {
     productId: dearest.productId,
     productName: dearest.productName,
+    productCode: dearest.productCode || '',
     unitPrice: dearest.unitPrice,
     rule
   };
@@ -1037,7 +1115,11 @@ export const commitInvoiceAchievements = async (dbConnection, {
         slab: entry.slab,
         product: null,
         ladderLabel: '',
-        measuredValue: entry.measuredValue
+        measuredValue: entry.measuredValue,
+        // Rupee value of the goods this ladder was measured on. Needed because a
+        // percentage reward is meaningless against a PIECE count — see
+        // computeScaledReward.
+        monetaryValue: measureLines(entry.qualifyingLines, 'amount')
       });
     }
     for (const hit of entry.productSlabHits || []) {
@@ -1046,7 +1128,11 @@ export const commitInvoiceAchievements = async (dbConnection, {
         slab: hit.slab,
         product: hit.product,
         ladderLabel: hit.label || '',
-        measuredValue: hit.measuredValue
+        measuredValue: hit.measuredValue,
+        monetaryValue: measureLines(
+          (entry.qualifyingLines || []).filter((l) => toId(l.productId) === toId(hit.product)),
+          'amount'
+        )
       });
     }
     if (ladders.length === 0) continue;
@@ -1118,15 +1204,24 @@ export const commitInvoiceAchievements = async (dbConnection, {
         }
       });
 
+      const scaledReward = computeScaledReward(reward, {
+        allowRepeat: scheme.allowRepeat,
+        slabFrom: slab.from,
+        measuredValue: ladder.measuredValue,
+        basis: entry.basis,
+        monetaryValue: ladder.monetaryValue
+      });
+
       const snapshot = {
-        type: reward.type,
-        points: toNumber(reward.points),
-        percentage: toNumber(reward.percentage),
-        amount: toNumber(reward.amount),
-        freeItemQuantity: toNumber(reward.freeItemQuantity),
-        freeItemRule: reward.freeItemRule || '',
-        giftName: reward.giftName || '',
-        description: reward.description || ''
+        type: scaledReward.type,
+        multiplier: scaledReward.multiplier,
+        points: toNumber(scaledReward.points),
+        percentage: toNumber(scaledReward.percentage),
+        amount: toNumber(scaledReward.amount),
+        freeItemQuantity: toNumber(scaledReward.freeItemQuantity),
+        freeItemRule: scaledReward.freeItemRule || '',
+        giftName: scaledReward.giftName || '',
+        description: scaledReward.description || ''
       };
 
       const nextEntry = {
@@ -1172,7 +1267,7 @@ export const commitInvoiceAchievements = async (dbConnection, {
 
       const entitlement = autoApplied
         ? null
-        : { slab, reward, measuredValue: ladder.measuredValue };
+        : { slab, reward: scaledReward, measuredValue: ladder.measuredValue };
 
       if (existingIndex >= 0 && toNumber(slab.seq) === existingSeq) {
         // Same slab recomputed by a re-approval — refresh, do not duplicate.
@@ -1195,9 +1290,22 @@ export const commitInvoiceAchievements = async (dbConnection, {
   }
 
   if (freeItemResolver && typeof freeItemResolver === 'function') {
+    // Pick from what the dealer actually BOUGHT. A scheme-granted free item sits
+    // at ₹0, so a `lowestPrice` rule would otherwise select the freebie as its own
+    // reward. The preview path already resolves against scope-filtered qualifying
+    // lines; this keeps the two consistent.
+    const purchasedLines = normalizedLines.filter((l) => !l.isSchemeFreeItem);
     for (const row of frozen) {
-      if (row.rewardType === 'freeItem' && row.entitlement) {
-        row.entitlement.freeItem = freeItemResolver(row, normalizedLines);
+      if (row.rewardType === 'freeItem') {
+        const slabOrRow = row.entitlement?.slab || row.slab || { reward: row.rewardSnapshot };
+        const linesForProduct = row.product
+          ? purchasedLines.filter((l) => toId(l.productId) === toId(row.product))
+          : purchasedLines;
+        const res = freeItemResolver(slabOrRow, linesForProduct.length > 0 ? linesForProduct : purchasedLines);
+        if (row.entitlement) {
+          row.entitlement.freeItem = res;
+        }
+        row.resolvedFreeItem = res;
       }
     }
   }
