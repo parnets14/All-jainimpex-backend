@@ -34,10 +34,12 @@ import {
   resolveDealerExtraDiscountBySpecificity
 } from '../utils/sequentialDiscountPolicy.js';
 import { normalizeServiceCharges } from '../utils/serviceChargeUtils.js';
+import { serviceChargeMasterSchema } from '../models/ServiceChargeMaster.js';
 import { schemeSchema } from '../models/Scheme.js';
 import { schemeProgressSchema } from '../models/SchemeProgress.js';
 import { schemeApplicationSchema } from '../models/SchemeApplication.js';
 import schemeEngine from '../services/schemeEngine.js';
+import { resolveCreditDays, addCreditDays } from '../utils/creditTerms.js';
 
 // Helper function to get models from company-specific connection
 const getModels = (dbConnection) => {
@@ -60,6 +62,13 @@ const getModels = (dbConnection) => {
     Scheme: dbConnection.models.Scheme || dbConnection.model('Scheme', schemeSchema),
     SchemeProgress: dbConnection.models.SchemeProgress || dbConnection.model('SchemeProgress', schemeProgressSchema),
     SchemeApplication: dbConnection.models.SchemeApplication || dbConnection.model('SchemeApplication', schemeApplicationSchema),
+    // Required by getDealerInvoice()'s
+    // .populate("serviceCharges.serviceChargeId", ...). Populate resolves the
+    // ref's model from the CONNECTION registry, not from the schema, so the
+    // model must be registered here. Relying on accountingService /
+    // serviceChargeMasterController to have registered it first makes the
+    // endpoint fail with MissingSchemaError on a freshly created connection.
+    ServiceChargeMaster: dbConnection.models.ServiceChargeMaster || dbConnection.model('ServiceChargeMaster', serviceChargeMasterSchema),
   };
 };
 
@@ -1903,22 +1912,36 @@ export const createDealerInvoice = async (req, res) => {
     
     console.log('📊 Sales type analysis:', { hasCDSales, hasRegularSales });
     
+    // Resolve the dealer's own term for the determined sales type. The helper
+    // uses `??`, so a dealer on "pay on demand" (creditDays: 0, the schema
+    // default) keeps 0. The previous `||` chains turned that 0 into the
+    // provided value — and since that defaults to 30, a 0-day dealer was given
+    // a 30-day dueDate, which the aging report and the overdue badge both read.
+    // The provided value is the last resort, used only when the dealer has no
+    // term configured at all.
     if (hasCDSales && !hasRegularSales) {
       // All items are CD Sales
       determinedSalesType = 'CD Sales';
-      appropriateCreditDays = dealer.creditDaysCD || dealer.creditDays || creditDays;
+      appropriateCreditDays = resolveCreditDays(dealer, {
+        salesType: 'CD Sales',
+        fallback: creditDays
+      });
       console.log('✅ All CD Sales - Using CD credit days:', appropriateCreditDays);
     } else if (hasRegularSales && !hasCDSales) {
       // All items are Regular Sales
       determinedSalesType = 'Regular Sale';
-      appropriateCreditDays = dealer.creditDaysRegular || dealer.creditDays || creditDays;
+      appropriateCreditDays = resolveCreditDays(dealer, {
+        salesType: 'Regular Sale',
+        fallback: creditDays
+      });
       console.log('✅ All Regular Sales - Using Regular credit days:', appropriateCreditDays);
     } else if (hasCDSales && hasRegularSales) {
       // Mixed sales - use the longer credit period (typically CD Sales has longer credit)
-      const cdDays = dealer.creditDaysCD || dealer.creditDays || 0;
-      const regularDays = dealer.creditDaysRegular || dealer.creditDays || 0;
-      appropriateCreditDays = Math.max(cdDays, regularDays, creditDays);
       determinedSalesType = 'Mixed'; // Indicate mixed sales
+      appropriateCreditDays = resolveCreditDays(dealer, {
+        salesType: 'Mixed',
+        fallback: creditDays
+      });
       console.log('✅ Mixed Sales - Using longer credit period:', appropriateCreditDays);
     }
     
@@ -2413,9 +2436,13 @@ export const approveDealerInvoice = async (req, res) => {
     invoice.approvedBy = req.user._id;
     invoice.approvedAt = new Date();
     
-    // Calculate due date based on credit days
-    invoice.dueDate = new Date();
-    invoice.dueDate.setDate(invoice.dueDate.getDate() + (invoice.creditDays || 30));
+    // Calculate due date based on credit days.
+    // Derived from `invoice.invoiceDate` (just set above) so the due date and
+    // the invoice date share one instant, and `creditDays` is read as-is — a 0
+    // means "due on the invoice date", NOT the 30-day fallback. The model's
+    // pre('save') hook recomputes this too; keeping them identical means the
+    // value the aging report reads is the same either way.
+    invoice.dueDate = addCreditDays(invoice.invoiceDate, invoice.creditDays) ?? undefined;
     
     await invoice.save({ session });
     

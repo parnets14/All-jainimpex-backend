@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   computeScaledReward,
   resolveFreeItemProduct,
@@ -7,6 +10,8 @@ import {
   evaluateSchemes,
   normalizeLine
 } from './schemeEngine.js';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 let passed = 0;
 let failed = 0;
@@ -426,5 +431,87 @@ await asyncTest('the invoice commit resolves the free item from PURCHASED lines 
   assert.equal(frozen[0].resolvedFreeItem.productId, 'p-A');
   assert.notEqual(frozen[0].resolvedFreeItem.productId, 'p-FREE');
 });
+
+// ---------------------------------------------------------------------------
+// The engine-level tests above prove `normalizeLine` PRESERVES the flag. They do
+// NOT prove the controllers PASS it. That is the gap that actually bit: in
+// `createSalesOrderWithAutoSplit` the flag was added to the `schemeLines` array
+// but the `recordOrderContributions` call built its OWN inline line mapper that
+// omitted it — so free items still counted as purchases on every auto-split
+// order, while every engine test stayed green.
+//
+// These are source-level assertions: the flag must appear inside the `lines:`
+// argument of each recordOrderContributions / commitInvoiceAchievements call,
+// or the call must reuse an array that was built with it.
+// ---------------------------------------------------------------------------
+
+console.log('\n--- 5. every scheme-engine call site passes the free-item flag ---');
+
+const CONTROLLERS_DIR = path.resolve(HERE, '..', 'controllers');
+
+/** Slice the balanced-paren argument list starting at the `(` before `from`. */
+const callArguments = (src, callIndex) => {
+  const open = src.indexOf('(', callIndex);
+  if (open === -1) return '';
+  let depth = 0;
+  for (let i = open; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ch === '(') depth += 1;
+    else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) return src.slice(open + 1, i);
+    }
+  }
+  return '';
+};
+
+const ENGINE_CALLS = ['recordOrderContributions', 'commitInvoiceAchievements'];
+
+for (const file of fs.readdirSync(CONTROLLERS_DIR)) {
+  if (!file.endsWith('.js')) continue;
+  const src = fs.readFileSync(path.join(CONTROLLERS_DIR, file), 'utf8');
+
+  for (const call of ENGINE_CALLS) {
+    const re = new RegExp(`schemeEngine\\.${call}\\s*\\(`, 'g');
+    let m;
+    while ((m = re.exec(src)) !== null) {
+      const args = callArguments(src, m.index);
+      const line = src.slice(0, m.index).split('\n').length;
+
+      // Accepted shapes:
+      //  (a) an inline mapper in the args that carries the flag;
+      //  (b) `lines: <name>` where <name> is an array declared with the flag;
+      //  (c) `lines: someHelper(...)` where someHelper is a module-level function
+      //      whose body carries the flag (the shared-mapper pattern);
+      //  (d) an inline `.map()` in the args that carries the flag.
+      const inlineHasFlag = /lines:\s*[\s\S]*?isSchemeFreeItem/.test(args);
+
+      const namedArray = /lines:\s*([A-Za-z_$][\w$]*)\s*[,}]/.exec(args);
+      let namedHasFlag = false;
+      if (namedArray) {
+        const varName = namedArray[1];
+        const declRe = new RegExp(`(?:const|let|var)\\s+${varName}\\s*=[\\s\\S]{0,2000}?isSchemeFreeItem`);
+        namedHasFlag = declRe.test(src);
+      }
+
+      const helperCall = /lines:\s*([A-Za-z_$][\w$]*)\s*\(/.exec(args);
+      let helperHasFlag = false;
+      if (helperCall) {
+        const fnName = helperCall[1];
+        const fnRe = new RegExp(`(?:const|function)\\s+${fnName}\\s*=?[\\s\\S]{0,1500}?isSchemeFreeItem`);
+        helperHasFlag = fnRe.test(src);
+      }
+
+      test(
+        `${file}:${line} ${call}() propagates isSchemeFreeItem`,
+        () => assert.ok(
+          inlineHasFlag || namedHasFlag || helperHasFlag,
+          `${call} at ${file}:${line} does not pass isSchemeFreeItem on its lines — `
+          + 'a scheme-granted free item will count as a purchase'
+        )
+      );
+    }
+  }
+}
 
 console.log(`\n================ ${passed} passed, ${failed} failed ================`);

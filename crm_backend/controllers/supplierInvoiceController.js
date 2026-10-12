@@ -8,6 +8,7 @@ import { warehouseSchema } from "../models/Warehouse.js";
 import { assertPeriodOpen, handlePeriodLockError } from "../services/periodLockService.js";
 import { recordUpdate, recordStatusChange } from "../services/auditTrailService.js";
 import { normalizeServiceCharges } from "../utils/serviceChargeUtils.js";
+import { serviceChargeMasterSchema } from "../models/ServiceChargeMaster.js";
 import schemeService from "../services/schemeService.js";
 import mongoose from "mongoose";
 
@@ -19,7 +20,12 @@ const getModels = (dbConnection) => {
     Supplier: dbConnection.models.Supplier || dbConnection.model('Supplier', supplierSchema),
     Product: dbConnection.models.Product || dbConnection.model('Product', productSchema),
     PurchaseOrder: dbConnection.models.PurchaseOrder || dbConnection.model('PurchaseOrder', purchaseOrderSchema),
-    Warehouse: dbConnection.models.Warehouse || dbConnection.model('Warehouse', warehouseSchema)
+    Warehouse: dbConnection.models.Warehouse || dbConnection.model('Warehouse', warehouseSchema),
+    // Required by getSupplierInvoice()'s
+    // .populate("serviceCharges.serviceChargeId", ...). Populate resolves the
+    // ref's model from the CONNECTION registry, so it must be registered here;
+    // otherwise a fresh connection throws MissingSchemaError -> 500.
+    ServiceChargeMaster: dbConnection.models.ServiceChargeMaster || dbConnection.model('ServiceChargeMaster', serviceChargeMasterSchema)
   };
 };
 

@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { appliedSchemeSchema } from "./appliedScheme.js";
+import { addCreditDays } from "../utils/creditTerms.js";
 
 const productSchema = new mongoose.Schema({
   product: {
@@ -514,11 +515,15 @@ salesOrderSchema.pre("save", function(next) {
       : 0;
   });
 
-  // STEP 2: Calculate due date
-  if (this.orderDate && this.creditDays) {
-    const dueDate = new Date(this.orderDate);
-    dueDate.setDate(dueDate.getDate() + this.creditDays);
-    this.dueDate = dueDate;
+  // STEP 2: Calculate due date.
+  //
+  // `creditDays: 0` means "pay on demand" and is the schema default, so a
+  // truthiness check (`if (this.creditDays)`) would SKIP this for the most
+  // common case and leave `dueDate` unset — making the order look as if it
+  // never falls due in the overdue report. Checked against null/undefined.
+  if (this.orderDate && this.creditDays !== null && this.creditDays !== undefined) {
+    const dueDate = addCreditDays(this.orderDate, this.creditDays);
+    if (dueDate) this.dueDate = dueDate;
   }
 
   // STEP 3: Calculate order-level amounts

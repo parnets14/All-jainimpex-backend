@@ -4,6 +4,7 @@ import {
   calculateDiscountLine,
   calculateOneTimeInvoicePriceIncrease
 } from "../utils/sequentialDiscountPolicy.js";
+import { addCreditDays } from "../utils/creditTerms.js";
 
 const invoiceItemSchema = new mongoose.Schema({
   product: {
@@ -469,11 +470,15 @@ const dealerInvoiceSchema = new mongoose.Schema({
 
 // Pre-save middleware to calculate amounts and dates
 dealerInvoiceSchema.pre("save", function(next) {
-  // Calculate due date
-  if (this.invoiceDate && this.creditDays) {
-    const dueDate = new Date(this.invoiceDate);
-    dueDate.setDate(dueDate.getDate() + this.creditDays);
-    this.dueDate = dueDate;
+  // Calculate due date.
+  //
+  // `creditDays: 0` means "pay on demand" and is the schema default, so a
+  // truthiness check (`if (this.creditDays)`) would SKIP the assignment for the
+  // most common case and leave `dueDate` undefined — making the invoice show as
+  // never-overdue in the aging report. Tested against null/undefined instead.
+  if (this.invoiceDate && this.creditDays !== null && this.creditDays !== undefined) {
+    const dueDate = addCreditDays(this.invoiceDate, this.creditDays);
+    if (dueDate) this.dueDate = dueDate;
   }
 
   // NOTE: Financial totals are calculated AFTER the sequential discount hook below

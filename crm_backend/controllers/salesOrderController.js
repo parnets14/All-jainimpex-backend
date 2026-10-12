@@ -36,6 +36,7 @@ import {
   releaseDealerCreditLease
 } from '../services/dealerCreditService.js';
 import schemeEngine from '../services/schemeEngine.js';
+import { resolveCreditDays, addCreditDays } from '../utils/creditTerms.js';
 
 // Helper function to get models from company-specific connection
 const getModels = (dbConnection) => {
@@ -66,6 +67,51 @@ const readAppliedSchemes = (body = {}) =>
 
 /** Scheme ids for the engine gate, or null when no gate was requested. */
 const appliedSchemeIds = appliedSchemeIdList;
+
+/**
+ * Payment due date = order date + credit days.
+ *
+ * The model's `pre('save')` hook computes this too, but the edit path uses
+ * `findOneAndUpdate`, which BYPASSES pre-save hooks. Without calling this from
+ * the update path, editing an order's `orderDate` or `creditDays` left `dueDate`
+ * stale — and `dueDate` drives both the `isOverdue` badge in the list and the
+ * overdue report, so an order could read as overdue (or not) incorrectly.
+ *
+ * Delegates to the shared `addCreditDays` so the Sales Order and the Dealer
+ * Invoice cannot drift apart on the same rule. `creditDays: 0` is a real,
+ * valid value (pay on demand) and yields the order date itself.
+ */
+const computeDueDate = (orderDate, creditDays) => addCreditDays(orderDate, creditDays);
+
+/**
+ * Map one persisted sales order's lines into the shape `schemeEngine` expects.
+ *
+ * This exists as a single module-level helper on purpose. The line shape is an
+ * explicit field list, so an omitted field is silently dropped — and the engine
+ * decides what counts as a purchase from these fields. `isSchemeFreeItem` in
+ * particular MUST be carried: `evaluateSchemes` filters qualifying lines on it,
+ * but only if it survived the trip in. When `createSalesOrderWithAutoSplit` kept
+ * its own inline copy of this mapper and forgot the flag, a scheme-granted free
+ * item counted as a purchase on every auto-split order.
+ *
+ * Keep this the ONE place that builds scheme lines from a sales order, or the
+ * two copies will drift again.
+ */
+const orderLinesForScheme = (order) =>
+  (order?.products || []).map((p) => ({
+    product: p.product,
+    productCode: p.productCode,
+    productName: p.productName || p.name,
+    brandName: p.brandName,
+    categoryName: p.categoryName,
+    subcategoryName: p.subcategoryName,
+    salesType: order.salesType,
+    quantity: p.quantity,
+    unitPrice: p.unitPrice,
+    amount: p.totalPrice ?? (Number(p.unitPrice || 0) * Number(p.quantity || 0)),
+    isSchemeFreeItem: Boolean(p.isSchemeFreeItem),
+    schemeCode: p.schemeCode || ''
+  }));
 
 const createDiscountPolicyError = (message, code) => {
   const error = new Error(message);
@@ -609,17 +655,27 @@ const generateOrderNumber = async (dbConnection, session = null) => {
       nextNumber = lastNumber + 1;
     }
 
-    // Format with leading zeros (4 digits)
-    const orderNumber = `${prefix}${nextNumber.toString().padStart(4, '0')}`;
-
-    // Double-check uniqueness (in case of race conditions)
-    const existingOrder = await applySession(SalesOrder.findOne({ orderNumber }));
-    if (existingOrder) {
-      // If somehow it exists, try the next number
-      return `${prefix}${(nextNumber + 1).toString().padStart(4, '0')}`;
+    // Probe forward for a free candidate instead of checking exactly one.
+    //
+    // This is defensive, NOT a fix for an observed collision: the previous code
+    // took max(existing)+1, which cannot already be taken. But it only ever
+    // checked ONE candidate, so the moment anything else perturbs numbering —
+    // a manual insert, a different padding width, a year boundary mid-request —
+    // it could hand back a taken number and the insert failed with E11000,
+    // surfacing to the user as a confusing "Order number already exists".
+    // Probing is cheap and removes the whole class.
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const candidate = `${prefix}${nextNumber.toString().padStart(4, '0')}`;
+      const existingOrder = await applySession(SalesOrder.findOne({ orderNumber: candidate }));
+      if (!existingOrder) {
+        return candidate;
+      }
+      nextNumber += 1;
     }
 
-    return orderNumber;
+    // Extremely unlikely: the whole 50-wide window is taken. Use a
+    // collision-resistant suffix instead of failing the order.
+    return `${prefix}${Date.now().toString().slice(-6)}`;
   } catch (error) {
     if (session) throw error;
     console.error('Error generating order number:', error);
@@ -1080,25 +1136,24 @@ export const createSalesOrder = async (req, res) => {
       actorId: req.user._id
     });
 
-    // Use dealer's credit days if not provided in request
+    // Use the dealer's credit terms when the request omits `creditDays`.
+    // `resolveCreditDays` uses `??`, so a dealer on "pay on demand"
+    // (creditDays: 0 — the schema default) keeps 0 instead of silently
+    // becoming 30. That value sets `dueDate`, which the overdue badge and the
+    // aging report read, so a 0-day dealer must not be shown as current.
     const finalCreditDays = creditDays !== undefined && creditDays !== null
       ? parseInt(creditDays)
-      : (dealerData.creditDays || 30);
+      : resolveCreditDays(dealerData, { salesType });
 
     // Validate credit days don't exceed dealer's limits
     if (creditDays !== undefined && creditDays !== null) {
       const requestedCreditDays = parseInt(creditDays);
 
-      // Determine which limit to check based on salesType
-      let maxCreditDays = 0;
-      if (salesType === 'Regular Sale') {
-        maxCreditDays = dealerData.creditDaysRegular || dealerData.creditDays || 0;
-      } else if (salesType === 'CD Sales') {
-        maxCreditDays = dealerData.creditDaysCD || dealerData.creditDays || 0;
-      } else {
-        // Default to regular if not specified
-        maxCreditDays = dealerData.creditDaysRegular || dealerData.creditDays || 0;
-      }
+      // The dealer's own term for this sales type is the cap. Resolve it with
+      // `??` semantics (0 is a real cap meaning "no credit"), then fall back to
+      // 0 so the `maxCreditDays > 0` guard below skips the check entirely when
+      // the dealer has no limit configured.
+      const maxCreditDays = resolveCreditDays(dealerData, { salesType, fallback: 0 }) ?? 0;
 
       if (requestedCreditDays > maxCreditDays && maxCreditDays > 0) {
         return res.status(400).json({
@@ -1238,11 +1293,7 @@ export const createSalesOrder = async (req, res) => {
     const { grossAmount, totalGst, discountAmount, totalAmount } = calculateCanonicalOrderTotals(validatedProducts);
 
     // Calculate due date
-    let dueDate = null;
-    if (orderDate && finalCreditDays) {
-      dueDate = new Date(orderDate);
-      dueDate.setDate(dueDate.getDate() + finalCreditDays);
-    }
+    const dueDate = computeDueDate(orderDate, finalCreditDays);
 
     // New orders always enter the Pending lifecycle. Confirmation must use the
     // dedicated status endpoint so stock, overdue, credit and approval checks run.
@@ -1393,23 +1444,7 @@ export const createSalesOrder = async (req, res) => {
     // ADVISORY scheme progress (same contract as the auto-split path).
     let schemePreview = { schemes: [] };
     try {
-      const schemeLines = (salesOrder.products || []).map((p) => ({
-        product: p.product,
-        productCode: p.productCode,
-        productName: p.productName || p.name,
-        brandName: p.brandName,
-        categoryName: p.categoryName,
-        subcategoryName: p.subcategoryName,
-        salesType: salesOrder.salesType,
-        quantity: p.quantity,
-        unitPrice: p.unitPrice,
-        amount: p.totalPrice ?? (Number(p.unitPrice || 0) * Number(p.quantity || 0)),
-        // Carry the free-item flag through: the engine excludes these from the
-        // qualifying lines, so dropping it here would make a scheme-granted free
-        // item count as a purchase.
-        isSchemeFreeItem: Boolean(p.isSchemeFreeItem),
-        schemeCode: p.schemeCode || ''
-      }));
+      const schemeLines = orderLinesForScheme(salesOrder);
 
       await schemeEngine.recordOrderContributions(req.dbConnection, {
         dealerId: salesOrder.dealer,
@@ -2881,6 +2916,28 @@ const updateSalesOrderUnlocked = async (req, res) => {
         .reduce((sum, product) => sum + calculateCanonicalCreditLineAmount(product), 0);
     }
 
+    // `dueDate` is derived, and this path uses findOneAndUpdate, which skips the
+    // model's pre('save') hook that normally computes it. Recompute here whenever
+    // an input it depends on actually changed, so editing the order date or the
+    // credit days cannot leave a stale due date (which drives the overdue badge
+    // and the overdue report). Only fill it in when the caller did not send an
+    // explicit value, so an intentional override still wins.
+    const effectiveOrderDate = req.body.orderDate ?? salesOrder.orderDate;
+    const effectiveCreditDays = req.body.creditDays ?? salesOrder.creditDays;
+    const orderDateChanged = req.body.orderDate !== undefined
+      && String(req.body.orderDate) !== String(salesOrder.orderDate ?? '');
+    const creditDaysChanged = req.body.creditDays !== undefined
+      && Number(req.body.creditDays) !== Number(salesOrder.creditDays);
+    if (
+      req.body.dueDate === undefined
+      && (orderDateChanged || creditDaysChanged || !salesOrder.dueDate)
+    ) {
+      const recomputedDueDate = computeDueDate(effectiveOrderDate, effectiveCreditDays);
+      if (recomputedDueDate) {
+        req.body.dueDate = recomputedDueDate;
+      }
+    }
+
     const effectiveUpdatedStatus = req.body.status || salesOrder.status;
     const effectiveExpiredState = req.body.isExpired ?? salesOrder.isExpired;
     if (effectiveUpdatedStatus !== 'Pending' || effectiveExpiredState === true) {
@@ -3759,16 +3816,9 @@ export async function createSingleSalesOrder(dbConnection, orderData, userId, co
   if (creditDays !== undefined && creditDays !== null) {
     const requestedCreditDays = parseInt(creditDays);
 
-    // Determine which limit to check based on salesType
-    let maxCreditDays = 0;
-    if (salesType === 'Regular Sale') {
-      maxCreditDays = dealerData.creditDaysRegular || dealerData.creditDays || 0;
-    } else if (salesType === 'CD Sales') {
-      maxCreditDays = dealerData.creditDaysCD || dealerData.creditDays || 0;
-    } else {
-      // Default to regular if not specified
-      maxCreditDays = dealerData.creditDaysRegular || dealerData.creditDays || 0;
-    }
+    // The dealer's own term for this sales type is the cap (0 = no credit).
+    // `fallback: 0` keeps the `maxCreditDays > 0` guard below meaningful.
+    const maxCreditDays = resolveCreditDays(dealerData, { salesType, fallback: 0 }) ?? 0;
 
     if (requestedCreditDays > maxCreditDays && maxCreditDays > 0) {
       throw new Error(`Credit days (${requestedCreditDays}) cannot exceed dealer's limit of ${maxCreditDays} days for ${salesType || 'Regular Sale'}.`);
@@ -3896,11 +3946,7 @@ export async function createSingleSalesOrder(dbConnection, orderData, userId, co
   });
 
   // Calculate due date
-  let dueDate = null;
-  if (orderDate && creditDays) {
-    dueDate = new Date(orderDate);
-    dueDate.setDate(dueDate.getDate() + creditDays);
-  }
+  const dueDate = computeDueDate(orderDate, creditDays);
 
   // Create sales order
   const salesOrder = new SalesOrder({
@@ -4122,13 +4168,17 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
     // Create Regular Sales Order if there are regular products
     if (regularProducts.length > 0) {
       console.log("\n📝 Creating Regular Sales Order...");
+      // Resolve per sales type so a dealer on 0 days keeps 0. Each split
+      // sibling then carries its OWN term (Regular vs CD) rather than a shared
+      // `|| 30`, which is what made a pay-on-demand dealer look like 30 days.
+      const regularCreditDays = resolveCreditDays(dealerData, { salesType: 'Regular Sale' });
       const regularOrderData = {
         ...orderData,
         dealer,
         products: regularProducts,
         salesType: 'Regular Sale',
-        creditDays: dealerData.creditDaysRegular || dealerData.creditDays || 30,
-        creditDaysApplied: dealerData.creditDaysRegular || dealerData.creditDays || 30,
+        creditDays: regularCreditDays,
+        creditDaysApplied: regularCreditDays,
         orderGroupId
       };
 
@@ -4145,13 +4195,14 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
     // Create CD Sales Order if there are CD products
     if (cdProducts.length > 0) {
       console.log("\n📝 Creating CD Sales Order...");
+      const cdCreditDays = resolveCreditDays(dealerData, { salesType: 'CD Sales' });
       const cdOrderData = {
         ...orderData,
         dealer,
         products: cdProducts,
         salesType: 'CD Sales',
-        creditDays: dealerData.creditDaysCD || dealerData.creditDays || 30,
-        creditDaysApplied: dealerData.creditDaysCD || dealerData.creditDays || 30,
+        creditDays: cdCreditDays,
+        creditDaysApplied: cdCreditDays,
         orderGroupId
       };
 
@@ -4178,24 +4229,7 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
     // Writes progress buckets only — no slab is crossed, nothing is handed over.
     let schemePreview = { schemes: [] };
     try {
-      const schemeLines = createdOrders.flatMap((order) =>
-        (order.products || []).map((p) => ({
-          product: p.product,
-          productCode: p.productCode,
-          productName: p.productName || p.name,
-          brandName: p.brandName,
-          categoryName: p.categoryName,
-          subcategoryName: p.subcategoryName,
-          salesType: order.salesType,
-          quantity: p.quantity,
-          unitPrice: p.unitPrice,
-          amount: p.totalPrice ?? (Number(p.unitPrice || 0) * Number(p.quantity || 0)),
-          // See the createSalesOrder path — a scheme-granted free item must not
-          // count as a purchase.
-          isSchemeFreeItem: Boolean(p.isSchemeFreeItem),
-          schemeCode: p.schemeCode || ''
-        }))
-      );
+      const schemeLines = createdOrders.flatMap((order) => orderLinesForScheme(order));
 
       for (const order of createdOrders) {
         await schemeEngine.recordOrderContributions(req.dbConnection, {
@@ -4203,18 +4237,12 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
           orderId: order._id,
           documentNumber: order.orderNumber,
           orderGroupId: order.orderGroupId,
-          lines: (order.products || []).map((p) => ({
-            product: p.product,
-            productCode: p.productCode,
-            productName: p.productName || p.name,
-            brandName: p.brandName,
-            categoryName: p.categoryName,
-            subcategoryName: p.subcategoryName,
-            salesType: order.salesType,
-            quantity: p.quantity,
-            unitPrice: p.unitPrice,
-            amount: p.totalPrice ?? (Number(p.unitPrice || 0) * Number(p.quantity || 0))
-          })),
+          // Build the lines with the SAME mapper used for the preview above, so
+          // `isSchemeFreeItem` / `schemeCode` reach the engine. This call used to
+          // carry its own inline copy of the mapper that omitted them, which made
+          // a scheme-granted free item count as a purchase on every auto-split
+          // order (the engine filters on the flag, but only if it is passed).
+          lines: orderLinesForScheme(order),
           schemeIds: appliedSchemeIds(appliedSelection)
         });
       }
@@ -4222,8 +4250,9 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
       schemePreview = await schemeEngine.previewSchemesForLines(req.dbConnection, {
         dealerId: dealer,
         lines: schemeLines,
-        // Payment-terms dimension (item #11).
-        paymentTerms: dealerData.creditDaysRegular || dealerData.creditDays || 30
+        // Payment-terms dimension (item #11). Resolved through the shared helper
+        // so a 0-day dealer is matched on 0, not on a substituted 30.
+        paymentTerms: resolveCreditDays(dealerData, { salesType })
       });
       console.log("🎁 Scheme schemes matched:", schemePreview.schemes.length);
     } catch (schemeError) {

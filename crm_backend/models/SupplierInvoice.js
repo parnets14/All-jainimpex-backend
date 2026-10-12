@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { purchaseSchemeBenefitsSchema as supplierInvoiceSchemeBenefitsSchema } from "./purchaseSchemeBenefit.js";
+import { addCreditDays } from "../utils/creditTerms.js";
 
 const supplierInvoiceItemSchema = new mongoose.Schema({
   product: {
@@ -409,11 +410,15 @@ const supplierInvoiceSchema = new mongoose.Schema({
 
 // Pre-save middleware to calculate amounts and dates
 supplierInvoiceSchema.pre("save", function(next) {
-  // Calculate due date
-  if (this.invoiceDate && this.creditDays) {
-    const dueDate = new Date(this.invoiceDate);
-    dueDate.setDate(dueDate.getDate() + this.creditDays);
-    this.dueDate = dueDate;
+  // Calculate due date.
+  //
+  // `creditDays: 0` means "due on the invoice date" — a real value, and a
+  // truthiness check would SKIP the assignment and leave `dueDate` unset, so the
+  // invoice never appears in the payables aging report. Checked against
+  // null/undefined instead. Mirrors models/DealerInvoice.js.
+  if (this.invoiceDate && this.creditDays !== null && this.creditDays !== undefined) {
+    const dueDate = addCreditDays(this.invoiceDate, this.creditDays);
+    if (dueDate) this.dueDate = dueDate;
   }
 
   // Calculate financial amounts (only if not already provided)
