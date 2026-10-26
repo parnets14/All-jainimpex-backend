@@ -206,6 +206,21 @@ const salesOrderSchema = new mongoose.Schema({
     default: null,
     index: true
   },
+  /**
+   * Client-generated idempotency token for the create request.
+   *
+   * The order is SAVED before the (slow) post-processing runs, so a client
+   * timeout is ambiguous: the order may already exist. Without a token a retry
+   * creates a duplicate order — and on an auto-split save, a duplicate pair.
+   * The client reuses the same token when it retries, and the controller
+   * returns the orders already created with it instead of making new ones.
+   *
+   * Sparse + unique per company database, so existing rows are unaffected.
+   */
+  clientRequestId: {
+    type: String,
+    default: null
+  },
   dealer: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Dealer",
@@ -571,6 +586,14 @@ salesOrderSchema.index({ isOutOfStock: 1, status: 1 });
 salesOrderSchema.index({ "orderStockStatus.overallStatus": 1, status: 1 });
 // Speeds up the stock-arrival lookup ($elemMatch on product + warehouse + stockStatus)
 salesOrderSchema.index({ status: 1, "products.product": 1, "products.warehouse": 1 });
+// Idempotent create: at most one order per (client request token, sales type).
+// Compound because an auto-split save legitimately creates TWO siblings — one
+// Regular, one CD — from a single user action and therefore one token.
+// Partial so the legacy rows without the field are unaffected.
+salesOrderSchema.index(
+  { clientRequestId: 1, salesType: 1 },
+  { unique: true, partialFilterExpression: { clientRequestId: { $type: 'string' } } }
+);
 
 // Export schema for multi-database support
 export { salesOrderSchema };

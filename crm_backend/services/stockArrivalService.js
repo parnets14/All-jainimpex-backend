@@ -17,6 +17,10 @@ const lineStockKey = (line) => (
     : null
 );
 
+// One in-flight refresh per database connection. WeakMap so a closed
+// connection's entry is collectable.
+const inFlightRefreshes = new WeakMap();
+
 const summarizeOrder = (products) => {
   const totalProducts = products.length;
   const availableProducts = products.filter((line) => line.stockStatus === 'available').length;
@@ -42,8 +46,61 @@ class StockArrivalService {
    * Orders are processed FIFO and each unit is promised at most once. This is
    * advisory only: explicit confirmation rechecks stock and creates the actual
    * reservation movement.
+   *
+   * COALESCED: concurrent callers on the same connection share one run. The
+   * save path schedules this in the background, and an auto-split save would
+   * otherwise queue two identical full-queue scans back to back.
    */
-  static async refreshAllPendingOrders(dbConnection, { maxRetries = 3 } = {}) {
+  static async refreshAllPendingOrders(dbConnection, options = {}) {
+    const inFlight = inFlightRefreshes.get(dbConnection);
+    if (inFlight) return inFlight;
+
+    const run = StockArrivalService.refreshAllPendingOrdersUncoalesced(dbConnection, options)
+      .finally(() => { inFlightRefreshes.delete(dbConnection); });
+
+    inFlightRefreshes.set(dbConnection, run);
+    return run;
+  }
+
+  /**
+   * Schedule a refresh to run AFTER the current response has been flushed.
+   *
+   * The sales-order save path called this inline, awaited, before responding —
+   * and its cost scales with the pending-order backlog, so a save could exceed
+   * the client's request timeout even though the order had already been saved.
+   * Nothing in the create response depends on the result, so it is safe to run
+   * afterwards.
+   *
+   * Tied to the response's `finish`/`close` event rather than `setImmediate`:
+   * the handler continues doing awaits after the save, so a bare setImmediate
+   * could still fire while the client is waiting, re-creating the contention
+   * this exists to remove.
+   *
+   * Errors are swallowed — this is advisory reconciliation.
+   */
+  static schedulePendingRefresh(dbConnection, res = null) {
+    if (!dbConnection) return;
+
+    let scheduled = false;
+    const run = () => {
+      if (scheduled) return;
+      scheduled = true;
+      setImmediate(() => {
+        StockArrivalService.refreshAllPendingOrders(dbConnection).catch((error) => {
+          console.error('Background pending-order refresh failed (non-critical):', error.message);
+        });
+      });
+    };
+
+    if (res && typeof res.once === 'function') {
+      res.once('finish', run);
+      res.once('close', run);
+      return;
+    }
+    run();
+  }
+
+  static async refreshAllPendingOrdersUncoalesced(dbConnection, { maxRetries = 3 } = {}) {
     const { SalesOrder } = getModels(dbConnection);
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -61,16 +118,21 @@ class StockArrivalService {
       const keys = [...new Set(orders.flatMap((order) => (
         (order.products || []).map(lineStockKey).filter(Boolean)
       )))];
+
+      // One aggregation for every product/warehouse pair in the whole queue.
+      // This used to be one `getCurrentStock` aggregation PER KEY, which made
+      // the cost of saving a single order grow with the entire pending backlog.
+      const balancesByKey = await StockMovementService.getCurrentStockBulk(
+        keys.map((key) => {
+          const [productId, warehouseId] = key.split(':');
+          return { productId, warehouseId };
+        }),
+        dbConnection
+      );
       const remainingByKey = new Map();
-      await Promise.all(keys.map(async (key) => {
-        const [productId, warehouseId] = key.split(':');
-        const currentStock = await StockMovementService.getCurrentStock(
-          productId,
-          warehouseId,
-          dbConnection
-        );
-        remainingByKey.set(key, Math.max(0, Number(currentStock || 0)));
-      }));
+      for (const key of keys) {
+        remainingByKey.set(key, Math.max(0, Number(balancesByKey.get(key) || 0)));
+      }
 
       const operations = [];
       let ordersReady = 0;

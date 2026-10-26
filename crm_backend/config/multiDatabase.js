@@ -1,4 +1,10 @@
 // config/multiDatabase.js
+import dns from 'dns';
+try {
+  dns.setServers(['8.8.8.8', '1.1.1.1']);
+} catch (e) {
+  // Ignore if not supported in environment
+}
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 

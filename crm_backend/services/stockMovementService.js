@@ -425,6 +425,70 @@ class StockMovementService {
     const [result] = await aggregation;
     return Number(result?.balance || 0);
   }
+
+  /**
+   * Bulk variant of `getCurrentStock`.
+   *
+   * WHY: the sales-order save path used to call `getCurrentStock` once per line,
+   * awaited in a `for...of` — three sequential round trips per line. A 20-line
+   * order meant ~60 round trips, which is a large part of why saving could
+   * exceed the client's request timeout.
+   *
+   * This resolves every product/warehouse pair on the document in ONE
+   * aggregation, grouped by the pair. Indexes `{productId, warehouseId}` already
+   * exist (models/Stock.js), so the $match is covered.
+   *
+   * @param {Array<{productId: string, warehouseId: string}>} pairs
+   * @param {Object} dbConnection
+   * @returns {Promise<Map<string, number>>} keyed `"productId:warehouseId"`
+   */
+  static async getCurrentStockBulk(pairs = [], dbConnection = null) {
+    if (!dbConnection) {
+      throw new Error('dbConnection is required to read current stock');
+    }
+
+    // Normalise + de-duplicate; ignore anything that cannot be a valid ObjectId
+    // so one bad line cannot fail the whole batch (the caller validates ids).
+    const wanted = new Map();
+    for (const pair of pairs || []) {
+      const productId = String(pair?.productId || '');
+      const warehouseId = String(pair?.warehouseId || '');
+      if (!mongoose.isValidObjectId(productId) || !mongoose.isValidObjectId(warehouseId)) continue;
+      wanted.set(`${productId}:${warehouseId}`, { productId, warehouseId });
+    }
+
+    const balances = new Map();
+    if (wanted.size === 0) return balances;
+
+    const { StockMovement } = getModels(dbConnection);
+    const productIds = [...new Set([...wanted.values()].map((p) => p.productId))]
+      .map((id) => new mongoose.Types.ObjectId(id));
+    const warehouseIds = [...new Set([...wanted.values()].map((p) => p.warehouseId))]
+      .map((id) => new mongoose.Types.ObjectId(id));
+
+    const rows = await StockMovement.aggregate([
+      { $match: { productId: { $in: productIds }, warehouseId: { $in: warehouseIds } } },
+      {
+        $group: {
+          _id: { productId: '$productId', warehouseId: '$warehouseId' },
+          inbound: { $sum: { $cond: [{ $eq: ['$type', 'IN'] }, '$quantity', 0] } },
+          outbound: { $sum: { $cond: [{ $eq: ['$type', 'OUT'] }, '$quantity', 0] } }
+        }
+      }
+    ]);
+
+    for (const row of rows) {
+      const key = `${row._id.productId}:${row._id.warehouseId}`;
+      balances.set(key, Number(row.inbound || 0) - Number(row.outbound || 0));
+    }
+
+    // Pairs with no movements at all are genuinely zero.
+    for (const key of wanted.keys()) {
+      if (!balances.has(key)) balances.set(key, 0);
+    }
+
+    return balances;
+  }
   
   /**
    * Recalculate balances for all stock movements

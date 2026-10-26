@@ -69,6 +69,21 @@ const readAppliedSchemes = (body = {}) =>
 const appliedSchemeIds = appliedSchemeIdList;
 
 /**
+ * Normalise the client's idempotency token for order creation.
+ *
+ * Returns null when absent, so callers can skip the replay lookup entirely and
+ * legacy clients behave exactly as before. Bounded to 100 chars so a hostile
+ * payload cannot bloat the index.
+ */
+const readClientRequestId = (body = {}) => {
+  const raw = body?.clientRequestId;
+  if (raw === undefined || raw === null) return null;
+  const value = String(raw).trim();
+  if (!value) return null;
+  return value.slice(0, 100);
+};
+
+/**
  * Payment due date = order date + credit days.
  *
  * The model's `pre('save')` hook computes this too, but the edit path uses
@@ -396,6 +411,62 @@ const calculateCanonicalOrderTotals = (products = []) => ({
   discountAmount: products.reduce((sum, product) => sum + Number(product.discountAmount || 0), 0),
   totalAmount: products.reduce((sum, product) => sum + Number(product.totalPrice || 0), 0)
 });
+
+/**
+ * Load everything the order-line validation loop needs, in a BOUNDED number of
+ * queries instead of three round trips per line.
+ *
+ * WHY: both create paths used to run `Product.findById` -> `Warehouse.findById`
+ * -> `getCurrentStock` inside an `await`-ed `for...of`. A 20-line order meant
+ * ~60 sequential round trips, a large part of why saving could exceed the
+ * client's request timeout. This collapses them to: one product query, one
+ * warehouse query, one stock aggregation.
+ *
+ * Returns lookups only. Validation and error messages stay in the callers so
+ * each endpoint keeps its own response shape (JSON vs throw).
+ */
+const loadOrderLineDependencies = async ({
+  canonicalProducts = [],
+  isOutOfStock = false,
+  dbConnection,
+  Product,
+  Warehouse
+}) => {
+  const productIds = [...new Set(
+    canonicalProducts.map((item) => String(item.product || '')).filter(Boolean)
+  )];
+  const warehouseIds = [...new Set(
+    canonicalProducts
+      .map((item) => (item.warehouse && item.warehouse !== 'No Stock' ? String(item.warehouse) : null))
+      .filter(Boolean)
+  )];
+
+  const [productDocs, warehouseDocs] = await Promise.all([
+    productIds.length
+      ? Product.find({ _id: { $in: productIds } })
+        .select('itemName productCode HSNCode internalRate salesType')
+        .lean()
+      : Promise.resolve([]),
+    warehouseIds.length
+      ? Warehouse.find({ _id: { $in: warehouseIds } }).select('name').lean()
+      : Promise.resolve([])
+  ]);
+
+  const productById = new Map(productDocs.map((doc) => [String(doc._id), doc]));
+  const warehouseById = new Map(warehouseDocs.map((doc) => [String(doc._id), doc]));
+
+  // Stock is only checked for in-stock orders.
+  const stockByPair = isOutOfStock
+    ? new Map()
+    : await StockMovementService.getCurrentStockBulk(
+      canonicalProducts
+        .filter((item) => item.warehouse && item.warehouse !== 'No Stock')
+        .map((item) => ({ productId: String(item.product), warehouseId: String(item.warehouse) })),
+      dbConnection
+    );
+
+  return { productById, warehouseById, stockByPair };
+};
 
 const normalizeComparableLevels = (levels) => JSON.stringify([...(levels || [])].map(String).sort());
 const normalizeComparableRateMap = (rates) => JSON.stringify(
@@ -1094,6 +1165,8 @@ export const previewSalesOrderCredit = async (req, res) => {
 // @route   POST /api/sales-orders
 // @access  Private
 export const createSalesOrder = async (req, res) => {
+  // Declared outside try so the catch can resolve an idempotency-index race.
+  let clientRequestId = null;
   try {
     // Get models from company-specific connection
     const { SalesOrder, Product, Dealer, User, Notification, Warehouse } = getModels(req.dbConnection);
@@ -1115,6 +1188,23 @@ export const createSalesOrder = async (req, res) => {
       isOutOfStock,
       stockValidation
     } = req.body;
+
+    // Idempotent replay. The order is saved before the slow post-processing, so
+    // a client timeout is ambiguous — the order may already exist. The client
+    // reuses its token on retry; return the existing order instead of inserting
+    // a duplicate.
+    clientRequestId = readClientRequestId(req.body);
+    if (clientRequestId) {
+      const existingOrder = await SalesOrder.findOne({ clientRequestId }).lean();      if (existingOrder) {
+        console.log(`♻️  Idempotent replay for clientRequestId ${clientRequestId} -> ${existingOrder.orderNumber}`);
+        return res.status(200).json({
+          success: true,
+          idempotentReplay: true,
+          message: 'This order was already created.',
+          salesOrder: existingOrder
+        });
+      }
+    }
 
     // Generate unique order number
     const orderNumber = await generateOrderNumber(req.dbConnection);
@@ -1230,8 +1320,19 @@ export const createSalesOrder = async (req, res) => {
         (await Warehouse.findOne({}).sort({ createdAt: 1 }));
     }
 
+    // Products, warehouses and stock are fetched in ONE pass each instead of
+    // per line (see loadOrderLineDependencies). Validation order and error
+    // messages below are unchanged.
+    const { productById, warehouseById, stockByPair } = await loadOrderLineDependencies({
+      canonicalProducts,
+      isOutOfStock,
+      dbConnection: req.dbConnection,
+      Product,
+      Warehouse
+    });
+
     for (const item of canonicalProducts) {
-      const product = await Product.findById(item.product);
+      const product = productById.get(String(item.product));
       if (!product) {
         return res.status(404).json({
           success: false,
@@ -1241,7 +1342,7 @@ export const createSalesOrder = async (req, res) => {
 
       // Validate warehouse exists (skip if warehouse is "No Stock" for out-of-stock orders)
       if (item.warehouse && item.warehouse !== "No Stock") {
-        const warehouse = await Warehouse.findById(item.warehouse);
+        const warehouse = warehouseById.get(String(item.warehouse));
 
         if (!warehouse) {
           return res.status(400).json({
@@ -1253,11 +1354,7 @@ export const createSalesOrder = async (req, res) => {
         // For out-of-stock orders, skip stock validation
         if (!isOutOfStock) {
           // For regular orders, validate stock availability
-          const currentStock = await StockMovementService.getCurrentStock(
-            item.product,
-            item.warehouse,
-            req.dbConnection
-          );
+          const currentStock = stockByPair.get(`${String(item.product)}:${String(item.warehouse)}`) ?? 0;
 
           if (currentStock < item.quantity) {
             return res.status(400).json({
@@ -1331,10 +1428,12 @@ export const createSalesOrder = async (req, res) => {
     // Scheme opt-in from the eligibility panel. Left untouched when the client
     // did not send it, so the field stays absent and the engine keeps counting
     // every matching scheme (legacy behaviour).
+    //
+    // NOTE: this value is applied inside the constructor below. It used to be
+    // assigned to `salesOrder` here, BEFORE `const salesOrder` was declared —
+    // a temporal-dead-zone ReferenceError on every request that carried
+    // `appliedSchemes`.
     const appliedSelection = readAppliedSchemes(req.body);
-    if (appliedSelection !== undefined) {
-      salesOrder.appliedSchemes = appliedSelection;
-    }
 
     // Initialize stock tracking fields for ALL orders (not just out-of-stock)
     // This ensures stock status is always available for display
@@ -1375,11 +1474,16 @@ export const createSalesOrder = async (req, res) => {
       status: initialStatus,
       discountFinalizedAt: isFinalizedSalesOrderStatus(initialStatus) ? new Date() : null,
       createdBy: req.user._id,
+      // Idempotency token (null for legacy clients that do not send one).
+      clientRequestId: clientRequestId || null,
       // Out-of-stock fields
       isOutOfStock: isOutOfStock || false,
       stockValidation: stockValidation || [],
       // Credit overlimit fields
       creditOverlimit: req.body.creditOverlimit || undefined,
+      // Scheme opt-in — absent unless the client explicitly sent it, which is
+      // what keeps legacy "count everything" behaviour intact.
+      ...(appliedSelection !== undefined ? { appliedSchemes: appliedSelection } : {}),
       // Credit check amount is derived from canonical direct + dealer-extra stages.
       creditAmount: orderTotalAmount,
       // Initialize order-level stock status for ALL orders
@@ -1414,11 +1518,10 @@ export const createSalesOrder = async (req, res) => {
 
     // Save sales order
     await salesOrder.save();
-    try {
-      await StockArrivalService.refreshAllPendingOrders(req.dbConnection);
-    } catch (refreshError) {
-      console.error('New Sales Order stock queue refresh failed (non-critical):', refreshError.message);
-    }
+    // Advisory reconciliation only — nothing in this response depends on it, and
+    // its cost scales with the pending-order backlog. Run it AFTER the response
+    // so a large queue can never push the save past the client timeout.
+    StockArrivalService.schedulePendingRefresh(req.dbConnection, res);
 
     if (creditOverlimitSnapshot.isOverlimit) {
       try {
@@ -1511,6 +1614,20 @@ export const createSalesOrder = async (req, res) => {
 
     // Handle duplicate order number error
     if (error.code === 11000) {
+      // The duplicate may come from the idempotency index rather than the order
+      // number: two concurrent retries can both pass the replay check above and
+      // race to insert. In that case the correct answer is the order that won.
+      if (clientRequestId) {
+        const racedOrder = await SalesOrder.findOne({ clientRequestId }).lean();
+        if (racedOrder) {
+          return res.status(200).json({
+            success: true,
+            idempotentReplay: true,
+            message: 'This order was already created.',
+            salesOrder: racedOrder
+          });
+        }
+      }
       return res.status(400).json({
         success: false,
         message: "Order number already exists"
@@ -3768,7 +3885,7 @@ export const getPendingQuantities = async (req, res) => {
  * Helper function to create a single sales order
  * Extracted from createSalesOrder for reusability in auto-split logic
  */
-export async function createSingleSalesOrder(dbConnection, orderData, userId, company = null) {
+export async function createSingleSalesOrder(dbConnection, orderData, userId, company = null, res = null) {
   const { SalesOrder, Product, Dealer, User, Notification, Warehouse } = getModels(dbConnection);
 
   const {
@@ -3792,7 +3909,8 @@ export async function createSingleSalesOrder(dbConnection, orderData, userId, co
     stockValidation,
     salesType, // NEW: 'Regular Sale' or 'CD Sales'
     creditDaysApplied, // NEW: Actual credit days applied
-    orderGroupId // NEW: correlates split siblings from one user action
+    orderGroupId, // NEW: correlates split siblings from one user action
+    clientRequestId // idempotency token, shared by both split siblings
   } = orderData;
 
   // Generate unique order number
@@ -3838,15 +3956,25 @@ export async function createSingleSalesOrder(dbConnection, orderData, userId, co
       (await Warehouse.findOne({}).sort({ createdAt: 1 }));
   }
 
+  // Products, warehouses and stock in ONE pass each — see
+  // loadOrderLineDependencies. Same validation order and error messages.
+  const { productById, warehouseById, stockByPair } = await loadOrderLineDependencies({
+    canonicalProducts,
+    isOutOfStock,
+    dbConnection,
+    Product,
+    Warehouse
+  });
+
   for (const item of canonicalProducts) {
-    const product = await Product.findById(item.product);
+    const product = productById.get(String(item.product));
     if (!product) {
       throw new Error(`Product not found: ${item.productName || item.product}`);
     }
 
     // Validate warehouse exists (skip if warehouse is "No Stock" for out-of-stock orders)
     if (item.warehouse && item.warehouse !== "No Stock") {
-      const warehouse = await Warehouse.findById(item.warehouse);
+      const warehouse = warehouseById.get(String(item.warehouse));
 
       if (!warehouse) {
         throw new Error(`Warehouse not found: ${item.warehouse}`);
@@ -3855,11 +3983,7 @@ export async function createSingleSalesOrder(dbConnection, orderData, userId, co
       // For out-of-stock orders, skip stock validation
       if (!isOutOfStock) {
         // For regular orders, validate stock availability
-        const currentStock = await StockMovementService.getCurrentStock(
-          item.product,
-          item.warehouse,
-          dbConnection
-        );
+        const currentStock = stockByPair.get(`${String(item.product)}:${String(item.warehouse)}`) ?? 0;
 
         if (currentStock < item.quantity) {
           throw new Error(`Insufficient stock for ${product.itemName} in ${warehouse.name}. Available: ${currentStock}, Required: ${item.quantity}`);
@@ -3952,6 +4076,9 @@ export async function createSingleSalesOrder(dbConnection, orderData, userId, co
   const salesOrder = new SalesOrder({
     orderNumber,
     orderGroupId, // NEW: set by the auto-split caller; pre-save defaults it to orderNumber
+    // Same token on both split siblings — the compound unique index allows one
+    // order per (token, salesType), so a retry is recognised rather than duplicated.
+    clientRequestId: readClientRequestId({ clientRequestId }) || null,
     dealer,
     dealerName: dealerData.name,
     dealerCode: dealerData.code,
@@ -4027,11 +4154,9 @@ export async function createSingleSalesOrder(dbConnection, orderData, userId, co
 
   // Save sales order
   await salesOrder.save();
-  try {
-    await StockArrivalService.refreshAllPendingOrders(dbConnection);
-  } catch (refreshError) {
-    console.error('Split Sales Order stock queue refresh failed (non-critical):', refreshError.message);
-  }
+  // Deferred + coalesced: the auto-split path calls this twice (once per
+  // sibling) and the two runs share one background scan.
+  StockArrivalService.schedulePendingRefresh(dbConnection, res);
 
   const notificationTitle = 'Sales Order Created';
   const notificationMessage = `Sales order ${salesOrder.orderNumber} has been created for you. Total: Rs. ${(salesOrder.totalAmount || 0).toLocaleString('en-IN')}.`;
@@ -4088,6 +4213,8 @@ export async function createSingleSalesOrder(dbConnection, orderData, userId, co
  * @access  Private
  */
 export const createSalesOrderWithAutoSplit = async (req, res) => {
+  // Declared outside try so the catch can resolve an idempotency-index race.
+  let clientRequestId = null;
   try {
     // Get models from company-specific connection
     const { SalesOrder, Product, Dealer, StockMovement, User, Notification } = getModels(req.dbConnection);
@@ -4096,6 +4223,27 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
     console.log("Request body:", JSON.stringify(req.body, null, 2));
 
     const { dealer, products, ...orderData } = req.body;
+
+    // Idempotent replay. An auto-split save creates up to TWO orders from one
+    // user action, so a retry after a client timeout would otherwise create a
+    // duplicate PAIR. The client reuses its token; if orders already exist for
+    // it we return them in the same shape a fresh split returns.
+    clientRequestId = readClientRequestId(req.body);
+    if (clientRequestId) {
+      const existingOrders = await SalesOrder.find({ clientRequestId }).lean();      if (existingOrders.length > 0) {
+        console.log(`♻️  Idempotent replay for clientRequestId ${clientRequestId} -> ${existingOrders.map((o) => o.orderNumber).join(', ')}`);
+        return res.status(200).json({
+          success: true,
+          idempotentReplay: true,
+          message: 'This order was already created.',
+          isSplit: existingOrders.length > 1,
+          salesOrders: existingOrders,
+          orderGroupId: existingOrders[0].orderGroupId,
+          regularOrder: existingOrders.find((o) => o.salesType === 'Regular Sale') || null,
+          cdOrder: existingOrders.find((o) => o.salesType === 'CD Sales') || null
+        });
+      }
+    }
 
     // Scheme opt-in from the eligibility panel, read ONCE here and reused below.
     // `orderData` is req.body minus dealer/products, so the selection is intact;
@@ -4115,19 +4263,26 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
     console.log("✅ Dealer found:", dealerData.name);
     console.log("📊 Dealer credit days - Regular:", dealerData.creditDaysRegular, "CD:", dealerData.creditDaysCD);
 
-    // Get full product details to check salesType
-    const productDetails = await Promise.all(
-      products.map(async (item) => {
-        const product = await Product.findById(item.product);
-        if (!product) {
-          throw createDiscountPolicyError(`Product not found: ${item.product}`, 'PRODUCT_NOT_FOUND');
-        }
-        return {
-          ...item,
-          salesType: product.salesType
-        };
-      })
+    // Resolve salesType for every line in ONE query. This used to be one
+    // `Product.findById` per line, on the hot path of every split save.
+    const splitProductIds = [...new Set(products.map((item) => String(item.product)))];
+    const splitProductDocs = await Product.find({ _id: { $in: splitProductIds } })
+      .select('salesType')
+      .lean();
+    const splitSalesTypeById = new Map(
+      splitProductDocs.map((doc) => [String(doc._id), doc.salesType])
     );
+
+    const productDetails = products.map((item) => {
+      const key = String(item.product);
+      if (!splitSalesTypeById.has(key)) {
+        throw createDiscountPolicyError(`Product not found: ${item.product}`, 'PRODUCT_NOT_FOUND');
+      }
+      return {
+        ...item,
+        salesType: splitSalesTypeById.get(key)
+      };
+    });
 
     console.log("📦 Product details loaded:", productDetails.length, "products");
 
@@ -4186,7 +4341,8 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
         req.dbConnection,
         regularOrderData,
         req.user._id,
-        req.company
+        req.company,
+        res
       );
       createdOrders.push(regularOrder);
       console.log("✅ Regular Sales Order created:", regularOrder.orderNumber);
@@ -4210,7 +4366,8 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
         req.dbConnection,
         cdOrderData,
         req.user._id,
-        req.company
+        req.company,
+        res
       );
       createdOrders.push(cdOrder);
       console.log("✅ CD Sales Order created:", cdOrder.orderNumber);
@@ -4297,6 +4454,23 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
 
     // Handle duplicate order number error
     if (error.code === 11000) {
+      // Same race as the single-order path: if the idempotency index rejected a
+      // concurrent retry, return the orders that already exist.
+      if (clientRequestId) {
+        const racedOrders = await SalesOrder.find({ clientRequestId }).lean();
+        if (racedOrders.length > 0) {
+          return res.status(200).json({
+            success: true,
+            idempotentReplay: true,
+            message: 'This order was already created.',
+            isSplit: racedOrders.length > 1,
+            salesOrders: racedOrders,
+            orderGroupId: racedOrders[0].orderGroupId,
+            regularOrder: racedOrders.find((o) => o.salesType === 'Regular Sale') || null,
+            cdOrder: racedOrders.find((o) => o.salesType === 'CD Sales') || null
+          });
+        }
+      }
       return res.status(400).json({
         success: false,
         message: "Order number already exists"

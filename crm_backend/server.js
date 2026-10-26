@@ -1,4 +1,4 @@
-﻿import cluster from "cluster";
+import cluster from "cluster";
 import { cpus } from "os";
 import express from "express";
 import cors from "cors";
@@ -152,9 +152,12 @@ import deAdminDeliveryRoutes from './DeliveryExecutiveAppBackend/routes/adminDel
 // Seed controller
 import { seedTypesForAllCompanies } from './controllers/seedController.js';
 
-// import dns from 'dns';
-
-// dns.setServers(['8.8.8.8', '8.8.4.4']);
+import dns from 'dns';
+try {
+  dns.setServers(['8.8.8.8', '1.1.1.1']);
+} catch (e) {
+  // Ignore if not supported in environment
+}
 
 dotenv.config();
 
