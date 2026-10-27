@@ -181,6 +181,16 @@ const productSchema = new mongoose.Schema({
     type: String,
     default: '',
     trim: true
+  },
+  /**
+   * Audit flag: this line's product falls inside a scheme applied to the order,
+   * so the dealer's standing extra discount was deliberately not stacked on it.
+   * The rate itself is 0 in `dealerExtraDiscount`; this records WHY, so a
+   * "discount missing" query has an answer.
+   */
+  dealerExtraDiscountBlockedByScheme: {
+    type: Boolean,
+    default: false
   }
 });
 

@@ -15,6 +15,8 @@ import { discountMappingSchema } from "../models/DiscountMapping.js";
 import { notifyCreditLimitExceeded, sendAdminNotification } from "../services/adminNotificationService.js";
 import { dealerInvoiceSchema } from "../models/DealerInvoice.js";
 import { dealerLedgerSchema } from "../models/DealerLedger.js";
+import { schemeSchema } from "../models/Scheme.js";
+import { loadAppliedSchemeScopes, isProductCoveredBySchemes } from '../utils/schemeCoverage.js';
 import { sendPushNotification } from '../services/firebaseNotificationService.js';
 import {
   calculateDiscountLine,
@@ -52,6 +54,9 @@ const getModels = (dbConnection) => {
     DiscountMapping: dbConnection.models.DiscountMapping || dbConnection.model('DiscountMapping', discountMappingSchema),
     DealerInvoice: dbConnection.models.DealerInvoice || dbConnection.model('DealerInvoice', dealerInvoiceSchema),
     DealerLedger: dbConnection.models.DealerLedger || dbConnection.model('DealerLedger', dealerLedgerSchema),
+    // Needed to read applied-scheme scopes: a product covered by an applied
+    // scheme must not also receive the dealer's extra discount.
+    Scheme: dbConnection.models.Scheme || dbConnection.model('Scheme', schemeSchema),
   };
 };
 
@@ -219,7 +224,7 @@ const sendDiscountPolicyError = (res, error) => {
   return true;
 };
 
-const canonicalizeSalesOrderProducts = async ({ products, dealer, dbConnection, actorId }) => {
+const canonicalizeSalesOrderProducts = async ({ products, dealer, dbConnection, actorId, schemeScopes = [] }) => {
   const { Product, DiscountMapping, User } = getModels(dbConnection);
   const actor = actorId
     ? await User.findById(actorId).select('role allowedDiscountLevels').lean()
@@ -255,11 +260,18 @@ const canonicalizeSalesOrderProducts = async ({ products, dealer, dbConnection, 
     // become executable only when an invoice creator explicitly selects them.
     const selectedDiscountLevels = [];
     const manualDiscountLevels = {};
-    const dealerExtraDiscount = resolveAndValidateDealerExtraDiscount({
-      submittedItem,
-      dealer,
-      product
-    });
+    // Dealer extra discount is a standing term; a scheme is already the
+    // concession on the products it covers, so the two must not stack. Only the
+    // dealer-extra stage is suppressed — direct and level discounts are
+    // unaffected.
+    const schemeCovered = isProductCoveredBySchemes(product, schemeScopes);
+    const dealerExtraDiscount = schemeCovered
+      ? 0
+      : resolveAndValidateDealerExtraDiscount({
+        submittedItem,
+        dealer,
+        product
+      });
     const mappingLevels = mapping?.levels || [];
     const stages = [];
 
@@ -365,6 +377,8 @@ const canonicalizeSalesOrderProducts = async ({ products, dealer, dbConnection, 
       selectedDiscountLevels,
       manualDiscountLevels,
       dealerExtraDiscount,
+      // Audit trail: why the dealer's extra discount is 0 on this line.
+      dealerExtraDiscountBlockedByScheme: schemeCovered,
       discountPercentage: stages
         .filter((stage) => stage.kind === 'direct' || stage.kind === 'level')
         .reduce((sum, stage) => sum + stage.ratePercentage, 0),
@@ -1104,7 +1118,13 @@ export const previewSalesOrderCredit = async (req, res) => {
       products,
       dealer,
       dbConnection: req.dbConnection,
-      actorId: req.user._id
+      actorId: req.user._id,
+      // Must match the save path, or the previewed credit amount would differ
+      // from the saved order whenever a scheme suppresses the dealer extra.
+      schemeScopes: await loadAppliedSchemeScopes(
+        getModels(req.dbConnection).Scheme,
+        readAppliedSchemes(req.body)
+      )
     });
     const exposure = await getDealerCreditExposure(req.dbConnection, dealerId, {
       excludeSalesOrderId
@@ -1223,7 +1243,12 @@ export const createSalesOrder = async (req, res) => {
       products,
       dealer: dealerData,
       dbConnection: req.dbConnection,
-      actorId: req.user._id
+      actorId: req.user._id,
+      // Products covered by an applied scheme do not also get dealer extra.
+      schemeScopes: await loadAppliedSchemeScopes(
+        getModels(req.dbConnection).Scheme,
+        readAppliedSchemes(req.body)
+      )
     });
 
     // Use the dealer's credit terms when the request omits `creditDays`.
@@ -2186,6 +2211,37 @@ OR wait for stock to arrive and this order will be auto-processed.`,
       }
     }
 
+    // RELEASE SCHEME CONTRIBUTIONS on cancel/reject.
+    //
+    // Deliberately NOT gated on `originalStatus`: contributions are recorded when
+    // the order is CREATED, so even a Pending order that is cancelled still holds
+    // them. Left in place, a cumulative scheme keeps counting goods that were
+    // never delivered, and the dealer can cross a slab on a cancelled order.
+    if (status === 'Cancelled' || status === 'Rejected') {
+      try {
+        const released = await schemeEngine.releaseOrderContributions(req.dbConnection, {
+          dealerId: salesOrder.dealer,
+          orderId: salesOrder._id
+        });
+        if (released.released > 0) {
+          console.log(
+            `🎁 Released ${released.released} scheme contribution(s) `
+            + `across ${released.buckets} bucket(s) for ${status.toLowerCase()} order `
+            + `${salesOrder.orderNumber}`
+          );
+        }
+      } catch (schemeError) {
+        // Best-effort, matching the stock and ledger reversals below: the status
+        // change is already saved, so throwing here would report a failure for a
+        // change that did happen. Log loudly — progress is now overstated.
+        console.error(
+          `❌ Scheme contribution release FAILED for ${status.toLowerCase()} order `
+          + `${salesOrder.orderNumber} — cumulative progress is overstated until repaired:`,
+          schemeError
+        );
+      }
+    }
+
     // NOTE: Credit limit blocking moved to invoice approval stage
     // Sales orders no longer block credit limit on confirmation
     // Credit limit is blocked when invoice is approved, not when order is confirmed
@@ -2760,7 +2816,13 @@ const updateSalesOrderUnlocked = async (req, res) => {
           products: productsForRepricing,
           dealer: dealerData,
           dbConnection: req.dbConnection,
-          actorId: req.user._id
+          actorId: req.user._id,
+          // Editing does not re-run the scheme panel, so the order's own gate
+          // decides coverage — same as the invoice inherits it.
+          schemeScopes: await loadAppliedSchemeScopes(
+            getModels(req.dbConnection).Scheme,
+            salesOrder.appliedSchemes
+          )
         });
       } else if (replayableAmountInputsChanged) {
         req.body.products = replayPersistedSalesOrderProducts(
@@ -3927,7 +3989,12 @@ export async function createSingleSalesOrder(dbConnection, orderData, userId, co
     products,
     dealer: dealerData,
     dbConnection,
-    actorId: userId
+    actorId: userId,
+    // `orderData` carries the same appliedSchemes gate the parent order used.
+    schemeScopes: await loadAppliedSchemeScopes(
+      getModels(dbConnection).Scheme,
+      orderData.appliedSchemes
+    )
   });
 
   // Validate credit days don't exceed dealer's limits
@@ -4294,13 +4361,18 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
     console.log("🟢 CD Sales products:", cdProducts.length);
 
     // Validate every split group's discount policy before the first order is persisted.
+    const splitSchemeScopes = await loadAppliedSchemeScopes(
+      getModels(req.dbConnection).Scheme,
+      appliedSelection
+    );
     await Promise.all([
       regularProducts.length > 0
         ? canonicalizeSalesOrderProducts({
           products: regularProducts,
           dealer: dealerData,
           dbConnection: req.dbConnection,
-          actorId: req.user._id
+          actorId: req.user._id,
+          schemeScopes: splitSchemeScopes
         })
         : Promise.resolve([]),
       cdProducts.length > 0
@@ -4308,7 +4380,8 @@ export const createSalesOrderWithAutoSplit = async (req, res) => {
           products: cdProducts,
           dealer: dealerData,
           dbConnection: req.dbConnection,
-          actorId: req.user._id
+          actorId: req.user._id,
+          schemeScopes: splitSchemeScopes
         })
         : Promise.resolve([])
     ]);

@@ -207,6 +207,14 @@ const invoiceItemSchema = new mongoose.Schema({
     type: String,
     default: '',
     trim: true
+  },
+  /**
+   * Audit flag: the product is covered by a scheme applied to this invoice, so
+   * the dealer's standing extra discount was not stacked on it (rate is 0).
+   */
+  dealerExtraDiscountBlockedByScheme: {
+    type: Boolean,
+    default: false
   }
 });
 

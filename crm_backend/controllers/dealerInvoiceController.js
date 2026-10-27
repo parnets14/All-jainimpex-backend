@@ -33,7 +33,8 @@ import {
   normalizeRateMap,
   resolveDealerExtraDiscountBySpecificity
 } from '../utils/sequentialDiscountPolicy.js';
-import { normalizeServiceCharges } from '../utils/serviceChargeUtils.js';
+import { prepareServiceCharges } from '../utils/serviceChargeUtils.js';
+import { loadAppliedSchemeScopes, isProductCoveredBySchemes } from '../utils/schemeCoverage.js';
 import { serviceChargeMasterSchema } from '../models/ServiceChargeMaster.js';
 import { schemeSchema } from '../models/Scheme.js';
 import { schemeProgressSchema } from '../models/SchemeProgress.js';
@@ -270,7 +271,13 @@ const canonicalizeOneTimePriceIncrease = ({
   };
 };
 
-const resolveAndValidateDealerExtraDiscount = ({ submittedItem, dealer, product }) => {
+const resolveAndValidateDealerExtraDiscount = ({ submittedItem, dealer, product, schemeCovered = false }) => {
+  // A product covered by an applied scheme already carries that scheme's
+  // concession, so the dealer's standing extra discount is not stacked on it.
+  // The submitted value is ignored rather than rejected, so an older client
+  // that still sends the configured rate cannot break the save.
+  if (schemeCovered) return 0;
+
   const configuredRate = resolveDealerExtraDiscountBySpecificity(dealer, product);
   if (hasOwn(submittedItem, 'dealerExtraDiscount')) {
     const submittedRate = Number(submittedItem.dealerExtraDiscount);
@@ -406,7 +413,8 @@ const canonicalizeInvoiceItems = async ({
   actorId,
   salesOrderId,
   existingItems = [],
-  session = null
+  session = null,
+  schemeScopes = []
 }) => {
   const { Product, DiscountMapping, User, SalesOrder } = getModels(dbConnection);
   const applySession = (query) => session ? query.session(session) : query;
@@ -441,6 +449,16 @@ const canonicalizeInvoiceItems = async ({
     }
     matchSourceLine = buildSalesOrderLineMatcher(linkedSalesOrder.products || []);
   }
+
+  // Which products are covered by an applied scheme. Derived from the linked
+  // order's opt-in gate when the caller did not pass it, so every caller of this
+  // function applies the same rule. No gate (standalone invoice) → no coverage.
+  const effectiveSchemeScopes = (Array.isArray(schemeScopes) && schemeScopes.length > 0)
+    ? schemeScopes
+    : await loadAppliedSchemeScopes(
+      getModels(dbConnection).Scheme,
+      linkedSalesOrder?.appliedSchemes
+    );
 
   let liveActorContextPromise = null;
   const getLiveActorContext = () => {
@@ -759,10 +777,12 @@ const canonicalizeInvoiceItems = async ({
       ?? null;
     const selectedDiscountLevels = [...new Set((liveSubmittedItem.selectedDiscountLevels || []).map(String))];
     const manualDiscountLevels = normalizeRateMap(liveSubmittedItem.manualDiscountLevels);
+    const schemeCovered = isProductCoveredBySchemes(product, effectiveSchemeScopes);
     const dealerExtraDiscount = resolveAndValidateDealerExtraDiscount({
       submittedItem: liveSubmittedItem,
       dealer,
-      product
+      product,
+      schemeCovered
     });
     const mappingLevels = mapping?.levels || [];
     const stages = [];
@@ -917,6 +937,7 @@ const canonicalizeInvoiceItems = async ({
       selectedDiscountLevels,
       manualDiscountLevels: new Map(Object.entries(manualDiscountLevels)),
       dealerExtraDiscount,
+      dealerExtraDiscountBlockedByScheme: schemeCovered,
       discountPercentage: stages
         .filter(stage => stage.kind === 'direct' || stage.kind === 'level')
         .reduce((sum, stage) => sum + stage.ratePercentage, 0),
@@ -1575,7 +1596,7 @@ export const calculateDiscountsAndPoints = async (req, res) => {
     // Get models from company-specific connection
     const { Dealer, Product, DiscountMapping, User } = getModels(req.dbConnection);
     
-    const { items, dealerId } = req.body;
+    const { items, dealerId, appliedSchemes } = req.body;
 
     if (!items || !Array.isArray(items)) {
       return res.status(400).json({
@@ -1583,6 +1604,14 @@ export const calculateDiscountsAndPoints = async (req, res) => {
         message: "Items array is required"
       });
     }
+
+    // Optional: when the caller tells us which schemes are applied, products
+    // covered by them lose the dealer-extra discount, matching the save path.
+    // Callers that omit it keep the previous behaviour.
+    const schemeScopes = await loadAppliedSchemeScopes(
+      getModels(req.dbConnection).Scheme,
+      appliedSchemes
+    );
 
     const dealer = dealerId
       ? await Dealer.findById(dealerId).select('dealerType extraDiscounts').lean()
@@ -1671,7 +1700,9 @@ export const calculateDiscountsAndPoints = async (req, res) => {
         }
       }
 
-      const dealerExtraDiscount = dealer
+      // A product covered by an applied scheme does not also get the dealer's
+      // standing extra discount — the scheme is the concession on those units.
+      const dealerExtraDiscount = dealer && !isProductCoveredBySchemes(product, schemeScopes)
         ? resolveDealerExtraDiscountBySpecificity(dealer, product)
         : 0;
       if (dealerExtraDiscount > 0) {
@@ -1789,7 +1820,7 @@ export const calculateDiscountsAndPoints = async (req, res) => {
 export const createDealerInvoice = async (req, res) => {
   try {
     // Get models from company-specific connection
-    const { DealerInvoice, Dealer, Product, SalesOrder, StockMovement, DealerLedger, Points, Notification } = getModels(req.dbConnection);
+    const { DealerInvoice, Dealer, Product, SalesOrder, StockMovement, DealerLedger, Points, Notification, ServiceChargeMaster } = getModels(req.dbConnection);
     
     console.log("Creating dealer invoice with data:", {
       dealerId: req.body.dealerId,
@@ -1995,6 +2026,14 @@ export const createDealerInvoice = async (req, res) => {
     // DON'T generate invoice number for drafts - will be generated on approval
     // const invoiceNumber = await generateInvoiceNumber(); // REMOVED
 
+    // Resolve service charges against the master FIRST: the master owns the
+    // charge name and the tax rate, so a tampered payload cannot suppress GST.
+    const { charges: preparedServiceCharges, warnings: serviceChargeWarnings } =
+      await prepareServiceCharges(req.body.serviceCharges, ServiceChargeMaster);
+    if (serviceChargeWarnings.length > 0) {
+      console.warn('Dealer invoice service charges:', serviceChargeWarnings.join(' | '));
+    }
+
     // Create invoice data as DRAFT
     // NOTE: Do NOT set invoiceNumber for drafts — leaving it undefined allows
     // the sparse unique index to permit multiple drafts without conflict
@@ -2021,7 +2060,7 @@ export const createDealerInvoice = async (req, res) => {
       totalGst: totalGst || 0,
       totalAmount: totalAmount || 0,
       totalPoints: totalPoints || 0,
-      serviceCharges: normalizeServiceCharges(req.body.serviceCharges),
+      serviceCharges: preparedServiceCharges,
       createdBy: req.user._id
     };
 
@@ -2190,7 +2229,10 @@ export const createDealerInvoice = async (req, res) => {
     res.status(201).json({
       success: true,
       message: "Draft invoice created successfully. Approve to generate invoice number.",
-      invoice: populatedInvoice
+      invoice: populatedInvoice,
+      // Non-fatal: rows that were ignored, so the client can surface them
+      // instead of silently losing a charge.
+      ...(serviceChargeWarnings.length > 0 ? { serviceChargeWarnings } : {})
     });
   } catch (error) {
     console.error("Create dealer invoice error:", error);
@@ -3011,7 +3053,7 @@ export const approveDealerInvoice = async (req, res) => {
 // @access  Private
 export const updateDealerInvoice = async (req, res) => {
   try {
-    const { DealerInvoice, Dealer } = getModels(req.dbConnection);
+    const { DealerInvoice, Dealer, ServiceChargeMaster } = getModels(req.dbConnection);
     const { id } = req.params;
 
     const invoice = await DealerInvoice.findById(id);
@@ -3055,9 +3097,16 @@ export const updateDealerInvoice = async (req, res) => {
       }
     }
 
-    // Service charges are normalized separately so unselected rows are discarded
+    // Service charges: resolve against the master so the charge name and tax
+    // rate cannot be overridden by the request, and report ignored rows.
+    let serviceChargeWarnings = [];
     if (Object.prototype.hasOwnProperty.call(req.body, "serviceCharges")) {
-      invoice.set("serviceCharges", normalizeServiceCharges(req.body.serviceCharges));
+      const prepared = await prepareServiceCharges(req.body.serviceCharges, ServiceChargeMaster);
+      serviceChargeWarnings = prepared.warnings;
+      if (serviceChargeWarnings.length > 0) {
+        console.warn('Dealer invoice service charges (update):', serviceChargeWarnings.join(' | '));
+      }
+      invoice.set("serviceCharges", prepared.charges);
     }
 
     if (req.body.customerInfo && typeof req.body.customerInfo === "object") {
@@ -3101,7 +3150,8 @@ export const updateDealerInvoice = async (req, res) => {
     return res.json({
       success: true,
       message: "Draft invoice updated successfully",
-      invoice
+      invoice,
+      ...(serviceChargeWarnings.length > 0 ? { serviceChargeWarnings } : {})
     });
   } catch (error) {
     if (handlePeriodLockError(error, res)) return;
@@ -3248,7 +3298,37 @@ export const deleteDealerInvoice = async (req, res) => {
       
       await invoice.save({ session });
       console.log(`✅ Invoice marked as cancelled`);
-      
+
+      // REVERSE SCHEME CONSEQUENCES.
+      //
+      // Approval froze the slabs this invoice crossed and created the reward
+      // entitlements. Cancelling the invoice used to leave both in place, so the
+      // dealer kept a reward for a sale that no longer exists — and re-issuing the
+      // invoice could mint a second reward for the same goods.
+      //
+      // Rewards already handed over are REPORTED, never clawed back silently:
+      // that is a business decision, not a repair.
+      let schemeReversal = { revoked: 0, flagged: 0, needsReview: [] };
+      schemeReversal = await schemeEngine.revokeInvoiceAchievements(req.dbConnection, {
+        invoiceId: invoice._id,
+        session,
+        actorId: req.user._id,
+        reason: `Invoice cancelled: ${reason || 'No reason provided'}`
+      });
+      if (schemeReversal.revoked > 0 || schemeReversal.flagged > 0) {
+        console.log(
+          `🎁 Scheme reversal for cancelled invoice ${invoice.invoiceNumber}: `
+          + `${schemeReversal.revoked} entitlement(s) revoked, `
+          + `${schemeReversal.flagged} achievement(s) flagged`
+        );
+      }
+      if (schemeReversal.needsReview.length > 0) {
+        console.warn(
+          `⚠️ ${schemeReversal.needsReview.length} already-GIVEN reward(s) left untouched `
+          + `on cancelled invoice ${invoice.invoiceNumber} — review manually`
+        );
+      }
+
       // RELEASE SALES ORDER
     let salesOrderReleased = false;
     if (invoice.salesOrder) {
@@ -3399,7 +3479,17 @@ export const deleteDealerInvoice = async (req, res) => {
         invoiceNumber: invoice.invoiceNumber,
         salesOrderReleased,
         stockReversed,
-        ledgerReversed
+        ledgerReversed,
+        // Scheme consequences of the cancellation. `schemeRewardsNeedingReview`
+        // lists rewards already handed over that were left untouched.
+        schemeRewardsRevoked: schemeReversal.revoked,
+        schemeAchievementsFlagged: schemeReversal.flagged,
+        schemeRewardsNeedingReview: schemeReversal.needsReview.map((row) => ({
+          applicationId: row._id,
+          schemeCode: row.schemeCode,
+          status: row.status,
+          rewardType: row.rewardType
+        }))
       }
     });
     } // Close CASE 2: Cancel Approved Invoice

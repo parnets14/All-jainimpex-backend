@@ -213,7 +213,15 @@ async function computeBalanceSheetData(req) {
     // ── 5. GST INPUT CREDIT (from supplier invoices) ──────────────────────────
     const gstInputAgg = await SupplierInvoice.aggregate([
       { $match: { invoiceDate: { $lte: reportDate }, status: { $nin: ['Cancelled'] } } },
-      { $group: { _id: null, totalGst: { $sum: '$totalGst' } } }
+      { $group: { _id: null, totalGst: { $sum: { $add: [
+        { $ifNull: ['$totalGst', 0] },
+        // `totalGst` is the GST on PRODUCT lines only — service-charge tax is
+        // stored separately in `serviceChargesTax`. Summing `totalGst` alone
+        // understated output GST and input credit by the service-charge tax,
+        // which made this statement disagree with the GST report (that report
+        // adds the two explicitly). Both models carry the field.
+        { $ifNull: ['$serviceChargesTax', 0] }
+      ] } } } }
     ]);
     const gstInputCredit = gstInputAgg[0]?.totalGst || 0;
 
@@ -297,7 +305,15 @@ async function computeBalanceSheetData(req) {
         isDraft: false,
         isDeleted: { $ne: true }
       }},
-      { $group: { _id: null, totalGst: { $sum: '$totalGst' } } }
+      { $group: { _id: null, totalGst: { $sum: { $add: [
+        { $ifNull: ['$totalGst', 0] },
+        // `totalGst` is the GST on PRODUCT lines only — service-charge tax is
+        // stored separately in `serviceChargesTax`. Summing `totalGst` alone
+        // understated output GST and input credit by the service-charge tax,
+        // which made this statement disagree with the GST report (that report
+        // adds the two explicitly). Both models carry the field.
+        { $ifNull: ['$serviceChargesTax', 0] }
+      ] } } } }
     ]);
     const gstCollected = gstSalesAgg[0]?.totalGst || 0;
     // GST Payable = gross GST collected on sales (output tax).
@@ -793,7 +809,15 @@ export const getBalanceSheetV2 = async (req, res) => {
     // 5. GST INPUT CREDIT
     const gstInputAgg = await SupplierInvoice.aggregate([
       { $match: { invoiceDate: { $lte: reportDate }, status: { $nin: ['Cancelled'] } } },
-      { $group: { _id: null, totalGst: { $sum: '$totalGst' } } }
+      { $group: { _id: null, totalGst: { $sum: { $add: [
+        { $ifNull: ['$totalGst', 0] },
+        // `totalGst` is the GST on PRODUCT lines only — service-charge tax is
+        // stored separately in `serviceChargesTax`. Summing `totalGst` alone
+        // understated output GST and input credit by the service-charge tax,
+        // which made this statement disagree with the GST report (that report
+        // adds the two explicitly). Both models carry the field.
+        { $ifNull: ['$serviceChargesTax', 0] }
+      ] } } } }
     ]);
     const gstInputCredit = gstInputAgg[0]?.totalGst || 0;
 
@@ -827,7 +851,15 @@ export const getBalanceSheetV2 = async (req, res) => {
     // 9. GST PAYABLE
     const gstSalesAgg = await DealerInvoice.aggregate([
       { $match: { invoiceDate: { $lte: reportDate }, status: { $nin: ['Cancelled', 'Draft'] }, isDraft: false, isDeleted: { $ne: true } } },
-      { $group: { _id: null, totalGst: { $sum: '$totalGst' } } }
+      { $group: { _id: null, totalGst: { $sum: { $add: [
+        { $ifNull: ['$totalGst', 0] },
+        // `totalGst` is the GST on PRODUCT lines only — service-charge tax is
+        // stored separately in `serviceChargesTax`. Summing `totalGst` alone
+        // understated output GST and input credit by the service-charge tax,
+        // which made this statement disagree with the GST report (that report
+        // adds the two explicitly). Both models carry the field.
+        { $ifNull: ['$serviceChargesTax', 0] }
+      ] } } } }
     ]);
     const gstPayable = Math.max(0, gstSalesAgg[0]?.totalGst || 0);
 
@@ -1179,12 +1211,20 @@ async function getDrillBreakdown(drill, reportDate, models, dbConnection) {
     }
 
     case 'gstPayable': {
-      // GST payable breakdown by invoice
+      // GST payable breakdown by invoice.
+      // `totalGst` excludes service-charge tax, so an invoice whose only tax is
+      // on service charges would have been filtered out entirely.
       const gstAgg = await models.DealerInvoice.aggregate([
-        { $match: { invoiceDate: { $lte: reportDate }, status: { $nin: ['Cancelled', 'Draft'] }, isDraft: false, isDeleted: { $ne: true }, totalGst: { $gt: 0 } } },
+        { $match: {
+          invoiceDate: { $lte: reportDate },
+          status: { $nin: ['Cancelled', 'Draft'] },
+          isDraft: false,
+          isDeleted: { $ne: true },
+          $or: [{ totalGst: { $gt: 0 } }, { serviceChargesTax: { $gt: 0 } }]
+        } },
         { $sort: { invoiceDate: -1 } },
         { $limit: 50 },
-        { $project: { invoiceNumber: 1, invoiceDate: 1, totalGst: 1, dealer: 1 } }
+        { $project: { invoiceNumber: 1, invoiceDate: 1, totalGst: 1, serviceChargesTax: 1, dealer: 1 } }
       ]);
       return {
         drill: 'gstPayable',
@@ -1193,7 +1233,7 @@ async function getDrillBreakdown(drill, reportDate, models, dbConnection) {
           id: inv._id,
           name: inv.invoiceNumber || 'Draft Invoice',
           date: inv.invoiceDate,
-          amount: inv.totalGst || 0,
+          amount: (inv.totalGst || 0) + (inv.serviceChargesTax || 0),
           drillable: false
         }))
       };

@@ -1313,6 +1313,192 @@ export const commitInvoiceAchievements = async (dbConnection, {
   return frozen;
 };
 
+// ---------------------------------------------------------------------------
+// Reversal — a cancelled document must not keep its scheme progress or reward.
+// ---------------------------------------------------------------------------
+/**
+ * Mark a document's contributions as not-counted, keeping the rows for audit.
+ *
+ * A CANCELLED order used to keep its contributions, so a cumulative scheme's
+ * running total still included goods that were never delivered — a dealer could
+ * cross a slab on a cancelled order. Releasing (rather than deleting) keeps the
+ * history and makes the reversal idempotent.
+ */
+export const releaseDocumentContributionsInList = (
+  contributions = [],
+  { documentId, documentType = 'SalesOrder' } = {}
+) => {
+  let released = 0;
+  const next = (contributions || []).map((contribution) => {
+    const sameDocument = contribution?.documentType === documentType
+      && toId(contribution?.documentId) === toId(documentId);
+    if (!sameDocument || contribution.counted === false) return contribution;
+    released += 1;
+    return { ...contribution, counted: false };
+  });
+  return { contributions: next, released };
+};
+
+/**
+ * Which entitlements a cancelled invoice must revoke.
+ *
+ * A reward that has already been HANDED OVER is never clawed back silently —
+ * that is a business decision, not a repair. Those come back as `needsReview`.
+ */
+export const planApplicationRevocations = (applications = [], { invoiceId } = {}) => {
+  const toRevoke = [];
+  const needsReview = [];
+  const untouched = [];
+
+  for (const application of applications || []) {
+    if (toId(application?.invoice) !== toId(invoiceId)) {
+      untouched.push(application);
+      continue;
+    }
+    if (application.status === 'Revoked' || application.status === 'Rejected') {
+      untouched.push(application);
+      continue;
+    }
+    if (application.status === 'Given') {
+      needsReview.push(application);
+      continue;
+    }
+    toRevoke.push(application);
+  }
+
+  return { toRevoke, needsReview, untouched };
+};
+
+/**
+ * Flag the achievements an invoice froze, so a re-issued invoice creates a fresh
+ * achievement instead of reviving the cancelled one.
+ */
+export const markAchievementsPendingRevocation = (achievements = [], { invoiceId } = {}) => {
+  let marked = 0;
+  const next = (achievements || []).map((achievement) => {
+    const fromInvoice = toId(achievement?.crossedByDocumentId) === toId(invoiceId);
+    if (!fromInvoice || achievement.revocationPending) return achievement;
+    marked += 1;
+    return { ...achievement, revocationPending: true };
+  });
+  return { achievements: next, marked };
+};
+
+/**
+ * Release a Sales Order's scheme contributions (DB wrapper).
+ *
+ * Called when an order is cancelled or rejected. Without it a cumulative scheme
+ * keeps counting goods that were never delivered.
+ */
+export const releaseOrderContributions = async (dbConnection, {
+  dealerId,
+  orderId,
+  session = null
+} = {}) => {
+  if (!dealerId || !orderId) return { buckets: 0, released: 0 };
+
+  const { SchemeProgress, Scheme } = getSchemeModels(dbConnection);
+  let query = SchemeProgress.find({ dealer: dealerId, 'contributions.documentId': orderId });
+  if (session) query = query.session(session);
+  const buckets = await query;
+
+  if (buckets.length === 0) return { buckets: 0, released: 0 };
+
+  const schemeIds = [...new Set(buckets.map((bucket) => toId(bucket.scheme)).filter(Boolean))];
+  const schemes = schemeIds.length > 0
+    ? await Scheme.find({ _id: { $in: schemeIds } }).select('slabs').lean()
+    : [];
+  const slabsByScheme = new Map(schemes.map((scheme) => [toId(scheme._id), scheme.slabs || []]));
+
+  let totalReleased = 0;
+  let touched = 0;
+
+  for (const bucket of buckets) {
+    const { contributions, released } = releaseDocumentContributionsInList(
+      bucket.contributions || [],
+      { documentId: orderId, documentType: 'SalesOrder' }
+    );
+    if (released === 0) continue;
+
+    bucket.contributions = contributions;
+    bucket.recomputeTotals();
+    bucket.refreshNextSlab(slabsByScheme.get(toId(bucket.scheme)) || []);
+    await bucket.save({ session });
+
+    totalReleased += released;
+    touched += 1;
+  }
+
+  return { buckets: touched, released: totalReleased };
+};
+
+/**
+ * Reverse an invoice's scheme consequences (DB wrapper).
+ *
+ * Called when an invoice is cancelled. Revokes the entitlements it created,
+ * flags the achievements it froze, and releases its own contributions so a
+ * re-issued invoice does not count the same goods twice.
+ */
+export const revokeInvoiceAchievements = async (dbConnection, {
+  invoiceId,
+  session = null,
+  actorId = null,
+  reason = ''
+} = {}) => {
+  if (!invoiceId) return { revoked: 0, flagged: 0, needsReview: [] };
+
+  const { SchemeProgress, SchemeApplication } = getSchemeModels(dbConnection);
+
+  let applicationQuery = SchemeApplication.find({ invoice: invoiceId });
+  if (session) applicationQuery = applicationQuery.session(session);
+  const applications = await applicationQuery;
+
+  const { toRevoke, needsReview } = planApplicationRevocations(applications, { invoiceId });
+
+  for (const application of toRevoke) {
+    application.status = 'Revoked';
+    application.revokedAt = new Date();
+    application.revokedBy = actorId || null;
+    application.remarks = [application.remarks, reason].filter(Boolean).join(' | ');
+    await application.save({ session });
+  }
+
+  // Flag the frozen achievements so the register stops treating them as earned,
+  // and so a re-issued invoice writes a fresh row instead of reviving this one.
+  let progressQuery = SchemeProgress.find({ 'achievements.crossedByDocumentId': invoiceId });
+  if (session) progressQuery = progressQuery.session(session);
+  const buckets = await progressQuery;
+
+  let flagged = 0;
+  for (const bucket of buckets) {
+    const { achievements, marked } = markAchievementsPendingRevocation(
+      bucket.achievements || [],
+      { invoiceId }
+    );
+    if (marked > 0) {
+      bucket.achievements = achievements;
+      bucket.markModified('achievements');
+    }
+
+    // A perInvoice scheme recorded this invoice's lines; take them back out so a
+    // re-issued invoice starts clean. For a cumulative scheme the ORDER's rows
+    // carry the goods and stay untouched.
+    const releasedResult = releaseDocumentContributionsInList(
+      bucket.contributions || [],
+      { documentId: invoiceId, documentType: 'DealerInvoice' }
+    );
+
+    if (marked > 0 || releasedResult.released > 0) {
+      bucket.contributions = releasedResult.contributions;
+      bucket.recomputeTotals();
+      await bucket.save({ session });
+      flagged += marked;
+    }
+  }
+
+  return { revoked: toRevoke.length, flagged, needsReview };
+};
+
 export default {
   getSchemeModels,
   normalizeLine,
@@ -1339,5 +1525,11 @@ export default {
   buildContribution,
   resolveFreeItemProduct,
   recordOrderContributions,
-  commitInvoiceAchievements
+  commitInvoiceAchievements,
+  // Reversal — cancelled documents must not keep progress or rewards.
+  releaseDocumentContributionsInList,
+  planApplicationRevocations,
+  markAchievementsPendingRevocation,
+  releaseOrderContributions,
+  revokeInvoiceAchievements
 };
